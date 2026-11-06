@@ -23,6 +23,8 @@ mod fetch_action;
 mod grant_role;
 #[path = "insert_or_update_trigger.rs"]
 mod insert_or_update_trigger;
+#[path = "rls_cause.rs"]
+mod rls_cause;
 #[path = "row_actions.rs"]
 mod row_actions;
 #[path = "run_js_code.rs"]

@@ -23,7 +23,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
-use sc_server::{AppMounts, SESSION_COOKIE, ServerConfig, admin_handlers, build_router};
+use sc_server::{AppMounts, SESSION_COOKIE, ServerConfig, admin_handlers, build_router_with_apps};
 use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -115,11 +115,14 @@ async fn setup() -> sc_error::Result<(Client, TestDb)> {
 
     let sessions = Arc::new(SessionStore::default());
     let apps = Arc::new(AppMounts::new(catalog.clone()));
-    let router = build_router(
+    // The router reads the catalog too: where every sign-in's second factor is
+    // decided (it starts no session without one).
+    let router = build_router_with_apps(
         &sc_api::admin_endpoints(),
-        admin_handlers(catalog, apps),
+        admin_handlers(catalog, apps.clone()),
         sessions,
         &ServerConfig::default(),
+        apps,
     )?;
 
     let mut client = Client::new(router);
@@ -342,6 +345,42 @@ async fn disabling_and_force_logout_end_the_session_already_in_progress() -> sc_
 
     // They can still sign in — a forced logout withdraws the session, not the
     // account.
+    let (status, _) = other
+        .send(
+            "POST",
+            "/api/login",
+            Some(json!({ "email": "other@example.com", "password": "otherpass" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // A new password set by an admin ends the sessions the old one started
+    // (security review 2026-11, #11), as an edit with a password does.
+    let (status, reset) = client
+        .send("POST", &format!("/api/users/{id}/random-password"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = other.send("GET", "/api/tables", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "a new password ends it");
+    let new_password = reset["password"].as_str().unwrap().to_owned();
+    let (status, _) = other
+        .send(
+            "POST",
+            "/api/login",
+            Some(json!({ "email": "other@example.com", "password": new_password })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = client
+        .send(
+            "PUT",
+            &format!("/api/users/{id}"),
+            Some(json!({ "email": "other@example.com", "role": 1, "password": "otherpass" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = other.send("GET", "/api/tables", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "so does an edit with one");
     let (status, _) = other
         .send(
             "POST",

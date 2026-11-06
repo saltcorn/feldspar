@@ -83,6 +83,10 @@ pub(crate) fn register(connection: &Connection) -> rusqlite::Result<()> {
 
 /// Argument `i` as a vector: `None` for `NULL`, the floats of a stored blob, or
 /// those of a JSON array of numbers written as text.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a vector element is single precision; one too large becomes infinite and is refused below"
+)]
 fn vector(ctx: &Context<'_>, i: usize) -> rusqlite::Result<Option<Vec<f32>>> {
     let not_a_vector = || {
         SqlError::UserFunctionError("a vector is an array of numbers, such as [0.5, 1, -2]".into())

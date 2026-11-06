@@ -22,6 +22,10 @@
 //!    `tsc`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![cfg(unix)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use sc_types::Role;
 use std::os::unix::fs::PermissionsExt;

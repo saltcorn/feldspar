@@ -173,7 +173,9 @@ impl Settings {
         let max_results = match config.get(CFG_SEARCH_MAX_RESULTS) {
             None | Some(Json::Null) => DEFAULT_MAX_RESULTS,
             Some(v) => match v.as_u64() {
-                Some(n) if (1..=MAX_MAX_RESULTS as u64).contains(&n) => n as usize,
+                Some(n) if (1..=MAX_MAX_RESULTS as u64).contains(&n) => {
+                    usize::try_from(n).unwrap_or(MAX_MAX_RESULTS)
+                }
                 _ => {
                     return Err(Error::invalid(format!(
                         "`{CFG_SEARCH_MAX_RESULTS}` should be a whole number from 1 to \

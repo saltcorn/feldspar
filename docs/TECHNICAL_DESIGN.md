@@ -71,6 +71,13 @@ feldspar/
 │  │                              #    `is_public`, `PublicAddr`, the SSRF resolver and the
 │  │                              #    `PublicClient` the agent's http trait, `fetch` and MCP
 │  │                              #    send with; an SMTP override's pinned address
+│  ├─ sc-proc/                    # 0. the one way to start a host process: `HostCommand`
+│  │                              #    (cleared environment, mandatory timeout, operands that
+│  │                              #    cannot be options, own process group, a sealed spawn
+│  │                              #    authority) and `Git` over a `RepoRoot`
+│  ├─ sc-http/                    # 0. values that go into a response header, each made by
+│  │                              #    one rule: a same-origin `RedirectTarget` and a
+│  │                              #    `DownloadName` for `Content-Disposition`
 │  ├─ sc-ratelimit/               # 3. in-memory token-bucket rate limiter keyed by string,
 │  │                              #    and the client-IP rule (queries, logins, code bodies)
 │  ├─ sc-i18n/                    # 0. Locale, negotiation, the Catalog, the message format,
@@ -250,6 +257,7 @@ graph TD
   coreact --> api["sc-api"]
   backup --> module["sc-module"]
   viewpattern["sc-viewpattern"] --> app
+  viewpattern --> http["sc-http"]
   server --> model["sc-model"]
   backup --> analytics["sc-analytics"]
   cli --> analytics
@@ -309,6 +317,8 @@ graph TD
   server --> ratelimit
   python --> expr
   files --> types["sc-types"]
+  files --> proc["sc-proc"]
+  proc --> log
   types --> query
   types --> i18n["sc-i18n"]
   i18n --> error
@@ -326,6 +336,8 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-config-file` | `sc-error` |
 | `sc-dns` | `sc-error` |
 | `sc-net` | `sc-error` |
+| `sc-proc` | `sc-error` `sc-log` |
+| `sc-http` | — (nothing in the workspace) |
 | `sc-ratelimit` | `sc-types` |
 | `sc-query` | `sc-error` |
 | `sc-repomap` | — (nothing in the workspace) |
@@ -337,12 +349,12 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-db-sqlite` | `sc-db` `sc-error` `sc-log` `sc-query` |
 | `sc-migrate` | `sc-db` `sc-error` `sc-query` |
 | `sc-expr` | `sc-error` `sc-query` `sc-ratelimit` `sc-types` |
-| `sc-files` | `sc-error` `sc-types` |
-| `sc-catalog` | `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-query` `sc-types` |
+| `sc-files` | `sc-error` `sc-proc` `sc-types` |
+| `sc-catalog` | `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-proc` `sc-query` `sc-types` |
 | `sc-config` | `sc-catalog` `sc-db` `sc-error` `sc-i18n` `sc-log` `sc-query` `sc-types` |
 | `sc-email` | `sc-catalog` `sc-config` `sc-error` `sc-net` |
 | `sc-auth` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
-| `sc-llm` | `sc-catalog` `sc-config` `sc-db` `sc-error` `sc-log` `sc-query` `sc-types` |
+| `sc-llm` | `sc-catalog` `sc-config` `sc-db` `sc-error` `sc-log` `sc-net` `sc-query` `sc-types` |
 | `sc-access` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-query` `sc-types` |
 | `sc-mcp` | `sc-catalog` `sc-db` `sc-error` `sc-net` `sc-query` `sc-types` |
 | `sc-action` | `sc-access` `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-query` `sc-types` |
@@ -350,21 +362,21 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-model` | `sc-catalog` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-analytics` | `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-db-sqlite` `sc-error` `sc-model` `sc-query` `sc-types` |
 | `sc-stream` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
-| `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-types` |
+| `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-net` `sc-proc` `sc-types` |
 | `sc-agent` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-workflow` | `sc-action` `sc-agent` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
 | `sc-api` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-query` `sc-ratelimit` `sc-types` |
-| `sc-app` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-stream` `sc-types` |
+| `sc-app` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-proc` `sc-query` `sc-stream` `sc-types` |
 | `sc-live` | `sc-access` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-stream` `sc-types` |
 | `sc-action-builtins` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-config` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-net` `sc-query` `sc-types` |
-| `sc-viewpattern` | `sc-access` `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-types` |
-| `sc-module` | `sc-access` `sc-action` `sc-action-builtins` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
-| `sc-python` | `sc-action` `sc-action-builtins` `sc-catalog` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
+| `sc-viewpattern` | `sc-access` `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-http` `sc-i18n` `sc-query` `sc-types` |
+| `sc-module` | `sc-access` `sc-action` `sc-action-builtins` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-http` `sc-log` `sc-model` `sc-proc` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
+| `sc-python` | `sc-action` `sc-action-builtins` `sc-catalog` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-proc` `sc-types` |
 | `sc-check` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-types` `sc-viewpattern` |
-| `sc-agent-builtins` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-query` `sc-repomap` `sc-types` |
-| `sc-backup` | `sc-access` `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
+| `sc-agent-builtins` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-proc` `sc-query` `sc-repomap` `sc-types` |
+| `sc-backup` | `sc-access` `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-net` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-http` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` `sc-workflow` |
 
 Four things the graph is worth reading for:
 
@@ -1220,13 +1232,52 @@ pub struct User {
   The window is the freshness TTL, it closes entirely once the message bus (§16) can carry an
   eviction to every node — `SessionStore::invalidate` is the seam it will hook to — and a
   deployment that will not accept it sets the cache TTL to zero, making every lookup a read.
+- **A session names the host it was issued for, and routes name the scope they take**
+  (security review 2026-11 §2, TODO-type-hardening H2.1). The scope is in the token
+  (`SessionScope::of_token`): an admin-host session's token is 64 hex digits; an application's
+  is `app-`, the application's id (32 hex digits), `-` and the random part, hashed whole, so it
+  cannot be pointed at another application. An application token from before tokens named
+  their application (`app-` and 64 hex digits) reads as `SessionScope::AnyApp` and works where
+  it did until it expires. `sc-server/src/session.rs` is the only place a request's session is
+  read: `Session<AdminScope>` (admin host, admin-issued), `Session<AppScope>` (an application's
+  host, issued by **that** application), `Session<Visiting>` (an application's host, issued
+  elsewhere and carried there by shared sign-in — served as the user, as before), and
+  `OwnSession` (`Session<AdminScope>` or `Session<AppScope>`, whichever the host is). Routes
+  take them as axum extractors or through their `of_request`. A route that changes the account
+  — the second-factor routes — takes an `OwnSession`, so a visiting session is nobody there.
+  `router::session_user`, which ignored the scope, is gone, and a workspace test keeps raw
+  store lookups out of the rest of `sc-server`.
+- **Signing in is typestate** (H2.2). `SessionStore::start` takes a `sc_auth::FullyAuthenticated`
+  and nothing else (`login(User)` and friends exist only behind sc-auth's `testing` feature,
+  which only dev-dependencies enable — a workspace test checks it). A sign-in's first factor
+  gives a `PasswordVerified` (`authenticate`, or `PasswordVerified::by` with a named
+  `FirstFactor`: a password or verification link, sign-up, an identity provider). It is
+  completed with a `SecondFactor`: a `SecondFactorProof`, made only by a right code, or a
+  `NoSecondFactorNeeded`, made only by `second_factor_needed`. `SessionAction::Start` carries a
+  `PasswordVerified`, so `apply_session`'s second-factor decision is the only way it becomes a
+  session. The sessions started for somebody who did not sign in are named
+  `SecondFactorWaiver`s — `BecomeUser`, `FirstUser`, `AdminHandoff`, `CallApi`, `BrowserDriver`,
+  `Cli` — and a workspace test lists the files that use one.
+- **Credential changes raise an auth epoch** (H2.3). `_fd_auth_epochs` (`user_id` PK, `epoch`;
+  no row is epoch 0) goes up on a new password (set by an admin, through `update_user`, or a
+  reset link), the second factor turned on or off, the account disabled, and its role made to
+  require a second factor it lacks. The session row records the epoch it started at
+  (`_fd_sessions.auth_epoch`, nullable, `NULL` = 0, added by the bootstrap) and so does a
+  challenge (`_fd_password_tokens.auth_epoch`); `SessionStore` refuses a session from an
+  earlier epoch at its next read on any node, and `start` refuses a `PasswordVerified` checked
+  at an earlier one (a password reset while a sign-in waits for its code). The functions that
+  change a credential raise the epoch themselves and return a `#[must_use]
+  CredentialsChanged`, which `SessionStore::bump_epoch` consumes: it deletes the account's
+  other session rows, restamps the one that made the change (when it goes on), drops this
+  node's cached copies and tells the live sockets. A handler hands one on with
+  `HandlerResponse::credentials_changed` (`SessionAction::CredentialsChanged`).
 - **Device recognition** ("Google-level"): remember known devices, email the user on a
   new-device login.
 - **OAuth2 server option**: Saltcorn can act as an identity provider (`sc-auth` exposes the
   authorization-code/PKCE endpoints when enabled).
 - **Session lifetime** (`session_ttl_hours`, Settings → Authentication, default 24, 1 to 8760).
   Live: every sign-in reads it from `_fd_config` (`AppMounts::current_session_ttl`) where
-  the router starts a session (`SessionStore::login_for`). So the next sign-in after a save
+  the router starts a session (`SessionStore::start`). So the next sign-in after a save
   gets it on every node, including after a save made by another node, `feldspar config set` or
   a restore. That covers a password's, an identity provider's and an admin handoff's. A session
   already started keeps the expiry it was given.
@@ -1282,13 +1333,20 @@ pub struct User {
   Codes from an authenticator app (TOTP, RFC 6238: HMAC-SHA-1, 6 digits, 30 seconds, one step
   of drift either way), and 10 single-use recovery codes. It belongs to the **account**, not
   to an application, so the routes are the server's own, under `/_feldspar/second-factor`,
-  answering on every host as the OAuth routes do:
+  answering on every host as the OAuth routes do. "Signed in" there means an `OwnSession`, a
+  session issued for the host the request arrived on: the application's own session on its
+  host, an admin session on the admin host. A session shared sign-in sends to an
+  application's host from the admin host or another application is nobody to these routes, so
+  an application's script cannot change a visiting account's second factor:
 
   - `GET` (signed in): `{enabled, required, recovery_codes_left}`.
-  - `POST setup {token?}`: a new secret, as `{secret, otpauth_url, qr_svg, account}`. The QR
-    code is an SVG drawn on the server. Refused while one is on.
+  - `POST setup {token?, password?}`: a new secret, as `{secret, otpauth_url, qr_svg,
+    account}`. The QR code is an SVG drawn on the server. Refused while one is on. Signed in
+    (rather than with a challenge's `token`), the account gives its current `password` again,
+    held to the login form's budget.
   - `POST enable {code, token?}`: turn it on with the app's first code. Answers
-    `{recovery_codes}`, shown once.
+    `{recovery_codes}`, shown once. Signed in, it ends the account's other sessions and keeps
+    this one, as `disable` does.
   - `POST verify {token, code}`: answer a sign-in's challenge (see below).
   - `POST disable {code}` and `POST recovery-codes {code}` (signed in): turn it off, or
     replace the recovery codes. Both need a current code. A role that requires it cannot turn
@@ -1298,10 +1356,18 @@ pub struct User {
 
   **Storage.** `_fd_second_factor` (`user_id` PK, the secret **sealed** with the instance key
   as a Secret field is, `enabled_at` (`NULL` while a setup waits for its first code),
-  `last_step`) and `_fd_recovery_codes` (SHA-256 of the account and the code). Both are made by
+  `last_step`, and the guess counter `guesses` / `guesses_since`) and `_fd_recovery_codes`
+  (`k1:` and the HMAC-SHA-256 of the account and the code, under a key derived from the
+  instance key). Both are made by
   the users bootstrap, are not foreign keys, and are deleted with the account. A code is
   accepted only for a time-step after `last_step`, in one conditional `UPDATE`, so a code
-  cannot be used twice. A recovery code is spent by `DELETE … RETURNING`.
+  cannot be used twice. A recovery code is spent by `DELETE … RETURNING`. Recovery codes are
+  18 symbols from a 31-letter alphabet drawn without bias (about 89 bits), shown as
+  `xxxxxx-xxxxxx-xxxxxx`. Codes made before (10 symbols, unkeyed SHA-256) are still spent once
+  under their old hash, and go when the account makes new ones. The secrets are types
+  (`sc_auth::TotpSecret`, `RecoveryCode`, `ChallengeToken`, H2.5): `Debug` redacted, no
+  `Display`, constant-time equality, read through an explicit `expose…`. Starting a setup
+  deletes only a setup still waiting for its first code, never one that is on (B6).
 
   **The challenge.** `apply_session` is where every session starts. For a
   `SessionAction::Start` by an account that has a second factor on, or whose role has
@@ -1318,14 +1384,40 @@ pub struct User {
     returns to the form's redirect, and an identity provider's `complete`, where it returns to
     `return_to`.
 
-  The answer starts the session through `apply_session` with `SessionAction::StartVerified`,
-  which is never challenged. That variant is also what `becomeUser` and the first user's
-  creation use. An identity-provider sign-in uses it too, unless Settings → Authentication
-  *Ask for a two-factor code after an identity provider* is on. Every password path is covered
-  this way without knowing about the second factor: the admin and REST logins, set-password,
-  verify-email, sign-up, and a rendered login form. Wrong codes count against the account (5 in
-  15 minutes, then `429`) as well as the login budget per IP. If the database cannot say
+  The answer spends the challenge, which gives back the `PasswordVerified` it held (at the
+  epoch it recorded: a credential changed meanwhile ends it), completes it with the code's
+  `SecondFactorProof` and starts the session through `apply_session` with
+  `SessionAction::StartVerified`, which is never challenged. That variant also carries the
+  named waivers `becomeUser` and the first user's creation use. A sign-in that sets up the
+  second factor its role requires raises the epoch itself; the challenge may outlive exactly
+  that one change. An identity-provider sign-in uses `Start`, so it is challenged exactly as a
+  password is: the provider's own second factor is not one this server can see, and accounts
+  match by email. (The former setting *Ask for a two-factor code after an identity provider*,
+  `second_factor_for_identity_providers`, is no longer read or shown.) Every password path is
+  covered this way without knowing about the second factor: the admin and REST logins,
+  set-password, verify-email, sign-up, and a rendered login form. If the database cannot say
   whether an account has a second factor, no session is started.
+
+  **Guessing.** Each code is counted against the account
+  **before** it is checked: `sc_auth::reserve_attempt` takes one of 5 guesses per 15 minutes in a
+  single conditional `UPDATE` of the account's `_fd_second_factor` row, so concurrent requests
+  cannot all be checked before one is counted, and every node shares the budget. The
+  `#[must_use] AttemptPermit` it returns is an argument, by value, of every check of a code
+  (`verify_second_factor`, `finish_second_factor_setup`), which settles it: a right code gives
+  its guess back (H2.4). Over the budget the answer is `429` with `Retry-After`. Each code
+  also counts against the login budget per IP. Replacing the recovery codes takes the
+  `SecondFactorProof` of a right code.
+
+  **Credential changes end sessions.** A new password (`set_user_password`, `update_user` with
+  one, a reset link), disabling an account, and a role change to one that requires a second
+  factor the account lacks raise the account's auth epoch (above) and delete its session rows
+  in `sc_auth::manage`, whoever calls it; a new password also deletes its outstanding reset
+  links and challenges. Making a role require a second factor ends the sessions of its
+  accounts that have none on (`delete_sessions_lacking_second_factor`), except the admin
+  making the change. Turning the second factor on or off ends the account's other sessions and
+  keeps the one that did it (`SessionStore::bump_epoch` with the session to keep). A server
+  handler hands the `CredentialsChanged` to the store, which evicts this node's cache and
+  closes live sockets; another node refuses the old sessions at its next read of them.
 
   **Applications made before it.** A build regenerates only an application's `src/feldspar/`
   runtime, never its own `Login.tsx`, so the generated client covers pages that know nothing of
@@ -1535,18 +1627,532 @@ the cycle named — Postgres would otherwise raise `infinite recursion detected 
 at query time.
 
 **Who may *write* these rules.** The four settings above — `min_role_read`, `min_role_write`,
-`ownership_formula` and `rls_enabled` — are set by an admin through `updateTable` (§13.1) and,
-since the agents milestone, by an **agent** carrying the `admin_copilot` trait (§11.3). A
-reader of this section must not have to infer that from §11, so it is stated here with its two
-conditions: the agent's `allow_access_changes` grant must be on — it is **off by default**, and
-it is a separate grant from `allow_drop` because a drop announces itself while a widened role
-floor does not — and the **run's caller must be role 1**, checked in the tool before anything
+`ownership_formula` and `rls_enabled` — are set by an admin through `updateTable` (§13.1) and by
+an **agent**: one carrying the `admin_copilot` trait (§11.3), or an MCP client with the
+administration server's `edit_schema` (§13.6). Row-level security is the one lever (§7.3a,
+TODO-type-hardening H8.5, H8.9):
+
+- On a table **without** RLS the settings are an agent's to change, and an agent may turn RLS
+  **on** (refused unless the formula translates for all four operations).
+- On a table **with** RLS only a **person** changes them: an administrator in a browser session
+  on the admin host, or the operator with the CLI on the server. An agent's batch that would
+  change a floor, the formula, `rls_enabled` or the history floor — stricter or looser — or
+  drop the table is refused with *"`<table>` has row-level security, so its access rules can
+  only be changed by a person in the admin UI. Tell the user what change you need and why."*,
+  which never suggests turning RLS off. A setting sent with the value it already has changes
+  nothing and is not refused.
+- The type: `schema_edit::ApplyOptions::editor` is an `sc_catalog::Editor` — `Person` (made only
+  by sc-server's `AdminSession::person`), `Operator` (made only by the CLI, `Operator::at_cli`)
+  or `Delegated` (everything else, the default) — and only the first two give the
+  `RlsTableAccess` such a change needs. `Admin::editor` is `Person` for a browser session and
+  `Delegated` for an endpoint an in-process tool layer calls (`Admin::delegated`), so the admin
+  UI's handlers serve both.
+
+The **run's caller must be role 1** for an agent's tools, checked in the tool before anything
 else, because a schema has no ownership formula to fall back on and an agent exposed to a
-role-80 user through a chat view must not become the table editor. This does not widen anyone's
-authority: the caller is already an admin, and an admin sets these through `updateTable` today.
-What it changes is the *speed* at which they can be set, which is why enabling RLS is refused
-unless the formula translates for all four operations, and why disabling it — the one operation
-whose damage is invisible in the schema afterwards — is reported back to the model in words.
+role-80 user through a chat view must not become the table editor. There is no
+`allow_access_changes` grant any more: grants on agents are options nobody keeps track of, and a
+stored configuration or token that carries the key keeps loading, the key ignored.
+
+### 7.3a Formula additions, and RLS as a hard boundary (TODO-type-hardening H7, H8)
+
+**Status: the formula additions (H7) and RLS as a hard boundary (H8) are built, each with an
+"As built" note below, except the unforgeable caller settings (H8.4), which are designed and not
+built.** This comes from the November 2026 security review
+([SECURITY_REVIEW_2026-11.md](./SECURITY_REVIEW_2026-11.md)).
+
+**Why.** Coding agents are told to build applications from custom queries rather than the
+generic table API, because a query is a smaller boundary. But a code body can say `asAdmin()`,
+and an agent working towards a short-term goal will use it whenever the table's rules get in
+the way. Each use is defensible on its own. Together they move the real policy out of the
+tables and into many code bodies, and then nobody controls permissions centrally any more.
+
+There are two answers, and they fit together:
+
+- Make the ownership formula able to state the common cases that today drive code to
+  `asAdmin()`. This must not add configuration fields.
+- Give RLS a single meaning: **"enforce this 100%, with no escape hatches"**. A second
+  setting such as "RLS, but immune to elevation" would always be set together with RLS or
+  not at all, so it would only be a second way to get it wrong.
+
+#### Already expressible (document, don't build)
+
+- **Rows shared by a group**: a Ↄ aggregation over a membership table.
+- **Append-only tables** (logs, form submissions): read floor admin, formula
+  `_insert && owner === user.id`. A write's response never returns a row the caller may not
+  read (security review #28).
+- **Deny that applies even above the role floor** ("nobody may edit a closed invoice"): set the
+  operation's floor to admin and state the whole rule, roles included, in the formula:
+  `_update && user.role <= 40 && status !== "closed"`. `user.role` already translates. There
+  is no separate deny rule.
+
+#### Time
+
+`new Date()` parses today but does not translate, so a formula that uses it drops to the
+row-by-row evaluator. That path is slower, is refused for streamed reads, and cannot become an
+RLS policy. The additions:
+
+- `new Date()` and `Date.now()` are **one instant per statement**. The host fixes it once and
+  binds it: a parameter on the runtime-check path, a GUC `sc.now` set by `set_caller_context`
+  on the RLS path. The SQL path and the row-by-row path therefore agree. SQL `now()` is not
+  used, because inside a shared transaction it is the transaction's start time.
+- Translatable forms:
+  - a date column, `new Date()`, `new Date(<date column>)`, and `new Date(<number>)` (epoch
+    milliseconds);
+  - `.getTime()` on any of those, and `Date.now()`, as numbers (epoch milliseconds);
+  - `+ - * /` on those numbers, and the comparisons `< <= > >= === !==` on dates or numbers.
+
+  Anything else is untranslatable, as today.
+
+**As built (H7.2).** The translator learns a column's kind from the schema shape
+(`sc_expr::FieldKind`, filled by the catalog from the field's SQL type). A comparison is a
+comparison of instants exactly when one side *constructs* one (`new Date(…)`); two date columns,
+or a date column and a string, keep the translation they had. Time is spelled through four
+functions in `sc_query::time` that the renderer writes per backend: an instant, a calendar date
+as its UTC midnight (what JavaScript's `new Date("2024-05-06")` is, whatever the session's time
+zone), whole epoch milliseconds (`floor`ed, as a `Date` truncates microseconds), and an instant
+from milliseconds. On SQLite they are `strftime`/`julianday` over the driver's fixed-width UTC
+text. Two numeric literals fold (`Date.now() - 15*60e3` is one bound number). On the evaluator,
+the instant is `FormulaCall::now`, bound as `__scNow`; `.getTime()` and `new Date(x)` go through
+frozen helpers that read the ISO text a date column is bound as, and give `null` for `null` as SQL
+does (`new Date(null)` was 1970 before), and a comparison or `===` with a `new Date(…)` side
+compares times. The runtime read uses one instant for its SQL predicate and every row it
+evaluates, and a calculated-field read one for its projections and its after-read fields.
+`set_caller_context` sets `sc.now` (RFC 3339, microseconds) with the role and user, and
+`clear_caller_context` empties it.
+
+```js
+published_at <= new Date()                                                  // embargo
+_update && owner === user.id && created_at.getTime() > Date.now() - 15*60e3 // 15-minute edit window
+_read && ticketⱵstatus === "open" && ticketⱵagent === user.id               // while a ticket is open
+```
+
+#### `old` in updates
+
+On an update, the proposed row is checked with `old` bound to the existing row, so a formula
+can compare the two:
+
+```js
+_update && owner === user.id && (status === old.status || (old.status === "draft" && status === "submitted"))
+_update && owner === user.id && credits === old.credits
+```
+
+- **Where `old` is defined.** Only in the proposed-row check of an update. In every other check
+  (`_read`, `_insert`, `_delete`, and the existing-row check of an update), `old.x` is `null`,
+  so a formula written as `_update && …` is unaffected.
+- **Runtime-check path.** `old.x` translates to the existing row's column, correlated in the
+  `UPDATE`. It is also bound in the reified check, which already has both rows.
+- **RLS.** A Postgres policy cannot see the old and new row together. The first version refuses
+  to enable RLS for a formula that uses `old`, under the existing rule that RLS is refused for a
+  formula the database cannot honour. A later version can emit a `BEFORE UPDATE` trigger that
+  evaluates the formula over `OLD` and `NEW` under the same GUCs.
+
+**As built (H7.3), with one deviation.** In the *existing-row* check of an update, `old` is the
+existing row too, not `null`: the check asks whether the row, unchanged, may be updated, so
+`status === old.status` holds there. With `old` null, the first example above would refuse every
+update at the existing-row check (`"submitted" === null`), before the proposed row is looked at.
+`old` is `null` in `_read`, `_insert` and `_delete`. So:
+
+- The catalog's shape declares `old` as the formula's own previous row (`SchemaShape::old_row`),
+  checked against the table's fields on save (`old.titel` is refused). A field called `old` wins,
+  so a table that has one keeps reading it. Calculated fields, row constraints and default values
+  refuse `old`.
+- Translated, `old.x` in an update's predicate is the row's own column (the `UPDATE`'s `WHERE`
+  reads the existing row), and a literal `null` in every other operation. The evaluator binds
+  `old` to the existing row's stored columns in both checks of an update, and to `null` where no
+  row is bound.
+- The proposed-row check runs on the evaluator, as it did, with `old` bound (`sc_access::
+  ownership::update_allowed`, used by the row layer, `write_as` and the REST upload). Instead
+  of correlating `old` in the `UPDATE`, the guard pins every `old.x` the formula reads to the
+  value the check saw (`update_guard`): a concurrent change to one of them makes the write miss,
+  the not-found it would have been had it come second.
+- **Under RLS (H7.4).** The `UPDATE` policy keeps the existing-row check (`USING`, where `old.x`
+  is the row's own column) and has `WITH CHECK (true)`; the proposed-row check is a generated
+  `BEFORE UPDATE` trigger, `sc_owner_update_old`, whose PL/pgSQL function
+  (`_fd_owner_old_<table>`, hashed when that passes 63 bytes) evaluates the role floor OR the
+  formula over `NEW` with `old.x` read from `OLD` (`sc_expr::translate_update_check`), under the
+  same GUCs, and raises SQLSTATE `42501` as a policy does. Its dollar-quote tag is chosen so no
+  string in the formula contains it. `enable_rls_sql` always drops the trigger and function first
+  and recreates them only for a formula that reads `old`; `disable_rls_sql` drops them. Enabling
+  RLS also requires the trigger's check to translate.
+
+#### Presented values: `_request`
+
+A share link, an unsubscribe link or an invitation must be readable by whoever holds its secret,
+and listable by nobody. The formula expresses this by comparing a column with a value the caller
+presents:
+
+```js
+_read && token === _request.token
+_update && token === _request.token && email === old.email      // unsubscribe: may set opted_out
+_insert && inviteⱵcode === _request.invite                      // join with an invitation code
+```
+
+This is ordinary evaluation in an environment, like `user`. Because the equality is checked per
+row, a caller only ever reaches the row whose secret they already hold. Listing, prefix searches
+and filters do not help without it.
+
+**The environment.**
+- `_request` holds the values the caller presented for this request: a map from key to string.
+- Keys are `[a-z][a-z0-9_]{0,31}`, at most 8 per request.
+- A key that is missing, `null` or empty is **absent**: `undefined` on the evaluator path, and
+  an unset GUC that folds to `NULL` on the SQL and RLS paths. An absent value therefore equals
+  nothing, not even a `null` column. On the JavaScript side, `undefined === null` is false; on
+  the SQL side, a comparison with `NULL` is never true.
+
+**How a caller presents values.** Never in the query string, so tokens stay out of access logs
+and history:
+- REST and fetch: the header `X-Sc-Request-<key>`.
+- Code API: `db.shares.withRequest({ token })`. A code query receives the value as one of its
+  own parameters and passes it on.
+- GraphQL: a `request` argument.
+- Live and sync subscriptions: the connection parameters.
+- MCP: a tool argument.
+
+A response computed with a presented value is `Cache-Control: private, no-store`.
+
+**RLS.** `set_caller_context` sets `sc.request.<key>` for every key that any table's formula
+references, empty when the caller presented none. It sets **all of them** every time, for the
+same reason it always sets both role and user: on a shared transaction, one writer's values must
+not carry over to the next writer. The key names come from the formulas, which an admin writes,
+not from the request. The values are bound via `set_config`.
+
+**Shape checked at save time.** `_request` is caller-controlled and sits next to the trusted
+`user`. A formula like `owner === _request.user_id` would look plausible to an agent and give
+away every row. So when a formula is saved:
+- `_request.<key>` may appear only as one side of `===` whose other side is a column of this
+  table or a Ⱶ-reached column.
+- That column must be **unique**, not the primary key, and not an integer or sequence column.
+- Any other use (compared with `user`, `old`, a literal, `!==`, arithmetic, truthiness) is
+  refused, with the reason given.
+- A warning is given when the column has no random default. The documented default is a
+  128-bit random string, so tokens are never chosen by users.
+
+**Rate limit.** Reads and writes on a table whose formula references `_request` count against a
+per-IP limit whenever they present a value. This is automatic, with no setting.
+
+**Not in the first version:** looking up a hashed token. A Secret field uses a salted hash,
+which cannot be looked up; this would need a keyed, deterministic hash.
+
+**As built (H7.5).** `_request` is an ambient object (`sc_expr::Ambient::Request`), in scope where
+the catalog's shape says so (`SchemaShape::request`, like `old`), and refused by calculated fields,
+row constraints and default values. `sc_expr::RequestValues` is the one way to hold presented
+values: it checks the key syntax and the limit of 8, drops empty values, and its `Debug` prints
+keys only. The values ride on `sc_catalog::Origin::request` and from there on `Principal`; an
+event rebuilds its origin from what it stores, so a presented value never reaches a stored run
+or a cascade. Translated, `column === _request.key` is `CAST(column AS text) = <value>` (no cast
+on a text column) with the value bound, or read from `sc.request.<key>` in a policy, so an
+absent value (`NULL`) matches nothing and a value that is not a valid UUID is a mismatch rather
+than an error; the evaluator binds `_request` as an object of strings (`{}` when nothing was
+presented). `sc_expr::check_request_uses` is the shape check, run by the schema editor on save
+(a column without a random default is returned as a note) and by `Catalog::reload` on load
+(a formula that fails it is cleared and grants nothing, as any invalid formula). The reload
+records the keys formulas read in a process-wide set, and `set_caller_context` sets
+`sc.request.<key>` for each of them every time (`clear_caller_context` empties them). A shared
+transaction re-applies the caller GUCs when the guest session or the presented values change,
+not only the role, user and changeset — which also closes the same gap for `sc.session`.
+
+**The channels, as built (H7.6).**
+- **HTTP** (REST, GraphQL, sync, custom queries, any `fetch`): the app router reads every
+  `X-Sc-Request-<key>` header into the request's origin; a name that is not a key, a value that
+  is not text or more than 8 values is a `400`. A response to a request that presented a value is
+  `Cache-Control: private, no-store`. The generated client's `ClientOptions.request` sends the
+  headers on every call (`presenting` wraps its `fetch`), and passes them to the live connection.
+- **Rate limit**: a request presenting a value counts against `presented:<ip>`,
+  `PRESENTED_VALUES_RATE` (120 a minute), with no setting; past it, a `429` with `Retry-After`.
+  It counts every presenting request rather than only those that reach a `_request` formula,
+  since the transport is where the address is known and a client presents values for nothing
+  else.
+- **Code API**: `.withRequest({ token })` on a query, sent as the plan's `request`; the host runs
+  that call inside an origin presenting exactly those values, so a body never presents what the
+  request it runs inside presented unless it passes the value on.
+- **GraphQL**: a `request: JSON` argument on every root query and mutation field (`_request`
+  beside a primary key called `request`), applied to that field's own reads and writes; nested
+  fields present what the HTTP request did.
+- **Live**: a client frame, `{"type":"present","values":{…}}`, replaces what the connection
+  presents, counted against the same per-address limit; the generated client sends it each time
+  the socket opens. The values live on the connection's `CallerCell`, so the frame loop decides
+  every read, re-check and stream query inside an origin carrying them, and a `table_changes`
+  fan-out asks each verdict with them (its verdict cache is keyed by them too). An upgrade
+  request's headers seed them. Sync's pull and push are HTTP, so the header is its channel.
+- **Agents and MCP**: the administration MCP server's callers are administrators, who meet every
+  floor, so a presented value decides nothing there. An agent acting for a user does: the
+  `query_table` tool offers a `request` argument listing the keys the table's formula reads, and
+  `call_api` passes `X-Sc-Request-*` in its `headers`.
+
+#### RLS as a hard boundary
+
+**The rule.** On a table with `rls_enabled`, every statement runs with the authority of the
+**cause** of the work, never more. The cause is the principal who started the request, the
+event or the trigger chain, carried along the chain (§10). Code cannot raise it:
+
+| Source of authority | On an RLS table |
+|---|---|
+| An admin's own request (admin session, admin API token, admin MCP user) | admin (unchanged: the admin role meets every floor) |
+| A signed-in user's request, and everything it triggers in cascade | that user |
+| An anonymous request, an inbound webhook | public |
+| A scheduled or startup trigger (no human cause) | system (admin role); it may narrow itself to a named user (below) |
+| The internal jobs in the system-authority inventory (backup, restore, retention, change log, sync bookkeeping, schema checks) | system (unchanged); these are not application code |
+| `asAdmin()` in a code body (`db`, `fs`, `trigger`, `models`) | **refused**, with an error naming the table and RLS |
+| A trigger's or code action's default authority ("admin in the event user's name"), and the built-in row actions' `ActionContext::scoped` | the cause |
+| A trigger marked "runs as system" and approved by a person for its current code (below) | system, for the trigger's own statements only |
+| `asUser(id)`, `forUser` / `Authority::Named` | the named user, only if they hold no more authority than the cause; otherwise refused |
+| `db.sql()` as admin, a custom SQL query | the cause's GUCs. Admin-authored statements cannot forge them (below) |
+
+**One chokepoint.** RLS tables are `FORCE`d, so every statement that touches one goes through
+`set_caller_context` (`sc-catalog/src/rls.rs`). Enforcement lives there:
+- `Principal` gains the authority of its cause.
+- An elevated principal ("admin in the user's name") is built with
+  `Principal::elevated(&cause, reason)` and keeps the cause.
+- `set_caller_context` writes the **cause's** role and user to `sc.role` and `sc.user`. Postgres
+  then enforces the policies whatever path the statement took.
+- Tables without RLS keep reading the elevated authority, through the runtime row layer, as
+  today. One statement over both kinds of table is therefore filtered on the RLS tables only.
+
+The code host's refusal of an explicit `asAdmin()` on an RLS table is an extra layer for clear
+error messages: the code body is told why, instead of silently getting fewer rows.
+
+**Statements cannot forge the context.** Custom SQL queries and `db.sql()` are admin-authored,
+but agents author them too, and a statement could call
+`set_config('sc.role', '1', true)` itself. So:
+- At save time, and again at run time, the statement is parsed and refused if it calls
+  `set_config`, is a `SET`, `RESET` or `DO`, or creates or replaces a function or procedure.
+- A later, stronger version makes the GUCs unforgeable (H8.4, designed below, not built).
+
+**As built (H8.3).** `sc_query::check_admin_sql` is the check: a scanner, not a parser, that
+knows every way SQL hides text (literals, `E'…'`, dollar quotes, quoted identifiers, nested
+comments; a `U&` Unicode-escaped name is refused outright) and refuses `set_config`,
+`pg_settings`, the functions that run SQL text (`query_to_xml` and kin, `dblink`), `SET`,
+`RESET`, `DO`, creating, altering or dropping a function or procedure, and `ALTER ROLE | USER |
+DATABASE | SYSTEM`, in every statement of the text. It runs when a custom SQL query is saved,
+each time it runs, and each time a `db.sql()` runs. With H8.5 it also refuses the statements
+that reshape RLS (below).
+
+**Unforgeable caller settings (H8.4, design).** H8.3 closes the textual routes. What remains is
+whatever it cannot see: a function created before the check existed, an extension's, a surface
+added later, a scanner mistake. The stronger version makes the settings worthless to forge.
+
+- **Two roles.** `R`, the login role the server connects as, owns the application's tables and
+  runs every statement, as today. `G`, a `NOLOGIN` role, owns a schema `sc_guard` holding one
+  table, `sc_guard.secret(key bytea)`, readable by `G` alone, and the guard functions. `R` is not
+  a member of `G` and cannot `SET ROLE` to it. Creating `G` needs `CREATEROLE` (or a superuser),
+  which `R` must not have, so it is an operator's step, not a bootstrap or a migration:
+  `feldspar db harden-rls --admin-url <a privileged connection>` creates `G`, the schema, the
+  secret (32 random bytes) and the functions, then regenerates every RLS table's policies in one
+  transaction. The secret is also written to the server's configuration file (never to the
+  database), because the server computes the MAC.
+- **The MAC.** `set_caller_context` reads the transaction's id once (`pg_current_xact_id()`, one
+  round trip per caller-context transaction) and sets, beside the settings it sets today,
+  `sc.mac` = HMAC-SHA256(secret, xid ‖ role ‖ user ‖ session ‖ presented values ‖ now ‖
+  changeset). Binding the transaction id means a MAC read in one transaction is useless in
+  another. Within one transaction a statement only ever runs after its own writer's settings
+  were applied (`SharedTx` re-applies them per writer), so it can read only the identity it
+  already has.
+- **The guard functions.** `sc_guard.caller_role()`, `caller_user()`, `caller_session()`,
+  `caller_request(key)` and `caller_now()`: `SECURITY DEFINER`, `STABLE`, `SET search_path =
+  sc_guard, pg_temp`. Each recomputes the MAC from the current settings with the secret (the
+  built-in `sha256()` composes HMAC, so `pgcrypto` is not required) and answers the value, or
+  `NULL` — no access — when the MAC is missing or wrong. A statement that sets `sc.role` itself
+  cannot produce the matching `sc.mac` without the secret, which `R` cannot read.
+- **The policies.** With the guard provisioned (recorded in `_fd_config`, and checked at
+  startup), `enable_rls_sql` emits `(SELECT sc_guard.caller_role())` and its siblings where it
+  emits `NULLIF(current_setting('sc.role', true), '')::int` today. The scalar subquery has no
+  outer reference, so Postgres evaluates it once per statement (an InitPlan), not once per row.
+  The `old` trigger of H7.4 reads the same functions.
+- **Startup self-check.** The server verifies that `sc_guard.caller_role` exists and that `R`
+  **cannot** `SELECT` from `sc_guard.secret`; if it can, guarded mode is refused and the System
+  tab and the log say why. Without the guard the server runs as today (GUC policies plus H8.3),
+  and the System tab says which mode is in force.
+- **Limits.** A superuser or `BYPASSRLS` login role still defeats every policy (§7.3's
+  operational requirement). Rotating the secret is `harden-rls --rotate`, which rewrites both
+  copies in one step and needs a restart.
+
+Not built in H8: it needs a database role the server's own role cannot create, so it is a
+deployment step every installation would have to take, and it cannot be exercised on a test
+database whose role lacks `CREATEROLE`. H8.3's check is the boundary until it is.
+
+**On an RLS table, only a person changes who may access it.** A person is an admin in a browser
+session (an `AdminSession`, not `Admin::delegated`), or an operator with the CLI on the server.
+Coding agents (Claude Code in the IDE, the in-app coding agent), MCP clients, `admin_copilot`
+and code bodies may **enable** RLS on a table. Once it is on, they cannot change the table's
+access settings at all: not its floors, not its ownership formula, and not RLS itself. That
+includes changes that would be stricter. A formula cannot in general be proven stricter than
+another, a rule that accepted some tightenings and refused others would be one agents cannot
+predict, and a tightening can break an application, so a person should see it anyway.
+
+Such a request is refused with: *"`<table>` has row-level security, so its access rules can
+only be changed by a person in the admin UI. Tell the user what change you need and why."* The
+reply does not suggest disabling RLS: the admin can edit the rules with RLS left on, and asking
+for it to be turned off invites exactly the wrong request.
+
+Everything else an agent does over an RLS table stays open, because none of it changes who may
+read or write its rows: adding or editing columns, rows, queries and code. Dropping a column
+the formula reads is also open, because the formula then fails closed and grants nothing.
+
+These paths are refused for agents, because each would end with a table losing RLS or with
+its rules changed:
+
+- `min_role_read`, `min_role_write`, `ownership_formula` or `rls_enabled` in a schema edit, in
+  any tool or batch, when the table has RLS. (`rls_enabled: true` on a table without it is
+  allowed.)
+- Dropping a table that has RLS. Otherwise drop-and-recreate would turn it off with extra
+  steps.
+- DDL in a custom SQL query or `db.sql()` that disables or reshapes policies:
+  `ALTER TABLE … DISABLE | NO FORCE ROW LEVEL SECURITY`, and `CREATE`, `ALTER` or
+  `DROP POLICY` (a new permissive `USING (true)` policy widens just as well). This is refused
+  by the same statement check that refuses `set_config` (H8.3).
+- An import or restore that agents can start (application import, partial restore, app sync)
+  that would replace an RLS table's metadata with `rls_enabled: false`.
+
+**Making this a type.** The schema-edit entry point takes an `Editor`, either
+`Person(&AdminSession)`, `Operator` (the CLI) or `Delegated(&Admin)`. Only the first two can
+build the `RlsTableAccess` value that changing an RLS table's access settings, disabling RLS
+or dropping an RLS table requires, so a new agent-facing path cannot get around the rule by
+forgetting a check.
+
+**As built (H8.1, H8.2, H8.5, H8.8).**
+- `sc_catalog::Cause` is carried by every `Principal`; `Principal::elevated(&cause, reason)`
+  keeps it, and `set_caller_context` writes `policy_role` / `policy_user` (the cause's for an
+  elevated principal). An event records `event_role` / `event_user` — the same, except for an
+  approved trigger (below) — and `Event::system` marks one with no human cause: a scheduled or
+  startup trigger's, a **stream element's** (a subscription is configuration, and nobody sent
+  the element), and a run or write at `Authority::System`. Its caller is nobody at the public
+  role with a system cause (`Principal::with_system_cause`), so `asUser()` there is still the
+  public role. `Principal::capped_at` caps the cause too, so an application's maximum role holds
+  under elevation.
+- The code host refuses an explicit `asAdmin()` on `db`, `trigger(…)` (a trigger whose table has
+  RLS) and a model's write-back; `fs` reaches no table and is unchanged. Row history, read from
+  the change log past the policies, is read as the cause on an RLS table.
+- `Principal::narrowed(&cause, role, user)` keeps the cause's chain and changeset; from there
+  its cause is the **named user** (a deviation from "keeps the cause": what the policies read and
+  what an event its write raises is caused by are that user's, and the check against the
+  original cause is made when it is narrowed). `asUser(id)` takes an id or a user row on `db`, a
+  query, `db.sql()`, a store, a model and a trigger.
+- A delegated editor's change to an RLS table's settings is refused only when it **differs**
+  from the stored value, so the admin form's whole-object save of an unchanged rule is not a
+  change; `history_min_role` counts as an access setting. `clear_all` and
+  `forget_table_settings` take the editor too.
+
+**No permission grants for agents.** This rule replaces the `allow_access_changes` grant
+(admin_copilot, MCP tokens, `feldspar mcp-token`). Grants on agents are options nobody keeps
+track of. RLS is the one lever: a table without RLS has access rules an agent may change, and a
+table with RLS has access rules only a person may change. Everything else the grant guarded
+becomes open to agents: a query's or stream's `min_role`, `api_tables`, public triggers and
+signed-out agents, an application's CSP, and roles and accounts. Deleting a role or an account
+still needs `allow_drop`, and the last enabled admin still cannot be disabled or deleted. These
+are low risk from an agent that goes wrong, and none of them is a boundary that RLS promises.
+
+Existing stored agent configurations and MCP tokens that carry `allow_access_changes` keep
+loading; the field is ignored. The CLI accepts the flag with a deprecation warning.
+
+#### Triggers that run as system
+
+The permission system decides access. Some business logic needs more authority than the user
+whose event starts it: an order decrements the shop's stock, a booking recounts the seats over
+every booking, accepting a friend request writes a row for each of the two users. On a table
+without RLS such logic can use `asAdmin()`. On an RLS table nothing elevates. The one exception
+is a trigger that a person has approved to run as system, the equivalent of Postgres's
+`SECURITY DEFINER`: the trusted logic lives in one named, listed place instead of in request
+code.
+
+**The setting.** A trigger has one more setting, **runs as system**. When it is on *and
+approved*, the trigger's action runs at system authority, the authority a scheduled trigger
+already has, even when a user's event fired it. RLS tables are included. Nothing else changes:
+the event, its row and the caller (`user` in the code) are as before.
+
+**Only a person approves it.** An agent, an MCP client or a code body may set it, which records
+a request, but the trigger keeps running at the cause's authority until a person approves it.
+A person is an admin in a browser session or an operator with the CLI, as in H8.5. The admin
+UI's triggers list shows every trigger that runs as system and every pending request, with the
+code to read. An agent that sets it is told: *"`<trigger>` will run as system once a person
+approves it in the admin UI. Until then it runs as the user who caused it."*
+
+**The approval is for the code, not the name.** The approval records a hash of the trigger's
+action configuration (its code, or its workflow definition, and its settings) together with who
+approved it and when. If the configuration changes and the hash no longer matches, the approval
+lapses and the trigger runs at the cause's authority again, until it is approved again. A change
+made by a person in an admin session re-approves it at once. Without this rule an agent could
+put anything into a trigger that is already trusted.
+
+**Elevation does not cascade.** Only the trigger's own statements run as system. Rows it writes
+fire further triggers whose cause is still the original user (the chain carries it, §10), so one
+approved trigger cannot lend its authority to a chain of unapproved ones. A trigger it calls
+directly runs as system only if that trigger is itself approved.
+
+**What the approver takes on.** The trigger runs at system authority on input the user controls
+(the row they wrote, a button's arguments), and its code is the only check on that input.
+Whatever it returns to the caller or writes where the caller can read it is disclosed on
+purpose. An action fired by a button that returns rows it read as system hands those rows to
+whoever pressed the button. The admin UI says this next to the approve button.
+
+**Storage.** Three nullable columns on the trigger's metadata table record the approval: the
+approved hash, the approver's user id, and the time. This is an additive change, made by the
+bootstrap. A backup restore by a person keeps approvals. An application import, partial restore
+or app sync that an agent starts drops them, which leaves the request pending. Each approved
+trigger is an entry in the system-authority inventory (SECURITY_REVIEW_2026-10.md).
+
+**As built (H8.10).** The setting is the trigger attribute `runs_as_system`; the approval is
+three columns `save_trigger` never writes, and `Trigger::configuration_hash` covers the event,
+table, `only_if`, body, action and configuration, and a workflow's current definition without its
+version number. `Principal::system_for_trigger` is admin authority whose policy identity is the
+system (`sc.role` 1, no `sc.user`) while `user` and the events its writes raise stay the cause's.
+A code body's `db` and `fs` act at it through `acting_as`; a workflow run records the hash it
+started approved for, and its steps run as system while the approval is still for it. The admin
+API's `approveTriggerSystem` / `revokeTriggerSystem` and `feldspar trigger approve-system |
+revoke-system` approve and revoke; an admin session's edit of an approved trigger re-approves it.
+
+**What RLS does not promise.** It protects the rows of the table it is on, not information
+derived from them. A scheduled job, or an approved trigger, with system authority can still copy
+rows into a table without RLS. That is visible, central configuration, approved by a person, not
+an escape hatch in a request path.
+
+**Compatibility.** This intentionally changes behaviour on instances that combine RLS tables with
+code that elevates:
+- A code body that says `asAdmin()` over an RLS table now gets an error.
+- A trigger whose default admin authority reached RLS rows now sees what its cause sees.
+
+There is no setting to restore the old behaviour. On the first start after upgrading, the server
+lists in the admin notices and the log every code body, custom query and trigger that touches an
+RLS table at elevated authority, found statically from the code and from the trigger
+definitions. The CHANGELOG states the change.
+
+**As built (H8.6).** `sc_server::report_rls_elevation`, run once by `serve`
+(`RLS_BOUNDARY_REPORTED`), lists each trigger a user's event fires whose table has RLS or whose
+code names an RLS table, and each trigger, custom code query and code library that says
+`asAdmin()` and names one. It is a reading of the text, so it errs towards listing. The admin
+notices it writes are new: `ADMIN_NOTICES`, `listAdminNotices` / `dismissAdminNotice`, and a
+banner above every admin screen.
+
+**Scheduled and startup triggers run at system authority** (decided). The rule is "never more
+than the cause", and a job with no caller has no one whose authority it could exceed. Running
+them as the public role was rejected: a nightly job such as "remind each user of their overdue
+tasks" would then need the formula to grant the public role, which is worse.
+
+**Acting as a named user.** A job with system authority, or an admin, can narrow itself to one
+user, and should when it acts on that user's behalf. The nightly reminder reads each user's
+tasks as that user, so the table's rules decide what goes into each email:
+
+```js
+for (const u of await db.users.where({ wants_reminders: true }).rows()) {
+  const overdue = await db.tasks.asUser(u.id).where({ done: false }).rows(); // u's own view
+  …
+}
+```
+
+- **API.** `asUser(id)` on `db`, `fs`, `trigger` and `models` is the native form of the plan
+  protocol's `{ "user": id }`, which today only Saltcorn 1's `Table` API reaches (`forUser`,
+  `insertRow(row, user)`). `asUser()` without an argument stays "the event's caller".
+- **Allowed** only when the named user holds no more authority than the cause: role at least
+  as high a number, and the cause is an admin, the system, or that same user. Otherwise it is
+  refused, on every table, not only RLS ones. System authority may therefore name anyone; a
+  role-80 caller may name only themselves.
+- **Enforcement.** The named user's principal keeps the cause (`Principal::elevated`'s
+  counterpart, `Principal::narrowed(&cause, user)`), and `set_caller_context` writes the named
+  user's role and user. Postgres sees exactly that user.
+- **Not checked today.** `load_named_user` (`sc-api/src/code_host/mod.rs`) loads any user
+  without comparing it to the cause, on the reasoning that a body "already runs as admin".
+  That no longer holds in a code query, which defaults to the caller: a query that passes a
+  request-supplied id to `forUser` would run as that user, an admin included. H8.2 closes it.
 
 ### 7.4 Roles (`_fd_roles`)
 
@@ -2026,6 +2632,7 @@ erDiagram
     text token_hash PK "SHA-256 of the cookie token"
     uuid user_id "deliberately NOT a foreign key"
     timestamp expires_at
+    int auth_epoch "the account's epoch at sign-in; null = 0"
   }
   GUESTSESSIONS["_fd_guest_sessions"] {
     text token_hash PK "SHA-256 of the guest cookie token"
@@ -2050,6 +2657,7 @@ erDiagram
     text purpose "invite | reset | verify | second_factor | second_factor_session"
     timestamp created_at
     timestamp expires_at "7 days for an invitation, 1 hour for a reset"
+    int auth_epoch "a challenge's: the account's epoch at its password"
   }
   SECONDFACTOR["_fd_second_factor"] {
     uuid user_id PK "deliberately NOT a foreign key"
@@ -2059,9 +2667,13 @@ erDiagram
     timestamp created_at
   }
   RECOVERYCODES["_fd_recovery_codes"] {
-    text code_hash PK "a recovery code, hashed"
+    text code_hash PK "k1: + HMAC of the account and the code"
     uuid user_id "deliberately NOT a foreign key"
     timestamp created_at
+  }
+  AUTHEPOCHS["_fd_auth_epochs"] {
+    uuid user_id PK "deliberately NOT a foreign key"
+    int epoch "raised by every credential change; no row = 0"
   }
   TABLES["_fd_tables"] {
     uuid id PK
@@ -2527,6 +3139,7 @@ erDiagram
   USERS ||--o{ PASSWORDTOKENS : "user_id -- by value"
   USERS ||--o| SECONDFACTOR : "user_id -- by value"
   USERS ||--o{ RECOVERYCODES : "user_id -- by value"
+  USERS ||--o| AUTHEPOCHS : "user_id -- by value"
   USERS |o--o{ RUNS : "user_id -- by value, nullable"
   TABLES ||--o{ FIELDS : "table_name -- same subject, joined by name"
   TABLES ||--o| TABLEEDITS : "name -- by name, bookkeeping"
@@ -4857,9 +5470,10 @@ and one refusal.
   seam — the shape `TableEvents` already has — that the server registers at boot and
   `schema_edit` notifies after a successful batch. The handlers' own `refresh_table` calls are
   gone rather than double-firing beside it.
-- **It names no table, and is scoped by what it may do.** Four grants — `allow_create`,
-  `allow_edit`, `allow_drop` and `allow_access_changes`, the last two off by default — are
-  checkboxes on **one** trait rather than four traits, because the operations share a batch:
+- **It names no table, and is scoped by what it may do.** Three grants — `allow_create`,
+  `allow_edit` and `allow_drop`, the last off by default — are checkboxes on **one** trait rather
+  than three traits (a fourth, `allow_access_changes`, was retired by TODO-type-hardening H8.9:
+  row-level security, not a grant, decides who may change a table's access rules, §7.3a), because the operations share a batch:
   creating `matters` with a key to an existing `clients` is a create *and* an edit, and a batch
   that half-applied for want of a grant is the state the transaction exists to avoid. A batch
   containing an ungranted operation is refused whole, naming the operation and the checkbox.
@@ -4948,11 +5562,11 @@ and one line, then one action's full settings, resolved for the table the trigge
 
 Four more decisions in that half:
 
-- **The four grants cover both halves.** Creating a table and creating a trigger are both
+- **The grants cover both halves.** Creating a table and creating a trigger are both
   `allow_create`; deleting a trigger is `allow_drop`; and a trigger's `min_role` — which decides
-  who may `POST /actions/{name}` — is an **access rule**, so it needs `allow_access_changes`
-  exactly as a table's role floors do. A second set of checkboxes would have been four more
-  decisions for the admin, on the same question, with the same right answers.
+  who may `POST /actions/{name}` — is set with the edit that saves the trigger (it needed
+  `allow_access_changes` until H8.9). A second set of checkboxes would have been more decisions
+  for the admin, on the same question, with the same right answers.
 - **`save_trigger` takes one trigger, not a list.** The schema editor takes a list because tables
   are *connected*; triggers are not — two of them are two independent rows, nothing in one
   resolves against the other — so a batch would buy an all-or-nothing guarantee nobody needs while
@@ -4977,8 +5591,8 @@ Four more decisions in that half:
 `describe_applications`, `save_api_query` and `delete_api_query` (§13.4). An application record
 carries a subdomain, a framework and its settings, a table subset, file stores, exposed triggers,
 static directories and a CSP; **one** of those is the agent's to write and the rest are not
-(since amended: `update_application` changes the connected tables, the static directories and,
-behind `allow_access_changes`, the CSP — see the creating-an-application part below). A
+(since amended: `update_application` changes the connected tables, the static directories and
+the CSP — see the creating-an-application part below). A
 framework's `store` and `source` say where somebody's code lives, a CSP is a security boundary, a
 subdomain is a DNS record somebody else configured — none of them is *building*, and all of them
 are the kind of setting whose damage is invisible from the transcript. A custom SQL query is the
@@ -5006,12 +5620,12 @@ Four decisions in that part:
   its definition. The **mount** is not touched — a mounted app's providers are built from its
   record at mount time — so the tool result says the endpoint is served from the app's next build
   rather than letting the model report a live endpoint that is not answering yet.
-- **The four grants cover this part too**, exactly as they cover the triggers: adding a query is
-  `allow_create`, changing one is `allow_edit`, deleting one is `allow_drop`, and a query's
-  `min_role` — which decides who may call the endpoint — is `allow_access_changes`. A query with
-  no stated floor is admin-only, which is §13.4's own rule rather than a new one.
+- **The grants cover this part too**, exactly as they cover the triggers: adding a query is
+  `allow_create`, changing one is `allow_edit` (its `min_role`, which decides who may call the
+  endpoint, included since H8.9), deleting one is `allow_drop`. A query with no stated floor is
+  admin-only, which is §13.4's own rule rather than a new one.
 
-**Two areas, on top of the four grants.** The grants answer *what may this agent do*; the areas
+**Two areas, on top of the grants.** The grants answer *what may this agent do*; the areas
 answer *to which of the three* — `allow_triggers` and `allow_applications`, both on by default,
 each removing its tools from the model's list when it is off rather than leaving them there to be
 refused. That asymmetry with the grants is deliberate: a grant must stay *visible*, because a model
@@ -5384,8 +5998,9 @@ as the caller (`RunCaller::user`), capped at the application's `max_role`, so ow
 RLS apply to what the agent does exactly as to the page's own requests. People who are not signed
 in are refused unless the exposure says `anonymous`. That takes **two** opt-ins: the agent's
 `min_role` must be public (100), and the application must say so. The admin API and the MCP tool
-refuse an anonymous exposure of a non-public agent when it is saved (`check_exposed_agents`), and
-the MCP tool also requires `allow_access_changes`, as it does for a public trigger. An anonymous run
+refuse an anonymous exposure of a non-public agent when it is saved (`check_exposed_agents`); an
+exposed agent has rate and spending caps (security review #22), and since H8.9 no further grant is
+asked for, as none is for a public trigger. An anonymous run
 is `RunCaller::anonymous()`: no user, the public role. It is never the system caller, which is admin.
 
 **Transport: SSE over `POST`, not the admin chat's WebSocket.** A turn is one message up and a
@@ -6296,8 +6911,8 @@ whether the admin's form, the CLI or a coding agent's `create_application` made 
 has no argument for it at all). An app reaches its data through custom queries (§13.4), one
 endpoint per thing a page does, which in JavaScript or Python run **as the caller** by default
 (§10.1, "Authority"); a row API is turned on per table, afterwards, only when somebody wants
-generic row access — `update_application`'s `api_tables` (which also needs
-`allow_access_changes`), `feldspar app api-tables`, or the form's checkbox.
+generic row access — `update_application`'s `api_tables` (an edit), `feldspar app api-tables`,
+or the form's checkbox.
 
 **An application is created and configured in the admin UI — never in Rust code and never
 by a CLI flag.** The admin picks the framework, fills in that framework's settings (a React
@@ -6823,7 +7438,9 @@ command and install step are started with. That is where a toolchain goes, and a
 from its **own settings**: `plugins/react-native` has an Android SDK and a JDK directory on the
 Modules tab, and its `frameworks` export is a function of them. Saving the settings reloads the
 module and so the declaration. A blank value is left out rather than set empty, so an unconfigured
-module falls back to the server's environment. A target also declares `requires`: what the machine must have before it can
+module falls back to the server's environment (for the variables a requirement names and the
+usual toolchain ones — `JAVA_HOME`, `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `ANDROID_NDK_HOME`,
+`GRADLE_USER_HOME`, `GRADLE_OPTS`, `DEVELOPER_DIR` — and no others). A target also declares `requires`: what the machine must have before it can
 build. Each entry is one of `{ env, directory }` (a variable the build sees is set, and is a
 directory), `{ command, dir_env }` (a program is on the build's `PATH`, or in the directory the
 optional `dir_env` variable names, which the build is expected to put on its own `PATH`) and
@@ -7845,6 +8462,21 @@ has to fit on a 1 GB machine. For the same reason a build command of exactly
 without an `npm` process holding ~60 MB for the length of the build. Anything else goes to npm
 as written.
 
+Every step a build starts is an `sc_proc::HostCommand` (security review 2026-11 §4,
+TODO-type-hardening H4): a **cleared environment** (`sc_proc::BASE_ENV` — the path, the locale,
+the home and temporary directories, proxies and certificate bundles — not the server's database
+URL, passwords or `FELDSPAR_*` settings; a target adds its toolchain's and its requirements'
+variables, then its own `env`), and a **time limit**: 20 minutes for the install, 20 for the
+bundler (all of an npm script's steps together), 15 for a type check, 2 hours for a native
+target. At the limit the step's whole process group is killed and the build fails saying so,
+which releases `BUILD_LOCK`: a bundler left in watch mode or an install waiting on a dead
+registry no longer holds every build, check and IDE save until a restart. An npm script's
+`node_modules/.bin` search stops at the store's root. An **IDE save** that installs (the first
+save, or one that changed a manifest) runs the package manager with `--ignore-scripts` (npm,
+pnpm, yarn and bun; another installer is not run on a save), unless the Development setting
+`install_scripts_on_save` is on; such an install is stamped as one without scripts, so the next
+Build installs again with them, and a save after a Build has nothing to install.
+
 #### Analytics: part of the Analytics UI as an application
 
 The framework **Analytics** (`analytics`; analytics milestone A9) serves the Analytics UI's own
@@ -8741,8 +9373,9 @@ of those endpoints are the SPA's own plumbing.
   and it is the sibling of the TypeScript generator's type mapping (§13.1). A tag declares the
   grant a change needs (`.needs(Grant::…)`), and may declare a second (`.and_needs(…)`), checked
   in order so a refusal names the first flag missing. **Roles and accounts** are tier 2 since
-  TODO F1.9: `listRoles` and `listUsers` read; `createRole` and `setUserDisabled` need
-  `allow_access_changes`; `deleteRole` and `deleteUser` need it *and* `allow_drop`. The last
+  TODO F1.9: `listRoles` and `listUsers` read; `createRole` needs `allow_create` and
+  `setUserDisabled` `allow_edit` (both needed `allow_access_changes` until TODO-type-hardening
+  H8.9); `deleteRole` and `deleteUser` need `allow_drop`. The last
   enabled admin cannot be disabled or deleted by anyone (`sc_auth::refuse_last_admin`, inside
   `delete_user` and `set_user_disabled`, so the CLI's `delete-user` and `modify-user
   --disabled` are held to it too), and a token cannot disable or delete the admin it runs as.
@@ -8903,8 +9536,9 @@ leave its static directories and CSP for a person, so the line drawn above moved
   connected. It is only an edit because a mount is not a grant: every file is still served
   through `sc_files::check_access` as the request's user.
 - **`csp`** (`{ "frame-ancestors": ["'self'", "https://other.example.com"], "img-src": null }`)
-  replaces or removes single directives and keeps the rest. A CSP is a security boundary, so it
-  needs `allow_access_changes`, the grant that guards roles. Names must be lower-case letters
+  replaces or removes single directives and keeps the rest. A CSP is a security boundary; it needs
+  `allow_edit` (it needed `allow_access_changes` until H8.9), and the tool's description tells the
+  model to say what it widens and why. Names must be lower-case letters
   and `-`. A source must be one printable word with no `;` or `,`, because the policy goes into
   a header verbatim.
 
@@ -8916,7 +9550,8 @@ so they get their own tool rather than an `update_application` section: no argum
 (with each provider's settings), `save` creates or changes by name (only the keys given, with
 `configuration` merged key by key), and `delete` removes, refused while a trigger listens or an
 application exposes the stream. Creating needs `allow_create`, changing `allow_edit`, deleting
-`allow_drop`, and `min_role` needs `allow_access_changes`. Writes go through `saveStream` and
+`allow_drop`; `min_role` is part of the change (it needed `allow_access_changes` until H8.9).
+Writes go through `saveStream` and
 `deleteStream` over the `AdminHost`, so the supervisor reloads and the stream flows at once.
 
 As `edit_schema` checks a grant per operation, this checks one per section, all before anything
@@ -9094,7 +9729,7 @@ pub trait ModelProviderHost: Send + Sync {
 ```
 
 The source compiles the dataset (§14.4) into one query and runs it on the primary database, as
-the admin (`Caller::admin()`): a model is the admin's. A restricted reader's permissions enter
+the admin (`Caller::system(reason)`): a model is the admin's. A restricted reader's permissions enter
 everywhere else the Analytics UI reads (§14.9), and a fit's output data is refused to them. A table's non-stored calculated fields are columns of a dataset over it where
 they become SQL; a provided table (§8.3) cannot be a dataset's base, because a dataset is one
 query. `ModelServices` in `sc-server/src/models.rs` assembles the pieces the way
@@ -11301,11 +11936,14 @@ Neither replaces the other. A self-serve application over `houses` lets a person
 
 #### Reading as the caller (`sc_dataset::access`)
 
-**Who reads** is a `Caller`: a role, the user's fields as an ownership formula's `user` sees them
-(`id`, `role` and every other column), and, in an application, the tables it may read at all
-(`tables`, `None` for every table). `Caller::of_user` is the request's user, or the public role
-for nobody. `Caller::admin()` is the server reading on its own authority. `within(tables)`
-narrows a caller to an application's tables.
+**Who reads** is a `Caller`, a view of the reader's `Principal` (TODO-type-hardening H3.4): its
+role, the user's fields as an ownership formula's `user` sees them (`id`, `role` and every other
+column), and the tables it may name at all (`TableScope::Every`, or `Only` an application's).
+`Caller::of_user` is the request's user, or the public role for nobody, and never the
+administrator's authority, whatever the role. Only `Caller::system(reason)` (the server reading on
+its own authority) and `Caller::admin(&AdminPrincipal)` (the admin host's Analytics UI, from the
+session's proof) read the users table's password hash, a relation that is not a catalog table,
+or a model's fit outputs. `within(tables)` narrows a caller to an application's tables.
 
 **One guard, after the statement is built.** A dataset compiles to one `sc-query` statement
 (§14.4), and that statement may read many tables: the base, a Join's or a Union's other side, a Ⱶ
@@ -11348,7 +11986,7 @@ the base or three joins away, and it appears under the plot that did not draw.
 selection functions of §14.6–§14.7. A plot's rows say where they run (`RowsDb`): on the primary
 database through a `Reader`, or in a fit's private in-memory database.
 
-**Models are the admin's.** A fit, a prediction and the model editor read as `Caller::admin()`.
+**Models are the admin's.** A fit, a prediction and the model editor read as `Caller::system(…)`.
 A fit's outputs come from rows read on the server's authority, which are not narrowed to anyone,
 so a fit's output data or table in a panel is refused to everybody else, with a sentence ("shown
 only in the unrestricted Analytics UI"). The model endpoints are not among an application's at
@@ -12481,7 +13119,7 @@ trigger's action passes it to the writes it makes.
 the rest of its row, and the writer's `user_id` (with `session` only when there is a user). The
 trigger needs all of it, because it writes the `_fd_changesets` row. Most code never handles a
 changeset: one is **ambient** for the task that runs the action (`sc_catalog::changeset::scope`),
-and `Principal::new` picks it up. The server's request middleware sets one for each request,
+and a `Principal` picks it up when it is made. The server's request middleware sets one for each request,
 and so do a CSV import, an MCP tool call, a workflow step (from the run) and a trigger's action
 (from the event). A write to a change-logged table always runs in a caller-context transaction,
 so the GUCs reach the trigger.
@@ -13552,7 +14190,8 @@ syntax is an issue on the card. The server matches before it calls the module (`
 
 **A route runs as whoever calls.** This is unlike a webhook. The caller is an API token's user
 when the request carries `Authorization: Bearer` (a bad token is a 401, never the public), else
-the admin host's session user, else nobody. `apiToken: true` refuses nobody with a 401, as v1's
+the admin host's session user — through the same scope check as every admin-host surface, so an
+application's session is nobody here — else nobody. `apiToken: true` refuses nobody with a 401, as v1's
 middleware does. A `POST` passes the CSRF check unless the route says `noCsrf`. In that case
 `open_to_public` lets a cookie-less request through as the anonymous caller, as it does a webhook.
 The module's `Table` reads and writes as the caller, like a view's (`TableHost::viewer_only`).
@@ -13565,7 +14204,12 @@ the prefix, `originalUrl`, and `req.res`/`res.req`. `res` provides `status`, `se
 `res` is a named stub, so `res.render` and v1's `res.sendWrap` fail saying what they are. The
 call answers once `res` is ended, not once the callback returns, because a callback may answer
 from a promise it did not return. Calls are bounded like a webhook's: 1 MiB body, 600 requests a
-minute per address, and the action wall clock. A throw is a 500 and the `error` event.
+minute per address, and the action wall clock. A throw is a 500 and the `error` event. The
+answer's headers are the module's, except the admin origin's security policy, which the module
+cannot set: `Content-Security-Policy` (and `-Report-Only`), `X-Frame-Options`,
+`X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, `Strict-Transport-Security`,
+the `Cross-Origin-*-Policy` headers and `Access-Control-Allow-Origin`/`-Credentials` are dropped,
+and the router adds the admin host's own.
 
 **What a route reads of the installation** (the `system` ask surface, `AskSurface::System`, carried only
 by a route's call). This is what `heartbeat-monitor` needs:
@@ -13975,6 +14619,31 @@ this is enforced mechanically — `[workspace.lints.clippy]` denies `unwrap_used
 each crate opts in via `[lints] workspace = true`, and `clippy.toml` exempts test code.
 Errors carry context and either are handled or propagate to a crash with a clear message. No
 `Result` is silently discarded.
+
+**What the compiler enforces (security review 2026-11, §6).** Beyond `unwrap_used`/`expect_used`,
+the workspace lint table denies:
+
+- `unsafe_code`. It is allowed again only in the modules that call C (`sc-dns`'s
+  `getaddrinfo`, CPython, the `libc` process, terminal and filesystem calls), and every block
+  needs a `// SAFETY:` comment (`undocumented_unsafe_blocks`). A test in
+  `tests/harness/tests/workspace_invariants.rs` lists the files that may contain `unsafe`.
+- `cast_possible_truncation`: use `try_from`, or an `#[allow]` with a reason when the range
+  is known.
+- `todo`, `unimplemented`, `dbg_macro` and `let_underscore_future`.
+- `disallowed_methods`, for the calls `clippy.toml` gives a replacement for:
+  - `std::env::set_var`/`remove_var`: pass the value explicitly.
+  - `reqwest::Client::new`/`builder`: use `sc_net::PublicClient`, or `sc_net::client_builder`,
+    which sets a connect timeout.
+  - `tokio::spawn`: use `sc_catalog::spawn_scoped`, which carries the task scope.
+  - `unbounded_channel`: bound the queue.
+
+  An existing site that keeps the original call says why in its `allow`.
+
+The release profile keeps `overflow-checks`. `sc-access`, `sc-auth`, `sc-files` and
+`sc-catalog` warn on `unreachable_pub`. The request-facing crates carry `indexing_slicing`,
+`string_slice` and `arithmetic_side_effects` as advisory lints under
+`--cfg feldspar_advisory_lints` (a non-gating CI job) until their existing hits are fixed. CI
+runs `cargo deny` (`deny.toml`: advisories, licences, bans, sources) and builds with `--locked`.
 
 **Error classification and logging (from GOALS).** Every `Error` carries a **kind** that
 splits errors into two classes with different audiences and different remedies:

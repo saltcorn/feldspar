@@ -17,47 +17,43 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new(
-            "listDatabaseConnections",
+            ids::LIST_DATABASE_CONNECTIONS,
             Method::Get,
             api().lit("db-connections"),
         )
-        .output(TypeSchema::array(db_connection_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(db_connection_schema())),
     );
 
     set.register(
         Endpoint::new(
-            "createDatabaseConnection",
+            ids::CREATE_DATABASE_CONNECTION,
             Method::Post,
             api().lit("db-connections"),
         )
         .input(db_connection_input_schema())
-        .output(db_connection_schema())
-        .auth(AuthRequirement::admin()),
+        .output(db_connection_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "updateDatabaseConnection",
+            ids::UPDATE_DATABASE_CONNECTION,
             Method::Put,
             api().lit("db-connections").param("id", ValueType::Uuid),
         )
         .input(db_connection_input_schema())
-        .output(db_connection_schema())
-        .auth(AuthRequirement::admin()),
+        .output(db_connection_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "deleteDatabaseConnection",
+            ids::DELETE_DATABASE_CONNECTION,
             Method::Delete,
             api().lit("db-connections").param("id", ValueType::Uuid),
         )
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // Dial what the form currently holds, without saving anything. The
@@ -67,7 +63,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // which before committing to a name.
     set.register(
         Endpoint::new(
-            "testDatabaseConnection",
+            ids::TEST_DATABASE_CONNECTION,
             Method::Post,
             api().lit("db-connections").lit("test"),
         )
@@ -76,8 +72,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("connected", TypeSchema::bool()),
             StructField::new("error", TypeSchema::optional(TypeSchema::text())),
             StructField::new("tables", TypeSchema::int()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 }
 

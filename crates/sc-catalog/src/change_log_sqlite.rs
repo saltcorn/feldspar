@@ -99,7 +99,7 @@ fn trigger_name(table: &str, op: &str) -> String {
 }
 
 /// Whether a trigger called `name` is one of this module's, for `table`.
-pub fn is_table_trigger(name: &str, table: &str) -> bool {
+pub(crate) fn is_table_trigger(name: &str, table: &str) -> bool {
     ["ins", "upd", "del"]
         .iter()
         .any(|op| name == format!("_fd_changes_{table}_{op}"))
@@ -184,7 +184,7 @@ fn changed_object(row: &str, columns: &[(String, Shape)]) -> String {
 /// The DDL that records `table`'s changes, keyed by `pk`, over its stored
 /// `columns` (name and declared SQL type). Drops the triggers left from
 /// before first, so it also regenerates them.
-pub fn enable_sql(table: &str, pk: &str, columns: &[(String, String)]) -> String {
+pub(crate) fn enable_sql(table: &str, pk: &str, columns: &[(String, String)]) -> String {
     let columns: Vec<(String, Shape)> = columns
         .iter()
         .map(|(name, sql_type)| (name.clone(), Shape::of(sql_type)))
@@ -236,7 +236,7 @@ pub fn enable_sql(table: &str, pk: &str, columns: &[(String, String)]) -> String
 }
 
 /// The DDL that stops recording `table`'s changes.
-pub fn disable_sql(table: &str) -> String {
+pub(crate) fn disable_sql(table: &str) -> String {
     ["ins", "upd", "del"]
         .iter()
         .map(|op| format!("DROP TRIGGER IF EXISTS {};", trigger_name(table, op)))
@@ -302,7 +302,7 @@ fn diff(side: &str) -> String {
 /// old value and the later new value win, the operation is the net one,
 /// columns that ended where they started are dropped, and an emptied entry is
 /// removed only when its changeset began in this transaction.
-pub fn bootstrap_sql() -> String {
+pub(crate) fn bootstrap_sql() -> String {
     let settings = TX_SETTINGS_TABLE;
     let log = CHANGES_TABLE;
     let sets = CHANGESETS_TABLE;
@@ -403,7 +403,7 @@ pub fn bootstrap_sql() -> String {
 /// The change log's own table on SQLite: `seq` is `AUTOINCREMENT`, so a number
 /// is never given out twice even when the entry that had it is removed — a
 /// device's watermark is a `seq` here.
-pub fn changes_table_sql() -> String {
+pub(crate) fn changes_table_sql() -> String {
     let now = "strftime('%Y-%m-%dT%H:%M:%f', 'now') || 'Z'";
     format!(
         "CREATE TABLE IF NOT EXISTS {log} (\
@@ -418,7 +418,7 @@ pub fn changes_table_sql() -> String {
 /// The table `change` alters in place: whose triggers must be dropped before
 /// it and generated again after. `None` for a change that creates or drops a
 /// table, or touches only an index or a comment.
-pub fn altered_table(change: &SchemaChange) -> Option<&str> {
+pub(crate) fn altered_table(change: &SchemaChange) -> Option<&str> {
     match change {
         SchemaChange::AddColumn { table, .. }
         | SchemaChange::DropColumn { table, .. }
@@ -440,7 +440,7 @@ pub fn altered_table(change: &SchemaChange) -> Option<&str> {
 ///
 /// A table whose key is no longer one column keeps no triggers; a table
 /// without them is left as it is.
-pub async fn apply_keeping_triggers(
+pub(crate) async fn apply_keeping_triggers(
     tx: &mut dyn sc_db::Transaction,
     change: &SchemaChange,
 ) -> Result<()> {

@@ -391,6 +391,10 @@ fn sorted(values: &[f64]) -> Vec<f64> {
 
 /// The `p` quantile of ascending `sorted` values, interpolating linearly
 /// between order statistics (R's type 7); NaN for no values.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+)]
 pub fn quantile(sorted: &[f64], p: f64) -> f64 {
     match sorted.len() {
         0 => f64::NAN,

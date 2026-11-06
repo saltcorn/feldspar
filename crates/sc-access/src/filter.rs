@@ -141,7 +141,7 @@ impl Operand<'_> {
 }
 
 /// [`comparison`] against whatever the operand is coerced by.
-pub fn comparison_on(on: &Operand, col: Expr, op: &str, operand: &Json) -> Result<Expr> {
+pub(crate) fn comparison_on(on: &Operand, col: Expr, op: &str, operand: &Json) -> Result<Expr> {
     let lit = |operand: &Json| -> Result<Expr> { Ok(Expr::lit(on.value(operand)?)) };
     let binary = |op: BinOp, operand: &Json| -> Result<Expr> {
         Ok(Expr::binary(op, col.clone(), lit(operand)?))
@@ -219,7 +219,7 @@ pub fn where_expr(table: &Table, fields: &[String], where_: Option<&Json>) -> Re
 /// The fields an application's caller may filter `table` on: every column
 /// its REST read returns ([`visible_field`](crate::user_rows::visible_field)),
 /// less the calculated ones, which are returned but not filtered on.
-pub fn api_filter_fields(table: &Table) -> Vec<String> {
+pub(crate) fn api_filter_fields(table: &Table) -> Vec<String> {
     table
         .fields
         .iter()

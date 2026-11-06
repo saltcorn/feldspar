@@ -359,6 +359,14 @@ fn plain(status: u16, message: &str) -> AppResponse {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 mod tests {
     use super::*;
 

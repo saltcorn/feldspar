@@ -1032,6 +1032,43 @@ async fn a_build_with_after_build_checks_records_a_run() -> sc_error::Result<()>
     Ok(())
 }
 
+/// TODO-type-hardening H3.3 (security review 2026-11 #16): the admin host
+/// takes a console administrator's proof, and checks the user it names again —
+/// a proof for an account that is not an enabled administrator runs nothing.
+#[tokio::test]
+async fn the_admin_host_refuses_a_proof_for_a_user_who_is_not_an_admin() -> sc_error::Result<()> {
+    let tmp = TempDir::new("admin-host-proof");
+    let (_router, catalog, _db) = setup(&tmp).await?;
+    let host = catalog
+        .admin_host()
+        .expect("building the router installs the admin host");
+    sc_auth::save_role(&catalog, &sc_auth::RoleDef::new(Role::of(40), "Staff")).await?;
+    let staff = create_user(&catalog, "staff@example.com", "correct-horse", Role::of(40)).await?;
+    let admin = create_user(&catalog, "admin@example.com", "correct-horse", Role::ADMIN).await?;
+
+    let for_staff =
+        sc_catalog::ConsoleAdmin::at_console(Some(staff.fields_json()), "test: a forged proof");
+    let err = host
+        .list_applications(&for_staff)
+        .await
+        .expect_err("a proof naming a role-40 user");
+    assert!(
+        err.to_string().contains("not an enabled administrator"),
+        "{err}"
+    );
+
+    let for_admin =
+        sc_catalog::ConsoleAdmin::at_console(Some(admin.fields_json()), "test: an admin's proof");
+    assert!(host.list_applications(&for_admin).await?.is_empty());
+
+    // Disabled since the proof was made: refused too. (Another admin first:
+    // the last one cannot be disabled.)
+    create_user(&catalog, "second@example.com", "correct-horse", Role::ADMIN).await?;
+    let _changed = sc_auth::set_user_disabled(&catalog, admin.id(), true).await?;
+    assert!(host.list_applications(&for_admin).await.is_err());
+    Ok(())
+}
+
 /// The administrative tools reach the admin handlers through the catalog's
 /// [`AdminHost`](sc_catalog::AdminHost), one typed method per operation
 /// (TODO-code-quality Q5.3): each runs the handler's own function, so it
@@ -1044,11 +1081,12 @@ async fn the_admin_host_runs_each_operation_through_its_handler() -> sc_error::R
         .admin_host()
         .expect("building the router installs the admin host");
 
-    assert!(host.list_applications(None).await?.is_empty());
+    let system = sc_catalog::ConsoleAdmin::system("test: the admin host");
+    assert!(host.list_applications(&system).await?.is_empty());
 
     let suggested = host
         .backend_operation(
-            None,
+            &system,
             sc_catalog::BackendOperation {
                 backend: sc_files::LOCAL_BACKEND.to_owned(),
                 operation: sc_files::OP_SUGGEST_DIR.to_owned(),
@@ -1064,7 +1102,7 @@ async fn the_admin_host_runs_each_operation_through_its_handler() -> sc_error::R
 
     let missing = uuid::Uuid::new_v4();
     let err = host
-        .update_application(None, missing, json!({ "name": "x" }))
+        .update_application(&system, missing, json!({ "name": "x" }))
         .await
         .expect_err("there is no such application");
     assert!(
@@ -1072,7 +1110,7 @@ async fn the_admin_host_runs_each_operation_through_its_handler() -> sc_error::R
         "the handler answered, not a lookup: {err}"
     );
     let err = host
-        .build_application(None, missing)
+        .build_application(&system, missing)
         .await
         .expect_err("there is no such application");
     assert!(

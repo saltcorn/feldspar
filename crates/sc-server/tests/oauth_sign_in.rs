@@ -14,6 +14,10 @@
 //! - Settings → Authentication's session lifetime and shared cookie apply to
 //!   these sessions as they do to a password's.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use crate::support::code_framework;
 use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
@@ -610,6 +614,31 @@ async fn an_application_and_the_admin_ui_sign_in_with_an_identity_provider() -> 
     let (status, _) = sign_in(&router, &mut admin_ui, &seen, ADMIN_EMAIL, "/").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(admin_ui.admin_user().await.as_deref(), Some(ADMIN_EMAIL));
+
+    // --- an account's second factor is asked for after the provider too
+    // (security review 2026-11, #10): the sign-in ends at the code page, with
+    // no session yet.
+    let guarded =
+        sc_auth::create_user(&catalog, "twofa@example.com", "twofa-pw", Role::PUBLIC).await?;
+    let secret = sc_auth::begin_second_factor_setup(&catalog, guarded.id()).await?;
+    let code = sc_auth::totp_at(&secret, chrono::Utc::now().timestamp());
+    let sc_auth::Attempt::Permitted(permit) =
+        sc_auth::reserve_attempt(&catalog, guarded.id()).await?
+    else {
+        panic!("a first guess");
+    };
+    let enabled = sc_auth::finish_second_factor_setup(&catalog, permit, guarded.id(), &code)
+        .await?
+        .expect("the app's code turns it on");
+    let _no_sessions_yet = enabled.changed;
+    let mut asked = Browser::new(router.clone(), APP_HOST);
+    let (_, back) = sign_in(&router, &mut asked, &seen, "twofa@example.com", "/orders").await;
+    let back = back.unwrap_or_default();
+    assert!(
+        back.starts_with("/_feldspar/second-factor/sign-in"),
+        "the code is asked for: {back}"
+    );
+    assert_eq!(asked.whoami().await, None, "no session before the code");
     // A flow started on a host this server does not serve by name — which
     // routes to the admin, as any unknown host does — is refused: its
     // completion token would be sent back there, to whoever runs that host.

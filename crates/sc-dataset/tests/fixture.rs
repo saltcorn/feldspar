@@ -244,7 +244,7 @@ pub async fn both() -> Result<Vec<Fixture>> {
 pub async fn read(fx: &Fixture, def: &DatasetDef, upto: Option<usize>) -> Result<StagePage> {
     read_stage(
         &fx.cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         def,
         upto,
         Page::first(1000),

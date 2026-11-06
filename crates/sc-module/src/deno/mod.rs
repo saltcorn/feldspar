@@ -1295,6 +1295,10 @@ impl DenoModuleHost {
     }
 
     /// Start a worker for `permissions` and return its index.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "unbounded: control messages to one worker, sent by the pool that admits jobs to it"
+    )]
     fn spawn(&self, pool: &mut Pool, permissions: &ModulePermissions) -> usize {
         let index = pool
             .workers
@@ -1431,6 +1435,10 @@ impl DenoModuleHost {
     /// [`send_with`](DenoModuleHost::send_with) under `bounds` — which is
     /// where a service's call, with neither a clock nor a budget, differs from
     /// every other.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "unbounded: a job's asks to the host, each awaited by the module code that sent it"
+    )]
     async fn send_bounded(
         &self,
         index: usize,

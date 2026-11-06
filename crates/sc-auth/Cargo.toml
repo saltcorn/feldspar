@@ -47,7 +47,17 @@ sc-log.workspace = true
 # One first use at a time creates the role grants or the credits ledger.
 tokio = { workspace = true }
 
+[features]
+# `SessionStore::login` and friends, and `SecondFactorWaiver::Test`: a test's
+# session without a sign-in. Enabled only by dev-dependencies (a workspace
+# invariant test checks that no ordinary dependency does), so a server cannot
+# start a session except from a `FullyAuthenticated` (security review 2026-11,
+# §2).
+testing = []
+
 [dev-dependencies]
+# This crate's own integration tests sign in with `testing`.
+sc-auth = { path = ".", features = ["testing"] }
 sc-db-postgres.workspace = true
 sc-test-harness = { workspace = true, features = ["catalog"] }
 tokio = { workspace = true }

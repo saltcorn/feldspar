@@ -137,6 +137,112 @@ Everything you validated in step 3 — read filtering, `WITH CHECK` on writes, t
 corner — holds for the join formula unchanged. Under the hood the server has simply turned the
 `Ⱶ`-path into a correlated sub-select against `projects`; you did not have to write any SQL.
 
+## Step 4b — Three rules that need no code
+
+Three rules look as if they need a code query with `asAdmin()`. Each can be written as a
+formula, which the server applies on every path, and which RLS can enforce (step 5).
+
+**Rows shared with a group.** Shared access lives in a table of its own, with one row per
+person a document is shared with: `shares(document → documents, shared_with, can_write)`. The
+`Ↄ` operator reads a row's *children*, so the document's formula can check the share rows that
+point at it:
+
+```js
+owner === user.email
+  || sharesↃdocument.some(s => s.shared_with === user.email && (_read || s.can_write === true))
+```
+
+The owner may do anything. Someone the document is shared with may read it, and may also write
+it when their share row says `can_write`. Adding or removing a share is a write to `shares`, so
+give that table its own formula (`documentⱵowner === user.email`), and only a document's owner
+can then share it.
+
+**Append-only tables** (a log, a form's submissions). Keep both floors at admin and grant only
+the insert:
+
+```js
+_insert && owner === user.email
+```
+
+A member can add rows they own and nothing else: no read, no update, no delete. A write's
+response never includes a row the caller may not read, so the create answers with the new row's
+key only. Staff who should read the submissions get a read floor (`Who can read rows: Staff`),
+and the formula is not needed for them.
+
+**A deny that also binds roles above the floor** ("nobody edits a closed invoice"). Ownership
+only widens access, so a role that meets the floor is never restricted by the formula. To
+restrict everyone except admins, put the floor at admin and write the whole rule, roles
+included, in the formula:
+
+```js
+_read && user.role <= 40
+  || _update && user.role <= 40 && status !== "closed"
+```
+
+`user.role` is the caller's role number (lower is more privileged), and it translates to SQL
+like any other field. There is no separate deny setting, and none is needed. Admins still meet
+the floor, so they can still correct a closed invoice.
+
+**Rules that depend on the time.** `new Date()` is the moment the request runs, and
+`.getTime()` and `Date.now()` are milliseconds, so an embargo and an edit window are formulas
+too:
+
+```js
+_read && published_at <= new Date()                                     // readable once published
+  || _update && owner === user.email
+     && created_at.getTime() > Date.now() - 15 * 60 * 1000              // editable for 15 minutes
+```
+
+`published_at` and `created_at` are date or timestamp fields. Every row of one request is decided
+at the same instant, and these translate to SQL, so they work with RLS (step 5).
+
+**Rules about how a row may change.** In an update, `old` is the row as it is stored, so the
+formula can compare it with the row as it will be:
+
+```js
+owner === user.email && (_read || _update
+  && (status === old.status || old.status === "draft" && status === "submitted"))
+```
+
+The owner may edit their row, but its `status` only moves from `draft` to `submitted`. A column
+nobody may edit after it is written is `_update && … && amount === old.amount`. In a read, an
+insert or a delete, `old` is `null`. A Postgres policy sees one row at a time, so when you turn on
+RLS (step 5) for a formula that uses `old`, the server also creates a trigger,
+`sc_owner_update_old`, that checks each update's new row against the old one under the same
+rules.
+
+**A share link.** Some rows should be readable by whoever holds a secret link, without an
+account, and listable by nobody. Add a `token` field to the table: type `uuid`, **unique**, with
+the default `gen_random_uuid()`, so every row gets a token nobody chose. Then the formula
+compares it with a value the caller *presents*:
+
+```js
+_read && token === _request.token
+```
+
+The link carries the token (`https://todo.localhost:3032/shared#<token>`, in the fragment so
+it is never sent to a server's logs), and the page presents it:
+
+```ts
+const api = createClient({ request: { token } });  // sends X-Sc-Request-Token on every call
+const [task] = await api.listTasks();                // the one task with that token
+```
+
+Without the token, or with another one, the list is empty: the formula is decided row by row,
+so a caller only reaches the row whose secret they already have. Some details:
+
+- `_request.token` may only be compared, with `===`, with a unique column that is neither the
+  primary key nor a number. A formula that uses it in any other way (`owner === _request.id`,
+  `!==`, a comparison with `user`) is refused when you save it, with the reason. A token column
+  with no random default is accepted with a warning.
+- A value is presented by the header `X-Sc-Request-<name>`, never in the query string. The
+  generated client's `request` option sends it, on the live connection too; a code query
+  passes one on with `db.tasks.withRequest({ token })`, and GraphQL takes a `request` argument.
+- Up to 8 values per request, with names of lowercase letters, digits and `_`.
+- Requests that present a value are limited per address, automatically, and their responses are
+  marked `Cache-Control: private, no-store`.
+- It works with RLS too (step 5): the server hands each presented value to the policies.
+
 ## Step 5 — Hand enforcement to the database: RLS
 
 So far the server enforces the formula, by injecting it into every query it runs — correct on

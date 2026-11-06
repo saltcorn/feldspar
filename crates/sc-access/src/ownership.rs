@@ -75,22 +75,16 @@ pub fn principal_of(user: Option<&User>) -> Principal {
     principal_at(sc_auth::role_of(user), user)
 }
 
-/// [`principal_of`] at an **explicit** role — what the admin API's row
-/// endpoints use: [`Role::ADMIN`](Role::ADMIN) clears every policy's role
-/// floor, so the admin's own row editor works on a FORCE'd table, while the user
-/// object still says which admin did it.
+/// [`principal_of`] at an **explicit** role — a caller whose authority is not
+/// its user's own: an agent run's caller, a code body's handle, a history
+/// reader. Never a way to the unchecked layer: that takes an
+/// [`AdminPrincipal`](sc_catalog::AdminPrincipal) (TODO-type-hardening H3.1),
+/// which an administrator's own row endpoints get from their session proof.
 pub fn principal_at(role: Role, user: Option<&User>) -> Principal {
-    let fields = user_values(user).map(|map| {
-        let obj: serde_json::Map<String, Json> = map
-            .iter()
-            .map(|(k, v)| (k.clone(), value_to_json(v)))
-            .collect();
-        Json::Object(obj)
-    });
     // The application and the guest session of the request this runs inside
     // (TODO-payments P1.3, P1.5): what the event a write raises reports, and the
     // `sc.session` an RLS policy reads.
-    Principal::new(role, fields).in_current_origin()
+    Principal::recorded(role, user.map(User::fields_json)).in_current_origin()
 }
 
 /// The user object as the formula sees it: `id`, `role`, and every extra field
@@ -114,7 +108,12 @@ fn user_values(user: Option<&User>) -> Option<BTreeMap<String, Value>> {
 /// caller never has one — the transport resolves a guest session only for
 /// somebody who is not signed in.
 fn session_values() -> sc_expr::AmbientValues {
-    sc_expr::session_ambient(sc_catalog::current_origin().session.as_deref())
+    let origin = sc_catalog::current_origin();
+    let mut ambient = sc_expr::session_ambient(origin.session.as_deref());
+    // And the values the caller presented, as `_request` (TODO-type-hardening
+    // H7.5): an object of strings, empty when nothing was presented.
+    ambient.insert(sc_expr::Ambient::Request, Some(origin.request.to_ambient()));
+    ambient
 }
 
 /// The rows of `table` a caller may read, applying §7.3's rule to a
@@ -171,10 +170,9 @@ pub async fn read_rows_as_in(
             .iter()
             .map(|values| {
                 // What this renders is read by a client — an agent's tools, a
-                // device's offline pull — so a secret is its sentinel.
-                let mut values = values.clone();
-                sc_catalog::secrets::redact_values(table, &mut values);
-                table_row_json(table, &values)
+                // device's offline pull — so it is an `ApiRow`: no hidden
+                // column, and a secret is its sentinel.
+                crate::ApiRow::of_values(table, values).into_json()
             })
             .collect(),
     ))
@@ -212,7 +210,7 @@ pub async fn read_row_values_as(
 }
 
 /// [`read_row_values_as`] on a caller's [`Executor`](rows::Executor).
-pub async fn read_row_values_as_in(
+pub(crate) async fn read_row_values_as_in(
     cat: &Catalog,
     table: &Table,
     query: &rows::RowQuery,
@@ -237,7 +235,7 @@ pub(crate) async fn read_row_values_by(
     evaluator: Option<&Arc<dyn JsEvaluator>>,
     executor: &rows::Executor,
 ) -> Result<Vec<BTreeMap<String, Value>>> {
-    let role = ctx.role;
+    let role = ctx.role();
     if let Some(search) = &query.search {
         crate::search::require_answerable(cat, table, search).await?;
     }
@@ -266,10 +264,16 @@ pub(crate) async fn read_row_values_by(
     let env = UserEnv::Inline(user_values(user));
     let session = session_values();
     let calc = table.calc_formulas();
+    // One instant for the statement (TODO-type-hardening H7.2): the SQL
+    // predicate and every row the evaluator decides read the same `new Date()`.
+    let now = chrono::Utc::now();
     match translate(
         formula,
         Operation::Read,
-        &Env::new(&env).with_calc(&calc).with_ambient(&session),
+        &Env::new(&env)
+            .with_calc(&calc)
+            .with_ambient(&session)
+            .with_now(now),
         &shape,
         &table.name,
     ) {
@@ -320,7 +324,7 @@ pub(crate) async fn read_row_values_by(
                 if granted.len() as u64 >= limit {
                     break;
                 }
-                if !allowed(evaluator, formula, Operation::Read, user, &values).await {
+                if !allowed(evaluator, formula, Operation::Read, user, &values, now).await {
                     continue;
                 }
                 if let Some(part) = &query.partition {
@@ -441,7 +445,7 @@ pub async fn row_insertable_as(
         return Ok(false);
     };
     let caller = principal_at(role, user);
-    let body = rows::fill_defaults(cat, table, body, caller.user.as_ref()).await?;
+    let body = rows::fill_defaults(cat, table, body, caller.user()).await?;
     let proposed = proposed_insert_row(table, &body)?;
     row_allowed(
         cat,
@@ -615,7 +619,15 @@ impl<'a> RowImage<'a> {
             return Ok(false);
         }
         let evaluator = require_evaluator(evaluator)?;
-        Ok(allowed(evaluator, formula, Operation::Read, user, &self.values).await)
+        Ok(allowed(
+            evaluator,
+            formula,
+            Operation::Read,
+            user,
+            &self.values,
+            chrono::Utc::now(),
+        )
+        .await)
     }
 }
 
@@ -822,7 +834,7 @@ pub async fn aggregate_values_as(
 /// from an untranslatable ownership formula is refused here for exactly the
 /// reason an ungrouped count is: a per-group number computed over rows it could
 /// not filter would be several numbers nobody can check instead of one.
-pub async fn aggregate_grouped_as(
+pub(crate) async fn aggregate_grouped_as(
     cat: &Catalog,
     table: &Table,
     projections: Vec<Projection>,
@@ -844,7 +856,7 @@ pub(crate) async fn aggregate_grouped_by(
     ctx: &Principal,
     user: Option<&User>,
 ) -> Result<Vec<BTreeMap<String, Value>>> {
-    match aggregate_guard(cat, table, &table.name, ctx.role, user)? {
+    match aggregate_guard(cat, table, &table.name, ctx.role(), user)? {
         AggregateGuard::InContext => {
             rows::aggregate_grouped(cat, table, projections, query, decided(ctx)).await
         }
@@ -913,10 +925,10 @@ pub(crate) async fn insert_row_by(
     evaluator: Option<&Arc<dyn JsEvaluator>>,
     executor: &rows::Executor,
 ) -> Result<Json> {
-    let role = caller.role;
+    let role = caller.role();
     // The defaults first, so the check below sees the row that would be
     // written — an `owner` defaulted to `user.id` is what grants it.
-    let body = &rows::fill_defaults(cat, table, body, caller.user.as_ref()).await?;
+    let body = &rows::fill_defaults(cat, table, body, caller.user()).await?;
     // The database enforces this table's ownership: the policies decide, and a
     // `WITH CHECK` they refuse surfaces from `run_in_context`.
     if table.rls_enabled {
@@ -984,7 +996,7 @@ pub(crate) async fn update_row_by(
     evaluator: Option<&Arc<dyn JsEvaluator>>,
     executor: &rows::Executor,
 ) -> Result<Json> {
-    let role = caller.role;
+    let role = caller.role();
     if table.rls_enabled {
         return rows::update_row_in(cat, table, id, body, decided(caller), executor).await;
     }
@@ -994,17 +1006,7 @@ pub(crate) async fn update_row_by(
     let existing = owned_row(cat, table, formula, Operation::Update, user, evaluator, id).await?;
     let changes = rows::coerce_row_values(table, body)?;
     let merged = merged_row(table, &existing, &changes);
-    if !row_allowed(
-        cat,
-        table,
-        formula,
-        Operation::Update,
-        user,
-        evaluator,
-        &merged,
-    )
-    .await?
-    {
+    if !update_allowed(cat, table, formula, user, evaluator, &existing, &merged).await? {
         return Err(Error::auth(format!(
             "that update would move the row out of what you may reach in `{}`",
             table.name
@@ -1012,7 +1014,7 @@ pub(crate) async fn update_row_by(
     }
     // The translated predicate rides in the UPDATE's WHERE where it can, closing
     // the gap between the check and the write.
-    let guard = write_guard(cat, table, formula, Operation::Update, user)?;
+    let guard = update_guard(cat, table, formula, user, &existing)?;
     rows::update_row_guarded_in(cat, table, id, body, guard, decided(caller), executor).await
 }
 
@@ -1047,7 +1049,7 @@ pub(crate) async fn delete_row_by(
     evaluator: Option<&Arc<dyn JsEvaluator>>,
     executor: &rows::Executor,
 ) -> Result<Json> {
-    let role = caller.role;
+    let role = caller.role();
     if table.rls_enabled {
         return rows::delete_row_in(cat, table, id, decided(caller), executor).await;
     }
@@ -1121,14 +1123,107 @@ pub async fn row_allowed(
     // (Phase 2) shares, so there is one implementation of "what does a reified
     // formula get bound".
     prefetch_bindings(cat, table, &analysis, &shape, &mut values).await?;
-    Ok(allowed(evaluator, formula, op, user, &values).await)
+    // The existing-row check of an update sees `old` as the row itself, as the
+    // translated guard reads it from the row being updated (TODO-type-hardening
+    // H7.3); every other operation sees it null.
+    let old = (op == Operation::Update).then(|| own_columns(table, &values));
+    Ok(allowed_with_old(
+        evaluator,
+        formula,
+        op,
+        user,
+        &values,
+        old.as_ref(),
+        chrono::Utc::now(),
+    )
+    .await)
+}
+
+/// A row's own stored columns, without the join values projected beside them:
+/// what `old` is bound to.
+fn own_columns(table: &Table, values: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
+    values
+        .iter()
+        .filter(|(name, _)| table.field(name).is_some_and(|f| !f.is_calc()))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
+/// Whether the caller may make an update that leaves the row as `proposed`:
+/// the formula's `_update` verdict on the proposed row, with `old` bound to the
+/// row as it is now (TODO-type-hardening H7.3), so a rule can compare the two
+/// (`status === old.status || old.status === "draft" && status === "submitted"`).
+///
+/// [`row_allowed`] for that one check. The existing-row check is
+/// [`row_allowed`] itself, where `old` is the row unchanged.
+#[allow(clippy::too_many_arguments)]
+pub async fn update_allowed(
+    cat: &Catalog,
+    table: &Table,
+    formula: &Formula,
+    user: Option<&User>,
+    evaluator: Option<&Arc<dyn JsEvaluator>>,
+    existing: &BTreeMap<String, Value>,
+    proposed: &BTreeMap<String, Value>,
+) -> Result<bool> {
+    let evaluator = require_evaluator(evaluator)?;
+    let shape = cat.schema_shape()?;
+    let analysis = formula.validate(&shape, &table.name)?;
+    let mut values = proposed.clone();
+    prefetch_bindings(cat, table, &analysis, &shape, &mut values).await?;
+    let old = own_columns(table, existing);
+    Ok(allowed_with_old(
+        evaluator,
+        formula,
+        Operation::Update,
+        user,
+        &values,
+        Some(&old),
+        chrono::Utc::now(),
+    )
+    .await)
+}
+
+/// The guard an update's `WHERE` carries: [`write_guard`]'s existing-row
+/// predicate, and every `old.x` the formula read pinned to the value the
+/// proposed-row check saw (TODO-type-hardening H7.3). A row changed in one of
+/// those fields between the check and the write matches nothing, so the
+/// update is the not-found it would have been had it come second.
+pub(crate) fn update_guard(
+    cat: &Catalog,
+    table: &Table,
+    formula: &Formula,
+    user: Option<&User>,
+    existing: &BTreeMap<String, Value>,
+) -> Result<Option<Expr>> {
+    let guard = write_guard(cat, table, formula, Operation::Update, user)?;
+    let shape = cat.schema_shape()?;
+    let analysis = formula.validate(&shape, &table.name)?;
+    let mut pins = analysis
+        .ambient_props(sc_expr::Ambient::Old)
+        .filter(|field| table.field(field).is_some_and(|f| !f.is_calc()))
+        .map(|field| {
+            Expr::binary(
+                sc_query::BinOp::IsNotDistinct,
+                Expr::col(field),
+                Expr::Lit(existing.get(field).cloned().unwrap_or(Value::Null)),
+            )
+        });
+    let Some(first) = pins.next() else {
+        return Ok(guard);
+    };
+    let pinned = pins.fold(first, Expr::and);
+    Ok(Some(match guard {
+        Some(g) => g.and(pinned),
+        None => pinned,
+    }))
 }
 
 /// The translated guard predicate for a write, when the formula is
 /// translatable — ANDed into the UPDATE/DELETE WHERE so the row cannot change
 /// hands between the check and the write. `None` for an untranslatable
 /// formula, whose single-row reified check already ran.
-pub fn write_guard(
+pub(crate) fn write_guard(
     cat: &Catalog,
     table: &Table,
     formula: &Formula,
@@ -1154,7 +1249,7 @@ pub fn write_guard(
 
 /// Fetch the full row addressed by `id` — its columns plus every Ⱶ-join value
 /// the formula reads, projected in the same query. `None` when no such row.
-pub async fn fetch_row_values(
+pub(crate) async fn fetch_row_values(
     cat: &Catalog,
     table: &Table,
     formula: &Formula,
@@ -1189,7 +1284,7 @@ pub async fn fetch_row_values(
 /// ([`generated`](sc_catalog::DataField::generated): an identity key, a
 /// `DEFAULT`) is left unbound — `null` would not be what is stored, and a
 /// formula that reads one on insert keeps failing closed.
-pub fn proposed_insert_row(table: &Table, body: &Json) -> Result<BTreeMap<String, Value>> {
+pub(crate) fn proposed_insert_row(table: &Table, body: &Json) -> Result<BTreeMap<String, Value>> {
     let mut values = rows::coerce_row_values(table, body)?;
     for field in &table.fields {
         if field.is_calc() || field.is_collab_doc() || field.generated.is_some() {
@@ -1252,16 +1347,34 @@ async fn allowed(
     op: Operation,
     user: Option<&User>,
     values: &BTreeMap<String, Value>,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> bool {
+    allowed_with_old(evaluator, formula, op, user, values, None, now).await
+}
+
+/// [`allowed`], with `old` bound to the existing row: the proposed-row check of
+/// an update (TODO-type-hardening H7.3). Everywhere else `old` is null.
+async fn allowed_with_old(
+    evaluator: &Arc<dyn JsEvaluator>,
+    formula: &Formula,
+    op: Operation,
+    user: Option<&User>,
+    values: &BTreeMap<String, Value>,
+    old: Option<&BTreeMap<String, Value>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    // An ownership formula has no triggering event, so no `row` is in scope —
+    // validation refuses naming one (§7.3's scope is the row's own fields,
+    // `user`, `session`, `old` and the flags).
+    let mut ambient = session_values();
+    ambient.insert(sc_expr::Ambient::Old, old.cloned());
     let call = FormulaCall {
         formula: formula.clone(),
         op,
         row: values.clone(),
         user: user_values(user),
-        // An ownership formula has no triggering event, so no `row`/`old` is in
-        // scope — validation refuses naming one (§7.3's scope is the row's own
-        // fields, `user`, `session` and the flags).
-        ambient: session_values(),
+        ambient,
+        now,
     };
     match evaluator.eval(call).await {
         Ok(granted) => granted,

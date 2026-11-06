@@ -96,7 +96,7 @@ async fn act<T>(f: impl std::future::Future<Output = Result<T>>) -> Result<T> {
 
 /// `who` (an id) writing as the admin screens do: at the admin's role.
 fn caller(who: &str) -> Principal {
-    Principal::new(Role::ADMIN, Some(json!({ "id": who, "role": 1 })))
+    Principal::recorded(Role::ADMIN, Some(json!({ "id": who, "role": 1 })))
 }
 
 async fn create(catalog: &Catalog, who: &str, body: Json) -> Result<String> {
@@ -185,6 +185,19 @@ async fn history_is_the_admins_until_opened_and_then_follows_the_read_rule() -> 
     let as_bob = HistoryReader::new(&catalog, Some(&bob), None);
     let as_admin = HistoryReader::new(&catalog, Some(&admin), None);
     let anonymous = HistoryReader::new(&catalog, None, None);
+
+    // A reader is a view of one caller (TODO-type-hardening H3.4): a
+    // principal's role with somebody else's user is refused, and the admin's
+    // role comes from its proof.
+    let ann_principal = sc_access::principal_of(Some(&ann));
+    assert!(HistoryReader::of(&catalog, &ann_principal, Some(&bob), None).is_err());
+    let via_principal = HistoryReader::of(&catalog, &ann_principal, Some(&ann), None)?;
+    assert_eq!(via_principal.role(), Role::of(80));
+    let proof = sc_catalog::AdminPrincipal::vouched(Some(admin.fields_json()), "test: a session");
+    assert!(HistoryReader::admin(&catalog, &proof, Some(&ann), None).is_err());
+    let via_proof = HistoryReader::admin(&catalog, &proof, Some(&admin), None)?;
+    assert!(via_proof.role().is_admin());
+    assert!(via_proof.row_history("notes", &anns).await.is_ok());
 
     // By default, only the admin.
     let err = as_ann.row_history("notes", &anns).await.unwrap_err();

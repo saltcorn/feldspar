@@ -22,8 +22,15 @@
 //! - **An update is untrusted input.** Decoding and applying one runs behind
 //!   `catch_unwind`: a malformed update is an error for its sender, never a
 //!   panic in the room every other member shares.
+//! - **And bounded** (TODO-type-hardening H5.3). `yrs` recurses over a value's
+//!   nesting as it decodes and over the document's as it deletes, collects and
+//!   prints, and a stack overflow is not a panic: it ends the process. Every
+//!   update is read by [`crate::yjs_scan`] first, which refuses a value nested
+//!   past its bound and counts the shared types the update creates, and the
+//!   document is kept within [`MAX_DOC_DEPTH`] levels of them.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sc_error::{Error, Result};
 use yrs::types::text::YChange;
@@ -34,6 +41,15 @@ use yrs::{
     Doc, GetString, OffsetKind, Options, ReadTxn, StateVector, Text, TextRef, Transact, Update,
     XmlElementPrelim, XmlFragmentRef, XmlTextPrelim,
 };
+
+use crate::yjs_scan;
+
+/// How deep shared types may nest in a document — the root, an element in it,
+/// an element in that — before an update that would go deeper is refused
+/// (TODO-type-hardening H5.3). A rich-text document is a handful deep (a
+/// table's cell's paragraph; a list in a list item); this is far past any
+/// editor and well inside what `yrs`'s recursion can take.
+pub const MAX_DOC_DEPTH: usize = 256;
 
 /// What the root shared type is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +123,11 @@ impl DocShape {
 pub struct CollabDoc {
     doc: Doc,
     shape: DocShape,
+    /// At least as deep as the document's shared types nest, counting the
+    /// ones still pending and the root as one: what was measured, plus every
+    /// type created since.
+    /// Measured again when it would pass [`MAX_DOC_DEPTH`].
+    depth_bound: AtomicUsize,
 }
 
 impl std::fmt::Debug for CollabDoc {
@@ -139,16 +160,30 @@ impl CollabDoc {
         CollabDoc {
             doc: new_doc(),
             shape,
+            // The root is a level before any update makes one.
+            depth_bound: AtomicUsize::new(1),
         }
     }
 
     /// The document a stored value holds: empty for `None` (a null field) or
     /// an empty value, the stored state otherwise.
+    ///
+    /// The stored state is measured before it is applied, and one deeper than
+    /// [`MAX_DOC_DEPTH`] is not loaded.
     pub fn load(shape: DocShape, stored: Option<&[u8]>) -> Result<CollabDoc> {
         let doc = CollabDoc::empty(shape);
         if let Some(bytes) = stored.filter(|b| !b.is_empty()) {
-            doc.apply(bytes)
-                .map_err(|e| Error::invalid(format!("the stored document cannot be read: {e}")))?;
+            guarded("the stored document", || {
+                yjs_scan::scan(bytes, &StateVector::default()).map_err(Error::invalid)?;
+                let depth = yjs_scan::depth(bytes, &[]).map_err(Error::invalid)?;
+                if depth > MAX_DOC_DEPTH {
+                    return Err(too_deep());
+                }
+                apply_to(&doc.doc, bytes)?;
+                doc.depth_bound.store(depth, Ordering::Relaxed);
+                Ok(())
+            })
+            .map_err(|e| Error::invalid(format!("the stored document cannot be read: {e}")))?;
         }
         Ok(doc)
     }
@@ -160,15 +195,51 @@ impl CollabDoc {
 
     /// Apply an update (Yjs v1). Applying one twice, or out of order, is
     /// harmless — that is what a CRDT is for.
+    ///
+    /// Refused, and not applied, when a value in it nests too deep or it would
+    /// take the document past [`MAX_DOC_DEPTH`].
     pub fn apply(&self, update: &[u8]) -> Result<()> {
         guarded("the update", || {
-            let update = Update::decode_v1(update)
+            let known = self.state_vector_now();
+            let scan = yjs_scan::scan(update, &known)
                 .map_err(|e| Error::invalid(format!("the update: {e}")))?;
-            self.doc
-                .transact_mut()
-                .apply_update(update)
-                .map_err(|e| Error::invalid(format!("the update: {e}")))
+            self.admit(update, scan.new_types)?;
+            apply_to(&self.doc, update)
         })
+    }
+
+    /// Whether an update creating `new_types` shared types keeps the document
+    /// within [`MAX_DOC_DEPTH`], recording what it may add.
+    ///
+    /// Each new type adds at most one level, so the cheap answer is the bound
+    /// plus the count. When that would pass the limit (most of what the bound
+    /// counted are siblings, not levels) the document is measured as it would
+    /// be with the update — its state, its pending update and this one, read
+    /// by [`yjs_scan::depth`] — and the bound starts again from that.
+    fn admit(&self, update: &[u8], new_types: usize) -> Result<()> {
+        if new_types == 0 {
+            return Ok(());
+        }
+        let bound = self.depth_bound.load(Ordering::Relaxed);
+        if bound.saturating_add(new_types) <= MAX_DOC_DEPTH {
+            self.depth_bound
+                .store(bound.saturating_add(new_types), Ordering::Relaxed);
+            return Ok(());
+        }
+        let state = self.state();
+        let pending = pending_update(&self.doc);
+        let more: Vec<&[u8]> = pending.as_deref().into_iter().chain([update]).collect();
+        let depth = yjs_scan::depth(&state, &more).map_err(Error::invalid)?;
+        if depth > MAX_DOC_DEPTH {
+            return Err(too_deep());
+        }
+        self.depth_bound.store(depth, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// The state vector, read in a transaction of its own.
+    fn state_vector_now(&self) -> StateVector {
+        self.doc.transact().state_vector()
     }
 
     /// The whole state as one update — what `doc_sync` carries and what is
@@ -306,8 +377,34 @@ impl CollabDoc {
                 paragraph.push_back(&mut txn, XmlTextPrelim::new(text));
             }
         }
+        // The root, the paragraph and its text: three levels, at most.
+        self.depth_bound.fetch_max(3, Ordering::Relaxed);
         self.diff(&before)
     }
+}
+
+/// Decode and apply one update, already scanned.
+fn apply_to(doc: &Doc, update: &[u8]) -> Result<()> {
+    let update =
+        Update::decode_v1(update).map_err(|e| Error::invalid(format!("the update: {e}")))?;
+    doc.transact_mut()
+        .apply_update(update)
+        .map_err(|e| Error::invalid(format!("the update: {e}")))
+}
+
+fn too_deep() -> Error {
+    Error::invalid(format!(
+        "the update would nest the document more than {MAX_DOC_DEPTH} levels deep, so it was \
+         not applied"
+    ))
+}
+
+/// The update `doc` holds back, waiting for what it depends on.
+fn pending_update(doc: &Doc) -> Option<Vec<u8>> {
+    let txn = doc.transact();
+    txn.store()
+        .pending_update()
+        .map(|pending| pending.update.encode_v1())
 }
 
 /// How a kind is said in a sentence.
@@ -397,6 +494,12 @@ pub fn merge_states(a: &[u8], b: &[u8]) -> Result<Vec<u8>> {
         [] => Ok(Vec::new()),
         [one] => Ok(one.to_vec()),
         _ => guarded("merging", || {
+            // Decoded whole by the merge: each is read for its values' depth
+            // first, as an update is.
+            for part in &parts {
+                yjs_scan::scan(part, &StateVector::default())
+                    .map_err(|e| Error::invalid(format!("merging two documents: {e}")))?;
+            }
             yrs::merge_updates_v1(parts.iter().copied())
                 .map_err(|e| Error::invalid(format!("merging two documents: {e}")))
         }),
@@ -533,6 +636,107 @@ mod tests {
             assert_eq!(d.text(), "A base B");
         }
         assert_eq!(merge_states(&[], &merged).unwrap(), merged);
+    }
+
+    /// A document whose root holds `depth - 1` elements, one inside the next:
+    /// `depth` levels, the root included.
+    fn nested_xml(depth: usize) -> Vec<u8> {
+        let doc = new_doc();
+        {
+            let mut txn = doc.transact_mut();
+            let root = yrs::WriteTxn::get_or_insert_xml_fragment(&mut txn, "default");
+            let mut parent = root.push_back(&mut txn, XmlElementPrelim::empty("div"));
+            for _ in 2..depth {
+                parent = parent.push_back(&mut txn, XmlElementPrelim::empty("div"));
+            }
+        }
+        doc.transact()
+            .encode_state_as_update_v1(&StateVector::default())
+    }
+
+    fn xml_doc() -> CollabDoc {
+        CollabDoc::empty(DocShape::new("default", RootKind::Xml))
+    }
+
+    #[test]
+    fn a_document_nested_past_the_limit_is_refused_and_not_applied() {
+        let d = xml_doc();
+        d.append_paragraph("before").unwrap();
+        let err = d
+            .apply(&nested_xml(MAX_DOC_DEPTH + 1))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("more than 256 levels deep"), "{err}");
+        // Nothing of it was applied, and the document goes on.
+        assert_eq!(d.text(), "before");
+        d.append_paragraph("after").unwrap();
+        assert_eq!(d.text(), "before\nafter");
+
+        // At the limit is a document like any other.
+        let ok = xml_doc();
+        ok.apply(&nested_xml(MAX_DOC_DEPTH)).unwrap();
+        assert!(CollabDoc::load(ok.shape().clone(), Some(&ok.state())).is_ok());
+        // And a stored document past it is not loaded.
+        let stored = nested_xml(MAX_DOC_DEPTH + 1);
+        let err = CollabDoc::load(ok.shape().clone(), Some(&stored))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("levels deep"), "{err}");
+    }
+
+    #[test]
+    fn nesting_one_level_an_update_is_stopped_at_the_limit() {
+        // The editor's way to the bottom: each update one element deeper.
+        let source = new_doc();
+        let target = xml_doc();
+        let mut parent = {
+            let mut txn = source.transact_mut();
+            let root = yrs::WriteTxn::get_or_insert_xml_fragment(&mut txn, "default");
+            root.push_back(&mut txn, XmlElementPrelim::empty("div"))
+        };
+        let mut sent = source
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        let mut levels = 2;
+        loop {
+            match target.apply(&sent) {
+                Ok(()) => {}
+                Err(e) => {
+                    assert!(e.to_string().contains("levels deep"), "{e}");
+                    break;
+                }
+            }
+            assert!(levels <= MAX_DOC_DEPTH, "level {levels} was let in");
+            let before = source.transact().state_vector();
+            {
+                let mut txn = source.transact_mut();
+                parent = parent.push_back(&mut txn, XmlElementPrelim::empty("div"));
+            }
+            sent = source.transact().encode_diff_v1(&before);
+            levels += 1;
+        }
+        assert_eq!(levels, MAX_DOC_DEPTH + 1);
+        assert_eq!(
+            yjs_scan::depth(&target.state(), &[]).unwrap(),
+            MAX_DOC_DEPTH
+        );
+    }
+
+    #[test]
+    fn a_value_nested_half_a_million_deep_is_refused_before_it_is_decoded() {
+        // One `Any` under root `default`: arrays in arrays, two bytes a level.
+        let mut update = vec![1, 1, 1, 0, 8, 1, 7];
+        update.extend_from_slice(b"default");
+        update.push(1);
+        for _ in 0..500_000 {
+            update.extend([117, 1]);
+        }
+        update.extend([126, 0]);
+        let d = text_doc();
+        let err = d.apply(&update).unwrap_err().to_string();
+        assert!(err.contains("nests more than"), "{err}");
+        assert!(CollabDoc::load(d.shape().clone(), Some(&update)).is_err());
+        assert!(merge_states(&update, &d.state()).is_err());
     }
 
     #[test]

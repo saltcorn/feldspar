@@ -785,7 +785,11 @@ fn vector_value(value: &Json) -> Json {
 /// `2026-09-02` — since a day-only v1 field becomes a `date` column here.
 fn day_only(value: &Json) -> Json {
     match value.as_str() {
-        Some(text) if text.len() > 10 => json!(&text[..10]),
+        // Ten characters, not bytes: a malformed backup's non-ASCII value must
+        // not split a character (a byte slice there panics the restore).
+        Some(text) if text.chars().count() > 10 => {
+            json!(text.chars().take(10).collect::<String>())
+        }
         _ => value.clone(),
     }
 }
@@ -2166,6 +2170,19 @@ fn role(obj: &Map<String, Json>, key: &str) -> i64 {
 mod tests {
     use super::*;
     use sc_types::Role;
+
+    /// A day-only value is cut at ten characters, not bytes, so a malformed
+    /// non-ASCII value does not panic the restore (security review 2026-11, F-2).
+    #[test]
+    fn day_only_cuts_on_a_character_boundary() {
+        assert_eq!(
+            day_only(&json!("2026-09-02T00:00:00.000Z")),
+            json!("2026-09-02")
+        );
+        assert_eq!(day_only(&json!("2026-09-0ééééé")), json!("2026-09-0é"));
+        assert_eq!(day_only(&json!("ä")), json!("ä"));
+        assert_eq!(day_only(&json!(7)), json!(7));
+    }
 
     /// A bcrypt hash as v1's bcryptjs writes one (the OpenBSD vector for `U*U`).
     const V1_HASH: &str = "$2a$05$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOeW";

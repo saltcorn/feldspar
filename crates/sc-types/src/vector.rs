@@ -115,6 +115,10 @@ pub fn check_dimensions(dimensions: u32) -> Result<()> {
 
 /// The floats of a JSON array of numbers, or the sentence saying why it is not
 /// one — any length.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a vector element is single precision; one too large becomes infinite and is refused below"
+)]
 pub fn floats(json: &Json) -> Result<Vec<f32>> {
     let Json::Array(items) = json else {
         return Err(Error::invalid(format!(

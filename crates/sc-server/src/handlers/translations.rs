@@ -16,9 +16,12 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // running application serves the change on the next reload with no build
     // (D7).
 
-    reg.register_admin("getTranslations", typed(state, get_translations));
+    reg.handle(
+        sc_api::handler_ids::GET_TRANSLATIONS,
+        typed(state, get_translations),
+    );
 
-    reg.register_admin("setApplicationLocales", {
+    reg.handle(sc_api::handler_ids::SET_APPLICATION_LOCALES, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -48,9 +51,12 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("saveTranslations", typed(state, save_translations));
+    reg.handle(
+        sc_api::handler_ids::SAVE_TRANSLATIONS,
+        typed(state, save_translations),
+    );
 
-    reg.register_admin("translateMissing", {
+    reg.handle(sc_api::handler_ids::TRANSLATE_MISSING, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -72,17 +78,17 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // A save or fill drops every mount's cached catalogues, because every
     // application serves the shared catalogue under its own.
 
-    reg.register_admin(
-        "getInstanceTranslations",
+    reg.handle(
+        sc_api::handler_ids::GET_INSTANCE_TRANSLATIONS,
         typed(state, get_instance_translations),
     );
 
-    reg.register_admin(
-        "saveInstanceTranslations",
+    reg.handle(
+        sc_api::handler_ids::SAVE_INSTANCE_TRANSLATIONS,
         typed(state, save_instance_translations),
     );
 
-    reg.register_admin("translateInstanceMissing", {
+    reg.handle(sc_api::handler_ids::TRANSLATE_INSTANCE_MISSING, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {

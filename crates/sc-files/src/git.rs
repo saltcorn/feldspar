@@ -56,9 +56,9 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use sc_error::{Context, Error, Result};
+use sc_proc::{AdminProof, Git, HostCommand, Operand, RepoRoot, Timeout};
 use sc_types::{Attrs, BasicType, FormField, Operation, OperationScope};
 use std::path::{Path, PathBuf};
-use tokio::process::Command;
 
 use crate::backend::OperationOutcome;
 use crate::def::{
@@ -71,12 +71,12 @@ use crate::store::{Entry, FileMeta, FileStat, FileStore};
 use crate::store_path::StorePath;
 
 /// Where clones live: `<data dir>/git-stores`.
-pub fn clone_dir() -> Result<PathBuf> {
+pub(crate) fn clone_dir() -> Result<PathBuf> {
     Ok(data_dir()?.join("git-stores"))
 }
 
 /// Where deploy keys live: `<data dir>/keys`.
-pub fn key_dir() -> Result<PathBuf> {
+pub(crate) fn key_dir() -> Result<PathBuf> {
     Ok(data_dir()?.join("keys"))
 }
 
@@ -239,23 +239,17 @@ pub async fn generate_deploy_key(name: &str) -> Result<DeployKey> {
     let _ = tokio::fs::remove_file(&private).await;
     let _ = tokio::fs::remove_file(&public).await;
 
-    let output = Command::new("ssh-keygen")
-        .arg("-t")
-        .arg("ed25519")
-        .arg("-N")
-        .arg("")
-        .arg("-C")
-        .arg(format!("saltcorn:{name}"))
-        .arg("-f")
-        .arg(&private)
-        .output()
-        .await
-        .map_err(|e| {
-            Error::config(format!(
-                "could not run `ssh-keygen` to generate a deploy key ({e}); \
-                 it is part of OpenSSH and must be installed to use the git backend"
-            ))
-        })?;
+    let mut keygen = HostCommand::new("ssh-keygen", &git_authority(), LOCAL_GIT);
+    keygen
+        .flag_value("-t", "ed25519")
+        .flag_value("-N", "")
+        .flag_value("-C", format!("saltcorn:{name}"))
+        .flag_value("-f", &private);
+    let output = keygen.output().await.map_err(|e| {
+        Error::config(format!(
+            "{e}; `ssh-keygen` is part of OpenSSH and must be installed to use the git backend"
+        ))
+    })?;
     if !output.status.success() {
         return Err(Error::invalid(format!(
             "`ssh-keygen` failed: {}",
@@ -469,17 +463,19 @@ impl GitRepo {
             .await
             .with_context(|| format!("creating clone directory {}", parent.display()))?;
 
-        let mut args: Vec<String> = vec!["clone".to_owned()];
-        if let Some(branch) = &self.branch {
-            args.push("--branch".to_owned());
-            args.push(branch.clone());
-        }
-        args.push(url.clone());
-        args.push(self.root.to_string_lossy().into_owned());
-
         // Run from the parent: the target does not exist yet, so it cannot be
-        // the working directory.
-        let out = self.run(&parent, &args).await?;
+        // the working directory. The URL is an operand after `--`: one that
+        // starts with `-` (`--upload-pack=…`) is refused rather than read as
+        // an option (security review 2026-11, C5).
+        let mut clone = Git::without_repository(&parent, &git_authority(), REMOTE_GIT);
+        clone.arg("clone");
+        if let Some(branch) = &self.branch {
+            clone.flag_value("--branch", branch);
+        }
+        clone
+            .operand(Operand::new(url.as_str())?)
+            .operand(Operand::path(&self.root));
+        let out = self.run(clone).await?;
         if !out.success {
             return Err(Error::invalid(format!(
                 "cloning {url} failed: {}",
@@ -494,7 +490,9 @@ impl GitRepo {
     /// `--no-edit` because a merge commit would otherwise open an editor, and an
     /// editor on a server is the hang the module docs describe.
     pub async fn pull(&self) -> Result<GitOutput> {
-        self.checked(&["pull", "--no-edit"], "pull").await
+        let mut pull = self.git(REMOTE_GIT);
+        pull.args(["pull", "--no-edit"]);
+        self.checked(pull, "pull").await
     }
 
     /// `git push` the checked-out branch to `origin`.
@@ -509,8 +507,10 @@ impl GitRepo {
                 "cannot push: the working tree is not on a branch",
             ));
         }
-        self.checked(&["push", "--set-upstream", "origin", &branch], "push")
-            .await
+        let mut push = self.git(REMOTE_GIT);
+        push.args(["push", "--set-upstream", "origin"])
+            .positional(Operand::new(branch)?);
+        self.checked(push, "push").await
     }
 
     /// Add `paths` to the index, or **everything** when `paths` is empty.
@@ -524,13 +524,13 @@ impl GitRepo {
     /// working tree is not the place to discover that `../../etc` was one.
     pub async fn stage(&self, paths: &[String]) -> Result<GitOutput> {
         let paths = pathspecs(paths)?;
-        let mut args = vec!["add".to_owned()];
+        let mut add = self.git(LOCAL_GIT);
+        add.arg("add");
         if paths.is_empty() {
-            args.push("--all".to_owned());
+            add.arg("--all");
         }
-        args.push("--".to_owned());
-        args.extend(paths);
-        self.checked_owned(&args, "add").await
+        add.operands(operands(&paths)?);
+        self.checked(add, "add").await
     }
 
     /// Take `paths` out of the index, or **everything** when `paths` is empty,
@@ -543,9 +543,9 @@ impl GitRepo {
     /// pressing `−` on it means.
     pub async fn unstage(&self, paths: &[String]) -> Result<GitOutput> {
         let paths = pathspecs(paths)?;
-        let mut args = vec!["reset".to_owned(), "-q".to_owned(), "--".to_owned()];
-        args.extend(paths);
-        self.checked_owned(&args, "reset").await
+        let mut reset = self.git(LOCAL_GIT);
+        reset.args(["reset", "-q"]).operands(operands(&paths)?);
+        self.checked(reset, "reset").await
     }
 
     /// Throw away the **unstaged** changes to `paths`: an edited or deleted file
@@ -607,11 +607,11 @@ impl GitRepo {
             if files.is_empty() {
                 continue;
             }
-            let mut args = vec!["--literal-pathspecs".to_owned(), command.to_owned()];
-            args.push(if command == "clean" { "-fq" } else { "-q" }.to_owned());
-            args.push("--".to_owned());
-            args.extend(files.iter().cloned());
-            let out = self.checked_owned(&args, command).await?;
+            let mut git = self.git(LOCAL_GIT);
+            git.args(["--literal-pathspecs", command])
+                .arg(if command == "clean" { "-fq" } else { "-q" })
+                .operands(operands(files)?);
+            let out = self.checked(git, command).await?;
             if !out.output.is_empty() {
                 said.push(out.output);
             }
@@ -641,7 +641,9 @@ impl GitRepo {
         self.require_cloned()?;
 
         if stage_all {
-            let staged = self.run(&self.root, &["add", "-A"]).await?;
+            let mut add = self.git(LOCAL_GIT);
+            add.args(["add", "-A"]);
+            let staged = self.run(add).await?;
             if !staged.success {
                 return Err(Error::invalid(format!(
                     "staging changes failed: {}",
@@ -650,21 +652,18 @@ impl GitRepo {
             }
         }
 
-        let mut args: Vec<String> = Vec::new();
+        let mut commit = self.git(LOCAL_GIT);
         if !self.has_identity().await? {
-            args.extend(
-                [
-                    "-c",
-                    "user.name=Saltcorn",
-                    "-c",
-                    "user.email=saltcorn@localhost",
-                ]
-                .map(str::to_owned),
-            );
+            commit.args([
+                "-c",
+                "user.name=Saltcorn",
+                "-c",
+                "user.email=saltcorn@localhost",
+            ]);
         }
-        args.extend(["commit".to_owned(), "-m".to_owned(), message.to_owned()]);
+        commit.arg("commit").flag_value("-m", message);
 
-        let out = self.run(&self.root, &args).await?;
+        let out = self.run(commit).await?;
         if out.success {
             return Ok(CommitOutcome {
                 committed: true,
@@ -704,16 +703,13 @@ impl GitRepo {
             // itself instead of C-style `\303\251` escapes; `--untracked-files=all`
             // names each new file rather than collapsing a new directory to
             // `notes/`, which is not a path anything can open.
-            .run(
-                &self.root,
-                &[
-                    "-c",
-                    "core.quotepath=false",
-                    "status",
-                    "--porcelain",
-                    "--untracked-files=all",
-                ],
-            )
+            .run_args(&[
+                "-c",
+                "core.quotepath=false",
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+            ])
             .await?
             .output
             .lines()
@@ -721,14 +717,11 @@ impl GitRepo {
             .map(str::to_owned)
             .collect();
         let last_commit = self
-            .run(&self.root, &["log", "-1", "--pretty=%h %s (%an, %ar)"])
+            .run_args(&["log", "-1", "--pretty=%h %s (%an, %ar)"])
             .await?;
         let (ahead, behind) = self.tracking().await?;
         let upstream = self
-            .run(
-                &self.root,
-                &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-            )
+            .run_args(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
             .await?
             .success;
         let branches = self.branches().await?;
@@ -762,7 +755,7 @@ impl GitRepo {
     async fn current_branch(&self) -> Result<String> {
         self.require_cloned()?;
         let out = self
-            .run(&self.root, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .run_args(&["rev-parse", "--abbrev-ref", "HEAD"])
             .await?;
         if !out.success || out.output == "HEAD" {
             return Ok(String::new());
@@ -774,10 +767,7 @@ impl GitRepo {
     /// it has no upstream to compare against.
     async fn tracking(&self) -> Result<(u32, u32)> {
         let out = self
-            .run(
-                &self.root,
-                &["rev-list", "--left-right", "--count", "HEAD...@{u}"],
-            )
+            .run_args(&["rev-list", "--left-right", "--count", "HEAD...@{u}"])
             .await?;
         if !out.success {
             return Ok((0, 0));
@@ -803,7 +793,7 @@ impl GitRepo {
     pub async fn branches(&self) -> Result<Vec<String>> {
         self.require_cloned()?;
         let local = self
-            .run(&self.root, &["branch", "--format=%(refname:short)"])
+            .run_args(&["branch", "--format=%(refname:short)"])
             .await?;
         let mut names: Vec<String> = if local.success {
             local
@@ -818,10 +808,7 @@ impl GitRepo {
         };
 
         let remote = self
-            .run(
-                &self.root,
-                &["branch", "--remotes", "--format=%(refname:short)"],
-            )
+            .run_args(&["branch", "--remotes", "--format=%(refname:short)"])
             .await?;
         if remote.success {
             for line in remote.output.lines() {
@@ -853,39 +840,30 @@ impl GitRepo {
         if branch.is_empty() {
             return Err(Error::invalid("a checkout needs a branch name"));
         }
-        let mut args = vec!["checkout"];
+        // Positional, not after `--`: to `git checkout`, what follows `--` is
+        // a path. `Operand` refuses a branch that would be read as an option.
+        let mut checkout = self.git(LOCAL_GIT);
+        checkout.arg("checkout");
         if create {
-            args.push("-b");
+            checkout.arg("-b");
         }
-        args.push(branch);
-        self.checked(&args, "checkout").await
+        checkout.positional(Operand::new(branch)?);
+        self.checked(checkout, "checkout").await
     }
 
     /// Whether the repository resolves a committer identity (from its own
     /// config, the user's, or the environment).
     async fn has_identity(&self) -> Result<bool> {
         Ok(self
-            .run(&self.root, &["config", "--get", "user.email"])
+            .run_args(&["config", "--get", "user.email"])
             .await?
             .success)
     }
 
-    /// Run a sub-command in the working tree and turn a non-zero exit into an
-    /// error naming the operation.
-    async fn checked(&self, args: &[&str], what: &str) -> Result<GitOutput> {
+    /// Run `git` and turn a non-zero exit into an error naming the operation.
+    async fn checked(&self, git: Git, what: &str) -> Result<GitOutput> {
         self.require_cloned()?;
-        let out = self.run(&self.root, args).await?;
-        if !out.success {
-            return Err(Error::invalid(format!("git {what} failed: {}", out.output)));
-        }
-        Ok(out)
-    }
-
-    /// [`checked`](GitRepo::checked) for an argument list built at runtime — a
-    /// pathspec list is as many arguments as the admin selected files.
-    async fn checked_owned(&self, args: &[String], what: &str) -> Result<GitOutput> {
-        self.require_cloned()?;
-        let out = self.run(&self.root, args).await?;
+        let out = self.run(git).await?;
         if !out.success {
             return Err(Error::invalid(format!("git {what} failed: {}", out.output)));
         }
@@ -905,25 +883,43 @@ impl GitRepo {
         )))
     }
 
-    /// Run `git` with this repository's credentials, non-interactively.
-    async fn run<S: AsRef<std::ffi::OsStr>>(&self, dir: &Path, args: &[S]) -> Result<GitOutput> {
-        let mut cmd = Command::new("git");
-        cmd.current_dir(dir).args(args);
-        // No terminal, so no question git asks can be answered (module docs).
-        cmd.env("GIT_TERMINAL_PROMPT", "0");
-        if let Some(key) = &self.key_path {
-            cmd.env("GIT_SSH_COMMAND", ssh_command(key));
+    /// `git` against this repository, named rather than discovered
+    /// ([`sc_proc::Git`]); against none, in the root, when it is not cloned yet
+    /// (the commands that run then fail, as they should, saying so).
+    fn git(&self, timeout: Timeout) -> Git {
+        match RepoRoot::at(&self.root) {
+            Some(repo) => Git::new(&repo, &git_authority(), timeout),
+            None => Git::without_repository(&self.root, &git_authority(), timeout),
         }
-        let output = cmd.output().await.map_err(|e| {
-            Error::config(format!(
-                "could not run `git` ({e}); it must be installed to use the git backend"
-            ))
+    }
+
+    /// [`run`](Self::run) a sub-command whose arguments are all the program's
+    /// own.
+    async fn run_args(&self, args: &[&'static str]) -> Result<GitOutput> {
+        let mut git = self.git(LOCAL_GIT);
+        git.args(args.iter().copied());
+        self.run(git).await
+    }
+
+    /// Run `git` with this repository's credentials, non-interactively.
+    async fn run(&self, mut git: Git) -> Result<GitOutput> {
+        if let Some(key) = &self.key_path {
+            git.ssh_key(key);
+        }
+        let output = git.output().await.map_err(|e| match e.is_not_found() {
+            true => Error::config(format!("{e}; git must be installed to use the git backend")),
+            false => e.into(),
         })?;
         Ok(GitOutput {
             success: output.status.success(),
             output: combined(&output.stdout, &output.stderr),
         })
     }
+}
+
+/// Checked pathspecs as operands (each already refuses a leading `-`).
+fn operands(paths: &[String]) -> Result<Vec<Operand>> {
+    paths.iter().map(|p| Operand::new(p.as_str())).collect()
 }
 
 /// Check client-supplied paths before they become git pathspecs, dropping the
@@ -1000,29 +996,22 @@ fn trim_blank_lines(text: &str) -> &str {
     text.trim_start_matches(['\n', '\r']).trim_end()
 }
 
-/// The `GIT_SSH_COMMAND` that makes git use one specific key and ask nothing.
-///
-/// - `IdentitiesOnly=yes` — otherwise ssh offers every key an agent holds
-///   before the one we named, and a forge that accepts one of those would use
-///   the wrong identity while a forge that rejects them may hit its auth-attempt
-///   limit before reaching ours.
-/// - `BatchMode=yes` — never prompt (module docs).
-/// - `StrictHostKeyChecking=accept-new` — a first clone from a host that is not
-///   in `known_hosts` is the normal case here, and with `BatchMode` the strict
-///   default would fail it; `accept-new` still refuses a host whose key has
-///   *changed*, which is the case that matters.
-fn ssh_command(key: &Path) -> String {
-    format!(
-        "ssh -i {} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
-        shell_quote(&key.to_string_lossy())
-    )
+/// On whose authority the git backend runs `git` and `ssh-keygen`: its
+/// operations are reached through the admin file-store route (and the
+/// administration MCP's store tools), which require an administrator. Listed
+/// in the system-authority inventory.
+pub(crate) const GIT_OPERATION: &str = "a git file-store operation (admin file-store route)";
+
+fn git_authority() -> AdminProof {
+    AdminProof::vouched(None, GIT_OPERATION)
 }
 
-/// Single-quote a path for the shell-like splitting git applies to
-/// `GIT_SSH_COMMAND`, so a key path containing a space still names one argument.
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
-}
+/// How long a git command that stays on this machine may run.
+const LOCAL_GIT: Timeout = Timeout::minutes(5);
+
+/// How long one that talks to the remote may: a first clone of a large
+/// repository is slow, a black-holed remote is not a reason to wait forever.
+const REMOTE_GIT: Timeout = Timeout::minutes(30);
 
 /// stdout then stderr, lossily decoded and trimmed.
 fn combined(stdout: &[u8], stderr: &[u8]) -> String {
@@ -1206,7 +1195,7 @@ pub const ARG_CREATE: &str = "create";
 /// already accepts. Everything else is
 /// [`Instance`](OperationScope::Instance): there is no working tree to pull
 /// until there is a saved store.
-pub fn git_operations() -> Vec<Operation> {
+pub(crate) fn git_operations() -> Vec<Operation> {
     vec![
         Operation::new(OP_GENERATE_KEY, OperationScope::Configure)
             .label("Generate deploy key")
@@ -1582,7 +1571,7 @@ pub fn record_clone_path(def: &mut FileStoreDef, path: &Path) {
 /// admin can legitimately supply by hand — pointing a store at a key that
 /// already exists on the machine is a perfectly good configuration, and one an
 /// admin managing several stores against one repository will want.
-pub fn record_deploy_key(def: &mut FileStoreDef, key: &DeployKey) {
+pub(crate) fn record_deploy_key(def: &mut FileStoreDef, key: &DeployKey) {
     def.config.insert(
         CFG_KEY_PATH.to_owned(),
         serde_json::Value::String(key.private_key_path.to_string_lossy().into_owned()),
@@ -1596,14 +1585,13 @@ pub fn record_deploy_key(def: &mut FileStoreDef, key: &DeployKey) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paths::DATA_DIR_ENV;
     use crate::paths::testing::temp_env;
 
     #[test]
     fn the_data_directory_honours_the_override() {
         // A test must never clone into the developer's real data directory.
         temp_env(|| {
-            unsafe { std::env::set_var(DATA_DIR_ENV, "/tmp/sc-data") };
+            crate::paths::testing::set_data_dir("/tmp/sc-data");
             assert_eq!(data_dir().unwrap(), PathBuf::from("/tmp/sc-data"));
             assert_eq!(
                 clone_dir().unwrap(),
@@ -1616,7 +1604,7 @@ mod tests {
     #[test]
     fn a_clone_path_is_derived_from_the_name_until_one_is_recorded() {
         temp_env(|| {
-            unsafe { std::env::set_var(DATA_DIR_ENV, "/tmp/sc-data") };
+            crate::paths::testing::set_data_dir("/tmp/sc-data");
             let mut def = FileStoreDef::git("web app", "git@example.com:me/app.git");
             assert_eq!(
                 clone_path(&def).unwrap(),
@@ -1634,7 +1622,7 @@ mod tests {
     #[test]
     fn a_repo_is_built_from_the_definitions_settings() {
         temp_env(|| {
-            unsafe { std::env::set_var(DATA_DIR_ENV, "/tmp/sc-data") };
+            crate::paths::testing::set_data_dir("/tmp/sc-data");
             let def = FileStoreDef::git("app", "git@example.com:me/app.git")
                 .with(CFG_BRANCH, "main")
                 .with(CFG_KEY_PATH, "/keys/app.key");
@@ -1657,7 +1645,7 @@ mod tests {
     #[test]
     fn a_blank_url_is_no_url() {
         temp_env(|| {
-            unsafe { std::env::set_var(DATA_DIR_ENV, "/tmp/sc-data") };
+            crate::paths::testing::set_data_dir("/tmp/sc-data");
             // Whitespace is not a URL. The repository is still buildable — a
             // store may have a directory instead — but it has nothing to clone
             // from, which is what stops it being git's "repository '   ' does
@@ -1670,7 +1658,7 @@ mod tests {
     #[test]
     fn a_configured_directory_is_where_the_working_copy_goes() {
         temp_env(|| {
-            unsafe { std::env::set_var(DATA_DIR_ENV, "/tmp/sc-data") };
+            crate::paths::testing::set_data_dir("/tmp/sc-data");
             let def = FileStoreDef::git("app", "git@example.com:me/app.git")
                 .with(CFG_DIR, "/srv/checkout");
             assert_eq!(clone_path(&def).unwrap(), PathBuf::from("/srv/checkout"));
@@ -1692,7 +1680,7 @@ mod tests {
     #[test]
     fn a_store_may_have_a_directory_and_no_url_at_all() {
         temp_env(|| {
-            unsafe { std::env::set_var(DATA_DIR_ENV, "/tmp/sc-data") };
+            crate::paths::testing::set_data_dir("/tmp/sc-data");
             let def = FileStoreDef::new("app", GIT_BACKEND).with(CFG_DIR, "/srv/checkout");
             let repo = GitRepo::from_def(&def).unwrap();
             assert_eq!(repo.url(), None);
@@ -1723,21 +1711,12 @@ mod tests {
         // where a working tree *is*, and following it is what keeps that tree
         // reachable.
         temp_env(|| {
-            unsafe { std::env::set_var(DATA_DIR_ENV, "/tmp/sc-data") };
+            crate::paths::testing::set_data_dir("/tmp/sc-data");
             let mut def = FileStoreDef::git("app", "git@example.com:me/app.git")
                 .with(CFG_DIR, "/srv/checkout");
             record_clone_path(&mut def, Path::new("/srv/original"));
             assert_eq!(clone_path(&def).unwrap(), PathBuf::from("/srv/original"));
         });
-    }
-
-    #[test]
-    fn the_ssh_command_pins_one_key_and_never_prompts() {
-        let cmd = ssh_command(Path::new("/keys/my key.key"));
-        assert!(cmd.contains("'/keys/my key.key'"), "{cmd}");
-        assert!(cmd.contains("IdentitiesOnly=yes"), "{cmd}");
-        assert!(cmd.contains("BatchMode=yes"), "{cmd}");
-        assert!(cmd.contains("StrictHostKeyChecking=accept-new"), "{cmd}");
     }
 
     #[test]

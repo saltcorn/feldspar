@@ -118,6 +118,9 @@ async fn fixture(formula: &str) -> Result<Fixture> {
                 uuid("owner"),
                 text("title"),
                 text("column"),
+                // A share code, which `_request` may reach a card by
+                // (TODO-type-hardening H7.6).
+                text("code").unique(),
             ],
         )
         .await?;
@@ -338,6 +341,35 @@ async fn the_owner_formula_is_decided_without_the_evaluator() -> Result<()> {
             evaluator_micros: counts.evaluator_micros,
         }
     );
+    Ok(())
+}
+
+/// TODO-type-hardening H7.6: what a connection presents (a `present` frame)
+/// is the `_request` of every verdict the fan-out makes for it, so each page
+/// is sent the card whose code it holds, and no other.
+#[tokio::test]
+async fn each_connection_is_sent_the_row_its_presented_code_reaches() -> Result<()> {
+    let f = fixture("_read && code === _request.code").await?;
+    let mut a = f.page(&f.cards, alice(), None, true).await;
+    let mut b = f.page(&f.cards, bob(), None, true).await;
+    a._connection
+        .set_request(sc_expr::RequestValues::new([("code", "c1")])?);
+    b._connection
+        .set_request(sc_expr::RequestValues::new([("code", "c2")])?);
+
+    f.insert("cards", json!({ "id": 1, "code": "c1", "title": "one" }))
+        .await;
+    f.insert("cards", json!({ "id": 2, "code": "c2", "title": "two" }))
+        .await;
+    assert_eq!(a.next_is("insert", 1).await["row"]["title"], "one");
+    assert_eq!(b.next_is("insert", 2).await["row"]["title"], "two");
+    // Presenting another code reaches another card from then on: both of a
+    // change's images are decided with what the page presents now.
+    a._connection
+        .set_request(sc_expr::RequestValues::new([("code", "c2")])?);
+    f.update("cards", 2, json!({ "title": "two!" })).await;
+    assert_eq!(a.next_is("update", 2).await["row"]["title"], "two!");
+    assert_eq!(b.next_is("update", 2).await["row"]["title"], "two!");
     Ok(())
 }
 

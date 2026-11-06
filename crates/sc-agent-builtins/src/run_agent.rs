@@ -213,7 +213,7 @@ impl Action for RunAgent {
         // (security review #32).
         let caller = if runs_as_event_user(ctx.config).map_err(named)? {
             let event_caller = ctx.caller();
-            let user = sc_auth::User::from_json(event_caller.role, event_caller.user.as_ref())
+            let user = sc_auth::User::from_json(event_caller.role(), event_caller.user())
                 .map_err(named)?;
             let caller = RunCaller::event_user(user);
             if let Some(floor) = agent.min_role

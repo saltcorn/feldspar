@@ -2,6 +2,10 @@
 //! a model's outputs with their plots drawn, a fit's progress pushed over a
 //! socket, the list of fits saying which are out of date, and the view state
 //! beside the model.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use crate::support::Socket;
 use std::collections::HashMap;

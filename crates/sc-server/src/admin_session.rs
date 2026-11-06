@@ -10,17 +10,19 @@
 //!   one constructor ([`AdminSession::of_request`], also its axum
 //!   [`FromRequestParts`] impl) checks all of it: the request is on the admin
 //!   host (not an application's, not a preview's), it carries a live session,
-//!   the session was **issued on the admin host** ([`SessionScope`], security
-//!   review #15's open item), and the user is an administrator. A route that
-//!   takes one cannot be reached otherwise.
+//!   the session was **issued on the admin host** (a
+//!   [`Session<AdminScope>`](crate::session::Session), security review #15's
+//!   open item), and the user is an administrator. A route that takes one
+//!   cannot be reached otherwise.
 //! - [`Admin`] is what an admin endpoint's handler is handed: an
 //!   [`AdminSession`], or the in-process admin tool layers (the MCP server's
 //!   endpoint tools and the catalog's admin host), which have run their own
 //!   admin check ([`Admin::delegated`]; listed in the security review's
 //!   system-authority inventory). The handler registry only calls a handler
-//!   registered with [`register_admin`](crate::HandlerRegistry::register_admin)
-//!   with one, and the router refuses to start when an admin endpoint names a
-//!   handler that was registered any other way.
+//!   registered under a `HandlerId<AdminOnly>`
+//!   ([`handle`](crate::HandlerRegistry::handle)) with one, and the router
+//!   refuses to start when an admin endpoint names a handler that was
+//!   registered any other way.
 //! - [`Caller`] is what the dispatcher resolved a request to before the
 //!   handler's gate narrows it: nobody, a signed-in user
 //!   ([`AuthenticatedUser`]), or admin authority.
@@ -38,12 +40,12 @@ use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
 use sc_api::AuthRequirement;
-use sc_auth::{AuthenticatedUser, SessionEnded, SessionListener, SessionScope, SessionStore, User};
+use sc_auth::{AuthenticatedUser, SessionEnded, SessionListener, SessionStore, User};
 use tokio::sync::Notify;
 use uuid::Uuid;
 
-use crate::router::{AppState, Resolved, enforce_auth, json_error, log_failure, resolve_app};
-use crate::security::SESSION_COOKIE;
+use crate::router::{AppState, Resolved, enforce_auth, json_error, resolve_app};
+use crate::session::{AdminScope, LookupFailed, Session};
 
 /// A request's admin session: on the admin host, live, issued on the admin
 /// host, and an administrator's (module docs). Constructed only by
@@ -85,6 +87,21 @@ impl AdminRefusal {
     }
 }
 
+impl From<LookupFailed> for AdminRefusal {
+    fn from(_: LookupFailed) -> AdminRefusal {
+        AdminRefusal::Failed
+    }
+}
+
+impl From<Session<AdminScope>> for AdminSession {
+    fn from(session: Session<AdminScope>) -> AdminSession {
+        AdminSession {
+            token: session.token().to_owned(),
+            user: session.into_user(),
+        }
+    }
+}
+
 impl IntoResponse for AdminRefusal {
     fn into_response(self) -> Response {
         match self {
@@ -105,10 +122,38 @@ impl IntoResponse for AdminRefusal {
     }
 }
 
+/// What stands behind an admin session's authority: the session check
+/// `AdminSession::of_request` made (the admin host, an admin-scope session,
+/// live, at the admin role). Listed in the system-authority inventory.
+const ADMIN_SESSION: &str = "an admin session (sc-server AdminSession::of_request)";
+
 impl AdminSession {
     /// The administrator.
     pub fn user(&self) -> &AuthenticatedUser {
         &self.user
+    }
+
+    /// The proof that a **person** is making a change (TODO-type-hardening
+    /// H8.5, §7.3a): what changing a row-level-security table's access rules
+    /// and approving a trigger to run as system take, through
+    /// `sc_catalog::Editor::Person`. Only a browser session on the admin host
+    /// makes one; an MCP token or an in-process tool layer does not.
+    pub fn person(&self) -> sc_catalog::Person {
+        sc_catalog::Person::in_admin_session(self.user.id(), ADMIN_SESSION)
+    }
+
+    /// The proof that this administrator is at the console
+    /// (TODO-type-hardening H3.3): what an agent run started from the console
+    /// (`RunCaller::console`) and the catalog's admin host take.
+    pub fn console(&self) -> sc_catalog::ConsoleAdmin {
+        sc_catalog::ConsoleAdmin::at_console(Some(self.user.fields_json()), ADMIN_SESSION)
+    }
+
+    /// The administrator as the caller of an agent run started from the
+    /// console: their own authority, with the console's proof, so the tools
+    /// that act as the server are theirs.
+    pub fn run_caller(&self) -> sc_agent::RunCaller {
+        sc_agent::RunCaller::console(self.user.clone().into_user(), self.console())
     }
 
     /// The session token the request carried — what a response that leaves
@@ -130,19 +175,18 @@ impl AdminSession {
             Resolved::Admin => {}
             Resolved::App(_) | Resolved::HiddenPreview => return Err(AdminRefusal::NotHere),
         }
-        let Some(token) = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned()) else {
-            return Err(AdminRefusal::Anonymous);
-        };
-        match admin_host_session(&state.sessions, &token).await? {
-            Some(user) if user.is_admin() => Ok(AdminSession { user, token }),
-            Some(user) => Err(AdminRefusal::NotAdmin(Box::new(user.into_user()))),
+        match Session::<AdminScope>::on_admin_host(&state.sessions, jar).await? {
+            Some(session) if session.user().is_admin() => Ok(AdminSession::from(session)),
+            Some(session) => Err(AdminRefusal::NotAdmin(Box::new(
+                session.into_user().into_user(),
+            ))),
             None => Err(AdminRefusal::Anonymous),
         }
     }
 
     /// The session as it is now: still this administrator's, or lost.
     pub(crate) async fn revalidate(&self, sessions: &SessionStore) -> Revalidated {
-        match sessions.user_for(&self.token).await {
+        match crate::session::revalidate(sessions, &self.token).await {
             Ok(Some(user)) if user.id() == self.user.id() && user.is_admin() => {
                 Revalidated::Admin(AdminSession {
                     user,
@@ -192,8 +236,11 @@ impl AdminSession {
     pub(crate) async fn signed_in(sessions: &SessionStore) -> AdminSession {
         let admin = User::new(Uuid::new_v4(), sc_types::Role::ADMIN);
         let token = sessions.login(admin).await.unwrap();
-        let user = sessions.user_for(&token).await.unwrap().unwrap();
-        AdminSession { user, token }
+        Session::<AdminScope>::of_token(sessions, token)
+            .await
+            .unwrap()
+            .map(AdminSession::from)
+            .unwrap()
     }
 }
 
@@ -209,22 +256,6 @@ impl FromRequestParts<AppState> for AdminSession {
             .await
             .map_err(IntoResponse::into_response)
     }
-}
-
-/// The user an admin-host session token names, or `None` when it names
-/// nobody **or was issued on an application's host**: on the admin host an
-/// application's session is not a session (security review #15).
-async fn admin_host_session(
-    sessions: &SessionStore,
-    token: &str,
-) -> Result<Option<AuthenticatedUser>, AdminRefusal> {
-    if SessionScope::of_token(token) != SessionScope::Admin {
-        return Ok(None);
-    }
-    sessions.user_for(token).await.map_err(|e| {
-        log_failure("session lookup failed", &e);
-        AdminRefusal::Failed
-    })
 }
 
 /// What a re-read of an admin session found.
@@ -265,11 +296,7 @@ struct Ear {
 
 impl SessionListener for Ear {
     fn session_ended(&self, ended: &SessionEnded<'_>) {
-        let mine = match ended {
-            SessionEnded::Token(token) => *token == self.token,
-            SessionEnded::User(user) => *user == self.user,
-            SessionEnded::All => true,
-        };
+        let mine = ended.covers(Some(&self.token), Some(self.user));
         if mine {
             self.ended.store(true, Ordering::SeqCst);
             self.notify.notify_one();
@@ -369,6 +396,28 @@ impl Admin {
         }
     }
 
+    /// This authority as the row layer's admin proof (TODO-type-hardening
+    /// H3.1): the admin role, in the administrator's name, vouched for by the
+    /// session check or by the delegating layer's own check.
+    pub fn principal(&self) -> sc_catalog::AdminPrincipal {
+        let by = match &self.0 {
+            Via::Session(_) => ADMIN_SESSION,
+            Via::Delegated { by, .. } => by,
+        };
+        sc_catalog::AdminPrincipal::vouched(self.user().map(User::fields_json), by)
+    }
+
+    /// Who is making a change with this authority (TODO-type-hardening H8.5):
+    /// a person for a browser session, delegated (named by the layer that
+    /// vouched) for anything else — an MCP client's endpoint tool, the
+    /// catalog's admin host.
+    pub fn editor(&self) -> sc_catalog::Editor {
+        match &self.0 {
+            Via::Session(session) => sc_catalog::Editor::Person(session.person()),
+            Via::Delegated { by, .. } => sc_catalog::Editor::Delegated(by),
+        }
+    }
+
     /// The browser session behind this authority, when it is one.
     pub fn session(&self) -> Option<&AdminSession> {
         match &self.0 {
@@ -413,17 +462,14 @@ impl Caller {
         state: &AppState,
         jar: &CookieJar,
     ) -> Result<Caller, Box<Response>> {
-        let Some(token) = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned()) else {
-            return Ok(Caller::Anonymous);
-        };
-        let user = admin_host_session(&state.sessions, &token)
+        let session = Session::<AdminScope>::on_admin_host(&state.sessions, jar)
             .await
-            .map_err(|refusal| Box::new(refusal.into_response()))?;
-        Ok(match user {
-            Some(user) if user.is_admin() => {
-                Caller::Admin(Admin::from(AdminSession { user, token }))
+            .map_err(|failed| Box::new(failed.into_response()))?;
+        Ok(match session {
+            Some(session) if session.user().is_admin() => {
+                Caller::Admin(Admin::from(AdminSession::from(session)))
             }
-            Some(user) => Caller::User(user),
+            Some(session) => Caller::User(session.into_user()),
             None => Caller::Anonymous,
         })
     }

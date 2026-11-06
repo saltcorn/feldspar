@@ -10,6 +10,10 @@
 //! agent's `mcp_server` trait names cannot be deleted is tested with the trait,
 //! AS9.1.)
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

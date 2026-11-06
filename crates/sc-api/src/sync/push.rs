@@ -364,7 +364,7 @@ impl Device<'_> {
             .device(self.id, change.mutation)
             .session(
                 self.context
-                    .changeset
+                    .changeset()
                     .as_ref()
                     .and_then(|c| c.session.clone()),
             )

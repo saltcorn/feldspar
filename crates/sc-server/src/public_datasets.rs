@@ -12,7 +12,6 @@
 //! restart forgets the jobs, and one cut short leaves no tables behind, because
 //! its rows were never committed.
 
-use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -40,7 +39,7 @@ pub struct HttpFetch {
 impl HttpFetch {
     /// A client with a timeout, saying who it is.
     pub fn new() -> HttpFetch {
-        let client = reqwest::Client::builder()
+        let client = sc_net::client_builder()
             .timeout(DOWNLOAD_TIMEOUT)
             .user_agent(concat!(
                 "Feldspar/",
@@ -152,12 +151,16 @@ impl InstallJobs {
 
     /// Start installing `key` on its own task, unless an install of it is
     /// already running — in which case that one is answered.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "tokio::spawn: detached on purpose; the work outlives the request that started it and must not run in that request's changeset"
+    )]
     pub fn start(
         &self,
         catalog: Arc<Catalog>,
         key: &str,
         fetch: Arc<dyn Fetch>,
-        context: sc_catalog::Principal,
+        context: sc_catalog::AdminPrincipal,
     ) -> InstallJob {
         let job = {
             let Ok(mut jobs) = self.jobs.lock() else {
@@ -196,7 +199,7 @@ impl InstallJobs {
                 &owned_key,
                 &*fetch,
                 &progress,
-                sc_access::admin_access(&context)?,
+                sc_access::admin_access(&context),
             )
             .await
         });
@@ -242,7 +245,7 @@ fn failed_now(key: &str, error: &str) -> InstallJob {
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, fetch: Arc<dyn Fetch>) {
     let jobs = InstallJobs::default();
 
-    reg.register_admin("listPublicDatasets", {
+    reg.handle(sc_api::handler_ids::LIST_PUBLIC_DATASETS, {
         let catalog = catalog.clone();
         let jobs = jobs.clone();
         move |_ctx| {
@@ -263,7 +266,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, fetch: 
         }
     });
 
-    reg.register_admin("installPublicDataset", {
+    reg.handle(sc_api::handler_ids::INSTALL_PUBLIC_DATASET, {
         let catalog = catalog.clone();
         let jobs = jobs.clone();
         move |ctx| {
@@ -274,14 +277,14 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, fetch: 
                 let key = ctx.path_param("key")?;
                 // An unknown key is a 404 now, not a failed job later.
                 public_datasets::find(key)?;
-                let caller = sc_access::principal_at(Role::ADMIN, ctx.user());
+                let caller = ctx.who.principal();
                 let job = jobs.start(catalog, key, fetch, caller);
                 Ok(HandlerResponse::ok(job.to_json()).with_status(202))
             }
         }
     });
 
-    reg.register_admin("getPublicDatasetInstall", {
+    reg.handle(sc_api::handler_ids::GET_PUBLIC_DATASET_INSTALL, {
         let jobs = jobs.clone();
         move |ctx| {
             let jobs = jobs.clone();

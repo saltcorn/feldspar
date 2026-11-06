@@ -290,21 +290,11 @@ async fn the_grants_decide_creating_editing_deleting_and_who_may_run_it() -> Res
     assert!(err.contains("allow_edit"), "{err}");
     assert!(err.contains("nothing was changed"), "{err}");
 
-    // Who may run a trigger through the API is an access rule, so it needs the
-    // access grant — not the edit grant that got the rest of the trigger saved.
-    let err = call(
-        &env,
-        &default_grants(),
-        "save_trigger",
-        json!({ "name": "note_arrival", "min_role": 80 }),
-    )
-    .await
-    .unwrap_err()
-    .to_string();
-    assert!(err.contains("allow_access_changes"), "{err}");
+    // Who may run a trigger through the API needs no grant of its own any more
+    // (TODO-type-hardening H8.9): the default configuration's edit sets it.
     let result = call(
         &env,
-        &all_grants(),
+        &default_grants(),
         "save_trigger",
         json!({ "name": "note_arrival", "min_role": 80 }),
     )

@@ -14,7 +14,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // running with the flag would see an empty list. Stored stores come first,
     // then any connected store with no definition, which reports a null id to
     // say "there is nothing here to edit".
-    reg.register_admin("listFileStores", {
+    reg.handle(sc_api::handler_ids::LIST_FILE_STORES, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -35,9 +35,12 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createFileStore", typed(state, create_file_store));
+    reg.handle(
+        sc_api::handler_ids::CREATE_FILE_STORE,
+        typed(state, create_file_store),
+    );
 
-    reg.register_admin("updateFileStore", {
+    reg.handle(sc_api::handler_ids::UPDATE_FILE_STORE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -76,7 +79,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteFileStore", {
+    reg.handle(sc_api::handler_ids::DELETE_FILE_STORE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -104,7 +107,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listFileStoreBackends", {
+    reg.handle(sc_api::handler_ids::LIST_FILE_STORE_BACKENDS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -137,13 +140,16 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // Configure scope: against configuration the admin has not saved yet, so the
     // definition is built from the body and thrown away, and what comes back is
     // its config for the form to adopt.
-    reg.register_admin("runBackendOperation", typed(state, backend_operation));
+    reg.handle(
+        sc_api::handler_ids::RUN_BACKEND_OPERATION,
+        typed(state, backend_operation),
+    );
 
     // Instance scope: against a saved store. Whatever the operation changed in
     // the definition is persisted, and the store is reconnected — an operation
     // may be exactly what makes it connectable (a clone), and an admin who has
     // just repaired a store should not have to save again to use it.
-    reg.register_admin("runFileStoreOperation", {
+    reg.handle(sc_api::handler_ids::RUN_FILE_STORE_OPERATION, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();

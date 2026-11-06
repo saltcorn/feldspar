@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use sc_action::TriggerDispatcher;
 use sc_auth::User;
-use sc_catalog::Catalog;
+use sc_catalog::{Catalog, ConsoleAdmin};
 use sc_error::{Error, Result};
 use sc_expr::JsEvaluator;
 use sc_llm::{ImagePart, ModelCapabilities, ToolSpec};
@@ -60,6 +60,16 @@ pub trait AgentTrait: Send + Sync {
 
     /// The configuration this trait takes, as form fields.
     fn config_spec(&self) -> Vec<FormField>;
+
+    /// Settings this trait **used to** take and no longer reads: a stored
+    /// configuration carrying one keeps loading, and the value is ignored
+    /// (`admin_copilot`'s `allow_access_changes`, TODO-type-hardening H8.9).
+    /// They are left out before the configuration is checked against
+    /// [`config_spec`](AgentTrait::config_spec), which refuses a key it does not
+    /// declare.
+    fn retired_settings(&self) -> &'static [&'static str] {
+        &[]
+    }
 
     /// Check a configuration beyond what [`config_spec`](AgentTrait::config_spec)
     /// can express — the part only this trait knows: that a table it names exists
@@ -520,56 +530,101 @@ pub struct TraitCheck<'a> {
 /// A tool's rows go through [`TraitContext::scoped`]: the run's caller as a
 /// [`Principal`](sc_catalog::Principal) ([`TraitContext::principal`]) bound
 /// to the catalog, with the user as it was loaded (TODO-code-quality Q3.4).
+///
+/// Whether the run may hold the tools that act as the server itself (the
+/// shell, module installs, the project's scripts and checks, the admin
+/// copilot) is not a pair of flags any more but where its prompt came from
+/// (security review 2026-11 A5, TODO-type-hardening H3.3): the fields are
+/// private, a caller is made by a named constructor, and the one origin that
+/// grants those tools carries a [`ConsoleAdmin`] proof. Everything else —
+/// and a constructor that does not say — withholds them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunCaller {
     /// The user every tool runs as, or `None` for a system or anonymous run.
-    pub user: Option<User>,
+    user: Option<User>,
     /// The role every tool's access is checked at — the user's own, admin for
     /// a system run, public for an anonymous one.
-    pub role: Role,
-    /// Whether a trigger started this run ([`RunCaller::triggered`]): it reads
-    /// and writes rows with the trigger's authority, but is never offered the
-    /// tools that act as the server itself — the shell, module installs, the
-    /// project's scripts and checks, the admin copilot.
-    pub triggered: bool,
-    /// Whether this run is a chat with an agent an application exposes
-    /// ([`RunCaller::exposed`], [`RunCaller::anonymous`]). Like a triggered
-    /// run, it keeps its caller's authority over rows but is never offered the
-    /// tools that act as the server: the request came from an application's
-    /// origin, where any script on the page holds the visitor's cookie and
-    /// CSRF token, and an admin signed in to the application is not therefore
-    /// at the admin console (security review #21).
-    pub exposed: bool,
+    role: Role,
+    /// Where the prompt came from, and so whether the server's own tools are
+    /// this run's.
+    origin: RunOrigin,
     /// The trigger chain that started this run, when a trigger did
     /// ([`chained`](Self::chained)): what a trigger run or a write made by one
     /// of its tools carries on, so the cascade limit counts a trigger → agent →
     /// trigger loop like any other. Empty for a chat.
-    pub chain: Vec<String>,
+    chain: Vec<String>,
 }
 
+/// Where a run's prompt came from (TODO-type-hardening H3.3).
+#[derive(Debug, Clone, PartialEq, Default)]
+enum RunOrigin {
+    /// The admin console, or a system run an administrator set going on
+    /// trusted input: the only origin offered the server's own tools, and only
+    /// with the proof.
+    Console(Box<ConsoleAdmin>),
+    /// Nobody vouched that the prompt came from the console: a chat turn made
+    /// with [`RunCaller::user`]. The default.
+    #[default]
+    Unvouched,
+    /// A trigger computed the prompt from an event ([`RunCaller::triggered`]):
+    /// it reads and writes rows with the trigger's authority, but is never
+    /// offered the tools that act as the server.
+    Triggered,
+    /// A chat with an agent an application exposes ([`RunCaller::exposed`],
+    /// [`RunCaller::anonymous`]). Like a triggered run, it keeps its caller's
+    /// authority over rows but is never offered the server's tools: the request
+    /// came from an application's origin, where any script on the page holds
+    /// the visitor's cookie and CSRF token, and an admin signed in to the
+    /// application is not therefore at the admin console (security review #21).
+    Exposed,
+}
+
+/// The system reason a [`RunCaller::system`] run's console authority is
+/// vouched for by: a run an administrator configured to run without anybody
+/// present — a trigger marked `trusted_input`, a scheduled run, the operator's
+/// CLI. Listed in the system-authority inventory.
+pub const SYSTEM_RUN: &str = "an agent run on trusted input (RunCaller::system)";
+
 impl RunCaller {
-    /// A run on behalf of `user`, at that user's role. This is a chat turn.
+    /// A run on behalf of `user`, at that user's role: a chat turn, without
+    /// the server's own tools (nobody vouched that it is at the console; see
+    /// [`console`](Self::console)).
     pub fn user(user: User) -> RunCaller {
         RunCaller {
             role: user.role(),
             user: Some(user),
-            triggered: false,
-            exposed: false,
+            origin: RunOrigin::Unvouched,
             chain: Vec::new(),
         }
     }
 
-    /// A chat turn of `user` with an agent an application exposes: the user's
-    /// own authority over rows, without the server's own tools (see
-    /// [`exposed`](Self::exposed)).
-    pub fn exposed(user: User) -> RunCaller {
+    /// A chat turn of `user` at the **admin console**, with `proof` that it is
+    /// there. The server's own tools are this run's when `proof` is for this
+    /// user and the user is an administrator; otherwise it is a
+    /// [`user`](Self::user) turn — mismatched proof fails closed.
+    pub fn console(user: User, proof: ConsoleAdmin) -> RunCaller {
+        let vouched = user.is_admin() && proof.user_id() == Some(user.id());
         RunCaller {
-            exposed: true,
+            origin: match vouched {
+                true => RunOrigin::Console(Box::new(proof)),
+                false => RunOrigin::Unvouched,
+            },
             ..RunCaller::user(user)
         }
     }
 
-    /// A run with the authority of the trigger that started it: admin, no user.
+    /// A chat turn of `user` with an agent an application exposes: the user's
+    /// own authority over rows, without the server's own tools.
+    pub fn exposed(user: User) -> RunCaller {
+        RunCaller {
+            origin: RunOrigin::Exposed,
+            ..RunCaller::user(user)
+        }
+    }
+
+    /// A run with the authority of the trigger that started it: admin, no
+    /// user, on trusted input ([`SYSTEM_RUN`]) — the server's own tools
+    /// included.
     ///
     /// Named for what it is rather than called a default, because the whole point
     /// of decision 5 is that the choice is visible at the one place a run is
@@ -578,8 +633,7 @@ impl RunCaller {
         RunCaller {
             user: None,
             role: Role::ADMIN,
-            triggered: false,
-            exposed: false,
+            origin: RunOrigin::Console(Box::new(ConsoleAdmin::system(SYSTEM_RUN))),
             chain: Vec::new(),
         }
     }
@@ -596,8 +650,10 @@ impl RunCaller {
     /// running on trusted input.
     pub fn triggered() -> RunCaller {
         RunCaller {
-            triggered: true,
-            ..RunCaller::system()
+            user: None,
+            role: Role::ADMIN,
+            origin: RunOrigin::Triggered,
+            chain: Vec::new(),
         }
     }
 
@@ -611,8 +667,7 @@ impl RunCaller {
         RunCaller {
             user: None,
             role: Role::PUBLIC,
-            triggered: false,
-            exposed: true,
+            origin: RunOrigin::Exposed,
             chain: Vec::new(),
         }
     }
@@ -631,8 +686,54 @@ impl RunCaller {
             None => RunCaller::anonymous(),
         };
         RunCaller {
-            triggered: true,
+            origin: RunOrigin::Triggered,
             ..caller
+        }
+    }
+
+    /// The same caller served at no more privilege than `ceiling`: lowering a
+    /// role forges nothing. What a test of a role's view, and an application's
+    /// maximum role, narrow a caller with.
+    #[must_use]
+    pub fn capped_at(mut self, ceiling: Role) -> RunCaller {
+        if !ceiling.meets(self.role) {
+            self.role = ceiling;
+        }
+        self
+    }
+
+    /// The user every tool runs as, or `None` for a system or anonymous run.
+    pub fn user_ref(&self) -> Option<&User> {
+        self.user.as_ref()
+    }
+
+    /// The role every tool's access is checked at.
+    pub fn role(&self) -> Role {
+        self.role
+    }
+
+    /// The trigger chain that started this run (empty for a chat).
+    pub fn chain(&self) -> &[String] {
+        &self.chain
+    }
+
+    /// Whether a trigger computed this run's prompt from an event.
+    pub fn is_triggered(&self) -> bool {
+        self.origin == RunOrigin::Triggered
+    }
+
+    /// Whether this is a chat through an application's exposed agent.
+    pub fn is_exposed(&self) -> bool {
+        self.origin == RunOrigin::Exposed
+    }
+
+    /// The proof that this run is an administrator at the console — what the
+    /// tools that act as the server, and the admin host, take. `None` for
+    /// every other run, whatever its role.
+    pub fn console_admin(&self) -> Option<&ConsoleAdmin> {
+        match &self.origin {
+            RunOrigin::Console(proof) if self.role.is_admin() => Some(proof),
+            _ => None,
         }
     }
 
@@ -648,7 +749,7 @@ impl RunCaller {
     /// that falls back to a configured account when "nobody is chatting" must
     /// not fall back for a visitor, who is somebody (security review #20).
     pub fn is_anonymous(&self) -> bool {
-        self.user.is_none() && self.exposed
+        self.user.is_none() && self.is_exposed()
     }
 
     /// Whether the prompt this run acts on came from outside the admin
@@ -656,7 +757,7 @@ impl RunCaller {
     /// that holding role 1 is not being an administrator at the console. Such a
     /// run is never offered the tools that act as the server.
     pub fn untrusted_origin(&self) -> bool {
-        self.triggered || self.exposed
+        self.is_triggered() || self.is_exposed()
     }
 
     /// The trigger chain a write or a trigger run made by one of this run's
@@ -1137,7 +1238,60 @@ mod tests {
         let caller = RunCaller::exposed(admin.clone());
         assert_eq!(caller.role, Role::ADMIN);
         assert!(caller.untrusted_origin() && !caller.is_anonymous());
-        assert!(!RunCaller::user(admin).untrusted_origin());
+        assert!(!RunCaller::user(admin.clone()).untrusted_origin());
+        // Not untrusted, and still not the console's without its proof.
+        assert!(RunCaller::user(admin).console_admin().is_none());
+    }
+
+    /// TODO-type-hardening H3.3: the server's own tools need the console's
+    /// proof, and every other way to make a caller withholds them.
+    #[test]
+    fn only_a_proven_console_run_holds_the_servers_own_tools() {
+        let admin = User::new(Uuid::new_v4(), Role::ADMIN);
+        let fields = || Some(serde_json::json!({ "id": admin.id().to_string() }));
+        let proof = ConsoleAdmin::at_console(fields(), "a test's admin session");
+        let console = RunCaller::console(admin.clone(), proof.clone());
+        assert_eq!(console.console_admin(), Some(&proof));
+
+        // An admin's chat turn nobody vouched for, a triggered run, an exposed
+        // chat and an anonymous one: withheld.
+        assert!(RunCaller::user(admin.clone()).console_admin().is_none());
+        assert!(RunCaller::triggered().console_admin().is_none());
+        assert!(RunCaller::exposed(admin.clone()).console_admin().is_none());
+        assert!(RunCaller::anonymous().console_admin().is_none());
+        assert!(
+            RunCaller::event_user(Some(admin.clone()))
+                .console_admin()
+                .is_none()
+        );
+
+        // A proof for somebody else, or for a user below admin, fails closed.
+        let other = ConsoleAdmin::at_console(
+            Some(serde_json::json!({ "id": Uuid::new_v4().to_string() })),
+            "a test's other session",
+        );
+        assert!(
+            RunCaller::console(admin.clone(), other)
+                .console_admin()
+                .is_none()
+        );
+        let staff = User::new(admin.id(), Role::of(40));
+        assert!(RunCaller::console(staff, proof).console_admin().is_none());
+
+        // The trusted system run holds it, until its role is lowered.
+        assert!(RunCaller::system().console_admin().is_some());
+        assert!(
+            RunCaller::system()
+                .capped_at(Role::of(40))
+                .console_admin()
+                .is_none()
+        );
+        assert!(
+            RunCaller::system()
+                .chained(vec!["t".into()])
+                .console_admin()
+                .is_some()
+        );
     }
 
     #[test]

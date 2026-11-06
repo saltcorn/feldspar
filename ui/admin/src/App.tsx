@@ -19,6 +19,7 @@ import Spinner from "react-bootstrap/Spinner";
 import { api } from "./api";
 import { setServedBaseDomain } from "./adminAddress";
 import { splitRoute, stepParam } from "./builder";
+import { AdminNotices } from "./AdminNotices";
 import { PoppedChats } from "./PoppedChats";
 import { useChatWindows } from "./chatWindows";
 import type { AuthStatusResponse } from "./client";
@@ -598,6 +599,7 @@ function Shell({
       </aside>
 
       <div className="page-wrapper">
+        <AdminNotices />
         <Screen route={route} user={user} />
         <footer className="footer footer-transparent d-print-none">
           <div className="container-xl">

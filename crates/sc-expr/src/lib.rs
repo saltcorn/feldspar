@@ -50,6 +50,7 @@ mod geo;
 pub mod html;
 #[cfg(feature = "eval")]
 mod normalise;
+mod request;
 mod rewrite;
 mod shape;
 mod subquery;
@@ -61,7 +62,7 @@ pub use analyze::{
     Ambient, AmbientUse, Analysis, FreeVars, JOIN, JoinPath, ModelCall, ModuleArg, ModuleCall,
     OpFlag, PREDICT, hoisted_call_key,
 };
-pub use ast::{Ast, BinaryOp, MemberProp, UnaryOp};
+pub use ast::{Ast, BinaryOp, MAX_FORMULA_DEPTH, MemberProp, UnaryOp};
 #[cfg(feature = "eval")]
 pub use code::CodeRuntime;
 pub use code::{
@@ -85,12 +86,16 @@ pub use eval::DenoEvaluator;
 pub use eval::{FormulaCall, JsEvaluator};
 pub use formula::Formula;
 pub use geo::{GEO, GEO_FUNCTIONS, GeoFunction, GeoResult, geo_function};
+pub use request::{
+    MAX_REQUEST_KEY_BYTES, MAX_REQUEST_KEYS, REQUEST_GUC_PREFIX, RequestUses, RequestValues,
+    check_request_uses, is_request_key, request_guc,
+};
 pub use rewrite::{Replacement, object_literal_entries, rename_relation_table, rewrite_free_refs};
-pub use shape::{FieldShape, KeyShape, RowsOf, SchemaShape, TableShape};
+pub use shape::{FieldKind, FieldShape, KeyShape, RowsOf, SchemaShape, TableShape};
 pub use subquery::{AggFunc, AggregateSpec, aggregate_expr, correlated_aggregate, correlation};
 pub use template::{Escape, MAX_PASSES, RenderMode, Template, Token};
 pub use translate::{
-    AmbientValues, CalcFields, Env, Operation, SESSION_GUC, TranslateError, USER_GUC, UserEnv,
-    join_path_expr, join_path_expr_rooted, session_ambient, translate, translate_rooted,
-    translate_value, translate_value_rooted,
+    AmbientValues, CalcFields, Env, NOW_GUC, Operation, SESSION_GUC, TranslateError, USER_GUC,
+    UserEnv, join_path_expr, join_path_expr_rooted, session_ambient, translate, translate_rooted,
+    translate_update_check, translate_value, translate_value_rooted,
 };

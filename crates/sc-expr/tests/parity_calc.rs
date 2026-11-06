@@ -120,6 +120,7 @@ async fn reified_value(ev: &DenoEvaluator, src: &str, extra: &[(&str, Value)]) -
             row: bindings(extra),
             user: None,
             ambient: Default::default(),
+            now: chrono::Utc::now(),
         })
         .await
         .unwrap_or_else(|e| panic!("{src}: eval_value: {e}"));

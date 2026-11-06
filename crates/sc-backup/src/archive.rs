@@ -470,6 +470,10 @@ fn read_rows(archive: Archive, path: &str, tx: &mpsc::Sender<Result<RowBatch>>) 
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 mod tests {
     use super::*;
     use std::io::Write;

@@ -47,21 +47,43 @@ use sc_types::Role;
 use uuid::Uuid;
 
 /// Who is asking: the role they hold and, when signed in, who they are.
+///
+/// A view of the caller's [`Principal`](sc_catalog::Principal)
+/// (TODO-type-hardening H3.4): the fields are private, and the role and the
+/// user come from one principal rather than being paired by hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caller {
     /// Their role — the public role for an anonymous caller.
-    pub role: Role,
+    role: Role,
     /// Their user id, or `None` for an anonymous caller.
-    pub user: Option<Uuid>,
+    user: Option<Uuid>,
 }
 
 impl Caller {
-    /// A caller with this role and user.
-    pub fn new(role: Option<Role>, user: Option<Uuid>) -> Caller {
+    /// The view of `principal`: its role and its user's id.
+    pub fn of(principal: &sc_catalog::Principal) -> Caller {
         Caller {
-            role: role.unwrap_or(Role::PUBLIC),
-            user,
+            role: principal.role(),
+            user: principal.user_id().and_then(|id| id.parse().ok()),
         }
+    }
+
+    /// Nobody: the public role.
+    pub fn anonymous() -> Caller {
+        Caller {
+            role: Role::PUBLIC,
+            user: None,
+        }
+    }
+
+    /// Their role — the public role for an anonymous caller.
+    pub fn role(&self) -> Role {
+        self.role
+    }
+
+    /// Their user id, or `None` for an anonymous caller.
+    pub fn user(&self) -> Option<Uuid> {
+        self.user
     }
 }
 
@@ -271,7 +293,7 @@ mod tests {
     }
 
     fn anonymous() -> Caller {
-        Caller::new(None, None)
+        Caller::anonymous()
     }
 
     fn boards() -> TopicSpec {

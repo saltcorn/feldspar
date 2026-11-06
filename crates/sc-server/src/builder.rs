@@ -34,17 +34,18 @@
 //! draws, and `mode` is the key that decides it.
 
 // Text for an HTML element or a quoted attribute: the one escape (Q4.5).
-use sc_expr::html::escape;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use sc_app::{AppId, Application, load_application};
 use sc_auth::User;
 use sc_catalog::Catalog;
 use sc_error::{Error, Repr};
+use sc_expr::html::SafeHtml;
+use sc_expr::safe_html;
 use sc_viewpattern::{
     ASSET_VERSION_TAG, Configurer, SALTCORN_UI_FRAMEWORK, view_runtime, view_sets,
 };
@@ -86,7 +87,7 @@ pub(crate) fn register_status_handler(
     bundle: Option<std::path::PathBuf>,
 ) {
     let bundle = std::sync::Arc::new(bundle);
-    handlers.register_admin("builderStatus", move |_ctx| {
+    handlers.handle(sc_api::handler_ids::BUILDER_STATUS, move |_ctx| {
         let bundle = bundle.clone();
         async move {
             let available = built_bundle(bundle.as_deref()).is_some();
@@ -111,6 +112,9 @@ pub(crate) struct BuilderEnv<'a> {
     pub base_domain: Option<&'a str>,
     /// Whether this server is reached over TLS, as far as it knows.
     pub secure: bool,
+    /// The administrator the request was admitted for: what the view
+    /// configurer runs as (TODO-type-hardening H3.1).
+    pub admin: &'a crate::admin_session::Admin,
 }
 
 /// Whether `path` is the builder's.
@@ -305,7 +309,8 @@ async fn document(
         .map_err(|e| failure(&e))?;
     let runtime = view_runtime().map_err(|e| failure(&e))?;
     let triggers = env.apps.triggers().map(|d| d.as_ref());
-    let configurer = Configurer::new(runtime, catalog, &app, Some(user), triggers)
+    let admin = env.admin.principal();
+    let configurer = Configurer::new(runtime, catalog, &app, &admin, triggers)
         .await
         .map_err(|e| failure(&e))?;
     let origin = application_origin(env, headers, &app);
@@ -459,7 +464,7 @@ async fn document(
         );
     }
     let html = render_document(&app, &page, &boot, csrf, &bundle_tag(bundle));
-    let mut response = Html(html).into_response();
+    let mut response = crate::html_page::html(html).into_response();
     let csp =
         builder_content_security_policy(origin.as_ref().map(sc_catalog::PublicBaseUrl::as_str));
     if let Ok(value) = HeaderValue::from_str(&csp) {
@@ -593,26 +598,35 @@ fn bundle_tag(bundle: &Path) -> String {
 /// - CKEditor, as v1's builder page loads it;
 /// - the boot data;
 /// - the bundle, a module script, which runs after all of them.
-fn render_document(app: &Application, page: &Page, boot: &Json, csrf: &str, tag: &str) -> String {
-    let ui = |file: &str| format!("{BUILDER_PREFIX}/saltcorn-ui/{ASSET_VERSION_TAG}/{file}");
-    let bundle = |file: &str| format!("{BUILDER_PREFIX}/static/{tag}/{file}");
-    let links: String = page
+fn render_document(app: &Application, page: &Page, boot: &Json, csrf: &str, tag: &str) -> SafeHtml {
+    let ui = |file: &str| {
+        SafeHtml::escape(&format!(
+            "{BUILDER_PREFIX}/saltcorn-ui/{ASSET_VERSION_TAG}/{file}"
+        ))
+    };
+    let bundle = |file: &str| SafeHtml::escape(&format!("{BUILDER_PREFIX}/static/{tag}/{file}"));
+    let links: SafeHtml = page
         .links
         .iter()
         .map(|(label, href)| {
-            format!(
+            safe_html!(
                 "<a class=\"btn btn-sm btn-outline-secondary\" href=\"{}\">{}</a>\n",
-                escape(href),
-                escape(label)
+                SafeHtml::escape(href),
+                SafeHtml::escape(label)
             )
         })
         .collect();
     let detail = page
         .detail
         .as_deref()
-        .map(|d| format!("<span class=\"text-muted\">{}</span>\n", escape(d)))
+        .map(|d| {
+            safe_html!(
+                "<span class=\"text-muted\">{}</span>\n",
+                SafeHtml::escape(d)
+            )
+        })
         .unwrap_or_default();
-    format!(
+    safe_html!(
         "<!doctype html>\n\
          <html lang=\"en\" data-bs-theme=\"light\">\n\
          <head>\n\
@@ -649,7 +663,7 @@ fn render_document(app: &Application, page: &Page, boot: &Json, csrf: &str, tag:
          </form>\n\
          </body>\n\
          </html>\n",
-        title = escape(&format!("{} · {} · builder", page.heading, app.name)),
+        title = SafeHtml::escape(&format!("{} · {} · builder", page.heading, app.name)),
         bootstrap_css = ui("bootstrap.min.css"),
         fontawesome = ui("fontawesome-free/css/all.min.css"),
         saltcorn_css = ui("saltcorn.css"),
@@ -659,25 +673,27 @@ fn render_document(app: &Application, page: &Page, boot: &Json, csrf: &str, tag:
         common = ui("saltcorn-common.js"),
         saltcorn = ui("saltcorn.js"),
         ckeditor = bundle("ckeditor/ckeditor.js"),
-        boot_id = BUILDER_BOOT_ID,
-        boot = script_json(boot),
+        boot_id = SafeHtml::trusted(BUILDER_BOOT_ID),
+        boot = SafeHtml::json_in_script(boot),
         builder_js = bundle(BUILDER_ENTRY),
-        app_name = escape(&app.name),
-        heading = escape(&page.heading),
-        step_name = escape(&page.step_name),
-        csrf = escape(csrf),
+        app_name = SafeHtml::escape(&app.name),
+        heading = SafeHtml::escape(&page.heading),
+        step_name = SafeHtml::escape(&page.step_name),
+        csrf = SafeHtml::escape(csrf),
+        detail = detail,
+        links = links,
     )
 }
 
 /// A refusal as a short document: the sentence, and the way back to the admin UI.
 fn refusal(status: StatusCode, sentence: &str, _: Option<()>) -> Response {
-    let html = format!(
+    let html = safe_html!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
          <title>Builder</title>\n</head>\n<body>\n<h1>The builder cannot open this</h1>\n\
          <p>{}</p>\n<p><a href=\"/\">Back to the admin UI</a></p>\n</body>\n</html>\n",
-        escape(sentence)
+        SafeHtml::escape(sentence)
     );
-    let mut response = (status, Html(html)).into_response();
+    let mut response = (status, crate::html_page::html(html)).into_response();
     response.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(BUILDER_CONTENT_SECURITY_POLICY),
@@ -693,18 +709,6 @@ fn failure(error: &Error) -> Response {
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     refusal(status, &sc_error::format_chain(error), None)
-}
-
-/// JSON safe inside a `<script>` element: nothing in it can close the element
-/// or open a comment.
-fn script_json(value: &Json) -> String {
-    serde_json::to_string(value)
-        .unwrap_or_else(|_| "null".to_owned())
-        .replace('<', "\\u003c")
-        .replace('>', "\\u003e")
-        .replace('&', "\\u0026")
-        .replace('\u{2028}', "\\u2028")
-        .replace('\u{2029}', "\\u2029")
 }
 
 /// `encodeURIComponent`, which is how the admin UI's hash routes spell a name
@@ -773,7 +777,8 @@ mod tests {
 
     #[test]
     fn boot_data_cannot_close_its_script_element() {
-        let text = script_json(&json!({ "text": "</script><!-- & \u{2028}" }));
+        let text =
+            SafeHtml::json_in_script(&json!({ "text": "</script><!-- & \u{2028}" })).into_string();
         assert!(!text.contains('<') && !text.contains('>') && !text.contains('&'));
         let back: Json = serde_json::from_str(&text).unwrap();
         assert_eq!(back["text"], "</script><!-- & \u{2028}");

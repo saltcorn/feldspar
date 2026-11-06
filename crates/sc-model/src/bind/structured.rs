@@ -57,6 +57,10 @@ pub(crate) struct Cells<'a> {
 
 /// The rows aggregated into their cells, with `fill` where none falls.
 /// Errors are sentence fragments.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+)]
 pub(crate) fn aggregate(
     cells: &Cells<'_>,
     values: Option<&Optional>,

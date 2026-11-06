@@ -451,6 +451,10 @@ pub(crate) fn number(v: Option<&Value>) -> Option<f64> {
 
 /// A layer's data: its features as GeoJSON while it is small, else what a
 /// map needs to fetch it as tiles.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+)]
 pub async fn layer_data(
     catalog: &Catalog,
     caller: &Caller,

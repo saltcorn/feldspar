@@ -185,13 +185,23 @@ async fn a_delegated_statement_runs_where_the_policies_can_see_it() -> Result<()
         "the statement ran at this caller's role and user, and the policies decided"
     );
 
-    // The default is the trigger's own authority, which is admin — and
-    // `Role::ADMIN` clears every policy's role floor, exactly as it does for the
-    // admin API's row editor. One host, one statement, one field of difference.
-    let every = host
-        .call(json!({ "op": "sql", "sql": "select title from books order by id" }))
-        .await?;
-    assert_eq!(titles(&every), vec!["Dune", "Emma", "Ilium", "Ubik"]);
+    // The default is the trigger's own authority, which is admin in bob's name
+    // — and on a table with row-level security nothing elevates
+    // (TODO-type-hardening H8.1): the statement runs at bob's settings, so the
+    // policies show it what they show bob.
+    let unmarked = json!({ "op": "sql", "sql": "select title from books order by id" });
+    let every = host.call(unmarked.clone()).await?;
+    assert_eq!(titles(&every), vec!["Emma", "Ubik"]);
+    // An administrator's run is the one that clears every policy's role floor,
+    // exactly as the admin API's row editor does.
+    let admin = TableHost::new(&cat).caused_by(
+        Role::ADMIN,
+        Some(json!({ "id": uuid::Uuid::new_v4().to_string(), "role": 1, "email": "root@example.com" })),
+    );
+    assert_eq!(
+        titles(&admin.call(unmarked).await?),
+        vec!["Dune", "Emma", "Ilium", "Ubik"]
+    );
 
     // A delegated write is the policies' decision too: bob may not insert ada's
     // row, and a `WITH CHECK` violation is the same **not found** every other
@@ -274,8 +284,9 @@ async fn both_spellings_of_delegation_reach_the_same_statement() -> Result<()> {
         json!({
             "opt": ["Dune", "Ilium"],
             "fluent": ["Dune", "Ilium"],
-            "admin": 4,
-            "forced": 4,
+            // Admin in ada's name: on an RLS table, ada's view (H8.1).
+            "admin": 2,
+            "forced": 2,
         })
     );
 

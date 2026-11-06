@@ -126,6 +126,10 @@ pub(crate) fn lookup(name: &str) -> std::result::Result<Vec<IpAddr>, LookupError
 }
 
 /// Spawn the resolver thread and wait for it to report that it is up.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "unbounded: each job is a getaddrinfo caller blocked on its reply, so the queue is never longer than the threads waiting on it"
+)]
 fn start() -> Option<Service> {
     let (jobs, queue) = tokio::sync::mpsc::unbounded_channel::<Job>();
     let (ready, started) = sync_channel::<std::result::Result<(), String>>(1);
@@ -153,6 +157,10 @@ fn start() -> Option<Service> {
 
 /// The resolver thread's body: build the runtime and the resolver, say whether
 /// that worked, then answer questions until the process ends.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn on the resolver's own runtime and thread, below the catalog: there is no task scope to carry"
+)]
 fn run(
     mut queue: tokio::sync::mpsc::UnboundedReceiver<Job>,
     ready: &SyncSender<std::result::Result<(), String>>,

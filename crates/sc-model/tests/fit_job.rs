@@ -7,6 +7,10 @@
 //! and everything the screen and a later prediction need — the encoding, the
 //! metrics, the chosen hyperparameters, the row counts — survives the round trip
 //! through JSON columns.
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 
 use std::sync::Arc;
 

@@ -286,7 +286,7 @@ impl<'e> Run<'e> {
         let admin = sc_auth::load_user_by_email(&self.env.catalog, "admin@example.com")
             .await?
             .expect("the admin");
-        let caller = std::mem::replace(&mut self.caller, RunCaller::user(admin));
+        let caller = std::mem::replace(&mut self.caller, console(admin));
         let report = self.call("check", json!({})).await.0;
         self.caller = caller;
         report
@@ -454,7 +454,7 @@ async fn a_run_that_has_built_nothing_looks_at_the_live_build() -> Result<()> {
     let admin = sc_auth::load_user_by_email(&env.catalog, "admin@example.com")
         .await?
         .expect("the admin");
-    let mut run = Run::new(&env, RunCaller::user(admin), config(&[]));
+    let mut run = Run::new(&env, console(admin), config(&[]));
     run.mode = RunMode::Plan;
     let opened = run.view(json!({"action": "goto", "path": "/"})).await;
     assert!(
@@ -638,7 +638,7 @@ async fn a_planned_features_pages_are_looked_at_on_the_planners_preview() -> Res
         env.agents.registry(),
         &agent,
         sc_llm::ConnectedModel::unconfigured(executor.clone()),
-        RunCaller::user(admin),
+        console(admin),
     )
     .with_connector(&models);
     let (_, conclusion) = runner.start("show the notes").await?;
@@ -826,4 +826,12 @@ async fn check_runs_the_applications_checklists_against_its_preview() -> Result<
     run.end();
     env.driver.shutdown();
     Ok(())
+}
+
+/// An administrator's chat at the console, with the session's proof
+/// (TODO-type-hardening H3.3): what the console's chat socket makes.
+fn console(admin: sc_auth::User) -> RunCaller {
+    let proof =
+        sc_catalog::ConsoleAdmin::at_console(Some(admin.fields_json()), "test: an admin session");
+    RunCaller::console(admin, proof)
 }

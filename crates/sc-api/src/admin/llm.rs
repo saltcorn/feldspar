@@ -20,53 +20,53 @@ pub(super) fn register(set: &mut EndpointSet) {
     // handler, rather than in the screen — see §11.1.
 
     set.register(
-        Endpoint::new("listLlmProviders", Method::Get, api().lit("llm-providers"))
-            .output(TypeSchema::array(llm_provider_schema()))
-            // Read-only, and its keys come back as the secret sentinel: an
-            // agent setting up another agent needs the provider and model
-            // names `createAgent` takes, and none of the credentials.
-            .mcp(
-                "List the LLM providers: each one's name and id (what an agent's \
+        Endpoint::new(
+            ids::LIST_LLM_PROVIDERS,
+            Method::Get,
+            api().lit("llm-providers"),
+        )
+        .output(TypeSchema::array(llm_provider_schema()))
+        // Read-only, and its keys come back as the secret sentinel: an
+        // agent setting up another agent needs the provider and model
+        // names `createAgent` takes, and none of the credentials.
+        .mcp(
+            "List the LLM providers: each one's name and id (what an agent's \
                  `provider` names), backend and settings, with API keys masked. \
                  Read the models of one with `listLlmModels`. Providers are set up \
                  by an admin in the admin UI, not over this API.",
-            )
-            .auth(AuthRequirement::admin()),
+        ),
     );
 
     set.register(
         Endpoint::new(
-            "createLlmProvider",
+            ids::CREATE_LLM_PROVIDER,
             Method::Post,
             api().lit("llm-providers"),
         )
         .input(llm_provider_input_schema())
-        .output(llm_provider_schema())
-        .auth(AuthRequirement::admin()),
+        .output(llm_provider_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "updateLlmProvider",
+            ids::UPDATE_LLM_PROVIDER,
             Method::Put,
             api().lit("llm-providers").param("id", ValueType::Uuid),
         )
         .input(llm_provider_input_schema())
-        .output(llm_provider_schema())
-        .auth(AuthRequirement::admin()),
+        .output(llm_provider_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "deleteLlmProvider",
+            ids::DELETE_LLM_PROVIDER,
             Method::Delete,
             api().lit("llm-providers").param("id", ValueType::Uuid),
         )
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // Make a provider the installation's default: the one used where nothing
@@ -75,15 +75,14 @@ pub(super) fn register(set: &mut EndpointSet) {
     // other — choosing it is using it, not changing it.
     set.register(
         Endpoint::new(
-            "setDefaultLlmProvider",
+            ids::SET_DEFAULT_LLM_PROVIDER,
             Method::Put,
             api()
                 .lit("llm-providers")
                 .param("id", ValueType::Uuid)
                 .lit("default"),
         )
-        .output(llm_provider_schema())
-        .auth(AuthRequirement::admin()),
+        .output(llm_provider_schema()),
     );
 
     // The registered backends with their settings spec, so the create/edit form
@@ -91,12 +90,11 @@ pub(super) fn register(set: &mut EndpointSet) {
     // `listFileStoreBackends` and `listFrameworks` make.
     set.register(
         Endpoint::new(
-            "listLlmProviderBackends",
+            ids::LIST_LLM_PROVIDER_BACKENDS,
             Method::Get,
             api().lit("llm-provider-backends"),
         )
-        .output(TypeSchema::array(llm_backend_info_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(llm_backend_info_schema())),
     );
 
     // One row per model a provider serves (TODO §3a): the name sent on the wire,
@@ -107,7 +105,7 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new(
-            "listLlmModels",
+            ids::LIST_LLM_MODELS,
             Method::Get,
             api()
                 .lit("llm-providers")
@@ -120,13 +118,12 @@ pub(super) fn register(set: &mut EndpointSet) {
              names), kind (chat, embedding, image, speech), whether it is the \
              provider's default, and its settings — prices, context window, \
              reasoning effort.",
-        )
-        .auth(AuthRequirement::admin()),
+        ),
     );
 
     set.register(
         Endpoint::new(
-            "createLlmModel",
+            ids::CREATE_LLM_MODEL,
             Method::Post,
             api()
                 .lit("llm-providers")
@@ -134,34 +131,31 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("models"),
         )
         .input(llm_model_input_schema())
-        .output(llm_model_schema())
-        .auth(AuthRequirement::admin()),
+        .output(llm_model_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "updateLlmModel",
+            ids::UPDATE_LLM_MODEL,
             Method::Put,
             api().lit("llm-models").param("id", ValueType::Uuid),
         )
         .input(llm_model_input_schema())
-        .output(llm_model_schema())
-        .auth(AuthRequirement::admin()),
+        .output(llm_model_schema()),
     );
 
     // Refused while an agent calls the model — by name, or as its provider's
     // default — and the refusal names the agents.
     set.register(
         Endpoint::new(
-            "deleteLlmModel",
+            ids::DELETE_LLM_MODEL,
             Method::Delete,
             api().lit("llm-models").param("id", ValueType::Uuid),
         )
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // The model settings a backend declares for a kind of model (chat when
@@ -169,7 +163,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // it knows nothing about. A kind the backend does not serve is refused.
     set.register(
         Endpoint::new(
-            "listLlmModelSettings",
+            ids::LIST_LLM_MODEL_SETTINGS,
             Method::Get,
             api()
                 .lit("llm-provider-backends")
@@ -177,8 +171,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("model-settings"),
         )
         .query([QueryParam::new("kind", ValueType::Text)])
-        .output(TypeSchema::array(form_field_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(form_field_schema())),
     );
 
     // **Fetch models.** Asks the provider's host which models it serves and
@@ -187,7 +180,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // the answer to the question.
     set.register(
         Endpoint::new(
-            "fetchLlmModels",
+            ids::FETCH_LLM_MODELS,
             Method::Post,
             api()
                 .lit("llm-providers")
@@ -198,8 +191,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("ok", TypeSchema::bool()),
             StructField::new("message", TypeSchema::text()),
             StructField::new("names", TypeSchema::array(TypeSchema::text())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // **Test.** Sends one trivial prompt to one model through one key, and
@@ -212,27 +204,30 @@ pub(super) fn register(set: &mut EndpointSet) {
     // submitted secret sentinel still resolves against the stored provider when
     // `provider_id` names one, so testing does not require retyping the key.
     set.register(
-        Endpoint::new("testLlmModel", Method::Post, api().lit("llm-model-test"))
-            .input(TypeSchema::struct_of([
-                StructField::new("provider_id", TypeSchema::optional(TypeSchema::uuid())),
-                StructField::new("backend", TypeSchema::text()),
-                StructField::new("config", TypeSchema::json()),
-                StructField::new("name", TypeSchema::text()),
-                StructField::new("model_config", TypeSchema::optional(TypeSchema::json())),
-                // The model's kind; left out is chat.
-                StructField::new("kind", TypeSchema::optional(TypeSchema::text())),
-            ]))
-            .output(TypeSchema::struct_of([
-                StructField::new("ok", TypeSchema::bool()),
-                // The model's reply on success, the provider's own words on
-                // failure. One field because the admin reads one thing either
-                // way: "did this work, and what did it say".
-                StructField::new("message", TypeSchema::text()),
-                StructField::new("model", TypeSchema::text()),
-                StructField::new("capabilities", TypeSchema::json()),
-                StructField::new("prices", TypeSchema::json()),
-            ]))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::TEST_LLM_MODEL,
+            Method::Post,
+            api().lit("llm-model-test"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("provider_id", TypeSchema::optional(TypeSchema::uuid())),
+            StructField::new("backend", TypeSchema::text()),
+            StructField::new("config", TypeSchema::json()),
+            StructField::new("name", TypeSchema::text()),
+            StructField::new("model_config", TypeSchema::optional(TypeSchema::json())),
+            // The model's kind; left out is chat.
+            StructField::new("kind", TypeSchema::optional(TypeSchema::text())),
+        ]))
+        .output(TypeSchema::struct_of([
+            StructField::new("ok", TypeSchema::bool()),
+            // The model's reply on success, the provider's own words on
+            // failure. One field because the admin reads one thing either
+            // way: "did this work, and what did it say".
+            StructField::new("message", TypeSchema::text()),
+            StructField::new("model", TypeSchema::text()),
+            StructField::new("capabilities", TypeSchema::json()),
+            StructField::new("prices", TypeSchema::json()),
+        ])),
     );
 }
 

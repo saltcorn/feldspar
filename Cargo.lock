@@ -8964,6 +8964,7 @@ dependencies = [
 name = "sc-access"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "sc-auth",
  "sc-catalog",
  "sc-db",
@@ -8999,6 +9000,7 @@ dependencies = [
  "sc-types",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "uuid",
 ]
@@ -9096,6 +9098,7 @@ dependencies = [
  "sc-log",
  "sc-mcp",
  "sc-net",
+ "sc-proc",
  "sc-query",
  "sc-repomap",
  "sc-test-harness",
@@ -9196,6 +9199,7 @@ dependencies = [
  "sc-expr",
  "sc-files",
  "sc-i18n",
+ "sc-proc",
  "sc-query",
  "sc-stream",
  "sc-test-harness",
@@ -9219,6 +9223,7 @@ dependencies = [
  "lru 0.12.5",
  "qrcode",
  "rust_decimal",
+ "sc-auth",
  "sc-catalog",
  "sc-db",
  "sc-db-postgres",
@@ -9272,6 +9277,7 @@ dependencies = [
  "sc-mcp",
  "sc-model",
  "sc-module",
+ "sc-net",
  "sc-query",
  "sc-stream",
  "sc-test-harness",
@@ -9302,6 +9308,7 @@ dependencies = [
  "sc-expr",
  "sc-files",
  "sc-log",
+ "sc-proc",
  "sc-query",
  "sc-test-harness",
  "sc-types",
@@ -9379,6 +9386,8 @@ dependencies = [
  "sc-mcp",
  "sc-migrate",
  "sc-module",
+ "sc-net",
+ "sc-proc",
  "sc-python",
  "sc-query",
  "sc-server",
@@ -9386,6 +9395,7 @@ dependencies = [
  "sc-test-harness",
  "sc-types",
  "sc-viewpattern",
+ "sc-workflow",
  "serde",
  "serde_json",
  "tokio",
@@ -9551,6 +9561,7 @@ dependencies = [
  "argon2 0.5.3",
  "async-trait",
  "base64 0.22.1",
+ "chrono",
  "deno_core",
  "getrandom 0.3.4",
  "hmac 0.12.1",
@@ -9562,11 +9573,13 @@ dependencies = [
  "sc-types",
  "serde_json",
  "sha2 0.10.9",
+ "stacker",
  "swc_common 24.0.0",
  "swc_ecma_ast 26.0.0",
  "swc_ecma_parser 42.0.0",
  "tokio",
  "tokio-postgres",
+ "uuid",
 ]
 
 [[package]]
@@ -9581,11 +9594,19 @@ dependencies = [
  "mime_guess",
  "regex-lite",
  "sc-error",
+ "sc-proc",
  "sc-types",
  "serde",
  "serde_json",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "sc-http"
+version = "0.1.0"
+dependencies = [
+ "http",
 ]
 
 [[package]]
@@ -9646,6 +9667,7 @@ dependencies = [
  "sc-db-postgres",
  "sc-error",
  "sc-log",
+ "sc-net",
  "sc-query",
  "sc-test-harness",
  "sc-types",
@@ -9750,9 +9772,11 @@ dependencies = [
  "sc-error",
  "sc-expr",
  "sc-files",
+ "sc-http",
  "sc-live",
  "sc-log",
  "sc-model",
+ "sc-proc",
  "sc-query",
  "sc-stream",
  "sc-test-harness",
@@ -9775,6 +9799,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-proc"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "pty-process",
+ "sc-error",
+ "sc-log",
+ "tokio",
+]
+
+[[package]]
 name = "sc-python"
 version = "0.1.0"
 dependencies = [
@@ -9792,6 +9827,7 @@ dependencies = [
  "sc-files",
  "sc-model",
  "sc-module",
+ "sc-proc",
  "sc-query",
  "sc-test-harness",
  "sc-types",
@@ -9883,6 +9919,7 @@ dependencies = [
  "sc-error",
  "sc-expr",
  "sc-files",
+ "sc-http",
  "sc-i18n",
  "sc-live",
  "sc-llm",
@@ -9891,6 +9928,8 @@ dependencies = [
  "sc-migrate",
  "sc-model",
  "sc-module",
+ "sc-net",
+ "sc-proc",
  "sc-python",
  "sc-query",
  "sc-ratelimit",
@@ -9926,6 +9965,8 @@ dependencies = [
  "sc-error",
  "sc-files",
  "sc-model",
+ "sc-net",
+ "sc-proc",
  "sc-types",
  "serde",
  "serde_json",
@@ -9971,6 +10012,7 @@ dependencies = [
  "sc-error",
  "tokio",
  "tokio-postgres",
+ "toml",
  "uuid",
 ]
 
@@ -10007,6 +10049,7 @@ dependencies = [
  "sc-error",
  "sc-expr",
  "sc-files",
+ "sc-http",
  "sc-i18n",
  "sc-query",
  "sc-test-harness",

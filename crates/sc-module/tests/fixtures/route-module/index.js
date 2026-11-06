@@ -49,6 +49,16 @@ module.exports = {
       callback: (req, res) => res.json({ email: req.user.email }),
     },
     {
+      url: "/policy",
+      // Headers the admin origin states for itself, and one of its own.
+      callback: (req, res) => {
+        res.set("Content-Security-Policy", "default-src *");
+        res.set("X-Frame-Options", "ALLOWALL");
+        res.set("X-Module", "kept");
+        res.send("<p>policy</p>");
+      },
+    },
+    {
       url: "/later",
       // Answers from a promise the callback does not return.
       callback: (req, res) => {

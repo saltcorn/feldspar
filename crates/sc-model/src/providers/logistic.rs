@@ -102,6 +102,10 @@ impl ModelProvider for LogisticRegression {
         }
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+    )]
     async fn fit(&self, frame: &Frame, config: &Attrs, hyper: &Attrs) -> Result<FitResult> {
         let label = column_setting(config, LABEL)?;
         let alpha = number_setting(hyper, ALPHA, 0.0)?;

@@ -61,6 +61,12 @@ pub const ATTR_CHAIN: &str = "chain";
 /// started the run.
 pub const ATTR_CHANGESET: &str = "changeset";
 
+/// The configuration hash of a run whose trigger a person had approved to run
+/// as system when it started (TODO-type-hardening H8.10). Its steps run at
+/// system authority while the trigger's approval is still for that hash; absent
+/// for any other run.
+pub const ATTR_SYSTEM: &str = "runs_as_system";
+
 /// One event, in the shape a run row can hold it.
 ///
 /// A struct of its own rather than a `serde` derive on [`Event`]: the event model
@@ -98,6 +104,12 @@ pub struct StoredEvent {
     /// The caller's guest session public id (TODO-payments P1.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+    /// Whether the event had no human cause (`Event::system`,
+    /// TODO-type-hardening H8.1): a run a scheduled trigger started keeps the
+    /// system's authority on the steps it resumes tomorrow. Absent in a run
+    /// stored before it existed, which then reads as caused by its caller.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub system: bool,
 }
 
 fn public_role() -> Role {
@@ -121,6 +133,7 @@ impl StoredEvent {
             user: event.user.clone(),
             app: event.app.as_ref().map(sc_catalog::CallingApp::to_json),
             session: event.session.clone(),
+            system: event.system,
         }
     }
 
@@ -142,6 +155,7 @@ impl StoredEvent {
             .as_ref()
             .and_then(sc_catalog::CallingApp::from_json);
         event.session = self.session.clone();
+        event.system = self.system;
         Ok(event)
     }
 }
@@ -421,6 +435,7 @@ mod tests {
                     scheme: Some("myshop".into()),
                 }),
                 session: Some("gs_1".into()),
+                ..sc_catalog::Origin::default()
             })
     }
 

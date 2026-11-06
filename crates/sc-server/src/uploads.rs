@@ -34,7 +34,7 @@ use sc_api::AuthRequirement;
 use sc_app::{UploadRecord, UploadRoute, UploadSlot};
 use sc_auth::User;
 use sc_catalog::Catalog;
-use sc_files::{CheckedStore, FileCaller, FileMeta};
+use sc_files::{CheckedStore, FileMeta};
 use serde_json::{Map, Value as Json, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -802,18 +802,23 @@ pub async fn sweep_uploads(catalog: &Catalog, before: i64) -> sc_error::Result<u
 }
 
 /// Sweep abandoned uploads every ten minutes, for the life of the process.
+/// Supervised ([`sc_catalog::supervise`]): a sweep that panics is logged and
+/// the loop starts again.
 pub(crate) fn spawn_upload_sweep(apps: Arc<crate::apps::AppMounts>) {
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(600));
-        loop {
-            tick.tick().await;
-            let Some(catalog) = apps.catalog() else {
-                continue;
-            };
-            match sweep_uploads(catalog, now() - ABANDONED_AFTER_SECS).await {
-                Ok(0) => {}
-                Ok(n) => sc_log::log_info!("removed {n} upload(s) begun over a day ago"),
-                Err(e) => log_failure("sweeping abandoned uploads", &e),
+    sc_catalog::supervise("the upload sweep", move || {
+        let apps = Arc::clone(&apps);
+        async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(600));
+            loop {
+                tick.tick().await;
+                let Some(catalog) = apps.catalog() else {
+                    continue;
+                };
+                match sweep_uploads(catalog, now() - ABANDONED_AFTER_SECS).await {
+                    Ok(0) => {}
+                    Ok(n) => sc_log::log_info!("removed {n} upload(s) begun over a day ago"),
+                    Err(e) => log_failure("sweeping abandoned uploads", &e),
+                }
             }
         }
     });
@@ -840,7 +845,10 @@ async fn prepare_temp(store: &CheckedStore, temp_path: &str) -> sc_error::Result
 /// the slot and the uploader all match). TODO-code-quality Q3.6; listed in
 /// docs/SECURITY_REVIEW_2026-10.md's inventory.
 fn server_store(catalog: &Catalog, store: &str) -> sc_error::Result<CheckedStore> {
-    catalog.checked_file_store(store, None, FileCaller::new(Role::ADMIN, None))
+    catalog.admin_file_store(
+        store,
+        &sc_catalog::AdminPrincipal::system("uploads: the server's temporary upload folder"),
+    )
 }
 
 /// The slot's store as the **uploader** reaches it: where the finished file is
@@ -850,11 +858,8 @@ async fn uploader_store(
     store: &str,
     user: Option<&User>,
 ) -> sc_error::Result<CheckedStore> {
-    let caller = FileCaller::new(
-        user.map_or(Role::PUBLIC, |u| u.role()),
-        user.map(|u| u.id().to_string()),
-    );
-    sc_catalog::open_checked_store(catalog, store, caller).await
+    let caller = sc_access::principal_of(user);
+    sc_catalog::open_checked_store(catalog, store, &caller).await
 }
 
 /// Whether an upload's destination is free.

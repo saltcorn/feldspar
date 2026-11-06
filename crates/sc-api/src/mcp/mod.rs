@@ -91,7 +91,9 @@ pub const GRANT_CREATE: &str = schema_edit::GRANT_CREATE;
 pub const GRANT_EDIT: &str = schema_edit::GRANT_EDIT;
 /// May drop tables and fields, and delete triggers and queries.
 pub const GRANT_DROP: &str = schema_edit::GRANT_DROP;
-/// May write the access rules of §7.3, a trigger's `min_role` and a query's.
+/// The key of the retired access-changes grant (TODO-type-hardening H8.9): a
+/// stored token or configuration that carries it keeps loading, and it is
+/// ignored. Row-level security decides instead (§7.3a).
 pub const GRANT_ACCESS_CHANGES: &str = schema_edit::GRANT_ACCESS_CHANGES;
 
 /// The key the **checklists grant** is stored under:
@@ -150,10 +152,10 @@ impl Area {
     }
 }
 
-/// One of the four grants, named — so a tool can *declare* what it needs rather
+/// One of the three grants, named — so a tool can *declare* what it needs rather
 /// than each one re-deriving it from a boolean.
 ///
-/// [`Grants`] is four booleans, which is the right shape for the caller who has
+/// [`Grants`] is three booleans, which is the right shape for the caller who has
 /// them; this is the right shape for the tool that wants one of them. The
 /// projection of a tagged [`Endpoint`](crate::Endpoint) is what needed it:
 /// `deleteAgent` must require `allow_drop` for the same reason `delete_trigger`
@@ -168,7 +170,9 @@ pub enum Grant {
     Edit,
     /// May destroy something.
     Drop,
-    /// May write the access rules of §7.3 — who may read, write or call a thing.
+    /// **Retired** (TODO-type-hardening H8.9): the access-changes grant. No
+    /// endpoint needs it; it stays so an endpoint set written while it existed
+    /// still reads, and it is held by everyone.
     AccessChanges,
 }
 
@@ -189,7 +193,7 @@ impl Grant {
             Grant::Create => grants.create,
             Grant::Edit => grants.edit,
             Grant::Drop => grants.drop,
-            Grant::AccessChanges => grants.access_changes,
+            Grant::AccessChanges => true,
         }
     }
 }
@@ -248,29 +252,31 @@ impl Areas {
     }
 }
 
-/// Every key the eight flags are stored under, in the order an admin ticks them.
+/// Every key the seven flags are stored under, in the order an admin ticks them.
+/// (`allow_access_changes` was an eighth; TODO-type-hardening H8.9 retired it,
+/// and a stored one is ignored.)
 ///
 /// One list, because there are two things that write these — an
 /// `admin_copilot` agent's configuration and an API token's `grants` column —
 /// and a ninth key invented by one of them would be a flag the other silently
 /// ignores.
-pub const FLAG_KEYS: [&str; 8] = [
+pub const FLAG_KEYS: [&str; 7] = [
     GRANT_CREATE,
     GRANT_EDIT,
     GRANT_DROP,
-    GRANT_ACCESS_CHANGES,
     Area::Triggers.key(),
     Area::Applications.key(),
     Area::Modules.key(),
     Area::History.key(),
 ];
 
-/// The four grants as a stored configuration has them; an absent flag reads as
+/// The three grants as a stored configuration has them; an absent flag reads as
 /// its default.
 ///
-/// Dropping and access changes default **off** and the other two **on**, which
-/// is the safe configuration rather than the empty one: a caller given nothing
-/// can build and cannot destroy or widen anybody's access.
+/// Dropping defaults **off** and the other two **on**, which is the safe
+/// configuration rather than the empty one: a caller given nothing can build
+/// and cannot destroy. Whose access it may change is row-level security's
+/// question (§7.3a), not a grant's.
 pub fn grants_from_attrs(config: &Attrs) -> Grants {
     let flag =
         |key: &str, default: bool| config.get(key).and_then(Json::as_bool).unwrap_or(default);
@@ -278,7 +284,6 @@ pub fn grants_from_attrs(config: &Attrs) -> Grants {
         create: flag(GRANT_CREATE, true),
         edit: flag(GRANT_EDIT, true),
         drop: flag(GRANT_DROP, false),
-        access_changes: flag(GRANT_ACCESS_CHANGES, false),
     }
 }
 
@@ -300,7 +305,7 @@ pub fn areas_from_attrs(config: &Attrs) -> Areas {
     }
 }
 
-/// The eight flags written back out, every key present and explicit.
+/// The seven flags written back out, every key present and explicit.
 ///
 /// What a token's `grants` column is made of. Explicit rather than sparse
 /// because the column is the record of *what an admin agreed to* — a missing key
@@ -312,7 +317,6 @@ pub fn flags_to_attrs(grants: &Grants, areas: &Areas) -> Attrs {
         (GRANT_CREATE, grants.create),
         (GRANT_EDIT, grants.edit),
         (GRANT_DROP, grants.drop),
-        (GRANT_ACCESS_CHANGES, grants.access_changes),
         (Area::Triggers.key(), areas.triggers),
         (Area::Applications.key(), areas.applications),
         (Area::Modules.key(), areas.modules),
@@ -435,9 +439,11 @@ pub struct ToolContext<'a> {
     /// The user this call runs as, or `None` for a system run — a trigger-driven
     /// agent turn has authority but no user.
     pub user: Option<&'a User>,
-    /// The role this call is authorized at: the user's own, or 1 for a system
-    /// run. Every tool here refuses anything but 1.
-    pub role: Role,
+    /// The proof that an administrator at the console makes this call, or
+    /// `None` for anybody else — another role, or an admin whose prompt came
+    /// from outside the console (TODO-type-hardening H3.3, H3.4). Every tool
+    /// here refuses a call without it ([`ToolContext::require_admin`]).
+    pub admin: Option<sc_catalog::ConsoleAdmin>,
     /// The trigger dispatcher, where this process has one.
     ///
     /// Carried rather than reached for, exactly as `TraitContext` carries it: a
@@ -450,6 +456,14 @@ pub struct ToolContext<'a> {
 }
 
 impl ToolContext<'_> {
+    /// The console administrator's proof, or the refusal a model can relay:
+    /// what a tool that reaches the admin host hands it.
+    pub fn require_admin(&self, tool: &str) -> Result<&sc_catalog::ConsoleAdmin> {
+        self.admin
+            .as_ref()
+            .ok_or_else(|| not_an_admin(tool, self.user.map_or(Role::PUBLIC, User::role)))
+    }
+
     /// The dispatcher, or the configuration error that says this context has
     /// none. Fail closed and say why.
     pub fn require_triggers(&self) -> Result<&Arc<TriggerDispatcher>> {
@@ -585,7 +599,7 @@ impl ToolSet {
     /// names what would fix it, because each is read by a model rather than by a
     /// developer with a backtrace.
     pub async fn call(&self, tool: &str, args: &Json, ctx: &ToolContext<'_>) -> Result<Json> {
-        require_admin(ctx.role, tool)?;
+        ctx.require_admin(tool)?;
         self.resolve(tool)?.call(ctx, &self.grants, args).await
     }
 
@@ -630,11 +644,24 @@ pub fn require_admin(role: Role, tool: &str) -> Result<()> {
     if role.is_admin() {
         return Ok(());
     }
-    Err(Error::invalid(format!(
+    Err(not_an_admin(tool, role))
+}
+
+/// The refusal [`require_admin`] and [`ToolContext::require_admin`] give.
+fn not_an_admin(tool: &str, role: Role) -> Error {
+    if role.is_admin() {
+        // The role is the admin's, but the call did not come from the console.
+        return Error::invalid(format!(
+            "`{tool}` is only available to an administrator at the admin console, and this \
+             call did not come from it. Tell the user the schema and the triggers over it \
+             can only be seen or changed from the admin console.",
+        ));
+    }
+    Error::invalid(format!(
         "`{tool}` is only available to an administrator, and this conversation is \
          with a role-{role} user. Tell them the schema and the triggers over it can \
          only be seen or changed by an admin.",
-    )))
+    ))
 }
 
 /// Refuse an operation the admin did not tick the box for, naming the box.
@@ -780,7 +807,6 @@ mod tests {
                     create: true,
                     edit: false,
                     drop: false,
-                    access_changes: true,
                 },
                 Areas {
                     triggers: false,
@@ -806,7 +832,7 @@ mod tests {
     #[test]
     fn a_token_minted_with_nothing_said_is_granted_everything() {
         let stored = token_flags_from_submitted(&Attrs::new());
-        // The eight, `allow_all` written down as off, and the checklists grant
+        // The seven, `allow_all` written down as off, and the checklists grant
         // written down as `append` — never `full` by default.
         assert_eq!(stored.len(), FLAG_KEYS.len() + 2);
         assert_eq!(stored[CHECKLISTS_GRANT], Json::from("append"));
@@ -819,7 +845,8 @@ mod tests {
         said.insert(GRANT_DROP.to_owned(), Json::Bool(false));
         let stored = token_flags_from_submitted(&said);
         assert_eq!(stored[GRANT_DROP], Json::Bool(false));
-        assert_eq!(stored[GRANT_ACCESS_CHANGES], Json::Bool(true));
+        // The retired grant is no longer written (TODO-type-hardening H8.9).
+        assert!(!stored.contains_key(GRANT_ACCESS_CHANGES));
         assert_eq!(stored[Area::Modules.key()], Json::Bool(true));
         assert_eq!(stored[ALLOW_ALL], Json::Bool(false));
 
@@ -866,7 +893,7 @@ mod tests {
         let empty = Attrs::new();
         let grants = grants_from_attrs(&empty);
         assert!(grants.create && grants.edit);
-        assert!(!grants.drop && !grants.access_changes);
+        assert!(!grants.drop);
         // Triggers and applications are offered until somebody says otherwise;
         // modules are not offered until somebody says so.
         assert_eq!(areas_from_attrs(&empty), Areas::all());

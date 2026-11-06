@@ -32,6 +32,8 @@ default = []
 python-host = ["dep:pyo3"]
 
 [dependencies]
+# `python -m venv` and `pip`, started the one way (H4).
+sc-proc.workspace = true
 sc-error.workspace = true
 # **Plugin modules** (phase 6). A Python module is a module to an admin (§8), so
 # what it supplies answers `sc-module`'s own types — the manifest, the loaded

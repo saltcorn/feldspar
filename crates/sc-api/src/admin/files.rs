@@ -12,7 +12,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // may contain `/` and would not fit a single path segment — rides in the body.
     set.register(
         Endpoint::new(
-            "browseFiles",
+            ids::BROWSE_FILES,
             Method::Post,
             api()
                 .lit("file-stores")
@@ -23,8 +23,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             "dir",
             TypeSchema::text(),
         )]))
-        .output(TypeSchema::array(file_listing_entry_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(file_listing_entry_schema())),
     );
 
     // Find entries anywhere under a directory by **name** — the file manager's
@@ -38,7 +37,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // per row.
     set.register(
         Endpoint::new(
-            "findFiles",
+            ids::FIND_FILES,
             Method::Post,
             api()
                 .lit("file-stores")
@@ -53,8 +52,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([
             StructField::new("entries", TypeSchema::array(file_listing_entry_schema())),
             StructField::new("truncated", TypeSchema::bool()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // The files of a kind in a store, by path — what a setting that names a file
@@ -63,7 +61,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // `node_modules` does not bury the one icon the admin is looking for.
     set.register(
         Endpoint::new(
-            "listStoreFiles",
+            ids::LIST_STORE_FILES,
             Method::Get,
             api()
                 .lit("file-stores")
@@ -75,8 +73,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([
             StructField::new("paths", TypeSchema::array(TypeSchema::text())),
             StructField::new("truncated", TypeSchema::bool()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // Search a store's text files, server-side. This is the endpoint the IDE's
@@ -86,7 +83,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // search, so what a person finds in the editor is what a model finds.
     set.register(
         Endpoint::new(
-            "searchFiles",
+            ids::SEARCH_FILES,
             Method::Post,
             api()
                 .lit("file-stores")
@@ -102,15 +99,14 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("dir", TypeSchema::optional(TypeSchema::text())),
             StructField::new("max_results", TypeSchema::optional(TypeSchema::int())),
         ]))
-        .output(file_search_schema())
-        .auth(AuthRequirement::admin()),
+        .output(file_search_schema()),
     );
 
     // Read one file's bytes (download) — base64 always, plus a UTF-8 `text`
     // shortcut when the contents decode cleanly (for the text editor).
     set.register(
         Endpoint::new(
-            "readFile",
+            ids::READ_FILE,
             Method::Post,
             api()
                 .lit("file-stores")
@@ -121,15 +117,14 @@ pub(super) fn register(set: &mut EndpointSet) {
             "path",
             TypeSchema::text(),
         )]))
-        .output(file_content_schema())
-        .auth(AuthRequirement::admin()),
+        .output(file_content_schema()),
     );
 
     // Write one file (upload / save an edited text file). The body carries the
     // contents as either base64 (`base64`) or UTF-8 (`text`); exactly one.
     set.register(
         Endpoint::new(
-            "writeFile",
+            ids::WRITE_FILE,
             Method::Post,
             api()
                 .lit("file-stores")
@@ -141,15 +136,14 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("base64", TypeSchema::optional(TypeSchema::text())),
             StructField::new("text", TypeSchema::optional(TypeSchema::text())),
         ]))
-        .output(file_entry_schema())
-        .auth(AuthRequirement::admin()),
+        .output(file_entry_schema()),
     );
 
     // Create a directory (and any missing parents). Idempotent — asking for a
     // directory that exists is a success, since the caller wanted one there.
     set.register(
         Endpoint::new(
-            "makeDirectory",
+            ids::MAKE_DIRECTORY,
             Method::Post,
             api()
                 .lit("file-stores")
@@ -160,15 +154,14 @@ pub(super) fn register(set: &mut EndpointSet) {
             "path",
             TypeSchema::text(),
         )]))
-        .output(file_entry_schema())
-        .auth(AuthRequirement::admin()),
+        .output(file_entry_schema()),
     );
 
     // Delete a file, or a directory and everything in it. Reports whether
     // anything was there, so the caller need not race an existence check.
     set.register(
         Endpoint::new(
-            "deleteFile",
+            ids::DELETE_FILE,
             Method::Post,
             api()
                 .lit("file-stores")
@@ -182,14 +175,13 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // Move or rename within the store. Never overwrites an existing destination.
     set.register(
         Endpoint::new(
-            "renameFile",
+            ids::RENAME_FILE,
             Method::Post,
             api()
                 .lit("file-stores")
@@ -200,8 +192,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("from", TypeSchema::text()),
             StructField::new("to", TypeSchema::text()),
         ]))
-        .output(file_entry_schema())
-        .auth(AuthRequirement::admin()),
+        .output(file_entry_schema()),
     );
 
     // Per-file metadata (design §9): the access rule and the free-form
@@ -210,7 +201,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // restricts a folder.
     set.register(
         Endpoint::new(
-            "getFileMeta",
+            ids::GET_FILE_META,
             Method::Post,
             api()
                 .lit("file-stores")
@@ -221,13 +212,12 @@ pub(super) fn register(set: &mut EndpointSet) {
             "path",
             TypeSchema::text(),
         )]))
-        .output(file_meta_schema())
-        .auth(AuthRequirement::admin()),
+        .output(file_meta_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "setFileMeta",
+            ids::SET_FILE_META,
             Method::Post,
             api()
                 .lit("file-stores")
@@ -239,8 +229,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("min_role", TypeSchema::optional(TypeSchema::int())),
             StructField::new("attributes", TypeSchema::json()),
         ]))
-        .output(file_meta_schema())
-        .auth(AuthRequirement::admin()),
+        .output(file_meta_schema()),
     );
 }
 

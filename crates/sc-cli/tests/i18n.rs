@@ -7,6 +7,10 @@
 //! [`Translator`], which is also how the two failure modes D9 names are made to
 //! happen on purpose.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

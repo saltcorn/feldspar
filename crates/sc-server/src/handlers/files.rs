@@ -7,7 +7,7 @@ use super::*;
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
 
-    reg.register_admin("browseFiles", {
+    reg.handle(sc_api::handler_ids::BROWSE_FILES, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -30,7 +30,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("findFiles", {
+    reg.handle(sc_api::handler_ids::FIND_FILES, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -45,7 +45,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 files.check_read(dir).await?;
                 let query = obj.non_empty_str_field("query")?.to_owned();
                 let max_results = match obj.get("max_results").and_then(Json::as_i64) {
-                    Some(n) if n >= 1 => n as usize,
+                    Some(n) if n >= 1 => usize::try_from(n).unwrap_or(usize::MAX),
                     _ => sc_files::DEFAULT_MAX_FOUND,
                 };
                 // The columns beside each hit's name are the same ones a listing
@@ -60,7 +60,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listStoreFiles", {
+    reg.handle(sc_api::handler_ids::LIST_STORE_FILES, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -89,7 +89,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("searchFiles", {
+    reg.handle(sc_api::handler_ids::SEARCH_FILES, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -111,7 +111,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     .map(str::to_owned);
                 let flag = |key: &str| obj.get(key).and_then(Json::as_bool).unwrap_or(false);
                 let max_results = match obj.get("max_results").and_then(Json::as_i64) {
-                    Some(n) if n >= 1 => n as usize,
+                    Some(n) if n >= 1 => usize::try_from(n).unwrap_or(usize::MAX),
                     _ => sc_files::DEFAULT_MAX_RESULTS,
                 };
                 let query = sc_files::SearchQuery {
@@ -150,7 +150,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("readFile", {
+    reg.handle(sc_api::handler_ids::READ_FILE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -176,7 +176,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("writeFile", {
+    reg.handle(sc_api::handler_ids::WRITE_FILE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -195,7 +195,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("makeDirectory", {
+    reg.handle(sc_api::handler_ids::MAKE_DIRECTORY, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -212,7 +212,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteFile", {
+    reg.handle(sc_api::handler_ids::DELETE_FILE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -227,7 +227,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("renameFile", {
+    reg.handle(sc_api::handler_ids::RENAME_FILE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -250,7 +250,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // (the endpoint model has no bytes shape), but registered here like any
     // other handler so it reaches the same catalog and the same access rule.
     // Routing around the `EndpointSet` must not mean routing around those.
-    reg.register_admin("uploadFile", {
+    reg.handle(sc_api::handler_ids::UPLOAD_FILE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -270,7 +270,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
 
     // The bytes of one file, as a download (the `/download/{store}/{*path}`
     // route): what the file manager's Download fetches, however large.
-    reg.register_admin("downloadFile", {
+    reg.handle(sc_api::handler_ids::DOWNLOAD_FILE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -288,7 +288,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("getFileMeta", {
+    reg.handle(sc_api::handler_ids::GET_FILE_META, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -304,7 +304,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("setFileMeta", {
+    reg.handle(sc_api::handler_ids::SET_FILE_META, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -365,28 +365,16 @@ async fn resolve_store(
     name: &str,
     ctx: &crate::handler::HandlerCtx<impl crate::handler::Who>,
 ) -> Result<CheckedStore> {
-    // Read whatever the caller's role: the floor is reported (a file's
-    // effective rule), not only checked.
-    let floor = load_file_store_by_name(catalog, name)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|def| def.min_role);
-    catalog.checked_file_store(name, floor, file_caller(ctx))
-}
-
-/// The caller as a file rule sees them: their role, and the id the owner rule
-/// (§2.1) compares with.
-///
-/// **Admin in practice**, because every file endpoint is `AuthRequirement::admin()`
-/// and an admin clears every rule. The check is wired in regardless: it is correct
-/// by construction, costs nothing, and starts doing real work the moment a
-/// non-admin role can reach a store.
-fn file_caller(ctx: &crate::handler::HandlerCtx<impl crate::handler::Who>) -> sc_files::FileCaller {
-    sc_files::FileCaller::new(
-        sc_auth::role_of(ctx.user()),
-        ctx.user().map(|u| u.id().to_string()),
-    )
+    // The catalog reads the floor whatever the caller's role — it is reported
+    // (a file's effective rule), not only checked — and for a caller below the admin a failure to read it
+    // is an error rather than "no floor" (TODO-type-hardening H3.2).
+    //
+    // The caller is **admin in practice**, because every file endpoint is
+    // `AuthRequirement::admin()` and an admin clears every rule. The check is
+    // wired in regardless: it is correct by construction, and starts doing
+    // real work the moment a non-admin role can reach a store.
+    let caller = sc_access::principal_of(ctx.user());
+    catalog.checked_file_store(name, &caller).await
 }
 
 /// The entry JSON returned after creating a directory.

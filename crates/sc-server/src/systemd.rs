@@ -205,6 +205,10 @@ impl ServiceManager {
     /// either. A server that is scheduling but wrong is a job for monitoring,
     /// not for `WatchdogSec`.
     #[must_use]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "tokio::spawn: a background loop for the life of the process, at no caller's behalf, so it must not inherit the starting task's scope"
+    )]
     pub fn spawn_watchdog(&self) -> Option<tokio::task::JoinHandle<()>> {
         let interval = self.watchdog_interval()?;
         let manager = self.clone();

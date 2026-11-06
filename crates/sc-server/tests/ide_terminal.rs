@@ -13,6 +13,10 @@
 //! here too, because it is this route's own checks asked ahead of time.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![cfg(unix)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -337,6 +341,10 @@ async fn close_reason(socket: &mut Socket) -> String {
 }
 
 /// Whether process `pid` still exists.
+#[allow(
+    unsafe_code,
+    reason = "kill(pid, 0) checks that the terminal's process is gone"
+)]
 fn alive(pid: i32) -> bool {
     // SAFETY: signal 0 only checks that the process exists.
     unsafe { libc::kill(pid, 0) == 0 }

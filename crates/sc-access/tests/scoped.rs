@@ -51,7 +51,7 @@ fn staff_only(catalog: &Catalog) -> Result<Table> {
 
 /// A signed-in caller at `role`, with the email an ownership formula reads.
 fn caller(role: Role, email: &str) -> Principal {
-    Principal::new(
+    Principal::recorded(
         role,
         Some(json!({ "id": uuid::Uuid::new_v4().to_string(), "email": email })),
     )
@@ -80,7 +80,7 @@ async fn a_caller_below_the_floor_is_refused_and_the_system_is_not() -> Result<(
 
     // A public caller is below both floors, and there is no formula to extend
     // them: refused, by the rule, not by luck.
-    let public = Principal::anonymous(Role::PUBLIC);
+    let public = Principal::anonymous();
     let scoped = Scoped::new(&catalog, Authority::Caller(&public));
     let read = scoped.read(&table, &RowQuery::new()).await.unwrap_err();
     assert!(matches!(read.repr(), Repr::Auth(_)), "{read}");
@@ -158,8 +158,19 @@ async fn only_the_system_and_an_administrator_make_an_unchecked_token() -> Resul
     assert!(Authority::system("test").unchecked().is_some());
     assert!(Authority::Caller(&admin).unchecked().is_some());
     assert!(Authority::Caller(&staff).unchecked().is_none());
-    assert!(Unchecked::admin(&staff).is_none());
-    assert!(sc_access::admin_access(&staff).is_err());
+    // The unchecked layer's admin token takes the proof (TODO-type-hardening
+    // H3.1): a principal whose role says admin is not one, and the proof
+    // names what stands behind it.
+    let proof = sc_catalog::AdminPrincipal::vouched(admin.user().cloned(), "a test's admin check");
+    let token = sc_access::admin_access(&proof);
+    assert_eq!(token.principal().map(Principal::role), Some(Role::ADMIN));
+    assert_eq!(token.vouched_by(), Some("a test's admin check"));
+    assert_eq!(
+        Unchecked::admin(&sc_catalog::AdminPrincipal::system("a test's job"))
+            .principal()
+            .and_then(Principal::user),
+        None
+    );
     assert!(
         Scoped::new(&catalog, Authority::Caller(&staff))
             .unchecked()
@@ -205,7 +216,7 @@ async fn a_scope_decides_with_the_loaded_user_and_refuses_anyone_elses() -> Resu
     }
 
     let alice = caller(Role::of(80), "a@x");
-    let loaded = sc_auth::User::from_json(alice.role, alice.user.as_ref())?;
+    let loaded = sc_auth::User::from_json(alice.role(), alice.user())?;
     let scoped = Scoped::new(&catalog, Authority::Caller(&alice)).with_user(loaded.as_ref());
     let mut seen = titles(&scoped.read(&table, &RowQuery::new()).await?)
         .into_iter()
@@ -229,7 +240,7 @@ async fn a_scope_decides_with_the_loaded_user_and_refuses_anyone_elses() -> Resu
     assert_eq!(grouped[0].get("n"), Some(&sc_query::Value::Int(2)));
     // The public role is below the floor and has no user for the formula to
     // grant a row to: it counts none, never the table.
-    let public = Principal::anonymous(Role::PUBLIC);
+    let public = Principal::anonymous();
     let none = Scoped::new(&catalog, Authority::Caller(&public))
         .aggregate_grouped(&table, count, &RowQuery::new())
         .await?;
@@ -237,7 +248,7 @@ async fn a_scope_decides_with_the_loaded_user_and_refuses_anyone_elses() -> Resu
 
     // Somebody else's user on alice's principal decides nothing.
     let bob = caller(Role::of(80), "b@x");
-    let bobs = sc_auth::User::from_json(bob.role, bob.user.as_ref())?;
+    let bobs = sc_auth::User::from_json(bob.role(), bob.user())?;
     let mixed = Scoped::new(&catalog, Authority::Caller(&alice)).with_user(bobs.as_ref());
     assert!(mixed.read(&table, &RowQuery::new()).await.is_err());
     Ok(())

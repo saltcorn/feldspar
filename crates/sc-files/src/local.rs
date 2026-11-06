@@ -606,7 +606,7 @@ pub const OP_SUGGEST_DIR: &str = "suggest_dir";
 /// [`Configure`](OperationScope::Configure) operation because it fills in the
 /// settings the admin is still editing, exactly as the deploy-key generator
 /// does, and like every suggestion it can be typed over before saving.
-pub fn local_operations() -> Vec<Operation> {
+pub(crate) fn local_operations() -> Vec<Operation> {
     vec![
         Operation::new(OP_SUGGEST_DIR, OperationScope::Configure)
             .label("Suggest a directory")
@@ -668,7 +668,6 @@ pub(crate) fn run_local_operation(
 mod operation_tests {
     use super::*;
     use crate::def::LOCAL_BACKEND;
-    use crate::paths::DATA_DIR_ENV;
     use crate::paths::testing::temp_env;
 
     /// The suggestion fills in both settings, and the directory it names is the
@@ -676,7 +675,7 @@ mod operation_tests {
     #[test]
     fn suggesting_a_directory_fills_in_the_settings() {
         temp_env(|| {
-            unsafe { std::env::set_var(DATA_DIR_ENV, "/tmp/sc-data") };
+            crate::paths::testing::set_data_dir("/tmp/sc-data");
             let mut def = FileStoreDef::new("Customer uploads", LOCAL_BACKEND);
             let outcome = run_local_operation(&mut def, OP_SUGGEST_DIR, &Attrs::new()).unwrap();
 
@@ -703,7 +702,7 @@ mod operation_tests {
     #[test]
     fn a_store_with_no_name_has_nothing_to_suggest() {
         temp_env(|| {
-            unsafe { std::env::set_var(DATA_DIR_ENV, "/tmp/sc-data") };
+            crate::paths::testing::set_data_dir("/tmp/sc-data");
             let mut def = FileStoreDef::new("  ", LOCAL_BACKEND);
             let err = run_local_operation(&mut def, OP_SUGGEST_DIR, &Attrs::new())
                 .unwrap_err()

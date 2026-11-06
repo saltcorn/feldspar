@@ -1,0 +1,68 @@
+# cargo-deny configuration (security review 2026-11, §6 and F §4; TODO-type-hardening H1.6).
+#
+# CI runs `cargo deny --locked check advisories bans licenses sources`. Run it
+# locally the same way; `cargo install cargo-deny --locked` installs it.
+#
+# An `ignore` entry below needs a reason that says why the advisory does not
+# reach Feldspar, not that it is inconvenient. When an upstream fix lands,
+# update the lock file and drop the entry.
+
+[graph]
+# Every feature of every workspace crate: an optional dependency behind
+# `sc-python/python-host` or `sc-module/deno-host` ships in the release, so it
+# is checked here too.
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # rsa: the Marvin timing side channel in RSA decryption, with no fixed
+    # release. It reaches the lock file through deno_crypto/deno_node_crypto
+    # (rsa 0.9) and russh/ssh-key (rsa 0.10 rc). Feldspar performs no RSA
+    # decryption itself: the git deploy keys it generates are Ed25519, and the
+    # only RSA a module can reach is Node's `crypto` over a key the module
+    # itself supplied.
+    { id = "RUSTSEC-2023-0071", reason = "no fix upstream; Feldspar does not decrypt with RSA" },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies inside the workspace carry no version requirement, which
+# `wildcards` would otherwise flag.
+allow-wildcard-paths = true
+deny = [
+    { name = "fancy-regex", reason = "backtracking regular expressions; use regex or regex-lite" },
+    { name = "openssl-sys", reason = "one TLS stack: rustls over aws-lc-rs" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[licenses]
+version = 2
+# What the dependency tree uses today, all permissive or weak-copyleft at file
+# level (MPL-2.0). A new licence is a decision, not a lock-file update: add it
+# here in the same change as the dependency that brings it.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "BSL-1.0",
+    "CC0-1.0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    # webpki-roots / webpki-root-certs: the Mozilla root store's data licence.
+    "CDLA-Permissive-2.0",
+    # libbz2-rs-sys: the original bzip2 licence, BSD-style.
+    "bzip2-1.0.6",
+]
+confidence-threshold = 0.9

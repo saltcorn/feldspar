@@ -17,12 +17,12 @@ pub(super) fn register(set: &mut EndpointSet) {
     // made — one response, because the dialog needs both to open and asking for
     // them separately would let them disagree.
     set.register(
-        Endpoint::new("getBackupOptions", Method::Get, api().lit("backup"))
-            .output(TypeSchema::struct_of([
+        Endpoint::new(ids::GET_BACKUP_OPTIONS, Method::Get, api().lit("backup")).output(
+            TypeSchema::struct_of([
                 StructField::new("available", backup_contents_schema()),
                 StructField::new("include", backup_selection_schema()),
-            ]))
-            .auth(AuthRequirement::admin()),
+            ]),
+        ),
     );
 
     // The password of an uploaded backup that is protected by one: the upload
@@ -32,7 +32,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // held with it for `restoreBackup`.
     set.register(
         Endpoint::new(
-            "unlockBackup",
+            ids::UNLOCK_BACKUP,
             Method::Post,
             api().lit("backup").lit("unlock"),
         )
@@ -48,8 +48,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("source", TypeSchema::optional(TypeSchema::text())),
             StructField::new("available", backup_contents_schema()),
             StructField::new("include", backup_selection_schema()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // Restore from an archive already uploaded (`/backup/upload` handed back its
@@ -61,7 +60,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // would hide it and as failure would be wrong.
     set.register(
         Endpoint::new(
-            "restoreBackup",
+            ids::RESTORE_BACKUP,
             Method::Post,
             api().lit("backup").lit("restore"),
         )
@@ -72,8 +71,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([
             StructField::new("restored", TypeSchema::array(TypeSchema::text())),
             StructField::new("warnings", TypeSchema::array(TypeSchema::text())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // **Automated backups**: any number of recurring backups, each sent to a
@@ -86,28 +84,26 @@ pub(super) fn register(set: &mut EndpointSet) {
     // schedule last did, written by the server's backup task and read-only.
     set.register(
         Endpoint::new(
-            "listBackupSchedules",
+            ids::LIST_BACKUP_SCHEDULES,
             Method::Get,
             api().lit("backup").lit("schedules"),
         )
-        .output(TypeSchema::array(backup_schedule_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(backup_schedule_schema())),
     );
 
     set.register(
         Endpoint::new(
-            "createBackupSchedule",
+            ids::CREATE_BACKUP_SCHEDULE,
             Method::Post,
             api().lit("backup").lit("schedules"),
         )
         .input(backup_schedule_input_schema())
-        .output(backup_schedule_schema())
-        .auth(AuthRequirement::admin()),
+        .output(backup_schedule_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "updateBackupSchedule",
+            ids::UPDATE_BACKUP_SCHEDULE,
             Method::Put,
             api()
                 .lit("backup")
@@ -115,14 +111,13 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .param("id", ValueType::Uuid),
         )
         .input(backup_schedule_input_schema())
-        .output(backup_schedule_schema())
-        .auth(AuthRequirement::admin()),
+        .output(backup_schedule_schema()),
     );
 
     // Stops new backups; the ones already written stay where they were sent.
     set.register(
         Endpoint::new(
-            "deleteBackupSchedule",
+            ids::DELETE_BACKUP_SCHEDULE,
             Method::Delete,
             api()
                 .lit("backup")
@@ -132,8 +127,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // **Clear all**: back to an empty installation (Settings → Backup).
@@ -143,20 +137,23 @@ pub(super) fn register(set: &mut EndpointSet) {
     // disk as well as the database. `delete_from_disk` names stores by name; a
     // store left out keeps its files where they are.
     set.register(
-        Endpoint::new("getClearAllPreview", Method::Get, api().lit("clear-all"))
-            .output(TypeSchema::struct_of([StructField::new(
-                "file_stores",
-                TypeSchema::array(TypeSchema::struct_of([
-                    StructField::new("name", TypeSchema::text()),
-                    StructField::new("backend", TypeSchema::text()),
-                    StructField::new("directory", TypeSchema::optional(TypeSchema::text())),
-                ])),
-            )]))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::GET_CLEAR_ALL_PREVIEW,
+            Method::Get,
+            api().lit("clear-all"),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "file_stores",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("name", TypeSchema::text()),
+                StructField::new("backend", TypeSchema::text()),
+                StructField::new("directory", TypeSchema::optional(TypeSchema::text())),
+            ])),
+        )])),
     );
 
     set.register(
-        Endpoint::new("clearAll", Method::Post, api().lit("clear-all"))
+        Endpoint::new(ids::CLEAR_ALL, Method::Post, api().lit("clear-all"))
             .input(TypeSchema::struct_of([StructField::new(
                 "delete_from_disk",
                 TypeSchema::array(TypeSchema::text()),
@@ -164,8 +161,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             .output(TypeSchema::struct_of([
                 StructField::new("cleared", TypeSchema::array(TypeSchema::text())),
                 StructField::new("warnings", TypeSchema::array(TypeSchema::text())),
-            ]))
-            .auth(AuthRequirement::admin()),
+            ])),
     );
 }
 

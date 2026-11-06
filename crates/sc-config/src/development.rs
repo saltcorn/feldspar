@@ -42,6 +42,10 @@ pub const IDE_TERMINAL_ENABLED: &str = "ide_terminal_enabled";
 /// Where the Claude Code executable that terminal runs is: an absolute path, or
 /// nothing to look for it (`PATH`, then the usual install locations).
 pub const CLAUDE_CODE_PATH: &str = "claude_code_path";
+/// Whether an IDE save that installs dependencies runs the packages' install
+/// scripts (TODO-type-hardening H4.4). Off: a save installs with
+/// `--ignore-scripts`, and the next Build runs them.
+pub const INSTALL_SCRIPTS_ON_SAVE: &str = "install_scripts_on_save";
 /// The subdomain of the base domain the admin UI is served on. Empty serves it
 /// on the base domain itself.
 pub const ADMIN_SUBDOMAIN: &str = "admin_subdomain";
@@ -122,6 +126,17 @@ pub fn development_section() -> ConfigSection {
                 "The full path of the claude program, such as /home/me/.local/bin/claude. Leave \
                  empty to look for it on the server's PATH and in the usual install locations. \
                  The server's --claude-cli option, when given, comes first.",
+            ),
+            // Off by default (security review 2026-11, C3): every dependency's
+            // `postinstall` is code from the registry, and saving a file is not
+            // a decision to run it as the server's user.
+            ConfigDef::help(
+                FormField::new(INSTALL_SCRIPTS_ON_SAVE, BasicType::Bool)
+                    .label("Run install scripts on save")
+                    .default_value(false),
+                "When a save in the IDE installs dependencies (the first save, or one that \
+                 changed package.json), run the packages' install scripts too. Off, the save \
+                 installs with --ignore-scripts and the next Build installs with them.",
             ),
         ],
     }
@@ -285,6 +300,19 @@ pub fn claude_code_path_from(config: &Attrs) -> Option<std::path::PathBuf> {
 /// The Claude Code executable the settings name, out of `_fd_config`.
 pub async fn claude_code_path(catalog: &Catalog) -> Result<Option<std::path::PathBuf>> {
     Ok(claude_code_path_from(
+        &crate::store::all_config(catalog).await?,
+    ))
+}
+
+/// Whether an IDE save's install runs the packages' install scripts, out of a
+/// settings bag. Anything but `true` reads as off.
+pub fn install_scripts_on_save_from(config: &Attrs) -> bool {
+    matches!(config.get(INSTALL_SCRIPTS_ON_SAVE), Some(Json::Bool(true)))
+}
+
+/// [`install_scripts_on_save_from`], out of `_fd_config`.
+pub async fn install_scripts_on_save(catalog: &Catalog) -> Result<bool> {
+    Ok(install_scripts_on_save_from(
         &crate::store::all_config(catalog).await?,
     ))
 }
@@ -499,6 +527,7 @@ mod tests {
                 MCP_LOOPBACK_ONLY,
                 IDE_TERMINAL_ENABLED,
                 CLAUDE_CODE_PATH,
+                INSTALL_SCRIPTS_ON_SAVE,
             ]
         );
 
@@ -506,6 +535,7 @@ mod tests {
             (MCP_ENABLED, false),
             (MCP_LOOPBACK_ONLY, true),
             (IDE_TERMINAL_ENABLED, false),
+            (INSTALL_SCRIPTS_ON_SAVE, false),
         ] {
             let def = section.fields.iter().find(|def| def.key() == key).unwrap();
             assert_eq!(
@@ -643,6 +673,11 @@ mod tests {
     #[test]
     fn the_ide_terminal_is_off_unless_it_is_exactly_on() {
         assert!(!ide_terminal_enabled_from(&Attrs::new()));
+        assert!(!install_scripts_on_save_from(&Attrs::new()));
+        assert!(install_scripts_on_save_from(&attrs(&[(
+            INSTALL_SCRIPTS_ON_SAVE,
+            Json::Bool(true)
+        )])));
         assert!(ide_terminal_enabled_from(&attrs(&[(
             IDE_TERMINAL_ENABLED,
             json!(true)

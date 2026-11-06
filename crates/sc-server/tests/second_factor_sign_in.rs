@@ -11,6 +11,10 @@
 //! - a browser answers the challenge on the server's own page, with a form, and
 //!   goes on to where it was going;
 //! - becoming a user is not stopped by the user's second factor.
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -36,6 +40,7 @@ use tower::ServiceExt;
 
 const BASE_DOMAIN: &str = "example.com";
 const CLUB: &str = "club.example.com";
+const SHOP: &str = "shop.example.com";
 const ROLE_MEMBER: Role = Role::of(80);
 const SESSION: &str = "sc_session";
 
@@ -147,7 +152,7 @@ impl Client {
 /// The code an app with `secret` shows `steps` steps from now.
 fn code(secret: &str, steps: i64) -> String {
     sc_auth::totp_at(
-        &sc_auth::decode_secret(secret).unwrap(),
+        &sc_auth::TotpSecret::from_base32(secret).unwrap(),
         Utc::now().timestamp() + steps * sc_auth::STEP_SECONDS,
     )
 }
@@ -196,6 +201,21 @@ async fn setup() -> sc_error::Result<Fixture> {
         None,
         apps.triggers(),
     )?)?;
+    // A second application, written by somebody else (security review
+    // 2026-11, §2: a session names the one application that issued it).
+    let shop = Application::new("Shop", "shop", FrameworkRef::new("code"))
+        .with_api(ApiConfig::new("rest", "/api"))
+        .with_table(sc_auth::USERS_TABLE.to_owned());
+    apps.mount(MountedApp::new_with(
+        shop,
+        Arc::new(CodeFramework::new(
+            "code",
+            AssetBundle::new().with("index.html", "<!doctype html>"),
+        )),
+        &catalog,
+        None,
+        apps.triggers(),
+    )?)?;
     let config = ServerConfig {
         base_domain: Some(BASE_DOMAIN.to_owned()),
         ..ServerConfig::default()
@@ -214,11 +234,16 @@ async fn setup() -> sc_error::Result<Fixture> {
     })
 }
 
-/// Turn on the signed-in `client`'s second factor, returning its secret and
-/// recovery codes. Uses the code of the step before now.
-async fn turn_on(client: &mut Client) -> (String, Vec<String>) {
+/// Turn on the signed-in `client`'s second factor, giving `password` again,
+/// returning its secret and recovery codes. Uses the code of the step before
+/// now.
+async fn turn_on(client: &mut Client, password: &str) -> (String, Vec<String>) {
     let (status, setup) = client
-        .send("POST", "/_feldspar/second-factor/setup", Some(json!({})))
+        .send(
+            "POST",
+            "/_feldspar/second-factor/setup",
+            Some(json!({ "password": password })),
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{setup}");
     let secret = setup["secret"].as_str().unwrap().to_owned();
@@ -256,7 +281,7 @@ async fn an_admin_signs_in_with_a_code_once_turned_on() -> sc_error::Result<()> 
         me["second_factor"].is_null(),
         "nothing is asked before it is on: {me}"
     );
-    let (secret, codes) = turn_on(&mut desk).await;
+    let (secret, codes) = turn_on(&mut desk, "admin-pw").await;
     let (_, status) = desk.send("GET", "/_feldspar/second-factor", None).await;
     assert_eq!(status["enabled"], json!(true));
     assert_eq!(status["recovery_codes_left"], json!(codes.len()));
@@ -503,7 +528,7 @@ async fn a_browser_answers_the_challenge_on_the_servers_page() -> sc_error::Resu
     let fx = setup().await?;
     let mut desk = Client::new(&fx.router, BASE_DOMAIN).await;
     desk.login("admin@example.com", "admin-pw").await;
-    let (secret, _) = turn_on(&mut desk).await;
+    let (secret, _) = turn_on(&mut desk, "admin-pw").await;
 
     let mut browser = Client::new(&fx.router, BASE_DOMAIN).await;
     browser.login("admin@example.com", "admin-pw").await;
@@ -590,6 +615,268 @@ async fn an_applications_session_is_nobody_on_the_admin_host() -> sc_error::Resu
     let (status, _) = desk
         .send("POST", "/_feldspar/second-factor/setup", Some(json!({})))
         .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    Ok(())
+}
+
+/// On an application's host an admin session (sent there when sign-in is
+/// shared across the base domain) is no session for the second factor's
+/// routes, so the application's script cannot enroll one on a visiting admin;
+/// and a session on its own host sets one up only with the password again
+/// (security review 2026-11, #3).
+#[tokio::test]
+async fn setup_needs_the_password_and_a_session_for_this_host() -> sc_error::Result<()> {
+    let fx = setup().await?;
+    let mut desk = Client::new(&fx.router, BASE_DOMAIN).await;
+    let (status, _) = desk.login("admin@example.com", "admin-pw").await;
+    assert_eq!(status, StatusCode::OK);
+    let admin_token = desk
+        .cookies
+        .get(SESSION)
+        .cloned()
+        .expect("a session cookie");
+    assert!(!admin_token.starts_with(sc_auth::APP_TOKEN_PREFIX));
+
+    // The admin's cookie, carried to an application's host.
+    let mut app = Client::new(&fx.router, CLUB).await;
+    app.cookies.insert(SESSION.to_owned(), admin_token);
+    for (method, route) in [
+        ("GET", "/_feldspar/second-factor"),
+        ("POST", "/_feldspar/second-factor/setup"),
+        ("POST", "/_feldspar/second-factor/enable"),
+        ("POST", "/_feldspar/second-factor/disable"),
+        ("POST", "/_feldspar/second-factor/recovery-codes"),
+    ] {
+        let body = (method == "POST").then(|| json!({ "password": "admin-pw", "code": "123456" }));
+        let (status, answer) = app.send(method, route, body).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{route}: {answer}");
+    }
+
+    // The member's own session on the application's host: no password, or a
+    // wrong one, sets nothing up; the right one does.
+    let mut member = Client::new(&fx.router, CLUB).await;
+    let (status, _) = member.login("member@example.com", "member-pw").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = member
+        .send("POST", "/_feldspar/second-factor/setup", Some(json!({})))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert!(body.to_string().contains("password"), "{body}");
+    let (status, _) = member
+        .send(
+            "POST",
+            "/_feldspar/second-factor/setup",
+            Some(json!({ "password": "not-it" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, body) = member
+        .send(
+            "POST",
+            "/_feldspar/second-factor/setup",
+            Some(json!({ "password": "member-pw" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["secret"].is_string());
+    Ok(())
+}
+
+/// The account's budget of wrong codes is counted before a code is checked,
+/// so a burst of concurrent guesses gets no more than the budget checked
+/// (security review 2026-11, #9).
+#[tokio::test]
+async fn concurrent_guesses_get_no_more_than_the_budget() -> sc_error::Result<()> {
+    let fx = setup().await?;
+    let mut desk = Client::new(&fx.router, BASE_DOMAIN).await;
+    desk.login("admin@example.com", "admin-pw").await;
+    turn_on(&mut desk, "admin-pw").await;
+    let mut laptop = Client::new(&fx.router, BASE_DOMAIN).await;
+    let (_, answer) = laptop.login("admin@example.com", "admin-pw").await;
+    let token = answer["second_factor"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Twenty wrong codes at once (from no address, so only the account's
+    // budget applies).
+    let guesses = (0..20).map(|i| {
+        let router = fx.router.clone();
+        let token = token.clone();
+        let cookies = laptop.cookies.clone();
+        async move {
+            let mut client = Client {
+                router,
+                host: BASE_DOMAIN.to_owned(),
+                cookies,
+            };
+            let code = format!("{:06}", 999_000 + i);
+            client
+                .send(
+                    "POST",
+                    "/_feldspar/second-factor/verify",
+                    Some(json!({ "token": token, "code": code })),
+                )
+                .await
+                .0
+        }
+    });
+    let statuses = futures::future::join_all(guesses).await;
+    let checked = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::UNAUTHORIZED)
+        .count();
+    let refused = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::TOO_MANY_REQUESTS)
+        .count();
+    assert_eq!(
+        (checked, refused),
+        (
+            sc_auth::MAX_GUESSES as usize,
+            20 - sc_auth::MAX_GUESSES as usize
+        ),
+        "{statuses:?}"
+    );
+    Ok(())
+}
+
+/// Turning a second factor on or off ends the account's other sessions and
+/// keeps the one that did it (security review 2026-11, #11).
+#[tokio::test]
+async fn changing_the_second_factor_ends_the_other_sessions() -> sc_error::Result<()> {
+    let fx = setup().await?;
+    let mut desk = Client::new(&fx.router, BASE_DOMAIN).await;
+    desk.login("admin@example.com", "admin-pw").await;
+    let mut stolen = Client::new(&fx.router, BASE_DOMAIN).await;
+    stolen.login("admin@example.com", "admin-pw").await;
+    let (status, _) = stolen.send("GET", "/api/tables", None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (secret, _) = turn_on(&mut desk, "admin-pw").await;
+    let (status, _) = stolen.send("GET", "/api/tables", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "the other session ended");
+    let (status, _) = desk.send("GET", "/api/tables", None).await;
+    assert_eq!(status, StatusCode::OK, "the one that turned it on goes on");
+
+    // A second session, past the code; then turning it off ends that one.
+    let mut laptop = Client::new(&fx.router, BASE_DOMAIN).await;
+    let (_, answer) = laptop.login("admin@example.com", "admin-pw").await;
+    let token = answer["second_factor"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (status, _) = laptop
+        .send(
+            "POST",
+            "/_feldspar/second-factor/verify",
+            Some(json!({ "token": token, "code": code(&secret, 0) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = desk
+        .send(
+            "POST",
+            "/_feldspar/second-factor/disable",
+            Some(json!({ "code": code(&secret, 1) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _) = laptop.send("GET", "/api/tables", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = desk.send("GET", "/api/tables", None).await;
+    assert_eq!(status, StatusCode::OK);
+    Ok(())
+}
+
+/// An application's session names the application that issued it (security
+/// review 2026-11, §2; H2.1). Carried to another application's host — as a
+/// shared sign-in cookie is — it is still the user there (`whoami`), but it
+/// is not that application's session, so the second factor's routes there
+/// answer as to nobody: the other application's script cannot enroll a second
+/// factor on, or turn one off for, an account that only visited it.
+#[tokio::test]
+async fn a_session_names_the_application_that_issued_it() -> sc_error::Result<()> {
+    let fx = setup().await?;
+    let mut club = Client::new(&fx.router, CLUB).await;
+    let (status, me) = club.login("member@example.com", "member-pw").await;
+    assert_eq!(status, StatusCode::OK, "{me}");
+    let token = club
+        .cookies
+        .get(SESSION)
+        .cloned()
+        .expect("a session cookie");
+    assert!(token.starts_with(sc_auth::APP_TOKEN_PREFIX));
+    assert!(
+        matches!(
+            sc_auth::SessionScope::of_token(&token),
+            sc_auth::SessionScope::App(_)
+        ),
+        "the token names its application"
+    );
+    let (status, _) = club.send("GET", "/_feldspar/second-factor", None).await;
+    assert_eq!(status, StatusCode::OK, "its own application's session");
+
+    let mut shop = Client::new(&fx.router, SHOP).await;
+    shop.cookies.insert(SESSION.to_owned(), token);
+    let (status, who) = shop.send("GET", "/api/whoami", None).await;
+    assert_eq!(status, StatusCode::OK, "{who}");
+    assert_eq!(
+        who["email"],
+        json!("member@example.com"),
+        "still the user here"
+    );
+    for (method, route) in [
+        ("GET", "/_feldspar/second-factor"),
+        ("POST", "/_feldspar/second-factor/setup"),
+        ("POST", "/_feldspar/second-factor/enable"),
+        ("POST", "/_feldspar/second-factor/disable"),
+        ("POST", "/_feldspar/second-factor/recovery-codes"),
+    ] {
+        let body = (method == "POST").then(|| json!({ "password": "member-pw", "code": "123456" }));
+        let (status, answer) = shop.send(method, route, body).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{route}: {answer}");
+    }
+    Ok(())
+}
+
+/// A sign-in waiting for its second factor ends when the account's password
+/// is changed meanwhile — here by an admin — even with the right code
+/// (security review 2026-11, B4; H2.3): the challenge was issued under the
+/// old credentials.
+#[tokio::test]
+async fn a_password_reset_ends_a_sign_in_waiting_for_its_code() -> sc_error::Result<()> {
+    let fx = setup().await?;
+    let mut member = Client::new(&fx.router, CLUB).await;
+    let (_, me) = member.login("member@example.com", "member-pw").await;
+    let id = me["id"].as_str().expect("an id").to_owned();
+    let (secret, _) = turn_on(&mut member, "member-pw").await;
+
+    let mut laptop = Client::new(&fx.router, CLUB).await;
+    let (_, answer) = laptop.login("member@example.com", "member-pw").await;
+    let token = answer["second_factor"]["token"]
+        .as_str()
+        .expect("a challenge")
+        .to_owned();
+
+    let mut desk = Client::new(&fx.router, BASE_DOMAIN).await;
+    desk.login("admin@example.com", "admin-pw").await;
+    let (status, body) = desk
+        .send("POST", &format!("/api/users/{id}/random-password"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = laptop
+        .send(
+            "POST",
+            "/_feldspar/second-factor/verify",
+            Some(json!({ "token": token, "code": code(&secret, 0) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert!(!laptop.signed_in());
+    // The member's own session ended with the old password too.
+    let (status, _) = member.send("GET", "/_feldspar/second-factor", None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     Ok(())
 }

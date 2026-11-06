@@ -18,6 +18,20 @@
 //! The concrete admin handlers (login, tables, rows, users) live in
 //! [`admin_handlers`]; they are resolved by name against the [`sc_api`] admin
 //! endpoint set at dispatch time.
+//!
+//! Indexing, string slicing and unchecked arithmetic are warned about here
+//! (security review 2026-11, §6; TODO-type-hardening H1.7) when built with
+//! `--cfg feldspar_advisory_lints` (the CI `clippy-advisory` job): this crate
+//! handles request input, where each is a panic a request can cause. Advisory
+//! until the existing hits are fixed, so they do not fail `-D warnings`.
+#![cfg_attr(
+    feldspar_advisory_lints,
+    warn(
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::arithmetic_side_effects
+    )
+)]
 
 /// The administrator's tasks' access to the primary database and to the raw
 /// file stores (TODO-code-quality Q3.5, Q3.6): the one `Unchecked::system` the
@@ -53,6 +67,7 @@ mod file_response;
 mod fit_progress;
 mod handler;
 mod handlers;
+mod html_page;
 mod i18n;
 mod live;
 // An application's own strings: the Translations screen's server half
@@ -66,9 +81,11 @@ mod mcp_servers;
 mod models;
 mod module_routes;
 mod modules;
+mod notices;
 mod oauth;
 mod observe;
 mod posterior;
+mod raw_routes;
 mod reload;
 mod requests;
 mod restore_host;
@@ -76,6 +93,7 @@ mod router;
 mod second_factor;
 mod security;
 mod serve;
+mod session;
 mod streams;
 mod system;
 mod systemd;
@@ -91,6 +109,7 @@ pub mod translations;
 mod triggers;
 mod uploads;
 mod webhooks;
+mod ws;
 
 pub use admin_host::{AdminHost, HANDOFF_ROUTE, HANDOFF_TTL};
 pub use agents::{AgentServices, install_agents, install_agents_on};
@@ -104,6 +123,7 @@ pub use oauth::{
     COMPLETE_ROUTE as OAUTH_COMPLETE_ROUTE, CONSENT_ROUTE as OAUTH_CONSENT_ROUTE,
     PROVIDERS_ROUTE as OAUTH_PROVIDERS_ROUTE,
 };
+pub use raw_routes::{RouteAuth, raw_routes};
 pub use second_factor::{
     CHALLENGE_COOKIE as SECOND_FACTOR_COOKIE, DISABLE_ROUTE as SECOND_FACTOR_DISABLE_ROUTE,
     ENABLE_ROUTE as SECOND_FACTOR_ENABLE_ROUTE, PAGE_ROUTE as SECOND_FACTOR_PAGE_ROUTE,
@@ -203,6 +223,10 @@ pub use models::{
     ModelServices, StanSettings, install_model_host, install_models, install_models_with,
 };
 pub use modules::ModuleServices;
+pub use notices::{
+    AdminNotice, RLS_REPORT_TITLE, add_notice, dismiss_notice, list_notices, report_rls_elevation,
+    rls_elevation_report,
+};
 pub use observe::STREAM_OBSERVE_ROUTE;
 pub use reload::{ReloadReport, reload_all, spawn_sighup_reload};
 pub use requests::{AppRequests, MAX_RESPONSE_BYTES, install_app_requests};

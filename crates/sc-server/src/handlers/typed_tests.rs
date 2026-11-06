@@ -65,8 +65,14 @@ async fn registry(teardown: &sc_test_harness::Teardown) -> HandlerRegistry {
         apps: Arc::new(AppMounts::new(catalog)),
     };
     let mut reg = HandlerRegistry::new();
-    reg.register_admin("greet", typed(&state, greet));
-    reg.register_admin("created", typed(&state, created));
+    reg.handle(
+        sc_api::HandlerId::<sc_api::AdminOnly>::new("greet"),
+        typed(&state, greet),
+    );
+    reg.handle(
+        sc_api::HandlerId::<sc_api::AdminOnly>::new("created"),
+        typed(&state, created),
+    );
     reg
 }
 

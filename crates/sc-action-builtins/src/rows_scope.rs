@@ -310,7 +310,7 @@ fn typed_bindings(ctx: &ActionContext<'_>) -> EventBindings {
             // Neither a payload nor a run context has columns behind it —
             // whatever its sender, or the step before this one, put in it is
             // read as its own JSON shape. Nor does a guest session's id.
-            Ambient::Payload | Ambient::Context | Ambient::Session => None,
+            Ambient::Payload | Ambient::Context | Ambient::Session | Ambient::Request => None,
         };
         typed_value(table, field, json)
     })

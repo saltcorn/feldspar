@@ -902,3 +902,98 @@ async fn a_variable_naming_a_column_is_still_checked_against_the_catalog() -> Re
     assert!(body.get("errors").is_some(), "{body}");
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Presented values (TODO-type-hardening H7.6)
+// ---------------------------------------------------------------------------
+
+/// A root field's `request` argument presents values to the table's ownership
+/// formula as `_request`: `shares(request: { token })` answers the one row
+/// with that token, on the runtime check and under RLS, and nothing without.
+#[tokio::test]
+async fn a_root_fields_request_argument_presents_a_token() -> Result<()> {
+    for rls in [false, true] {
+        let db = TestDb::new().await?;
+        let (cat, _) = setup(&db).await?;
+        db.client()
+            .await?
+            .batch_execute(
+                "CREATE TABLE shares (id bigint primary key, title text, token text UNIQUE); \
+                 INSERT INTO shares VALUES (1, 'one', 'tok-1'), (2, 'two', 'tok-2')",
+            )
+            .await
+            .map_err(|e| sc_error::Error::database(e.to_string()))?;
+        cat.reload().await?;
+        bootstrap_table_meta(&cat).await?;
+        let mut shares = TableMeta::new("shares");
+        shares.set_ownership_formula(Some("_read && token === _request.token"));
+        shares.set_rls_enabled(rls);
+        save_table_meta(&cat, &shares).await?;
+        if rls {
+            enable_rls(&cat, &cat.require("shares")?).await?;
+        }
+        let api = GraphqlProvider::project_with(
+            "/graphql",
+            &[cat.require("shares")?],
+            GraphqlLimits::new(),
+        )?;
+        let anyone = caller("anyone@example.com")?;
+        let user = Some(&anyone);
+
+        let body = run_as(
+            &api,
+            &cat,
+            user,
+            r#"{ shares(request: { token: "tok-1" }) { title } }"#,
+        )
+        .await?;
+        assert_eq!(
+            data(&body)["shares"],
+            json!([{ "title": "one" }]),
+            "rls={rls}"
+        );
+        let body = run_as(&api, &cat, user, "{ shares { title } }").await?;
+        assert_eq!(
+            data(&body)["shares"],
+            json!([]),
+            "rls={rls}: nothing presented"
+        );
+        let body = run_as(
+            &api,
+            &cat,
+            user,
+            r#"{ shares_by_pk(id: 2, request: { token: "tok-2" }) { title } }"#,
+        )
+        .await?;
+        assert_eq!(
+            data(&body)["shares_by_pk"],
+            json!({ "title": "two" }),
+            "rls={rls}"
+        );
+        let body = run_as(
+            &api,
+            &cat,
+            user,
+            r#"{ shares_by_pk(id: 2, request: { token: "tok-1" }) { title } }"#,
+        )
+        .await?;
+        assert_eq!(
+            data(&body)["shares_by_pk"],
+            json!(null),
+            "rls={rls}: another's token"
+        );
+        // A value that is not a string is refused, naming the argument.
+        let body = run_as(
+            &api,
+            &cat,
+            user,
+            "{ shares(request: { token: 5 }) { title } }",
+        )
+        .await?;
+        assert!(
+            body["errors"].to_string().contains("request.token"),
+            "rls={rls}: {body}"
+        );
+    }
+    Ok(())
+}

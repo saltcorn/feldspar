@@ -155,6 +155,7 @@ async fn check(
             row: relation_binding(lines),
             user: user_map,
             ambient: Default::default(),
+            now: chrono::Utc::now(),
         })
         .await
         .unwrap_or_else(|e| panic!("{src}: reified: {e}"));

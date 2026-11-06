@@ -9,6 +9,10 @@
 //! draws, and (milestone 31, 2.6) its `writePosterior` from a workflow step
 //! after `fit_model` and under a caller's authority. The Python handle is
 //! `sc-python`'s `python_models.rs`.
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 
 use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_catalog::Authority;
@@ -1196,7 +1200,7 @@ async fn a_callers_write_back_is_held_to_the_callers_own_rights() -> Result<()> 
         .await;
 
     // Caused by a role-40 user.
-    let caller = sc_catalog::Principal::new(
+    let caller = sc_catalog::Principal::recorded(
         Role::of(40),
         Some(json!({
             "id": "6b1c2d64-3f3a-4a52-9a8b-0f4d2b7f1a11",

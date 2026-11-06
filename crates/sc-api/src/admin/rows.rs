@@ -24,7 +24,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // endpoint has a bound even when the caller forgets one.
     set.register(
         Endpoint::new(
-            "listRows",
+            ids::LIST_ROWS,
             Method::Get,
             api()
                 .lit("tables")
@@ -32,8 +32,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("rows"),
         )
         .query(row_read_params())
-        .output(TypeSchema::array(TypeSchema::json()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(TypeSchema::json())),
     );
 
     // How many rows there are, without reading them. The table page shows this
@@ -41,7 +40,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // row to print one number would cost what the data costs.
     set.register(
         Endpoint::new(
-            "countRows",
+            ids::COUNT_ROWS,
             Method::Get,
             api()
                 .lit("tables")
@@ -60,13 +59,12 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "count",
             TypeSchema::int(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     set.register(
         Endpoint::new(
-            "createRow",
+            ids::CREATE_ROW,
             Method::Post,
             api()
                 .lit("tables")
@@ -74,13 +72,12 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("rows"),
         )
         .input(TypeSchema::json())
-        .output(TypeSchema::json())
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::json()),
     );
 
     set.register(
         Endpoint::new(
-            "updateRow",
+            ids::UPDATE_ROW,
             Method::Put,
             api()
                 .lit("tables")
@@ -89,29 +86,25 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .param("id", ValueType::Text),
         )
         .input(TypeSchema::json())
-        .output(TypeSchema::json())
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::json()),
     );
 
-    set.register(
-        Endpoint::new(
-            "deleteRow",
-            Method::Delete,
-            api()
-                .lit("tables")
-                .param("table", ValueType::Text)
-                .lit("rows")
-                .param("id", ValueType::Text),
-        )
-        .auth(AuthRequirement::admin()),
-    );
+    set.register(Endpoint::new(
+        ids::DELETE_ROW,
+        Method::Delete,
+        api()
+            .lit("tables")
+            .param("table", ValueType::Text)
+            .lit("rows")
+            .param("id", ValueType::Text),
+    ));
 
     // Empty the table: every row, in one statement, keeping the table, its
     // fields and its settings. The table page's "Delete all rows". Answers how
     // many rows went, which is the one thing the admin cannot see afterwards.
     set.register(
         Endpoint::new(
-            "deleteAllRows",
+            ids::DELETE_ALL_ROWS,
             Method::Delete,
             api()
                 .lit("tables")
@@ -121,8 +114,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::int(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     //
@@ -136,7 +128,7 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new(
-            "getRowHistory",
+            ids::GET_ROW_HISTORY,
             Method::Get,
             api()
                 .lit("tables")
@@ -146,7 +138,6 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("history"),
         )
         .output(TypeSchema::array(history_entry_schema()))
-        .auth(AuthRequirement::admin())
         .mcp(
             McpTag::new(
                 "Read the history of one row of a table that keeps row history: \
@@ -162,7 +153,7 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new(
-            "listDeletedRows",
+            ids::LIST_DELETED_ROWS,
             Method::Get,
             api()
                 .lit("tables")
@@ -174,7 +165,6 @@ pub(super) fn register(set: &mut EndpointSet) {
             QueryParam::new("offset", ValueType::Int),
         ])
         .output(TypeSchema::array(deleted_row_schema()))
-        .auth(AuthRequirement::admin())
         .mcp(
             McpTag::new(
                 "List the rows deleted from a table that keeps row history and not \
@@ -190,7 +180,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // `seq` from the row's history; `row` is null when it did not exist then.
     set.register(
         Endpoint::new(
-            "getRowAsOf",
+            ids::GET_ROW_AS_OF,
             Method::Get,
             api()
                 .lit("tables")
@@ -200,7 +190,6 @@ pub(super) fn register(set: &mut EndpointSet) {
         )
         .query([QueryParam::new("as_of", ValueType::Text).required()])
         .output(row_as_of_schema())
-        .auth(AuthRequirement::admin())
         .mcp(
             McpTag::new(
                 "Rebuild one row of a table that keeps row history as it was at \
@@ -214,7 +203,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     );
 
     set.register(
-        Endpoint::new("listChangesets", Method::Get, api().lit("changesets"))
+        Endpoint::new(ids::LIST_CHANGESETS, Method::Get, api().lit("changesets"))
             .query([
                 QueryParam::new("user", ValueType::Text),
                 QueryParam::new("table", ValueType::Text),
@@ -224,7 +213,6 @@ pub(super) fn register(set: &mut EndpointSet) {
                 QueryParam::new("offset", ValueType::Int),
             ])
             .output(TypeSchema::array(changeset_summary_schema()))
-            .auth(AuthRequirement::admin())
             .mcp(
                 McpTag::new(
                     "List changesets, newest first: each is one user action (a \
@@ -239,12 +227,11 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new(
-            "getChangeset",
+            ids::GET_CHANGESET,
             Method::Get,
             api().lit("changesets").param("id", ValueType::Text),
         )
         .output(changeset_detail_schema())
-        .auth(AuthRequirement::admin())
         .mcp(
             McpTag::new(
                 "Read one changeset: who did it, when and from where, and every row \
@@ -262,7 +249,7 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new(
-            "restoreRow",
+            ids::RESTORE_ROW,
             Method::Post,
             api()
                 .lit("tables")
@@ -272,7 +259,6 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("restore"),
         )
         .output(restored_row_schema())
-        .auth(AuthRequirement::admin())
         .mcp(
             McpTag::new(
                 "Put a deleted row back, as it was when it was deleted, with the same \
@@ -288,7 +274,7 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new(
-            "revertRow",
+            ids::REVERT_ROW,
             Method::Post,
             api()
                 .lit("tables")
@@ -302,7 +288,6 @@ pub(super) fn register(set: &mut EndpointSet) {
             TypeSchema::int(),
         )]))
         .output(restored_row_schema())
-        .auth(AuthRequirement::admin())
         .mcp(
             McpTag::new(
                 "Set one row back to how it was at one of its versions (the \
@@ -317,7 +302,7 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new(
-            "undoChangeset",
+            ids::UNDO_CHANGESET,
             Method::Post,
             api()
                 .lit("changesets")
@@ -331,7 +316,6 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("force", TypeSchema::optional(TypeSchema::bool())),
         ]))
         .output(undo_outcome_schema())
-        .auth(AuthRequirement::admin())
         .mcp(
             McpTag::new(
                 "Undo a changeset: reverse what it did to every row (or only to \
@@ -360,7 +344,7 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new(
-            "exportTableCsv",
+            ids::EXPORT_TABLE_CSV,
             Method::Get,
             api()
                 .lit("tables")
@@ -370,8 +354,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([
             StructField::new("filename", TypeSchema::text()),
             StructField::new("csv", TypeSchema::text()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // Every row that parses and validates is written; the rest come back as
@@ -381,7 +364,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // an admin must be told apart from having added them all over again.
     set.register(
         Endpoint::new(
-            "importTableCsv",
+            ids::IMPORT_TABLE_CSV,
             Method::Post,
             api()
                 .lit("tables")
@@ -396,8 +379,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("inserted", TypeSchema::int()),
             StructField::new("updated", TypeSchema::int()),
             StructField::new("errors", TypeSchema::array(TypeSchema::text())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 }
 

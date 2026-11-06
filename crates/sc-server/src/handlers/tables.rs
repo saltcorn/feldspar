@@ -8,7 +8,7 @@ use super::*;
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
 
-    reg.register_admin("listTables", {
+    reg.handle(sc_api::handler_ids::LIST_TABLES, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -25,7 +25,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createTable", {
+    reg.handle(sc_api::handler_ids::CREATE_TABLE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -61,7 +61,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createTableFromCsv", {
+    reg.handle(sc_api::handler_ids::CREATE_TABLE_FROM_CSV, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -83,7 +83,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &name,
                     &optional_str(obj, "database"),
                     &document,
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 let rls = catalog.primary_info().capabilities().row_level_security;
@@ -96,7 +96,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createTableFromGeoFile", {
+    reg.handle(sc_api::handler_ids::CREATE_TABLE_FROM_GEO_FILE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -116,7 +116,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &file_name,
                     &bytes,
                     Some(layer.trim()).filter(|l| !l.is_empty()),
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 let rls = catalog.primary_info().capabilities().row_level_security;
@@ -130,7 +130,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("dropTable", {
+    reg.handle(sc_api::handler_ids::DROP_TABLE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -160,7 +160,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &[schema_edit::Operation::DropTable {
                         table: table.clone(),
                     }],
-                    &schema_edit::ApplyOptions::default(),
+                    &schema_edit::ApplyOptions::by(ctx.who.editor()),
                 )
                 .await?;
                 Ok(HandlerResponse::ok(json!({ "dropped": table })))
@@ -168,7 +168,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("renameTable", {
+    reg.handle(sc_api::handler_ids::RENAME_TABLE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -194,7 +194,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateTable", {
+    reg.handle(sc_api::handler_ids::UPDATE_TABLE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -219,7 +219,10 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                         table: table.name.clone(),
                         settings,
                     }],
-                    &schema_edit::ApplyOptions::default(),
+                    // A person in the admin UI may change an RLS table's
+                    // access rules; an MCP client's endpoint tool, calling
+                    // this same handler, may not (TODO-type-hardening H8.5).
+                    &schema_edit::ApplyOptions::by(ctx.who.editor()),
                 )
                 .await?;
                 let rls = catalog.primary_info().capabilities().row_level_security;
@@ -233,7 +236,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listMetadataTables", {
+    reg.handle(sc_api::handler_ids::LIST_METADATA_TABLES, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -244,7 +247,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createMetadataTable", {
+    reg.handle(sc_api::handler_ids::CREATE_METADATA_TABLE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -263,7 +266,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listTableProviders", {
+    reg.handle(sc_api::handler_ids::LIST_TABLE_PROVIDERS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -288,7 +291,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createProvidedTable", {
+    reg.handle(sc_api::handler_ids::CREATE_PROVIDED_TABLE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -317,7 +320,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateProvidedTable", {
+    reg.handle(sc_api::handler_ids::UPDATE_PROVIDED_TABLE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -358,7 +361,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteTableSettings", {
+    reg.handle(sc_api::handler_ids::DELETE_TABLE_SETTINGS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -369,13 +372,14 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 // policies a forgotten `rls_enabled` had turned on is the schema
                 // editor's rule, not this handler's.
                 let name = ctx.path_param("table")?.to_owned();
-                let deleted = schema_edit::forget_table_settings(&catalog, &name).await?;
+                let deleted =
+                    schema_edit::forget_table_settings(&catalog, &name, &ctx.who.editor()).await?;
                 Ok(HandlerResponse::ok(json!({ "deleted": deleted })))
             }
         }
     });
 
-    reg.register_admin("listOrphanTableSettings", {
+    reg.handle(sc_api::handler_ids::LIST_ORPHAN_TABLE_SETTINGS, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();

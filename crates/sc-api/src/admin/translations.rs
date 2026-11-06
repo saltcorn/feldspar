@@ -17,22 +17,21 @@ pub(super) fn register(set: &mut EndpointSet) {
     // describing a shape that does not exist.
     set.register(
         Endpoint::new(
-            "getTranslations",
+            ids::GET_TRANSLATIONS,
             Method::Get,
             api()
                 .lit("applications")
                 .param("id", ValueType::Uuid)
                 .lit("translations"),
         )
-        .output(TypeSchema::json())
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::json()),
     );
 
     // Which locales the application serves, and which one it falls back to.
     // Turning one off does **not** delete its catalogue.
     set.register(
         Endpoint::new(
-            "setApplicationLocales",
+            ids::SET_APPLICATION_LOCALES,
             Method::Put,
             api()
                 .lit("applications")
@@ -43,8 +42,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("locales", TypeSchema::array(TypeSchema::text())),
             StructField::new("default_locale", TypeSchema::optional(TypeSchema::text())),
         ]))
-        .output(TypeSchema::json())
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::json()),
     );
 
     // Save one locale's catalogue, whole. Refused — naming the key — for a
@@ -53,7 +51,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // one by hand is owed the same guarantee.
     set.register(
         Endpoint::new(
-            "saveTranslations",
+            ids::SAVE_TRANSLATIONS,
             Method::Put,
             api()
                 .lit("applications")
@@ -65,8 +63,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             "messages",
             TypeSchema::json(),
         )]))
-        .output(TypeSchema::json())
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::json()),
     );
 
     // **Translate missing**: fill everything this locale has not got through
@@ -74,7 +71,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // placeholder check rejected (D9).
     set.register(
         Endpoint::new(
-            "translateMissing",
+            ids::TRANSLATE_MISSING,
             Method::Post,
             api()
                 .lit("applications")
@@ -83,8 +80,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .param("locale", ValueType::Text)
                 .lit("fill"),
         )
-        .output(TypeSchema::json())
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::json()),
     );
 
     // Strings every application serves under its own: the same screen payload,
@@ -92,19 +88,18 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new(
-            "getInstanceTranslations",
+            ids::GET_INSTANCE_TRANSLATIONS,
             Method::Get,
             api().lit("translations"),
         )
-        .output(TypeSchema::json())
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::json()),
     );
 
     // Save one locale of the shared catalogue, whole: a key left out is
     // removed. Placeholders are checked as an application's are.
     set.register(
         Endpoint::new(
-            "saveInstanceTranslations",
+            ids::SAVE_INSTANCE_TRANSLATIONS,
             Method::Put,
             api().lit("translations").param("locale", ValueType::Text),
         )
@@ -112,22 +107,20 @@ pub(super) fn register(set: &mut EndpointSet) {
             "messages",
             TypeSchema::json(),
         )]))
-        .output(TypeSchema::json())
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::json()),
     );
 
     // **Translate missing** for the shared catalogue: every key another locale
     // of it has, filled into this one by the configured LLM.
     set.register(
         Endpoint::new(
-            "translateInstanceMissing",
+            ids::TRANSLATE_INSTANCE_MISSING,
             Method::Post,
             api()
                 .lit("translations")
                 .param("locale", ValueType::Text)
                 .lit("fill"),
         )
-        .output(TypeSchema::json())
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::json()),
     );
 }

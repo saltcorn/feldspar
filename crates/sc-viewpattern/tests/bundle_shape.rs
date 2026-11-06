@@ -17,6 +17,10 @@
 //! Runs in every `cargo test` that has a built bundle. A checkout built with
 //! `SC_BUILD_ADMIN=0` has none, and the test says so and passes.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use std::path::PathBuf;
 use std::process::Command;
 

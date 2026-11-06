@@ -9,6 +9,10 @@
 //! stubbed as in `build_updates_client.rs`; the registry is process-wide, which
 //! is why this is its own test binary.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;

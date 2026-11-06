@@ -26,6 +26,14 @@
 //! - and every one of these is **admin-only**, like every other configuration
 //!   endpoint.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 
 use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_types::Role;
@@ -391,10 +399,19 @@ async fn furnish(server: &mut Server) -> sc_error::Result<()> {
                 "configuration": { "code": "row.title" },
                 "min_role": null,
                 "enabled": true,
+                "runs_as_system": true,
             })),
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
+    // Approved by the person at the console (TODO-type-hardening H8.10), which
+    // a restore that person makes keeps.
+    let id = body["id"].as_str().expect("the trigger's id").to_owned();
+    let (status, body) = server
+        .client
+        .send("POST", &format!("/api/triggers/{id}/system-approval"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     let (certificate, private_key) = self_signed();
     let (status, body) = server
@@ -757,6 +774,9 @@ async fn a_backup_restores_into_a_second_installation() -> sc_error::Result<()> 
     // here, and it fires on the table that was restored beside it.
     assert_eq!(trigger["error"], Value::Null);
     assert_eq!(trigger["channel"], json!("books"));
+    // A person restored it, so its approval to run as system came with it, for
+    // the same configuration (TODO-type-hardening H8.10).
+    assert_eq!(trigger["system_state"], json!("approved"), "{trigger}");
 
     // The private key travelled — a backup that redacted it would restore a server
     // that cannot serve HTTPS — and it is *stored*, not merely echoed.
@@ -2440,10 +2460,17 @@ async fn every_backup_route_is_admin_only() -> sc_error::Result<()> {
 /// Set once for the whole binary, as `git_store_api`'s is: the environment is
 /// process-wide and these tests run in parallel. Only this test defines a store
 /// the restore has to place; every other one prepares its store first.
+#[allow(
+    unsafe_code,
+    reason = "the binary's data directory is set once, through the environment the server reads"
+)]
 fn data_dir() -> &'static std::path::Path {
     static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
         let dir = temp_dir();
+        // SAFETY: test-only: written once per binary, under the `OnceLock`,
+        // and never changed after. A concurrent `getenv` in another test is
+        // the test-code race security review 2026-11 (F §1) records.
         unsafe { std::env::set_var(sc_files::DATA_DIR_ENV, &dir) };
         dir
     })

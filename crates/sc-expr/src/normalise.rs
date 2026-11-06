@@ -157,6 +157,24 @@ fn render(
                 }
             }
         }
+        // `Date.now()` is the statement's instant (TODO-type-hardening H7.2),
+        // bound by the evaluator as `__scNow`, so it agrees with the SQL path.
+        Ast::Call { callee, args, .. } if args.is_empty() && is_date_now(callee, locals) => {
+            out.push_str("__scNow");
+        }
+        // `x.getTime()`: milliseconds of a `Date`, or of the ISO text a date
+        // column is bound as, and null for null — as the SQL path reads it.
+        Ast::Call { callee, args, .. }
+            if args.is_empty()
+                && matches!(&**callee, Ast::Member { prop: MemberProp::Static(m), .. } if m == "getTime") =>
+        {
+            let Ast::Member { obj, .. } = &**callee else {
+                return;
+            };
+            out.push_str("__scT(");
+            render(obj, locals, hoisted, out);
+            out.push(')');
+        }
         Ast::Call {
             callee,
             args,
@@ -168,6 +186,16 @@ fn render(
                 if i > 0 {
                     out.push_str(", ");
                 }
+                render(a, locals, hoisted, out);
+            }
+            out.push(')');
+        }
+        // `new Date()` is the statement's instant, and `new Date(x)` of a null
+        // is null rather than 1970, as `new Date(<null column>)` is in SQL.
+        Ast::NewDate(args) if args.is_empty() => out.push_str("new Date(__scNow)"),
+        Ast::NewDate(args) if args.len() == 1 => {
+            out.push_str("__scDate(");
+            for a in args {
                 render(a, locals, hoisted, out);
             }
             out.push(')');
@@ -201,10 +229,10 @@ fn render(
             BinaryOp::And => infix("&&", l, r, locals, hoisted, out),
             BinaryOp::Or => infix("||", l, r, locals, hoisted, out),
             BinaryOp::Nullish => infix("??", l, r, locals, hoisted, out),
-            BinaryOp::Lt => guarded("<", l, r, locals, hoisted, out),
-            BinaryOp::LtEq => guarded("<=", l, r, locals, hoisted, out),
-            BinaryOp::Gt => guarded(">", l, r, locals, hoisted, out),
-            BinaryOp::GtEq => guarded(">=", l, r, locals, hoisted, out),
+            BinaryOp::Lt => compared("<", l, r, locals, hoisted, out),
+            BinaryOp::LtEq => compared("<=", l, r, locals, hoisted, out),
+            BinaryOp::Gt => compared(">", l, r, locals, hoisted, out),
+            BinaryOp::GtEq => compared(">=", l, r, locals, hoisted, out),
             BinaryOp::Add => guarded("+", l, r, locals, hoisted, out),
             BinaryOp::Sub => guarded("-", l, r, locals, hoisted, out),
             BinaryOp::Mul => guarded("*", l, r, locals, hoisted, out),
@@ -301,6 +329,20 @@ fn equality(
     out: &mut String,
 ) {
     let op = if negated { "!==" } else { "===" };
+    // Two instants are equal when their times are: `===` on two `Date`s is
+    // identity, and a date column is bound as text (TODO-type-hardening H7.2).
+    if matches!(l, Ast::NewDate(_)) || matches!(r, Ast::NewDate(_)) {
+        out.push_str("(((x, y) => x === null || y === null ? x ");
+        out.push_str(op);
+        out.push_str(" y : __scT(x) ");
+        out.push_str(op);
+        out.push_str(" __scT(y))(");
+        render(l, locals, hoisted, out);
+        out.push_str(", ");
+        render(r, locals, hoisted, out);
+        out.push_str("))");
+        return;
+    }
     let callers: Vec<&str> = if matches!(l, Ast::Null) || matches!(r, Ast::Null) {
         Vec::new()
     } else {
@@ -361,6 +403,36 @@ fn guarded(
     out.push_str("))");
 }
 
+/// An ordered comparison: [`guarded`], and when either side constructs a
+/// `Date`, over both sides' times (TODO-type-hardening H7.2), so a date column
+/// bound as text compares with `new Date()` as the SQL path compares instants.
+fn compared(
+    op: &str,
+    l: &Ast,
+    r: &Ast,
+    locals: &mut Vec<String>,
+    hoisted: &BTreeMap<String, String>,
+    out: &mut String,
+) {
+    if !matches!(l, Ast::NewDate(_)) && !matches!(r, Ast::NewDate(_)) {
+        return guarded(op, l, r, locals, hoisted, out);
+    }
+    out.push_str("(((x, y) => x === null || y === null ? null : __scT(x) ");
+    out.push_str(op);
+    out.push_str(" __scT(y))(");
+    render(l, locals, hoisted, out);
+    out.push_str(", ");
+    render(r, locals, hoisted, out);
+    out.push_str("))");
+}
+
+/// Whether `callee` is `Date.now`, the global's.
+fn is_date_now(callee: &Ast, locals: &[String]) -> bool {
+    matches!(callee, Ast::Member { obj, prop: MemberProp::Static(m), .. }
+        if m == "now"
+            && matches!(&**obj, Ast::Ident(d) if d == "Date" && !locals.iter().any(|l| l == d)))
+}
+
 /// The ambient object this expression names, unshadowed by an arrow parameter.
 ///
 /// Every ambient object gets the same null guard, and it is applied on syntax
@@ -398,6 +470,10 @@ fn render_str(s: &str, out: &mut String) {
 
 /// A number literal. Integral values in the exact range print without a
 /// decimal point; Rust's shortest-round-trip `Display` covers the rest.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the value is integral and within 2^53, so the cast is exact"
+)]
 fn render_num(n: f64, out: &mut String) {
     const MAX_EXACT_INT: f64 = 9_007_199_254_740_992.0; // 2^53
     if n.fract() == 0.0 && n.abs() <= MAX_EXACT_INT {
@@ -433,10 +509,35 @@ mod tests {
     }
 
     #[test]
-    fn new_date_renders_as_itself() {
-        assert_eq!(js("new Date()"), "new Date()");
-        assert_eq!(js("new Date"), "new Date()");
-        assert_eq!(js("new Date(start)"), "new Date(start)");
+    fn new_date_is_the_statements_instant_and_null_safe() {
+        assert_eq!(js("new Date()"), "new Date(__scNow)");
+        assert_eq!(js("new Date"), "new Date(__scNow)");
+        assert_eq!(js("new Date(start)"), "__scDate(start)");
+        assert_eq!(js("new Date(2024, 1)"), "new Date(2024, 1)");
+        assert_eq!(js("Date.now()"), "__scNow");
+        assert_eq!(js("start.getTime()"), "__scT(start)");
+        // An arrow parameter called `Date` is not the global.
+        assert_eq!(
+            js("[1].map(Date => Date.now())"),
+            "[1].map(((Date) => Date.now()))"
+        );
+    }
+
+    #[test]
+    fn a_comparison_with_a_constructed_date_compares_times() {
+        assert_eq!(
+            js("due <= new Date()"),
+            "(((x, y) => x === null || y === null ? null : __scT(x) <= __scT(y))(due, new Date(__scNow)))"
+        );
+        assert_eq!(
+            js("due === new Date(start)"),
+            "(((x, y) => x === null || y === null ? x === y : __scT(x) === __scT(y))(due, __scDate(start)))"
+        );
+        // Two columns compare as they always have.
+        assert_eq!(
+            js("due <= start"),
+            "(((x, y) => x === null || y === null ? null : x <= y)(due, start))"
+        );
     }
 
     #[test]

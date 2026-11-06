@@ -110,7 +110,7 @@ async fn react_app_logs_in_against_sc_auth_and_the_session_identifies_it() -> Re
     // That is exactly what a session store does with it — mint a token, and hand
     // the user back when the app presents it on the next request.
     let sessions = SessionStore::default();
-    let token = sessions.login(user).await?;
+    let token = sessions.login(user.into_user()).await?;
     let recovered = sessions
         .user_for(&token)
         .await?
@@ -163,6 +163,7 @@ async fn authenticating_is_not_authorization() -> Result<()> {
     let SessionAction::Start(reader) = login.session else {
         panic!("login must start a session");
     };
+    let reader = reader.into_user();
 
     // Being logged in is enough for `whoami`...
     assert_eq!(

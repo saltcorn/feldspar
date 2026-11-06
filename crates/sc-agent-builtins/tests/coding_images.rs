@@ -77,10 +77,7 @@ fn coding() -> sc_types::Attrs {
 /// images it attached.
 async fn look(env: &Env, args: Json, role: Role) -> (Result<String>, Vec<ImagePart>) {
     let coding_trait = env.registry.require("coding").unwrap().clone();
-    let caller = RunCaller {
-        role,
-        ..RunCaller::system()
-    };
+    let caller = RunCaller::system().capped_at(role);
     let mut state = Json::Null;
     let mut ctx = TraitContext {
         catalog: &env.catalog,

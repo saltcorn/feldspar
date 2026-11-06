@@ -37,9 +37,12 @@ tokio::task_local! {
 /// Does nothing outside [`surfacing_refusals`].
 pub fn record_refusal(message: &str) {
     let _ = REFUSALS.try_with(|refusals| {
-        if let Ok(mut refusals) = refusals.lock() {
-            refusals.push(message.to_owned());
-        }
+        // Recovered rather than skipped on poison: a refusal dropped here is
+        // work reported as done that was not (security review 2026-11 F-4).
+        refusals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(message.to_owned());
     });
 }
 
@@ -52,7 +55,10 @@ where
 {
     let refusals = Arc::new(Mutex::new(Vec::new()));
     let result = REFUSALS.scope(Arc::clone(&refusals), fut).await?;
-    let refused = refusals.lock().map(|r| r.clone()).unwrap_or_default();
+    let refused = refusals
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     match refused.split_first() {
         None => Ok(result),
         Some((first, rest)) => {

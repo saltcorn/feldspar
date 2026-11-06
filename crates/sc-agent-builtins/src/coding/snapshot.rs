@@ -21,9 +21,9 @@
 //! the commit hash taken before the call, in case the command committed) only for
 //! a path that actually changed.
 
+use sc_proc::{Git, Operand, RepoRoot, SystemTask, Timeout};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 
 use super::ledger::{MAX_PRE_IMAGE_BYTES, PreImage};
 use super::state::{CodingState, content_hash};
@@ -213,12 +213,16 @@ pub async fn record_changes(
 /// `HEAD` and the tracked files that do not differ from it, when `dir` is in a
 /// git work tree with a commit.
 fn git_base(dir: &Path) -> Option<GitBase> {
-    let head = String::from_utf8(git(dir, &["rev-parse", "--verify", "HEAD"])?)
+    let head = String::from_utf8(git(dir, &["rev-parse", "--verify", "HEAD"], None)?)
         .ok()?
         .trim()
         .to_owned();
-    let tracked = git(dir, &["ls-files", "-z"])?;
-    let dirty = git(dir, &["diff", "--name-only", "--relative", "-z", "HEAD"])?;
+    let tracked = git(dir, &["ls-files", "-z"], None)?;
+    let dirty = git(
+        dir,
+        &["diff", "--name-only", "--relative", "-z", "HEAD"],
+        None,
+    )?;
     let split = |bytes: &[u8]| -> HashSet<String> {
         bytes
             .split(|b| *b == 0)
@@ -234,22 +238,29 @@ fn git_base(dir: &Path) -> Option<GitBase> {
     Some(GitBase { head, clean })
 }
 
-/// `rel` as committed at `head`.
+/// `rel` as committed at `head`. `<commit>:./<path>` never starts with `-`.
 fn git_show(dir: &Path, head: &str, rel: &str) -> Option<Vec<u8>> {
-    git(dir, &["show", &format!("{head}:./{rel}")])
+    let object = Operand::new(format!("{head}:./{rel}")).ok()?;
+    git(dir, &["show"], Some(object))
 }
 
-/// A git command's stdout, when it succeeds.
-fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+/// Who reads a shell call's before-and-after git state: the server, with
+/// arguments of its own (and a commit and path it read from git).
+const SNAPSHOT: SystemTask = SystemTask::new("coding shell snapshot: git state");
+
+/// A git command's stdout, when it succeeds — `args` and then `object`
+/// (positional: to `git show`, what follows `--` is a path). On this thread:
+/// [`Snapshot::take`] runs on a blocking one.
+fn git(dir: &Path, args: &[&'static str], object: Option<Operand>) -> Option<Vec<u8>> {
+    // Against the work tree's own repository, never one git discovers from
+    // `dir`, which a user below admin may write (security review 2026-11, #1).
+    let repo = RepoRoot::enclosing(dir)?;
+    let mut git = Git::new(&repo, &SNAPSHOT, Timeout::minutes(2));
+    git.cwd(dir).args(args.iter().copied());
+    if let Some(object) = object {
+        git.positional(object);
+    }
+    let output = git.output_blocking().ok()?;
     output.status.success().then_some(output.stdout)
 }
 

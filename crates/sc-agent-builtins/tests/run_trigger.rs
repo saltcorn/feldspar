@@ -190,11 +190,13 @@ async fn the_triggers_own_min_role_still_gates_it() -> Result<()> {
     .await?;
     assert_eq!(env.rows("reorders").await?.len(), 1);
 
-    let mut public = as_user("anon@example.com");
-    public.role = Role::PUBLIC;
-    if let Some(user) = &mut public.user {
-        *user = user.clone().capped_at(Role::PUBLIC);
-    }
+    let public = RunCaller::user(
+        as_user("anon@example.com")
+            .user_ref()
+            .cloned()
+            .expect("a signed-in caller")
+            .capped_at(Role::PUBLIC),
+    );
     let err = env
         .call("run_trigger", &cfg(), json!({"title": "Dune"}), &public)
         .await

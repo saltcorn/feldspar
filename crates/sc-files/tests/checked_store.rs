@@ -74,7 +74,7 @@ fn as_user(store: &Arc<dyn FileStore>, id: &str) -> CheckedStore {
     CheckedStore::new(
         Arc::clone(store),
         None,
-        FileCaller::new(Role::of(80), Some(id.to_owned())),
+        FileCaller::of_principal(Role::of(80), Some(id.to_owned())),
     )
 }
 
@@ -134,7 +134,7 @@ async fn a_rename_stays_in_one_store_and_a_root_is_an_administrator_s() {
     let (raw, dir) = store("rename").await;
     let other_dir = temp_dir("rename-other");
     let other: Arc<dyn FileStore> = Arc::new(LocalFileStore::new("other", &other_dir).unwrap());
-    let admin = FileCaller::new(Role::ADMIN, None);
+    let admin = FileCaller::of_principal(Role::ADMIN, None);
     let here = CheckedStore::new(Arc::clone(&raw), None, admin.clone());
     let there = CheckedStore::new(Arc::clone(&other), None, admin);
 

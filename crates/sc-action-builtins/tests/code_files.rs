@@ -16,7 +16,10 @@
 //! authority does not; a file larger than one read may carry is refused rather
 //! than truncated; and a store that is not connected is named the moment it is
 //! asked for.
-
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use sc_types::Role;

@@ -90,7 +90,8 @@ pub async fn call(
     let args = arguments(args, &[ARG_PATH, ARG_OFFSET, ARG_LIMIT])?;
     let rel = args.string_arg(ARG_PATH)?;
     let offset = line_arg(&args, ARG_OFFSET)?.unwrap_or(1);
-    let limit = line_arg(&args, ARG_LIMIT)?.map_or(ceiling, |l| l.min(ceiling)) as usize;
+    let limit = usize::try_from(line_arg(&args, ARG_LIMIT)?.map_or(ceiling, |l| l.min(ceiling)))
+        .unwrap_or(usize::MAX);
 
     let (store, path) = open_at(scope, ctx, &rel).await?;
     if store.stat(&path).await?.is_some_and(|s| s.is_dir) {
@@ -115,7 +116,8 @@ pub async fn call(
         ))
     })?;
 
-    let page = render(&rel, text, offset as usize, limit, &tool_name(scope))?;
+    let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+    let page = render(&rel, text, offset, limit, &tool_name(scope))?;
     let mut state = CodingState::load(ctx.state());
     state.saw(&path, &bytes);
     state.store(ctx.state());

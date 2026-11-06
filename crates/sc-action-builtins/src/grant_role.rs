@@ -200,6 +200,10 @@ fn role(config: &Attrs) -> Result<Role> {
 }
 
 /// The configured duration, if any: a positive number of days.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a positive, finite number of days in milliseconds; the cast saturates past i64::MAX"
+)]
 fn duration(config: &Attrs) -> Result<Option<Duration>> {
     let days = match config.get(CFG_DURATION_DAYS) {
         None | Some(Json::Null) => return Ok(None),

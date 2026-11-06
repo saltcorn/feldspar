@@ -13,6 +13,10 @@
 //! certificate made in-process: a test must not carry a key in the repository
 //! (it would expire) and must not reach a CA.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use std::net::SocketAddr;
 

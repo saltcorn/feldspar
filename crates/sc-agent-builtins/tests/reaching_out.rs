@@ -13,7 +13,10 @@
 //!   with the follow-up prompt handed back and the source ledgered;
 //! - `subagent`: the handover prompt before the briefing, the handoff prompt
 //!   after the report.
-
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::BTreeMap;

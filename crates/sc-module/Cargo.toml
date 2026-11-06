@@ -36,10 +36,14 @@ deno-host = [
 ]
 
 [dependencies]
+# `npm` for module installs, started the one way (H4).
+sc-proc.workspace = true
 # A target operation's files arrive base64-encoded, since a keystore is bytes
 # and a module's answer crosses from its JavaScript into Rust as JSON text.
 base64.workspace = true
 sc-error.workspace = true
+# A redirect target and a download name, each made by one rule (H6.3).
+sc-http.workspace = true
 sc-log.workspace = true
 # `FormField` for a module action's declared configuration, translated from v1's
 # `configFields`; `Attrs` for the values; `redact_attrs`/`merge_secrets` for a

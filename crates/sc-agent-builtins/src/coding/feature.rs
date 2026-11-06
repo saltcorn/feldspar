@@ -434,7 +434,31 @@ async fn commit_feature(
             feature.title.clone()
         }
     };
-    match commit::commit(&top, scope, ctx.catalog, diff, &message).await {
+    let committed = match ctx.caller.console_admin() {
+        Some(admin) => {
+            commit::commit(
+                &top,
+                scope,
+                ctx.catalog,
+                diff,
+                &message,
+                &admin.spawn_proof(),
+            )
+            .await
+        }
+        None => {
+            commit::commit(
+                &top,
+                scope,
+                ctx.catalog,
+                diff,
+                &message,
+                &commit::FEATURE_COMMIT,
+            )
+            .await
+        }
+    };
+    match committed {
         Ok(Some(hash)) => format!(
             "commit: {hash} {}",
             message.lines().next().unwrap_or_default()

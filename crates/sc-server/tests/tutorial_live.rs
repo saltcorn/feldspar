@@ -24,6 +24,10 @@
 //! document; three pages on one board check the list, the states, the
 //! refusal, a publish's stamped source and the leave.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use crate::support::{Socket, send};
 use sc_types::Role;
@@ -553,7 +557,7 @@ async fn part_one_the_live_socket() -> Result<()> {
         .await?
         .unwrap()
         .id();
-    sc_auth::update_user(
+    let _changed = sc_auth::update_user(
         &tutorial.catalog,
         member_id,
         UserUpdate {

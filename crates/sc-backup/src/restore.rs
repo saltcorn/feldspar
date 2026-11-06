@@ -104,6 +104,12 @@ pub fn inspect(path: &Path, password: Option<&str>) -> Result<(Available, Json)>
 ///
 /// The file is read as the restore goes ([`Archive`]), so it must stay where it
 /// is until this returns. `password` decrypts a password-protected backup.
+///
+/// `editor` is who started it (TODO-type-hardening H8.5, §7.3a): a person in
+/// the admin UI, the operator at the CLI, or something delegated — an MCP
+/// client calling the restore endpoint. A delegated restore does not change
+/// the access settings of a table that already has row-level security; the
+/// table's other parts are restored and the refusal is in the report.
 #[allow(clippy::too_many_lines)]
 pub async fn restore_backup(
     catalog: &Catalog,
@@ -111,6 +117,7 @@ pub async fn restore_backup(
     path: &Path,
     password: Option<&str>,
     selection: &Selection,
+    editor: sc_catalog::Editor,
 ) -> Result<RestoreReport> {
     let archive = read_backup(path, password)?;
     let manifest = manifest_of(&archive)?;
@@ -272,7 +279,7 @@ pub async fn restore_backup(
                 table: name.clone(),
                 settings: access,
             }],
-            &schema_edit::ApplyOptions::default(),
+            &schema_edit::ApplyOptions::by(editor),
         )
         .await
         .map(|_| String::new());
@@ -342,15 +349,32 @@ pub async fn restore_backup(
         } else {
             TriggerPass::Deferring
         };
-        refused_triggers =
-            restore_triggers(catalog, apps, &archive, &selection, pass, &mut report).await;
+        refused_triggers = restore_triggers(
+            catalog,
+            apps,
+            &archive,
+            &selection,
+            pass,
+            editor,
+            &mut report,
+        )
+        .await;
     }
     if !refused_agents.is_empty() {
         restore_agents(catalog, apps, &archive, Some(&refused_agents), &mut report).await;
     }
     if !refused_triggers.is_empty() {
         let pass = TriggerPass::Retry(&refused_triggers);
-        restore_triggers(catalog, apps, &archive, &selection, pass, &mut report).await;
+        restore_triggers(
+            catalog,
+            apps,
+            &archive,
+            &selection,
+            pass,
+            editor,
+            &mut report,
+        )
+        .await;
     }
     if selection.agents {
         restore_agent_memories(catalog, &archive, &user_ids, &mut report).await;
@@ -2885,6 +2909,7 @@ async fn restore_triggers(
     archive: &Archive,
     selection: &Selection,
     pass: TriggerPass<'_>,
+    editor: sc_catalog::Editor,
     report: &mut RestoreReport,
 ) -> Vec<String> {
     let mut refused = Vec::new();
@@ -2932,6 +2957,15 @@ async fn restore_triggers(
                 ));
             }
             sc_action::save_trigger(catalog, &dispatcher.registry(), &trigger).await?;
+            // A person's restore keeps the approval to run as system the backup
+            // carries; an agent's leaves the request pending
+            // (TODO-type-hardening H8.10). Either way the approval is for the
+            // configuration it was given for, so a different one lapses.
+            if editor.is_person()
+                && let Some(approval) = crate::codec::system_approval_from_json(&value)
+            {
+                sc_action::restore_system_approval(catalog, &editor, trigger.id, &approval).await?;
+            }
             Ok(trigger)
         }
         .await;

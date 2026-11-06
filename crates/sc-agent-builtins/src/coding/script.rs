@@ -24,16 +24,14 @@
 
 use sc_types::ArgsExt;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::time::Duration;
 
 use sc_agent::TraitContext;
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_llm::ToolSpec;
+use sc_proc::{AdminProof, HostCommand, Operand, Timeout};
 use sc_types::Attrs;
 use serde_json::{Value as Json, json};
-use tokio::process::Command;
 
 use crate::files::{FileScope, config_count};
 use sc_api::mcp::arguments;
@@ -101,7 +99,8 @@ pub async fn call(
         }));
     }
 
-    let output = match npm_run(&project.dir, &script, timeout).await? {
+    let who = super::host_code_proof(ctx.caller)?;
+    let output = match npm_run(&who, &project.dir, &script, timeout).await? {
         Ran::Finished(output) => output,
         Ran::TimedOut => {
             return Ok(json!({
@@ -181,33 +180,29 @@ pub enum Ran {
     TimedOut,
 }
 
-/// Run `program args…` in `dir`, killed after `timeout` seconds.
-pub async fn run_bounded(dir: &Path, program: &str, args: &[&str], timeout: u64) -> Result<Ran> {
-    let child = Command::new(program)
-        .args(args)
-        .current_dir(dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .output();
-    match tokio::time::timeout(Duration::from_secs(timeout), child).await {
-        // Dropping the future killed the process (`kill_on_drop`), so a
-        // process that hangs does not outlive the call that started it.
-        Err(_) => Ok(Ran::TimedOut),
-        Ok(result) => result.map(Ran::Finished).map_err(|e| {
-            Error::config(format!(
-                "could not run `{program} {}` in {}: {e}",
-                args.join(" "),
-                dir.display()
-            ))
-        }),
+/// Run `command` in `dir`, its process group killed after `timeout` seconds,
+/// so a process that hangs does not outlive the call that started it.
+pub async fn run_bounded(mut command: HostCommand, dir: &Path) -> Result<Ran> {
+    let line = command.command_line();
+    command.cwd(dir);
+    match command.output_bounded().await {
+        Ok(None) => Ok(Ran::TimedOut),
+        Ok(Some(output)) => Ok(Ran::Finished(output)),
+        Err(e) => Err(Error::config(format!(
+            "{e} (`{line}` in {})",
+            dir.display()
+        ))),
     }
 }
 
-/// `npm run <script>` in `dir`, bounded.
-pub async fn npm_run(dir: &Path, script: &str, timeout: u64) -> Result<Ran> {
-    run_bounded(dir, "npm", &["run", script], timeout).await
+/// `npm run <script>` in `dir`, bounded, on the administrator's authority
+/// `who` ([`host_code_proof`](super::host_code_proof)). The script is one the
+/// project declares; positional, since after `--` npm would pass it to the
+/// script instead.
+pub async fn npm_run(who: &AdminProof, dir: &Path, script: &str, timeout: u64) -> Result<Ran> {
+    let mut npm = HostCommand::new("npm", who, Timeout::secs(timeout));
+    npm.arg("run").positional(Operand::new(script)?);
+    run_bounded(npm, dir).await
 }
 
 fn declared_scripts(manifest: &[u8]) -> Result<Vec<String>> {

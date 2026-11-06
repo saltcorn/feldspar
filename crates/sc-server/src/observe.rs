@@ -114,7 +114,9 @@ pub(crate) async fn stream_observe_upgrade(
 ) -> axum::response::Response {
     let Some(supervisor) = supervisor else {
         let reason = "this server has no stream support installed, so there is nothing to observe";
-        return ws.on_upgrade(move |socket| refuse(socket, reason.to_owned()));
+        return crate::ws::upgrade(ws, crate::ws::REFUSAL, move |socket| {
+            refuse(socket, reason.to_owned())
+        });
     };
     let Some(running) = supervisor.get(id) else {
         // Not running *here*. A disabled stream and one this process has not
@@ -123,10 +125,13 @@ pub(crate) async fn stream_observe_upgrade(
         let reason = format!(
             "stream {id} is not running on this server, so there are no elements to observe"
         );
-        return ws.on_upgrade(move |socket| refuse(socket, reason));
+        return crate::ws::upgrade(ws, crate::ws::REFUSAL, move |socket| refuse(socket, reason));
     };
     // Open only while the admin session lasts (#42's class).
-    ws.on_upgrade(move |socket| session.guard(observe(socket, running, hub)))
+    // The admin only watches: nothing the browser says is more than a close.
+    crate::ws::upgrade(ws, crate::ws::LISTEN_ONLY, move |socket| {
+        session.guard(observe(socket, running, hub))
+    })
 }
 
 /// Close a socket, saying why.

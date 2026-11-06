@@ -16,7 +16,7 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use sc_auth::User;
+use sc_auth::{CredentialsChanged, FullyAuthenticated, PasswordVerified, User};
 use sc_catalog::{Catalog, PublicBaseUrl};
 use sc_error::Result;
 use serde_json::Value as Json;
@@ -210,27 +210,31 @@ pub enum SessionAction {
     /// Leave the session untouched.
     #[default]
     Keep,
-    /// Start a session for this user (login): mint a token and carry it.
+    /// Start a session for a sign-in whose first factor checked out (login):
+    /// the transport asks for the second factor if the account needs one
+    /// (design §7.2), and otherwise mints a token and carries it. A
+    /// [`PasswordVerified`] is half a sign-in, so this is the only way such a
+    /// value reaches a session (security review 2026-11, §2).
     ///
     /// Whatever session the caller arrived with is ended, so a login replaces a
-    /// session rather than adding one. That is what makes "become user" a
-    /// *swap*: the admin session that authorised it does not stay live behind
-    /// the one it turned into.
-    Start(User),
+    /// session rather than adding one.
+    Start(PasswordVerified),
     /// [`Start`](SessionAction::Start) a session whose browser cookie ends
     /// when the browser closes, whatever Settings → Authentication says: a
     /// sign-in that left "Remember me" unticked (`remember: false`), on a
     /// computer that is not the person's own. The session itself lasts as
     /// long as any other.
-    StartUntilBrowserCloses(User),
-    /// [`Start`](SessionAction::Start) a session **past the second factor**
-    /// (design §7.2): one the transport starts as it is, never stopping it to
-    /// ask for a code. For a sign-in that has given its code already, and for
-    /// the few that never ask — an admin becoming a user, the first user of a
-    /// new installation. `remember` is the sign-in's "Remember me".
+    StartUntilBrowserCloses(PasswordVerified),
+    /// Start a session **past the second factor** (design §7.2): one the
+    /// transport starts as it is, never stopping it to ask for a code. For a
+    /// sign-in that has given its code already, and for the few named waivers
+    /// ([`sc_auth::SecondFactorWaiver`]) — an admin becoming a user, the first
+    /// user of a new installation. That is what makes "become user" a *swap*:
+    /// the admin session that authorised it does not stay live behind the one
+    /// it turned into. `remember` is the sign-in's "Remember me".
     StartVerified {
-        /// The user the session is for.
-        user: User,
+        /// Who the session is for, past both factors.
+        who: FullyAuthenticated,
         /// `false`: the browser cookie ends with the browser.
         remember: bool,
     },
@@ -246,6 +250,12 @@ pub enum SessionAction {
     /// End **every** session there is, the caller's cookie included — what
     /// Clear all does once it has deleted every account.
     EndAll,
+    /// Accounts' credentials changed ([`CredentialsChanged`]: a password set
+    /// by an admin, an account disabled, a role that now requires a second
+    /// factor): their epochs are already raised, and the transport ends their
+    /// sessions on this node ([`sc_auth::SessionStore::bump_epoch`]). The
+    /// caller's own session goes too when it is one of them.
+    CredentialsChanged(Vec<CredentialsChanged>),
     /// Give the caller the **guest session** just started for them
     /// (TODO-payments P1.5): set its cookie, on the application's own host,
     /// lasting `max_age_secs`. The row already exists; this is the cookie.
@@ -259,22 +269,23 @@ pub enum SessionAction {
 }
 
 impl SessionAction {
-    /// Start a session for `user`, remembered across a browser restart as
-    /// Settings allow (`remember`), or ending with the browser (`!remember`).
-    pub fn start(user: User, remember: bool) -> SessionAction {
+    /// Start a session for `signing_in`, remembered across a browser restart
+    /// as Settings allow (`remember`), or ending with the browser
+    /// (`!remember`).
+    pub fn start(signing_in: PasswordVerified, remember: bool) -> SessionAction {
         if remember {
-            SessionAction::Start(user)
+            SessionAction::Start(signing_in)
         } else {
-            SessionAction::StartUntilBrowserCloses(user)
+            SessionAction::StartUntilBrowserCloses(signing_in)
         }
     }
 
     /// The user a session would be started for, whichever kind of start it is.
     pub fn starts(&self) -> Option<&User> {
         match self {
-            SessionAction::Start(user)
-            | SessionAction::StartUntilBrowserCloses(user)
-            | SessionAction::StartVerified { user, .. } => Some(user),
+            SessionAction::Start(signing_in)
+            | SessionAction::StartUntilBrowserCloses(signing_in) => Some(signing_in.user()),
+            SessionAction::StartVerified { who, .. } => Some(who.user()),
             _ => None,
         }
     }
@@ -387,23 +398,28 @@ impl ApiResponse {
         }
     }
 
-    /// A `200 OK` that also starts a session for `user` (login).
-    pub fn start_session(user: User, body: Json) -> ApiResponse {
+    /// A `200 OK` that also starts a session for `signing_in` (login), once
+    /// its second factor is dealt with.
+    pub fn start_session(signing_in: PasswordVerified, body: Json) -> ApiResponse {
         ApiResponse {
             status: 200,
             body,
             raw: None,
             file: None,
-            session: SessionAction::Start(user),
+            session: SessionAction::Start(signing_in),
             headers: Vec::new(),
         }
     }
 
     /// [`start_session`](ApiResponse::start_session), honouring a sign-in's
     /// "Remember me" ([`crate::auth::remember`] of its body).
-    pub fn start_session_remembering(user: User, body: Json, remember: bool) -> ApiResponse {
+    pub fn start_session_remembering(
+        signing_in: PasswordVerified,
+        body: Json,
+        remember: bool,
+    ) -> ApiResponse {
         ApiResponse {
-            session: SessionAction::start(user, remember),
+            session: SessionAction::start(signing_in, remember),
             ..ApiResponse::ok(body)
         }
     }

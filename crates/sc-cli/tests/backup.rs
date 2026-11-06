@@ -2,6 +2,14 @@
 //! binary** against two **real Postgres** databases: what one installation
 //! holds, written to a file from a terminal, comes back in another — all of it
 //! but the TLS settings, which the backup leaves out.
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

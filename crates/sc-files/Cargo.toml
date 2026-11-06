@@ -10,6 +10,8 @@ rust-version.workspace = true
 
 [dependencies]
 sc-error.workspace = true
+# `git` and `ssh-keygen` for the git backend, started the one way (H4).
+sc-proc.workspace = true
 # `Attrs` for a store definition's backend settings, so a backend's settings use
 # the same vocabulary every other configurable extension point does (§6.2).
 sc-types.workspace = true

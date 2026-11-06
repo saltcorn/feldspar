@@ -900,7 +900,11 @@ impl SaltcornUiFramework {
         }
         // Recorded as unproven: the visitor chose the address (security review #41).
         match sc_auth::sign_up_user(cat, &email, &password, self.new_user_role()).await {
-            Ok(user) => Ok(signed_in(user, dest, true)),
+            Ok(user) => Ok(signed_in(
+                sc_auth::PasswordVerified::by(cat, user, sc_auth::FirstFactor::SignUp).await?,
+                dest,
+                true,
+            )),
             // "role 80 does not exist" is the admin's to fix, and the one
             // sentence that says how.
             Err(e) if e.kind() == ErrorKind::Application => again(&reason_of(&e)),
@@ -1442,12 +1446,12 @@ impl<'a> ViewerHosts<'a> {
             // leaves unmarked is the viewer's, not the admin's it would be in a
             // code body.
             table: TableHost::new(cat)
-                .caused_by(caller.role, caller.user.clone())
+                .caused_by(caller.role(), caller.user().cloned())
                 .with_evaluator(evaluator)
                 .viewer_only(),
-            files: FileStoreHost::new(cat).caused_by(caller.role, caller.user.as_ref()),
+            files: FileStoreHost::new(cat).caused_by(caller.role(), caller.user()),
             triggers: triggers.map(|d| AppTriggers {
-                inner: TriggerRunHost::new(d, cat).caused_by(caller.role, caller.user.clone()),
+                inner: TriggerRunHost::new(d, cat).caused_by(caller.role(), caller.user().cloned()),
                 declared,
             }),
             module_fns: cat.module_functions(),
@@ -1547,32 +1551,11 @@ fn body_json(body: &RequestBody) -> Json {
 /// Where a form post that names `redirect` goes: the path, if it is one on this
 /// application, else `/`. An absolute URL, a protocol-relative `//host` and a
 /// backslash trick are all refused — v1's `safe_redirect` rule, because the
-/// value is whatever was in the query.
-///
-/// What is kept is encoded as Express's `res.redirect` encodes a `Location`
-/// (`encodeurl`): a space or a non-ASCII character becomes its `%XX`, and an
-/// escape already there is left alone — the query decoded `%20` into the space
-/// this puts back.
+/// value is whatever was in the query — and what is kept is encoded as
+/// Express's `res.redirect` encodes a `Location`: the one rule of
+/// [`sc_http::RedirectTarget`] (security review 2026-11 D6).
 fn safe_redirect(redirect: Option<&str>) -> String {
-    match redirect {
-        Some(path)
-            if path.starts_with('/')
-                && !path.starts_with("//")
-                && !path.contains('\\')
-                && !path.chars().any(char::is_control) =>
-        {
-            let mut out = String::with_capacity(path.len());
-            for byte in path.bytes() {
-                if byte <= b' ' || byte >= 0x7f || b"\"<>^`{|}".contains(&byte) {
-                    out.push_str(&format!("%{byte:02X}"));
-                } else {
-                    out.push(char::from(byte));
-                }
-            }
-            out
-        }
-        _ => "/".to_owned(),
-    }
+    sc_http::RedirectTarget::or_root(redirect).into_string()
 }
 
 /// A JSON response under `status`.
@@ -1661,7 +1644,7 @@ enum AuthForm {
 
 /// Signed in as `user`, and on to `dest` if it is a path on this application,
 /// else to `/`. Not `remember`ed, the session's cookie ends with the browser.
-fn signed_in(user: User, dest: &str, remember: bool) -> AppResponse {
+fn signed_in(user: sc_auth::PasswordVerified, dest: &str, remember: bool) -> AppResponse {
     let mut out = AppResponse::redirect(safe_redirect(Some(dest).filter(|d| !d.is_empty())));
     out.session = SessionAction::start(user, remember);
     out
@@ -1751,12 +1734,10 @@ pub async fn serve_store_file(
     if !cat.has_file_store(&store_name)? {
         return Ok(AppResponse::not_found());
     }
-    let caller = sc_files::FileCaller::new(
-        user.map_or(Role::PUBLIC, |u| u.role()),
-        user.map(|u| u.id().to_string()),
-    );
-    // Every read checked for the viewer (TODO-code-quality Q3.6).
-    let store = sc_catalog::open_checked_store(cat, &store_name, caller).await?;
+    // Every read checked for the viewer (TODO-code-quality Q3.6), against the
+    // floor the catalog reads (TODO-type-hardening H3.2).
+    let caller = sc_access::principal_of(user);
+    let store = sc_catalog::open_checked_store(cat, &store_name, &caller).await?;
     match store.serve(&path).await {
         Ok(file) => Ok(AppResponse::serve_file(file)),
         Err(_) => Ok(AppResponse::not_found()),

@@ -87,7 +87,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::Bytes;
 use sc_action::FileUrls;
-use sc_catalog::{Catalog, load_file_store_by_name};
+use sc_catalog::{AdminPrincipal, Catalog, Principal};
 use sc_error::{Error, Result};
 use sc_expr::FileHost;
 use sc_files::{
@@ -145,26 +145,33 @@ pub struct FileStoreHost<'a> {
     /// store definitions are read over.
     catalog: &'a Catalog,
     /// The event's caller — the role a delegated operation is checked against
-    /// (public for an event with no caller at all) and the user id the owner
-    /// rule compares with and a delegated write records.
+    /// (public for an event with no caller at all) and the user the owner rule
+    /// compares with and a delegated write records.
+    principal: Principal,
+    /// [`principal`](FileStoreHost::principal) as a file rule sees it.
     caller: FileCaller,
     /// The most bytes one read or write may carry across the seam.
     max_bytes: u64,
     /// The most bytes one host-side copy may move.
     max_copy_bytes: u64,
-    /// The store-wide floors already read, by store name.
+    /// The stores already bound, by store name and whether at the admin's
+    /// authority.
     ///
-    /// A floor is a row in `_fd_file_stores`, so reading it per operation would
-    /// put a query in front of every file a loop touches. It cannot change under
-    /// a run that is measured in milliseconds, and a run that raced an admin
-    /// editing the store would be as arbitrary either way.
-    floors: Mutex<BTreeMap<String, Option<Role>>>,
+    /// Binding a store for a caller reads its floor, a row in
+    /// `_fd_file_stores`, so binding per operation would put a query in front
+    /// of every file a loop touches. It cannot change under a run that is
+    /// measured in milliseconds, and a run that raced an admin editing the
+    /// store would be as arbitrary either way.
+    bound: Mutex<BTreeMap<(String, bool), CheckedStore>>,
     /// Where the run's application serves store files, for `file.url()`.
     urls: Option<Arc<dyn FileUrls>>,
     /// What an operation that names no authority runs under: the admin's for a
     /// trigger, the caller's for a body answering a request
     /// ([`defaulting_to`](FileStoreHost::defaulting_to)).
     default_authority: Authority,
+    /// The admin authority to act at in place of elevating over the caller
+    /// (TODO-type-hardening H8.10; see `TableHost::acting_as`).
+    admin: Option<AdminPrincipal>,
 }
 
 impl<'a> FileStoreHost<'a> {
@@ -173,13 +180,23 @@ impl<'a> FileStoreHost<'a> {
     pub fn new(catalog: &'a Catalog) -> FileStoreHost<'a> {
         FileStoreHost {
             catalog,
+            principal: Principal::anonymous(),
             caller: FileCaller::anonymous(),
             max_bytes: FILE_BYTES.load(Ordering::Relaxed),
             max_copy_bytes: COPY_BYTES.load(Ordering::Relaxed),
-            floors: Mutex::new(BTreeMap::new()),
+            bound: Mutex::new(BTreeMap::new()),
             urls: None,
             default_authority: Authority::Admin,
+            admin: None,
         }
+    }
+
+    /// Act at `admin`'s authority where an operation is the admin's (see
+    /// `TableHost::acting_as`).
+    #[must_use]
+    pub fn acting_as(mut self, admin: AdminPrincipal) -> FileStoreHost<'a> {
+        self.admin = Some(admin);
+        self
     }
 
     /// Run an operation that names no authority under `authority` rather than
@@ -204,21 +221,18 @@ impl<'a> FileStoreHost<'a> {
     ///
     /// [`TableHost::caused_by`]: super::TableHost::caused_by
     #[must_use]
-    pub fn caused_by(mut self, role: Role, user: Option<&Json>) -> FileStoreHost<'a> {
-        let user_id = user.and_then(|u| u.get("id")).and_then(|id| match id {
-            Json::String(s) => Some(s.clone()),
-            Json::Number(n) => Some(n.to_string()),
-            _ => None,
-        });
-        self.caller = FileCaller::new(role, user_id);
-        self
+    pub fn caused_by(self, role: Role, user: Option<&Json>) -> FileStoreHost<'a> {
+        self.for_caller(&Principal::recorded(role, user.cloned()))
     }
 
     /// Attach the event's caller as a principal (`ActionContext::caller`): its
     /// role, and its user's id — [`caused_by`](FileStoreHost::caused_by)'s pair.
     #[must_use]
-    pub fn for_caller(self, caller: &sc_catalog::Principal) -> FileStoreHost<'a> {
-        self.caused_by(caller.role, caller.user.as_ref())
+    pub fn for_caller(mut self, caller: &Principal) -> FileStoreHost<'a> {
+        // The caller itself, so its cause travels (TODO-type-hardening H8.1).
+        self.principal = caller.clone();
+        self.caller = self.principal.file_caller();
+        self
     }
 
     /// Attach where the run's application serves store files, which is what
@@ -242,47 +256,35 @@ impl<'a> FileStoreHost<'a> {
     /// are the proof that the path-cumulative rule passed.
     ///
     /// Admin authority clears every rule that can be written, so its store is
-    /// bound to the administrator and its floor is not read from the database
-    /// — the whole walk is skipped rather than performed to reach a foregone
-    /// conclusion. A delegated one is bound to the event's caller and the
-    /// store's floor (read once per store per run).
+    /// bound to the administrator (the code body's admin actor, in its event's
+    /// user's name). A delegated one is bound to the event's caller. Either way
+    /// the catalog reads the store's floor (TODO-type-hardening H3.2) — once
+    /// per store and authority per run.
     async fn checked(&self, name: &str, authority: &Authority) -> Result<CheckedStore> {
-        // Whether it is connected first, so "no such store" is the answer
-        // whatever the floor would have been.
-        let store = self.open(name, authority, None)?;
-        if authority.is_admin() {
-            return Ok(store);
-        }
-        self.open(name, authority, self.floor(name).await?)
-    }
-
-    /// The connected store `name` with `authority`'s caller and `floor` bound,
-    /// or an error naming it.
-    fn open(&self, name: &str, authority: &Authority, floor: Option<Role>) -> Result<CheckedStore> {
-        let caller = match authority.is_admin() {
-            true => FileCaller::new(Role::ADMIN, self.caller.user_id.clone()),
-            false => self.caller.clone(),
-        };
-        self.catalog.checked_file_store(name, floor, caller)
-    }
-
-    /// The store-wide floor, read once per store per run.
-    ///
-    /// `None` for a store with no definition row — an ephemeral `--file-store` —
-    /// which is the same answer every other file endpoint resolves for one.
-    async fn floor(&self, name: &str) -> Result<Option<Role>> {
-        if let Ok(cache) = self.floors.lock()
-            && let Some(known) = cache.get(name)
+        let key = (name.to_owned(), authority.is_admin());
+        if let Ok(cache) = self.bound.lock()
+            && let Some(store) = cache.get(&key)
         {
-            return Ok(*known);
+            return Ok(store.clone());
         }
-        let floor = load_file_store_by_name(self.catalog, name)
-            .await?
-            .and_then(|def| def.min_role);
-        if let Ok(mut cache) = self.floors.lock() {
-            cache.insert(name.to_owned(), floor);
+        let store = match authority.is_admin() {
+            true => {
+                let admin = match &self.admin {
+                    Some(admin) => admin.clone(),
+                    None => Principal::elevated(&self.principal, super::CODE_ADMIN_RULE),
+                };
+                self.catalog.checked_file_store(name, &admin).await?
+            }
+            false => {
+                self.catalog
+                    .checked_file_store(name, &self.principal)
+                    .await?
+            }
+        };
+        if let Ok(mut cache) = self.bound.lock() {
+            cache.insert(key, store.clone());
         }
-        Ok(floor)
+        Ok(store)
     }
 
     /// The metadata a write's options (`write(bytes, { owner, minRole,
@@ -299,7 +301,7 @@ impl<'a> FileStoreHost<'a> {
             // and naming somebody else would be handing them a file — or taking
             // one — which delegation was never meant to grant.
             (Authority::User, Some(Some(named)))
-                if Some(&named) != self.caller.user_id.as_ref() =>
+                if Some(named.as_str()) != self.caller.user_id() =>
             {
                 return Err(Error::auth(format!(
                     "not permitted to choose the owner of {path:?} in file store {} — a \
@@ -313,7 +315,10 @@ impl<'a> FileStoreHost<'a> {
                     store.name()
                 )));
             }
-            (Authority::User, _) => self.caller.user_id.clone().map(OwnerPlan::IfUnset),
+            (Authority::User, _) => self
+                .caller
+                .user_id()
+                .map(|id| OwnerPlan::IfUnset(id.to_owned())),
             (_, Some(Some(named))) => Some(OwnerPlan::Set(named)),
             (_, Some(None)) => Some(OwnerPlan::Clear),
             (_, None) => None,
@@ -497,10 +502,10 @@ fn owner_option(req: &FileRequest) -> Result<Option<Option<String>>> {
 /// when `err` is not a refusal (a missing file, a bad argument).
 fn refusal_warning(req: &FileRequest, caller: &FileCaller, err: &Error) -> Option<String> {
     let message = err.auth_message()?;
-    let who = match &caller.user_id {
-        Some(id) => format!("user `{id}` (role {})", caller.role),
-        None if caller.role.is_public() => "the public role".to_owned(),
-        None => format!("role {}", caller.role),
+    let who = match &caller.user_id() {
+        Some(id) => format!("user `{id}` (role {})", caller.role()),
+        None if caller.role().is_public() => "the public role".to_owned(),
+        None => format!("role {}", caller.role()),
     };
     Some(format!(
         "feldspar: warning: a code body's file `{}` of {:?} in store `{}`, as {who}, was \
@@ -518,16 +523,29 @@ impl FileHost for FileStoreHost<'_> {
             ))
         })?;
         req.authority = req.authority.resolve(&self.default_authority);
-        let answer = self.run(&req).await;
-        // A refusal is the body's to catch, and cleanup code catches it without
-        // a word — a delete that left somebody else's upload behind, a shared
-        // file that stopped updating. The server log says so either way.
-        if let Err(err) = &answer
-            && let Some(warning) = refusal_warning(&req, &self.caller, err)
-        {
-            eprintln!("{warning}");
+        // `asUser(id)` (TODO-type-hardening H8.8): the named user, narrowed
+        // from this run's caller — refused when they hold more authority than
+        // whoever caused the run — and then exactly a delegated operation, as
+        // that user, on a host of its own for this one request.
+        if let Authority::Named(id) = &req.authority {
+            let user = super::load_named_user(self.catalog, id).await?;
+            let named =
+                Principal::narrowed(&self.principal, user.role(), Some(user.fields_json()))?;
+            let host = FileStoreHost {
+                catalog: self.catalog,
+                caller: named.file_caller(),
+                principal: named,
+                max_bytes: self.max_bytes,
+                max_copy_bytes: self.max_copy_bytes,
+                bound: Mutex::new(BTreeMap::new()),
+                urls: self.urls.clone(),
+                default_authority: Authority::User,
+                admin: None,
+            };
+            req.authority = Authority::User;
+            return host.files_resolved(req).await;
         }
-        answer
+        self.files_resolved(req).await
     }
 
     fn store_names(&self) -> Vec<String> {
@@ -540,16 +558,30 @@ impl FileHost for FileStoreHost<'_> {
 }
 
 impl FileStoreHost<'_> {
+    /// [`files`](FileHost::files) once the authority is the admin's or a
+    /// delegated caller's.
+    async fn files_resolved(&self, req: FileRequest) -> Result<Json> {
+        let answer = self.run(&req).await;
+        // A refusal is the body's to catch, and cleanup code catches it without
+        // a word — a delete that left somebody else's upload behind, a shared
+        // file that stopped updating. The server log says so either way.
+        if let Err(err) = &answer
+            && let Some(warning) = refusal_warning(&req, &self.caller, err)
+        {
+            eprintln!("{warning}");
+        }
+        answer
+    }
+
     /// Answer one operation.
     async fn run(&self, req: &FileRequest) -> Result<Json> {
-        // Two of the four authorities, and the other two refused by name. `fs`
-        // offers `asAdmin()` and `asUser()` and nothing else, so `public` and a
-        // named user can only arrive from a guest that built the request itself
-        // — and this surface has no rule to apply them with: its access check
-        // reads *this run's* role (§10.1's file rule), which is not the role
-        // either of them means. Answering them as the run's own caller would be
-        // a body asking to be treated as somebody smaller and being treated as
-        // itself, which is the failure principle 5 exists to prevent.
+        // Two of the four authorities; a named user (`asUser(id)`) arrives here
+        // as a delegated caller of a host of its own (`files`), and `public` is
+        // refused by name. `fs` offers no `public`, so it can only arrive from a
+        // guest that built the request itself — and answering it as the run's
+        // own caller would be a body asking to be treated as somebody smaller and
+        // being treated as itself, which is the failure principle 5 exists to
+        // prevent.
         if !matches!(req.authority, Authority::Admin | Authority::User) {
             return Err(Error::invalid(format!(
                 "`{}` is not an authority the file surface carries: a file operation is the \
@@ -563,7 +595,12 @@ impl FileStoreHost<'_> {
         if req.op == "url" {
             // Reads nothing from the store, so it reads no floor either; the
             // store still has to be one this server has.
-            self.open(&req.store, &req.authority, None)?;
+            if !self.catalog.has_file_store(&req.store)? {
+                return Err(Error::not_found(format!(
+                    "file store `{}` is not connected",
+                    req.store
+                )));
+            }
             return Ok(self.url(req, &path));
         }
         let store = self.checked(&req.store, &req.authority).await?;
@@ -577,7 +614,7 @@ impl FileStoreHost<'_> {
                 dir.mkdir().await?;
                 // A delegated body's directory is its caller's, as its files are.
                 if req.authority == Authority::User
-                    && let Some(owner) = &self.caller.user_id
+                    && let Some(owner) = &self.caller.user_id()
                 {
                     dir.record_owner(owner).await;
                 }
@@ -972,10 +1009,9 @@ impl FileStoreHost<'_> {
     /// A `meta`: the rule set on this entry, the rule that applies, and the
     /// attributes.
     async fn meta(&self, req: &FileRequest, path: &str) -> Result<Json> {
-        // The rule that applies is reported under either authority, so the
-        // store's floor is read here even for the admin's.
-        let floor = self.floor(&req.store).await?;
-        let store = self.open(&req.store, &req.authority, floor)?;
+        // The rule that applies is reported under either authority: a binding
+        // carries the store's floor, which the catalog reads for both.
+        let store = self.checked(&req.store, &req.authority).await?;
         let file = store.readable(path).await?;
         let meta = file.get_meta().await?;
         let effective = store.effective_min_role(path).await?;
@@ -1194,7 +1230,8 @@ mod tests {
         let refused = Error::auth(r#"not permitted to access "p/7/a.pdf" in file store uploads"#);
         let warning = refusal_warning(
             &req,
-            &FileCaller::new(Role::of(80), Some("12".into())),
+            &Principal::recorded(Role::of(80), Some(serde_json::json!({ "id": "12" })))
+                .file_caller(),
             &refused,
         )
         .unwrap();

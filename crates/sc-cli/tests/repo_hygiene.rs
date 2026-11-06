@@ -782,7 +782,7 @@ fn the_design_records_what_the_agents_milestone_actually_built() {
         "**The triggers, and the problem they pose.**",
         "progressive disclosure inside the one loop",
         "A hidden second inference is a run nobody can read",
-        "The four grants cover both halves",
+        "The grants cover both halves",
         "`save_trigger` takes one trigger, not a list",
     ] {
         assert!(design.contains(fragment), "§11 should record `{fragment}`");

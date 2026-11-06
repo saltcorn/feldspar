@@ -599,14 +599,10 @@ mod tests {
             "workspace_kinds": ["data_explorer"]
         }));
         let user = Uuid::new_v4();
-        let caller = Caller {
-            role: Role::of(40),
-            user: Some(BTreeMap::from([(
-                "id".to_owned(),
-                sc_query::Value::Uuid(user),
-            )])),
-            tables: None,
-        };
+        let caller = Caller::of(&sc_catalog::Principal::recorded(
+            Role::of(40),
+            Some(json!({ "id": user.to_string() })),
+        ));
         let houses = DatasetDef::new("Houses", Base::table("houses"));
         let on_houses = DatasetDef::new("Mine", Base::dataset(houses.id));
         let incidents = DatasetDef::new("Incidents", Base::table("incidents"));
@@ -653,11 +649,7 @@ mod tests {
         let ws = Workspace::new("D", WorkspaceKind::Dashboard, None);
         app.shown = vec![ws.clone()];
         app.datasets = BTreeSet::from([d.id]);
-        let caller = Caller {
-            role: Role::of(40),
-            user: None,
-            tables: None,
-        };
+        let caller = Caller::of(&sc_catalog::Principal::recorded(Role::of(40), None));
         // Not one of the application's tables: fixed mode does not ask.
         assert!(app.sees_dataset(&caller, &d, &Sharing::default(), &library));
         assert!(!app.sees_dataset(&caller, &other, &Sharing::default(), &library));
@@ -672,7 +664,7 @@ mod tests {
         assert!(app.check_dataset_editor().is_err());
         assert!(!app.offers_table("houses"));
         // No table subset: the shown workspaces' datasets are the grant.
-        assert!(app.narrow(caller).tables.is_none());
+        assert_eq!(app.narrow(caller).tables(), &sc_dataset::TableScope::Every);
         assert_eq!(app.shell_json()["workspace_kinds"], json!(["dashboard"]));
     }
 }

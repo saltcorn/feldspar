@@ -84,7 +84,11 @@ impl FromIterator<(String, Value)> for ValueRow {
 ///
 /// `table` names the table in every refusal, because "a provided table cannot be
 /// joined" is only actionable if it says which one.
-pub fn run_select_over(select: &Select, table: &str, rows: Vec<ValueRow>) -> Result<Vec<Row>> {
+pub(crate) fn run_select_over(
+    select: &Select,
+    table: &str,
+    rows: Vec<ValueRow>,
+) -> Result<Vec<Row>> {
     refuse_unsupported(select, table)?;
 
     // WHERE, then ORDER BY, then OFFSET/LIMIT — SQL's own order, which is the
@@ -95,12 +99,13 @@ pub fn run_select_over(select: &Select, table: &str, rows: Vec<ValueRow>) -> Res
         sort_rows(&mut kept, &select.order, table)?;
     }
 
-    let offset = select.offset.unwrap_or(0) as usize;
+    // Saturating: an offset past `usize` skips every row, as it would anyway.
+    let offset = usize::try_from(select.offset.unwrap_or(0)).unwrap_or(usize::MAX);
     if offset > 0 {
         kept = kept.split_off(offset.min(kept.len()));
     }
     if let Some(limit) = select.limit {
-        kept.truncate(limit as usize);
+        kept.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
     }
 
     // An aggregate projection is a different shape of answer — one row over the
@@ -129,7 +134,7 @@ pub fn run_select_over(select: &Select, table: &str, rows: Vec<ValueRow>) -> Res
 /// key, so a provided-table write begins by asking which rows the statement's
 /// filter matches (`crate::provider`). A `None` filter keeps everything, which
 /// is what an unfiltered `UPDATE` or `DELETE` means.
-pub fn filter_rows(
+pub(crate) fn filter_rows(
     filter: Option<&Expr>,
     table: &str,
     rows: Vec<ValueRow>,
@@ -152,7 +157,7 @@ pub fn filter_rows(
 /// declared — `@saltcorn/rss` answers every element `rss-parser` found — and a
 /// column nobody declared has no type, no header and no place in a `Row`, so it
 /// is left where it is rather than being smuggled through as text.
-pub fn value_row(fields: &[DataField], json: &Json) -> ValueRow {
+pub(crate) fn value_row(fields: &[DataField], json: &Json) -> ValueRow {
     let object = json.as_object();
     fields
         .iter()
@@ -186,7 +191,7 @@ fn coerce(json: &Json, field: &DataField) -> Value {
         },
         BasicType::Int => match json {
             Json::Number(n) => n.as_i64().map_or_else(
-                || n.as_f64().map_or(Value::Null, |f| Value::Int(f as i64)),
+                || n.as_f64().map_or(Value::Null, |f| Value::Int(truncated(f))),
                 Value::Int,
             ),
             Json::String(s) => s.trim().parse().map_or(Value::Null, Value::Int),
@@ -468,11 +473,22 @@ fn aggregate(
     })
 }
 
+/// A float read into an integer field: truncated toward zero, saturating at
+/// the `i64` range (NaN is 0), as Postgres' and SQLite's casts do.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "truncation toward zero is the conversion meant"
+)]
+fn truncated(f: f64) -> i64 {
+    f as i64
+}
+
 /// An integral sum stays integral: a count of pennies that came back as `3.0`
 /// would be a surprising answer to `sum(price)` on an integer column.
 fn number_value(n: f64) -> Value {
     if n.fract() == 0.0 && n.abs() < 9.0e15 {
-        Value::Int(n as i64)
+        // Integral and well inside the `i64` range, so exact.
+        Value::Int(truncated(n))
     } else {
         Value::Float(n)
     }
@@ -942,7 +958,7 @@ fn compare(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
 /// [`run_select_over`] runs regardless, so a provider that ignores all of this
 /// still gets the right answer, and one that honours it does the same work
 /// twice on a smaller list.
-pub fn pushdown(select: &Select) -> (Json, Json) {
+pub(crate) fn pushdown(select: &Select) -> (Json, Json) {
     let empty = || {
         (
             Json::Object(serde_json::Map::new()),

@@ -1002,7 +1002,10 @@ impl<'a> RowSource<'a> {
                     if catalog.primary_info().capabilities().row_level_security {
                         sc_catalog::set_caller_context(
                             tx.as_mut(),
-                            &sc_catalog::Principal::anonymous(sc_types::Role::ADMIN),
+                            &sc_catalog::Authority::system(
+                                "backup: read every row of a table under row-level security",
+                            )
+                            .as_principal(),
                         )
                         .await?;
                     }

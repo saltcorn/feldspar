@@ -19,7 +19,8 @@
 //! What is stored changes only through `createDataset`, `updateDataset`,
 //! `cloneDataset` and `deleteDataset`.
 
-use crate::endpoint::{AuthRequirement, Endpoint, EndpointSet, Method, PathSpec, QueryParam};
+use crate::endpoint::{Endpoint, EndpointSet, Method, PathSpec, QueryParam};
+use crate::handler_ids as ids;
 use crate::schema::{StructField, TypeSchema, ValueType};
 
 fn api() -> PathSpec {
@@ -34,59 +35,52 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // Every stored dataset, with whether it reads: the Analytics UI's front page,
     // the model form's picker and the explorer's drop-down.
     set.register(
-        Endpoint::new("listDatasets", Method::Get, api().lit("datasets"))
-            .output(TypeSchema::array(dataset_summary_schema()))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(ids::LIST_DATASETS, Method::Get, api().lit("datasets"))
+            .output(TypeSchema::array(dataset_summary_schema())),
     );
 
     // One dataset, compiled: the report on its base and each operation.
     set.register(
         Endpoint::new(
-            "getDataset",
+            ids::GET_DATASET,
             Method::Get,
             api().lit("datasets").param("id", ValueType::Uuid),
         )
-        .output(dataset_detail_schema())
-        .auth(AuthRequirement::admin()),
+        .output(dataset_detail_schema()),
     );
 
     // A new dataset: a name, a base, and (usually none yet) operations.
     set.register(
-        Endpoint::new("createDataset", Method::Post, api().lit("datasets"))
+        Endpoint::new(ids::CREATE_DATASET, Method::Post, api().lit("datasets"))
             .input(dataset_input_schema())
-            .output(dataset_detail_schema())
-            .auth(AuthRequirement::admin()),
+            .output(dataset_detail_schema()),
     );
 
     // Replace a dataset's name, description and operations. The base is sent
     // too and must be the one it has: a base is never changed.
     set.register(
         Endpoint::new(
-            "updateDataset",
+            ids::UPDATE_DATASET,
             Method::Put,
             api().lit("datasets").param("id", ValueType::Uuid),
         )
         .input(dataset_input_schema())
-        .output(dataset_detail_schema())
-        .auth(AuthRequirement::admin()),
+        .output(dataset_detail_schema()),
     );
 
     // Refused while other datasets read it; a model that uses it is listed by
     // `datasetUsage` for the warning, and is left listed with its error.
-    set.register(
-        Endpoint::new(
-            "deleteDataset",
-            Method::Delete,
-            api().lit("datasets").param("id", ValueType::Uuid),
-        )
-        .auth(AuthRequirement::admin()),
-    );
+    set.register(Endpoint::new(
+        ids::DELETE_DATASET,
+        Method::Delete,
+        api().lit("datasets").param("id", ValueType::Uuid),
+    ));
 
     // Share a dataset with a role, or with nobody but its owner (`null`)
     // (A9.1). Its owner's and the admin's to say.
     set.register(
         Endpoint::new(
-            "shareDataset",
+            ids::SHARE_DATASET,
             Method::Put,
             api()
                 .lit("datasets")
@@ -94,13 +88,12 @@ pub(crate) fn register(set: &mut EndpointSet) {
                 .lit("share"),
         )
         .input(share_input_schema())
-        .output(dataset_detail_schema())
-        .auth(AuthRequirement::admin()),
+        .output(dataset_detail_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "cloneDataset",
+            ids::CLONE_DATASET,
             Method::Post,
             api()
                 .lit("datasets")
@@ -111,8 +104,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
             "name",
             TypeSchema::optional(TypeSchema::text()),
         )]))
-        .output(dataset_detail_schema())
-        .auth(AuthRequirement::admin()),
+        .output(dataset_detail_schema()),
     );
 
     // --- public datasets ----------------------------------------------------
@@ -123,12 +115,11 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // got here if it cannot, and the latest install of it this process ran.
     set.register(
         Endpoint::new(
-            "listPublicDatasets",
+            ids::LIST_PUBLIC_DATASETS,
             Method::Get,
             api().lit("public-datasets"),
         )
-        .output(TypeSchema::array(public_dataset_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(public_dataset_schema())),
     );
 
     // Get one: download its files, create its tables and a dataset on the main
@@ -137,30 +128,28 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // done. A second start while one runs answers that one.
     set.register(
         Endpoint::new(
-            "installPublicDataset",
+            ids::INSTALL_PUBLIC_DATASET,
             Method::Post,
             api()
                 .lit("public-datasets")
                 .param("key", ValueType::Text)
                 .lit("install"),
         )
-        .output(public_dataset_job_schema())
-        .auth(AuthRequirement::admin()),
+        .output(public_dataset_job_schema()),
     );
 
     // The latest install of one, running or finished: what the UI polls. A
     // 404 when this process has not installed it since it started.
     set.register(
         Endpoint::new(
-            "getPublicDatasetInstall",
+            ids::GET_PUBLIC_DATASET_INSTALL,
             Method::Get,
             api()
                 .lit("public-datasets")
                 .param("key", ValueType::Text)
                 .lit("install"),
         )
-        .output(public_dataset_job_schema())
-        .auth(AuthRequirement::admin()),
+        .output(public_dataset_job_schema()),
     );
 
     // What reads a dataset: what the delete warning lists. `workspaces` is
@@ -168,7 +157,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // with how many, and the explorers that have it chosen (`panels` 0).
     set.register(
         Endpoint::new(
-            "datasetUsage",
+            ids::DATASET_USAGE,
             Method::Get,
             api()
                 .lit("datasets")
@@ -179,8 +168,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
             StructField::new("datasets", TypeSchema::array(named_schema())),
             StructField::new("models", TypeSchema::array(named_schema())),
             StructField::new("workspaces", TypeSchema::array(workspace_use_schema())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // The shapes of every stage of a definition — stored or being edited —
@@ -189,7 +177,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // while rows are rows of a table (`viewingsↃhouse`).
     set.register(
         Endpoint::new(
-            "datasetShapes",
+            ids::DATASET_SHAPES,
             Method::Post,
             api().lit("datasets").lit("shapes"),
         )
@@ -197,15 +185,14 @@ pub(crate) fn register(set: &mut EndpointSet) {
             "dataset",
             TypeSchema::json(),
         )]))
-        .output(dataset_report_schema())
-        .auth(AuthRequirement::admin()),
+        .output(dataset_report_schema()),
     );
 
     // Whether one operation compiles at a position of a definition, and the
     // columns after it — the operation form's check as the admin types.
     set.register(
         Endpoint::new(
-            "validateDatasetOperation",
+            ids::VALIDATE_DATASET_OPERATION,
             Method::Post,
             api().lit("datasets").lit("validate"),
         )
@@ -222,15 +209,14 @@ pub(crate) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([
             StructField::new("error", TypeSchema::optional(TypeSchema::text())),
             StructField::new("shape", TypeSchema::optional(TypeSchema::json())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // A page of the stage after the first `upto` operations (all of them when
     // absent), with the column types and the total.
     set.register(
         Endpoint::new(
-            "readDatasetStage",
+            ids::READ_DATASET_STAGE,
             Method::Post,
             api().lit("datasets").lit("stage"),
         )
@@ -245,15 +231,14 @@ pub(crate) fn register(set: &mut EndpointSet) {
             StructField::new("grain", TypeSchema::json()),
             StructField::new("rows", TypeSchema::array(TypeSchema::json())),
             StructField::new("total", TypeSchema::int()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // The distinct values of a column at a stage, most frequent first: what a
     // Split's new columns are pre-filled from.
     set.register(
         Endpoint::new(
-            "datasetColumnValues",
+            ids::DATASET_COLUMN_VALUES,
             Method::Post,
             api().lit("datasets").lit("values"),
         )
@@ -263,15 +248,14 @@ pub(crate) fn register(set: &mut EndpointSet) {
             StructField::new("column", TypeSchema::text()),
             StructField::new("limit", TypeSchema::optional(TypeSchema::int())),
         ]))
-        .output(TypeSchema::array(TypeSchema::json()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(TypeSchema::json())),
     );
 
     // The tables a dataset can be based on or combine with, and their
     // columns: the base picker's list.
     set.register(
         Endpoint::new(
-            "listDatasetTables",
+            ids::LIST_DATASET_TABLES,
             Method::Get,
             api().lit("datasets").lit("tables"),
         )
@@ -279,8 +263,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
             StructField::new("name", TypeSchema::text()),
             StructField::new("columns", TypeSchema::array(TypeSchema::json())),
             StructField::new("primary_key", TypeSchema::optional(TypeSchema::text())),
-        ])))
-        .auth(AuthRequirement::admin()),
+        ]))),
     );
 
     // --- plots ---------------------------------------------------------------
@@ -291,68 +274,74 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // `error` (the first reason, as a sentence) and `problems` (all of them),
     // which the explorer shows in place of the plot.
     set.register(
-        Endpoint::new("renderPlot", Method::Post, api().lit("plots").lit("render"))
-            .input(TypeSchema::struct_of([StructField::new(
-                "spec",
-                TypeSchema::json(),
-            )]))
-            .output(TypeSchema::struct_of([
-                StructField::new("error", TypeSchema::optional(TypeSchema::text())),
-                StructField::new(
-                    "problems",
-                    TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
-                ),
-                StructField::new(
-                    "layers",
-                    TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
-                ),
-                StructField::new("domains", TypeSchema::optional(TypeSchema::json())),
-                StructField::new("facets", TypeSchema::optional(TypeSchema::json())),
-                StructField::new("bins", TypeSchema::optional(TypeSchema::json())),
-                StructField::new(
-                    "warnings",
-                    TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
-                ),
-            ]))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::RENDER_PLOT,
+            Method::Post,
+            api().lit("plots").lit("render"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "spec",
+            TypeSchema::json(),
+        )]))
+        .output(TypeSchema::struct_of([
+            StructField::new("error", TypeSchema::optional(TypeSchema::text())),
+            StructField::new(
+                "problems",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+            ),
+            StructField::new(
+                "layers",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
+            ),
+            StructField::new("domains", TypeSchema::optional(TypeSchema::json())),
+            StructField::new("facets", TypeSchema::optional(TypeSchema::json())),
+            StructField::new("bins", TypeSchema::optional(TypeSchema::json())),
+            StructField::new(
+                "warnings",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+            ),
+        ])),
     );
 
     // A summary table's data (A2.8): the cells for each combination of the
     // row and column dimensions' values, and the totals. Answers `error` and
     // `problems`, as `renderPlot` does, for a spec that cannot be made.
     set.register(
-        Endpoint::new("renderTable", Method::Post, api().lit("plots").lit("table"))
-            .input(TypeSchema::struct_of([StructField::new(
-                "spec",
-                TypeSchema::json(),
-            )]))
-            .output(TypeSchema::struct_of([
-                StructField::new("error", TypeSchema::optional(TypeSchema::text())),
-                StructField::new(
-                    "problems",
-                    TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
-                ),
-                StructField::new(
-                    "rows",
-                    TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
-                ),
-                StructField::new(
-                    "columns",
-                    TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
-                ),
-                StructField::new(
-                    "cells",
-                    TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
-                ),
-                StructField::new("body", TypeSchema::optional(TypeSchema::json())),
-                StructField::new("row_totals", TypeSchema::optional(TypeSchema::json())),
-                StructField::new("column_totals", TypeSchema::optional(TypeSchema::json())),
-                StructField::new("grand_total", TypeSchema::optional(TypeSchema::json())),
-                StructField::new("bins", TypeSchema::optional(TypeSchema::json())),
-                StructField::new("total", TypeSchema::optional(TypeSchema::int())),
-                StructField::new("truncated", TypeSchema::optional(TypeSchema::bool())),
-            ]))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::RENDER_TABLE,
+            Method::Post,
+            api().lit("plots").lit("table"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "spec",
+            TypeSchema::json(),
+        )]))
+        .output(TypeSchema::struct_of([
+            StructField::new("error", TypeSchema::optional(TypeSchema::text())),
+            StructField::new(
+                "problems",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+            ),
+            StructField::new(
+                "rows",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+            ),
+            StructField::new(
+                "columns",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+            ),
+            StructField::new(
+                "cells",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+            ),
+            StructField::new("body", TypeSchema::optional(TypeSchema::json())),
+            StructField::new("row_totals", TypeSchema::optional(TypeSchema::json())),
+            StructField::new("column_totals", TypeSchema::optional(TypeSchema::json())),
+            StructField::new("grand_total", TypeSchema::optional(TypeSchema::json())),
+            StructField::new("bins", TypeSchema::optional(TypeSchema::json())),
+            StructField::new("total", TypeSchema::optional(TypeSchema::int())),
+            StructField::new("truncated", TypeSchema::optional(TypeSchema::bool())),
+        ])),
     );
 
     // The gallery's items, the map shown disabled until A5. `reshapes` marks
@@ -360,7 +349,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // (scatterplot matrix, parallel coordinates, correlation heatmap, mosaic).
     set.register(
         Endpoint::new(
-            "plotGallery",
+            ids::PLOT_GALLERY,
             Method::Get,
             api().lit("plots").lit("gallery"),
         )
@@ -370,8 +359,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
             StructField::new("available", TypeSchema::bool()),
             StructField::new("reshapes", TypeSchema::bool()),
             StructField::new("arrives_in", TypeSchema::optional(TypeSchema::text())),
-        ])))
-        .auth(AuthRequirement::admin()),
+        ]))),
     );
 
     // The hypothesis tests for the Y, X and Wrap drop zones (A2.12–A2.14):
@@ -381,38 +369,41 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // tests, assumption checks and the test its sentence reports; or `error`
     // (and `problems`), as `renderPlot` does, when the roles have no test.
     set.register(
-        Endpoint::new("runTests", Method::Post, api().lit("plots").lit("tests"))
-            .input(TypeSchema::struct_of([StructField::new(
-                "spec",
-                TypeSchema::json(),
-            )]))
-            .output(TypeSchema::struct_of([
-                StructField::new("error", TypeSchema::optional(TypeSchema::text())),
-                StructField::new(
-                    "problems",
-                    TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
-                ),
-                StructField::new("design", TypeSchema::optional(TypeSchema::text())),
-                StructField::new(
-                    "y",
-                    TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
-                ),
-                StructField::new("x", TypeSchema::optional(TypeSchema::text())),
-                StructField::new("by", TypeSchema::optional(TypeSchema::text())),
-                StructField::new(
-                    "mu",
-                    TypeSchema::optional(TypeSchema::Value(ValueType::Float)),
-                ),
-                StructField::new(
-                    "level",
-                    TypeSchema::optional(TypeSchema::Value(ValueType::Float)),
-                ),
-                StructField::new(
-                    "sections",
-                    TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
-                ),
-            ]))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::RUN_TESTS,
+            Method::Post,
+            api().lit("plots").lit("tests"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "spec",
+            TypeSchema::json(),
+        )]))
+        .output(TypeSchema::struct_of([
+            StructField::new("error", TypeSchema::optional(TypeSchema::text())),
+            StructField::new(
+                "problems",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+            ),
+            StructField::new("design", TypeSchema::optional(TypeSchema::text())),
+            StructField::new(
+                "y",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+            ),
+            StructField::new("x", TypeSchema::optional(TypeSchema::text())),
+            StructField::new("by", TypeSchema::optional(TypeSchema::text())),
+            StructField::new(
+                "mu",
+                TypeSchema::optional(TypeSchema::Value(ValueType::Float)),
+            ),
+            StructField::new(
+                "level",
+                TypeSchema::optional(TypeSchema::Value(ValueType::Float)),
+            ),
+            StructField::new(
+                "sections",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
+            ),
+        ])),
     );
 
     // The spec for what is on the drop zones (A2.2): by a gallery preset, which
@@ -421,7 +412,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // preset left them, or `error` when nothing can be drawn yet.
     set.register(
         Endpoint::new(
-            "suggestPlot",
+            ids::SUGGEST_PLOT,
             Method::Post,
             api().lit("plots").lit("suggest"),
         )
@@ -435,8 +426,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
             StructField::new("spec", TypeSchema::optional(TypeSchema::json())),
             StructField::new("assignment", TypeSchema::optional(TypeSchema::json())),
             StructField::new("error", TypeSchema::optional(TypeSchema::text())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // --- map layers (A5.5) -----------------------------------------------------
@@ -451,7 +441,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // there are and their `bounds` (`[west, south, east, north]`). A layer that
     // cannot be drawn answers `delivery: "none"` and the sentence in `error`.
     set.register(
-        Endpoint::new("layerData", Method::Post, api().lit("layers"))
+        Endpoint::new(ids::LAYER_DATA, Method::Post, api().lit("layers"))
             .input(TypeSchema::struct_of([StructField::new(
                 "layer",
                 TypeSchema::json(),
@@ -477,8 +467,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
                 StructField::new("tiles", TypeSchema::optional(TypeSchema::text())),
                 StructField::new("source_layer", TypeSchema::optional(TypeSchema::text())),
                 StructField::new("keyed", TypeSchema::optional(TypeSchema::bool())),
-            ]))
-            .auth(AuthRequirement::admin()),
+            ])),
     );
 
     // One Mapbox vector tile of a layer (`application/vnd.mapbox-vector-tile`),
@@ -488,7 +477,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // refused with the sentence.
     set.register(
         Endpoint::new(
-            "layerTile",
+            ids::LAYER_TILE,
             Method::Get,
             api()
                 .lit("layers")
@@ -498,8 +487,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
                 .param("y", ValueType::Int),
         )
         .query([QueryParam::new("layer", ValueType::Text).required()])
-        .binary_output()
-        .auth(AuthRequirement::admin()),
+        .binary_output(),
     );
 
     // A layer's rows for the Map workspace's attribute table (A5.10): the
@@ -510,31 +498,34 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // table's (`sorted`); otherwise in the dataset's order, for the table to
     // sort. A layer that cannot be read answers `error`.
     set.register(
-        Endpoint::new("layerRows", Method::Post, api().lit("layers").lit("rows"))
-            .input(TypeSchema::struct_of([
-                StructField::new("layer", TypeSchema::json()),
-                StructField::new("sort", TypeSchema::optional(TypeSchema::json())),
-                StructField::new("limit", TypeSchema::optional(TypeSchema::int())),
-            ]))
-            .output(TypeSchema::struct_of([
-                StructField::new("error", TypeSchema::optional(TypeSchema::text())),
-                StructField::new(
-                    "columns",
-                    TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
-                ),
-                StructField::new(
-                    "rows",
-                    TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
-                ),
-                StructField::new(
-                    "ids",
-                    TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
-                ),
-                StructField::new("total", TypeSchema::optional(TypeSchema::int())),
-                StructField::new("keyed", TypeSchema::optional(TypeSchema::bool())),
-                StructField::new("sorted", TypeSchema::optional(TypeSchema::bool())),
-            ]))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::LAYER_ROWS,
+            Method::Post,
+            api().lit("layers").lit("rows"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("layer", TypeSchema::json()),
+            StructField::new("sort", TypeSchema::optional(TypeSchema::json())),
+            StructField::new("limit", TypeSchema::optional(TypeSchema::int())),
+        ]))
+        .output(TypeSchema::struct_of([
+            StructField::new("error", TypeSchema::optional(TypeSchema::text())),
+            StructField::new(
+                "columns",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
+            ),
+            StructField::new(
+                "rows",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
+            ),
+            StructField::new(
+                "ids",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
+            ),
+            StructField::new("total", TypeSchema::optional(TypeSchema::int())),
+            StructField::new("keyed", TypeSchema::optional(TypeSchema::bool())),
+            StructField::new("sorted", TypeSchema::optional(TypeSchema::bool())),
+        ])),
     );
 
     // The features of a layer a selection finds (A5.10), `by` one of
@@ -545,7 +536,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // `saveSelection` filters by — or `error`, the sentence.
     set.register(
         Endpoint::new(
-            "selectFeatures",
+            ids::SELECT_FEATURES,
             Method::Post,
             api().lit("layers").lit("select"),
         )
@@ -562,8 +553,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
             StructField::new("count", TypeSchema::optional(TypeSchema::int())),
             StructField::new("truncated", TypeSchema::optional(TypeSchema::bool())),
             StructField::new("condition", TypeSchema::optional(TypeSchema::text())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // **Save selection as dataset** (A5.10): a new dataset `name` whose base
@@ -573,7 +563,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // `getDataset` does.
     set.register(
         Endpoint::new(
-            "saveSelection",
+            ids::SAVE_SELECTION,
             Method::Post,
             api().lit("layers").lit("selection"),
         )
@@ -586,8 +576,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
             ),
             StructField::new("condition", TypeSchema::optional(TypeSchema::text())),
         ]))
-        .output(dataset_detail_schema())
-        .auth(AuthRequirement::admin()),
+        .output(dataset_detail_schema()),
     );
 
     // --- maps (A5.6, A5.7, A5.11, A5.12) ------------------------------------------
@@ -600,12 +589,11 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // URL, empty for none, and the further hosts comma-separated).
     set.register(
         Endpoint::new(
-            "mapSettings",
+            ids::MAP_SETTINGS,
             Method::Get,
             api().lit("maps").lit("settings"),
         )
-        .output(map_settings_schema())
-        .auth(AuthRequirement::admin()),
+        .output(map_settings_schema()),
     );
 
     // Save the base maps from the Analytics UI's Settings page: the form's
@@ -615,7 +603,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // `mapSettings`' answer.
     set.register(
         Endpoint::new(
-            "saveMapSettings",
+            ids::SAVE_MAP_SETTINGS,
             Method::Post,
             api().lit("maps").lit("settings"),
         )
@@ -623,8 +611,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
             "values",
             map_values_schema(),
         )]))
-        .output(map_settings_schema())
-        .auth(AuthRequirement::admin()),
+        .output(map_settings_schema()),
     );
 
     // Let a map load from one more origin (A5.11): adds it to the base maps'
@@ -632,13 +619,16 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // load on. The origin of `url` is taken, and anything that is not one
     // refused by name. Answers `mapSettings`' answer.
     set.register(
-        Endpoint::new("allowMapHost", Method::Post, api().lit("maps").lit("hosts"))
-            .input(TypeSchema::struct_of([StructField::new(
-                "url",
-                TypeSchema::text(),
-            )]))
-            .output(map_settings_schema())
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::ALLOW_MAP_HOST,
+            Method::Post,
+            api().lit("maps").lit("hosts"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "url",
+            TypeSchema::text(),
+        )]))
+        .output(map_settings_schema()),
     );
 
     // The Map workspace's toolbox (A5.12): every tool, built in or a
@@ -646,16 +636,19 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // `{ name, label, kind: "layer" | "column" | "number" | "choice" | "text",
     // … }`).
     set.register(
-        Endpoint::new("listMapTools", Method::Get, api().lit("maps").lit("tools"))
-            .output(TypeSchema::array(TypeSchema::struct_of([
-                StructField::new("id", TypeSchema::text()),
-                StructField::new("group", TypeSchema::text()),
-                StructField::new("label", TypeSchema::text()),
-                StructField::new("description", TypeSchema::text()),
-                StructField::new("params", TypeSchema::array(TypeSchema::json())),
-                StructField::new("module", TypeSchema::optional(TypeSchema::text())),
-            ])))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::LIST_MAP_TOOLS,
+            Method::Get,
+            api().lit("maps").lit("tools"),
+        )
+        .output(TypeSchema::array(TypeSchema::struct_of([
+            StructField::new("id", TypeSchema::text()),
+            StructField::new("group", TypeSchema::text()),
+            StructField::new("label", TypeSchema::text()),
+            StructField::new("description", TypeSchema::text()),
+            StructField::new("params", TypeSchema::array(TypeSchema::json())),
+            StructField::new("module", TypeSchema::optional(TypeSchema::text())),
+        ]))),
     );
 
     // Run a tool (A5.12) on its form's answers (`params`, a layer's answer a
@@ -665,7 +658,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // refused with the sentence, and nothing is stored.
     set.register(
         Endpoint::new(
-            "runMapTool",
+            ids::RUN_MAP_TOOL,
             Method::Post,
             api().lit("maps").lit("tools").lit("run"),
         )
@@ -678,8 +671,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
             StructField::new("dataset", TypeSchema::json()),
             StructField::new("report", dataset_report_schema()),
             StructField::new("layer", TypeSchema::json()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // The map the explorer draws for a dataset (A5.7): its rows over a base
@@ -690,18 +682,21 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // a geometry column, longitude and latitude columns, a key to a table
     // with a geometry column), or `error` when nothing can be drawn.
     set.register(
-        Endpoint::new("suggestMap", Method::Post, api().lit("maps").lit("suggest"))
-            .input(TypeSchema::struct_of([
-                StructField::new("dataset", TypeSchema::uuid()),
-                StructField::new("assignment", TypeSchema::optional(TypeSchema::json())),
-                StructField::new("geometry", TypeSchema::optional(TypeSchema::json())),
-            ]))
-            .output(TypeSchema::struct_of([
-                StructField::new("spec", TypeSchema::optional(TypeSchema::json())),
-                StructField::new("sources", TypeSchema::array(TypeSchema::json())),
-                StructField::new("error", TypeSchema::optional(TypeSchema::text())),
-            ]))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::SUGGEST_MAP,
+            Method::Post,
+            api().lit("maps").lit("suggest"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("dataset", TypeSchema::uuid()),
+            StructField::new("assignment", TypeSchema::optional(TypeSchema::json())),
+            StructField::new("geometry", TypeSchema::optional(TypeSchema::json())),
+        ]))
+        .output(TypeSchema::struct_of([
+            StructField::new("spec", TypeSchema::optional(TypeSchema::json())),
+            StructField::new("sources", TypeSchema::array(TypeSchema::json())),
+            StructField::new("error", TypeSchema::optional(TypeSchema::text())),
+        ])),
     );
 
     // A map spec drawn (A5.6): for each layer, its features as `layerData`
@@ -711,16 +706,19 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // `color`, `size`, `shape`), over every feature, and graduated colours'
     // breaks in `classes` (A5.9).
     set.register(
-        Endpoint::new("renderMap", Method::Post, api().lit("maps").lit("render"))
-            .input(TypeSchema::struct_of([StructField::new(
-                "spec",
-                TypeSchema::json(),
-            )]))
-            .output(TypeSchema::struct_of([StructField::new(
-                "layers",
-                TypeSchema::array(TypeSchema::json()),
-            )]))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::RENDER_MAP,
+            Method::Post,
+            api().lit("maps").lit("render"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "spec",
+            TypeSchema::json(),
+        )]))
+        .output(TypeSchema::struct_of([StructField::new(
+            "layers",
+            TypeSchema::array(TypeSchema::json()),
+        )])),
     );
 
     // --- panels (A4.2) ---------------------------------------------------------
@@ -740,7 +738,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // condition and dataset, the column it filtered or why it filtered none.
     set.register(
         Endpoint::new(
-            "renderPanel",
+            ids::RENDER_PANEL,
             Method::Post,
             api().lit("panels").lit("render"),
         )
@@ -772,8 +770,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
                 "filters",
                 TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
             ),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // --- the model editor -----------------------------------------------------
@@ -798,7 +795,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // changes, then `{"type":"finished","status","error"}`, and closes.
     set.register(
         Endpoint::new(
-            "getModelOutputs",
+            ids::GET_MODEL_OUTPUTS,
             Method::Get,
             api()
                 .lit("models")
@@ -817,8 +814,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
             // `{ name, label, optional, kind: "table" | "plot", table?, spec?,
             // plot?, error? }`, `plot` being `renderPlot`'s answer.
             StructField::new("outputs", TypeSchema::array(TypeSchema::json())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // --- the shell -------------------------------------------------------------
@@ -828,18 +824,21 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // application — its name, its mode, what it allows and, in fixed mode, the
     // workspaces it shows (A9.3). And the roles, for sharing.
     set.register(
-        Endpoint::new("analyticsShell", Method::Get, api().lit("analytics/shell"))
-            .output(TypeSchema::struct_of([
-                StructField::new("application", TypeSchema::optional(TypeSchema::json())),
-                StructField::new(
-                    "roles",
-                    TypeSchema::array(TypeSchema::struct_of([
-                        StructField::new("role", TypeSchema::int()),
-                        StructField::new("name", TypeSchema::text()),
-                    ])),
-                ),
-            ]))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::ANALYTICS_SHELL,
+            Method::Get,
+            api().lit("analytics/shell"),
+        )
+        .output(TypeSchema::struct_of([
+            StructField::new("application", TypeSchema::optional(TypeSchema::json())),
+            StructField::new(
+                "roles",
+                TypeSchema::array(TypeSchema::struct_of([
+                    StructField::new("role", TypeSchema::int()),
+                    StructField::new("name", TypeSchema::text()),
+                ])),
+            ),
+        ])),
     );
 
     // --- workspaces ----------------------------------------------------------
@@ -848,7 +847,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // that brings it — what the create dialog lists, disabled or not.
     set.register(
         Endpoint::new(
-            "listWorkspaceKinds",
+            ids::LIST_WORKSPACE_KINDS,
             Method::Get,
             api().lit("workspace-kinds"),
         )
@@ -857,41 +856,37 @@ pub(crate) fn register(set: &mut EndpointSet) {
             StructField::new("label", TypeSchema::text()),
             StructField::new("available", TypeSchema::bool()),
             StructField::new("arrives_in", TypeSchema::optional(TypeSchema::text())),
-        ])))
-        .auth(AuthRequirement::admin()),
+        ]))),
     );
 
     set.register(
-        Endpoint::new("listWorkspaces", Method::Get, api().lit("workspaces"))
-            .output(TypeSchema::array(workspace_schema()))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(ids::LIST_WORKSPACES, Method::Get, api().lit("workspaces"))
+            .output(TypeSchema::array(workspace_schema())),
     );
 
     set.register(
         Endpoint::new(
-            "getWorkspace",
+            ids::GET_WORKSPACE,
             Method::Get,
             api().lit("workspaces").param("id", ValueType::Uuid),
         )
-        .output(workspace_schema())
-        .auth(AuthRequirement::admin()),
+        .output(workspace_schema()),
     );
 
     set.register(
-        Endpoint::new("createWorkspace", Method::Post, api().lit("workspaces"))
+        Endpoint::new(ids::CREATE_WORKSPACE, Method::Post, api().lit("workspaces"))
             .input(TypeSchema::struct_of([
                 StructField::new("name", TypeSchema::text()),
                 StructField::new("kind", TypeSchema::text()),
             ]))
-            .output(workspace_schema())
-            .auth(AuthRequirement::admin()),
+            .output(workspace_schema()),
     );
 
     // Rename. The state has its own endpoint, because it is saved as it
     // changes and a rename must not race a stale copy of it.
     set.register(
         Endpoint::new(
-            "updateWorkspace",
+            ids::UPDATE_WORKSPACE,
             Method::Put,
             api().lit("workspaces").param("id", ValueType::Uuid),
         )
@@ -899,14 +894,13 @@ pub(crate) fn register(set: &mut EndpointSet) {
             "name",
             TypeSchema::text(),
         )]))
-        .output(workspace_schema())
-        .auth(AuthRequirement::admin()),
+        .output(workspace_schema()),
     );
 
     // Share a workspace with a role, or with nobody but its owner (A9.1).
     set.register(
         Endpoint::new(
-            "shareWorkspace",
+            ids::SHARE_WORKSPACE,
             Method::Put,
             api()
                 .lit("workspaces")
@@ -914,13 +908,12 @@ pub(crate) fn register(set: &mut EndpointSet) {
                 .lit("share"),
         )
         .input(share_input_schema())
-        .output(workspace_schema())
-        .auth(AuthRequirement::admin()),
+        .output(workspace_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "saveWorkspaceState",
+            ids::SAVE_WORKSPACE_STATE,
             Method::Put,
             api()
                 .lit("workspaces")
@@ -931,18 +924,14 @@ pub(crate) fn register(set: &mut EndpointSet) {
             "state",
             TypeSchema::json(),
         )]))
-        .output(workspace_schema())
-        .auth(AuthRequirement::admin()),
+        .output(workspace_schema()),
     );
 
-    set.register(
-        Endpoint::new(
-            "deleteWorkspace",
-            Method::Delete,
-            api().lit("workspaces").param("id", ValueType::Uuid),
-        )
-        .auth(AuthRequirement::admin()),
-    );
+    set.register(Endpoint::new(
+        ids::DELETE_WORKSPACE,
+        Method::Delete,
+        api().lit("workspaces").param("id", ValueType::Uuid),
+    ));
 }
 
 /// A stored dataset as a list shows it.

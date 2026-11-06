@@ -6,7 +6,7 @@ use super::*;
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
 
-    reg.register("authStatus", {
+    reg.handle(sc_api::handler_ids::AUTH_STATUS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -46,7 +46,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("finishOnboarding", {
+    reg.handle(sc_api::handler_ids::FINISH_ONBOARDING, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -57,7 +57,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register("createFirstUser", {
+    reg.handle(sc_api::handler_ids::CREATE_FIRST_USER, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -79,9 +79,16 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 }
                 let user = create_first_user(&catalog, &email, &password).await?;
                 // Log the new admin straight in — they came from the bootstrap
-                // screen and expect to land in the app.
+                // screen and expect to land in the app, and have no second
+                // factor yet (a named waiver, security review 2026-11, §2).
                 let body = user_summary_json(&user);
-                Ok(HandlerResponse::start_verified_session(user, body))
+                Ok(HandlerResponse::start_verified_session(
+                    sc_auth::FullyAuthenticated::waived(
+                        user,
+                        sc_auth::SecondFactorWaiver::FirstUser,
+                    ),
+                    body,
+                ))
             }
         }
     });
@@ -96,7 +103,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         .with_status(429)
     }
 
-    reg.register("login", {
+    reg.handle(sc_api::handler_ids::LOGIN, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -132,7 +139,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_signed_in("logout", |_ctx| async {
+    reg.handle(sc_api::handler_ids::LOGOUT, |_ctx| async {
         Ok(HandlerResponse::end_session(json!({ "ok": true })))
     });
 }

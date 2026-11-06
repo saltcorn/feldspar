@@ -14,6 +14,10 @@
 //! out. Asserting on the emitted text would pass just as happily on code that
 //! never runs. Skips when `node` is absent, like the `tsc` test beside it.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use std::process::Command;
 
 use sc_api::{ApiProvider, RestProvider};

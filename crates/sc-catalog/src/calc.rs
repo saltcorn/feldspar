@@ -31,11 +31,11 @@ use crate::table::{FieldMergeIssue, Table};
 /// already includes them as fields), dropping the invalid ones and leaving the
 /// survivors in dependency order. Returns one issue per dropped field.
 pub(crate) fn merge_calc_fields(
-    map: &mut HashMap<String, Table>,
+    map: &mut HashMap<sc_query::Ident, Table>,
     shape: &SchemaShape,
 ) -> Vec<FieldMergeIssue> {
     let mut issues = Vec::new();
-    let ids: Vec<String> = map.keys().cloned().collect();
+    let ids: Vec<sc_query::Ident> = map.keys().cloned().collect();
     for id in ids {
         let table = &map[&id];
         if table.is_system() {
@@ -77,13 +77,17 @@ pub(crate) fn merge_calc_fields(
                             issues.push(issue(&table.name, name, &e.to_string()));
                         }
                         Ok(analysis) => {
-                            if analysis.uses_caller() || !analysis.flags.is_empty() {
+                            if analysis.uses_caller()
+                                || !analysis.flags.is_empty()
+                                || analysis.uses(sc_expr::Ambient::Old)
+                                || analysis.uses(sc_expr::Ambient::Request)
+                            {
                                 invalid.insert(name.clone());
                                 issues.push(issue(
                                     &table.name,
                                     name,
-                                    "a calculated field cannot use `user`, `session` or the \
-                                     operation flags",
+                                    "a calculated field cannot use `user`, `session`, `old`, \
+                                     `_request` or the operation flags",
                                 ));
                             }
                         }
@@ -253,7 +257,7 @@ mod tests {
     fn run(mut t: Table) -> (Table, Vec<FieldMergeIssue>) {
         let shape = shape_of(&t);
         let mut map = HashMap::new();
-        let id = t.name.clone();
+        let id = sc_query::Ident::existing(&t.name).unwrap();
         map.insert(id.clone(), std::mem::replace(&mut t, table("_tmp", vec![])));
         let issues = merge_calc_fields(&mut map, &shape);
         (map.remove(&id).unwrap(), issues)

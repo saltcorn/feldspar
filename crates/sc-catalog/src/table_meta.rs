@@ -85,20 +85,20 @@ use crate::table::{AccessRules, Table};
 pub const TABLE_META_TABLE: &str = "_fd_tables";
 
 /// The UUID primary-key column (§9).
-pub const COL_ID: &str = "id";
+pub(crate) const COL_ID: &str = "id";
 /// The name of the table this row overlays — §9's required `name` column, which
 /// for an overlay *is* the subject's name, and the key the merge joins on.
-pub const COL_NAME: &str = "name";
+pub(crate) const COL_NAME: &str = "name";
 /// The human label shown instead of the table name, when one is given.
-pub const COL_LABEL: &str = "label";
+pub(crate) const COL_LABEL: &str = "label";
 /// The human-readable description column (§9).
-pub const COL_DESCRIPTION: &str = "description";
+pub(crate) const COL_DESCRIPTION: &str = "description";
 /// Least-privileged role that may read the table's rows.
-pub const COL_MIN_ROLE_READ: &str = "min_role_read";
+pub(crate) const COL_MIN_ROLE_READ: &str = "min_role_read";
 /// Least-privileged role that may create, update or delete the table's rows.
-pub const COL_MIN_ROLE_WRITE: &str = "min_role_write";
+pub(crate) const COL_MIN_ROLE_WRITE: &str = "min_role_write";
 /// The sparse per-table values column (§9) — JSON, always an object.
-pub const COL_ATTRIBUTES: &str = "attributes";
+pub(crate) const COL_ATTRIBUTES: &str = "attributes";
 
 /// Attribute key holding the table's ownership formula source (§7.3).
 pub const ATTR_OWNERSHIP_FORMULA: &str = "ownership_formula";
@@ -163,7 +163,7 @@ impl ProvidedTableDef {
     }
 
     /// The configuration as the JSON object a module is handed.
-    pub fn configuration_json(&self) -> Json {
+    pub(crate) fn configuration_json(&self) -> Json {
         Json::Object(self.configuration.clone())
     }
 }

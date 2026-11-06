@@ -319,6 +319,10 @@ fn poly(cc: &[f64], x: f64) -> f64 {
 /// Shapiro and Wilk's W of `x`, sorted ascending, and its p-value — R's
 /// `swilk` for 3 to 5,000 values (R's `shapiro.test` refuses others, and so
 /// does this, with `None`, as it does when every value is the same).
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "numeric code: float-to-integer as saturates (NaN is 0), and the integer casts index tables this function sized"
+)]
 pub fn shapiro_wilk(x: &[f64]) -> Option<(f64, f64)> {
     const SMALL: f64 = 1e-19;
     const G: [f64; 2] = [-2.273, 0.459];
@@ -484,6 +488,10 @@ impl RankSum {
     }
 
     /// P(W ≤ q).
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "numeric code: float-to-integer as saturates (NaN is 0), and the integer casts index tables this function sized"
+    )]
     pub fn lower(&self, q: f64) -> f64 {
         if q < 0.0 {
             return 0.0;
@@ -493,6 +501,10 @@ impl RankSum {
     }
 
     /// P(W > q).
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "numeric code: float-to-integer as saturates (NaN is 0), and the integer casts index tables this function sized"
+    )]
     pub fn upper(&self, q: f64) -> f64 {
         if q < 0.0 {
             return 1.0;
@@ -539,6 +551,10 @@ impl SignedRank {
     }
 
     /// P(V ≤ q).
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "numeric code: float-to-integer as saturates (NaN is 0), and the integer casts index tables this function sized"
+    )]
     pub fn lower(&self, q: f64) -> f64 {
         if q < 0.0 {
             return 0.0;
@@ -548,6 +564,10 @@ impl SignedRank {
     }
 
     /// P(V > q).
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "numeric code: float-to-integer as saturates (NaN is 0), and the integer casts index tables this function sized"
+    )]
     pub fn upper(&self, q: f64) -> f64 {
         if q < 0.0 {
             return 1.0;

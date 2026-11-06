@@ -300,7 +300,7 @@ impl Run {
             state: RunState::Running,
             error: None,
             context: serde_json::to_value(state).unwrap_or(Json::Null),
-            user: caller.user.as_ref().map(|u| u.id()),
+            user: caller.user_ref().map(|u| u.id()),
             // An agent run is pinned to nothing, is always runnable, and is
             // never leased: the loop is driven by whoever started it, not by the
             // workflow queue.

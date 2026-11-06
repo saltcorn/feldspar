@@ -225,7 +225,7 @@ impl OutputData {
         let total = json
             .get("total")
             .and_then(Json::as_u64)
-            .map_or(frame.rows, |n| n as usize)
+            .map_or(frame.rows, |n| usize::try_from(n).unwrap_or(usize::MAX))
             .max(frame.rows);
         Ok(OutputData { frame, total })
     }
@@ -682,6 +682,10 @@ pub(crate) struct ScoredPart<'a> {
 /// The [`ROWS_OUTPUT`] frame of a predicting fit: the columns the model read
 /// (as the dataset had them), `split`, and the outcome's own columns.
 #[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+)]
 pub(crate) fn rows_output(
     outcome: &Outcome,
     encoding: &Encoding,

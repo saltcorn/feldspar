@@ -50,7 +50,10 @@ pub(crate) fn fit_progress_upgrade(
     session: crate::admin_session::AdminWatch,
 ) -> axum::response::Response {
     // Open only while the admin session lasts (#42's class).
-    ws.on_upgrade(move |socket| session.guard(watch(socket, catalog, id)))
+    // The browser only watches: nothing it says is more than a close.
+    crate::ws::upgrade(ws, crate::ws::LISTEN_ONLY, move |socket| {
+        session.guard(watch(socket, catalog, id))
+    })
 }
 
 /// Send the fit's progress until it finishes or the browser goes.

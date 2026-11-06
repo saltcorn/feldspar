@@ -15,6 +15,26 @@
 //!   a [`StorePath`], which only the one validator makes: `..`, `\`, `:`, NUL
 //!   and Windows-trimmed segments are refused before any backend sees the path,
 //!   and `.git` in any spelling is known (TODO-code-quality Q4.1).
+//!
+//! `unreachable_pub` (security review 2026-11, F-15): an item is `pub` only
+//! when another crate calls it. A primitive that skips the guarded entry
+//! points stays `pub(crate)`, so a handler elsewhere cannot reach past the
+//! guard by importing it.
+//!
+//! Indexing, string slicing and unchecked arithmetic are warned about here
+//! (security review 2026-11, §6; TODO-type-hardening H1.7) when built with
+//! `--cfg feldspar_advisory_lints` (the CI `clippy-advisory` job): this crate
+//! handles request input, where each is a panic a request can cause. Advisory
+//! until the existing hits are fixed, so they do not fail `-D warnings`.
+#![warn(unreachable_pub)]
+#![cfg_attr(
+    feldspar_advisory_lints,
+    warn(
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::arithmetic_side_effects
+    )
+)]
 
 mod access;
 mod backend;
@@ -33,13 +53,13 @@ mod stream;
 pub mod xattr;
 
 pub use access::{
-    FileCaller, VisibleEntry, check_access, check_write, controls_build, effective_min_role,
-    filter_visible, list_visible, record_owner, visible_entries,
+    FileCaller, VisibleEntry, check_access, check_write, effective_min_role, list_visible,
+    record_owner,
 };
 pub use backend::{
     OperationOutcome, Relocation, backend_config_spec, backend_operations, connect_from_def,
-    display_config, git_config_spec, local_config_spec, registered_backends, relocate_for_restore,
-    run_backend_operation, validate_file_store_config,
+    display_config, registered_backends, relocate_for_restore, run_backend_operation,
+    validate_file_store_config,
 };
 pub use checked::{CheckedStore, Readable, Writable};
 pub use def::{
@@ -50,13 +70,12 @@ pub use disk::{remove_store_from_disk, store_directory};
 pub use git::{
     ARG_BRANCH, ARG_CREATE, ARG_MESSAGE, ARG_PATHS, ARG_STAGED_ONLY, CommitOutcome, DeployKey,
     GitChange, GitFileStore, GitOutput, GitRepo, GitStatus, OP_CHECKOUT, OP_CLONE, OP_COMMIT,
-    OP_DISCARD, OP_GENERATE_KEY, OP_PULL, OP_PUSH, OP_STAGE, OP_STATUS, OP_UNSTAGE, clone_dir,
-    clone_path, generate_deploy_key, git_operations, key_dir, parse_change, record_clone_path,
-    record_deploy_key,
+    OP_DISCARD, OP_GENERATE_KEY, OP_PULL, OP_PUSH, OP_STAGE, OP_STATUS, OP_UNSTAGE, clone_path,
+    generate_deploy_key, parse_change, record_clone_path,
 };
-pub use local::{LocalFileStore, OP_SUGGEST_DIR, local_operations};
-pub use paths::{DATA_DIR_ENV, data_dir, local_store_dir, suggest_local_dir};
-pub use reference::{free_path, mime_allowed, mime_for_path, suffixed_path, validate_file_path};
+pub use local::{LocalFileStore, OP_SUGGEST_DIR};
+pub use paths::{DATA_DIR_ENV, data_dir, suggest_local_dir};
+pub use reference::{free_path, mime_allowed, mime_for_path, validate_file_path};
 pub use search::{
     DEFAULT_EXCLUDED_DIRS, DEFAULT_MAX_FOUND, DEFAULT_MAX_RESULTS, FoundFiles, MAX_FILE_BYTES,
     MAX_FILES_SCANNED, MAX_LINE_CHARS, SearchHit, SearchOutcome, SearchQuery, find_by_extension,
@@ -64,10 +83,8 @@ pub use search::{
 };
 pub use serve::ServeFile;
 pub use store::{CONTENT_TYPE_ATTRIBUTE, Entry, FILENAME_ATTRIBUTE, FileMeta, FileStat, FileStore};
-pub use store_path::{AsStorePath, StorePath, in_git_dir};
-pub use stream::{
-    BoxAsyncRead, BoxAsyncWrite, READ_CHUNK, check_range, read_chunks, read_to_bytes,
-};
+pub use store_path::{AsStorePath, HostCode, StorePath, in_git_dir};
+pub use stream::{BoxAsyncRead, BoxAsyncWrite, READ_CHUNK, read_chunks, read_to_bytes};
 
 #[cfg(test)]
 mod tests {
@@ -493,7 +510,7 @@ mod tests {
     #[tokio::test]
     async fn build_inputs_are_admin_only_writes() {
         let (_base, store) = temp_store();
-        let staff = FileCaller::new(Role::of(40), Some("u1".into()));
+        let staff = FileCaller::of_principal(Role::of(40), Some("u1".into()));
         for path in [
             "web/package.json",
             "web/Package.JSON",
@@ -508,13 +525,19 @@ mod tests {
             "web/node_modules",
             "web/NODE_MODULES./x/index.js",
         ] {
-            assert!(controls_build(path), "{path}");
+            assert!(
+                matches!(
+                    StorePath::parse(path).unwrap().host_code_kind(),
+                    Some(HostCode::PackageManager | HostCode::BuildConfig)
+                ),
+                "{path}"
+            );
             assert!(
                 check_write(&store, None, path, &staff).await.is_err(),
                 "{path}"
             );
             assert!(
-                check_write(&store, None, path, &FileCaller::role(Role::ADMIN))
+                check_write(&store, None, path, &FileCaller::at_role(Role::ADMIN))
                     .await
                     .is_ok(),
                 "{path}"
@@ -527,7 +550,124 @@ mod tests {
             "docs/package.json.md",
             "web/README.md",
         ] {
-            assert!(!controls_build(path), "{path}");
+            assert_eq!(
+                StorePath::parse(path).unwrap().host_code_kind(),
+                None,
+                "{path}"
+            );
+            assert!(
+                check_write(&store, None, path, &staff).await.is_ok(),
+                "{path}"
+            );
+        }
+    }
+
+    /// Claude Code's project configuration is written by an admin only: the
+    /// admin's terminal starts in a store and runs its hooks as the server's
+    /// user (security review 2026-11, #2).
+    #[tokio::test]
+    async fn coding_agent_config_is_an_admin_only_write() {
+        let (_base, store) = temp_store();
+        let staff = FileCaller::of_principal(Role::of(40), Some("u1".into()));
+        for path in [
+            ".claude/settings.json",
+            "web/.claude/settings.json",
+            "web/.claude/settings.local.json",
+            "web/.Claude./commands/x.md",
+            "CLAUDE.md",
+            "web/claude.md",
+            "web/CLAUDE.local.md",
+            "web/.claude",
+            "web/.mcp.json",
+        ] {
+            assert_eq!(
+                StorePath::parse(path).unwrap().host_code_kind(),
+                Some(HostCode::AgentConfig),
+                "{path}"
+            );
+            let err = check_write(&store, None, path, &staff).await.unwrap_err();
+            assert!(err.to_string().contains("coding agent"), "{path}: {err}");
+            assert!(
+                check_write(&store, None, path, &FileCaller::at_role(Role::ADMIN))
+                    .await
+                    .is_ok(),
+                "{path}"
+            );
+        }
+        for path in [
+            "web/claude.txt",
+            "docs/CLAUDE.md.bak",
+            "web/src/claude/x.ts",
+            // Instructions the coding agents keep themselves (`HostCode` docs).
+            "web/AGENTS.md",
+        ] {
+            assert_eq!(
+                StorePath::parse(path).unwrap().host_code_kind(),
+                None,
+                "{path}"
+            );
+            assert!(
+                check_write(&store, None, path, &staff).await.is_ok(),
+                "{path}"
+            );
+        }
+    }
+
+    /// Security review 2026-11 C1 (TODO-type-hardening H4.3): below admin, no
+    /// write lays out a bare repository git would discover — a `HEAD` beside
+    /// `objects/` and `refs/` — nor reaches into a `.git`; ordinary files
+    /// named `config`, `objects/…` and `refs/…`, and a `head` directory, stay
+    /// writable.
+    #[tokio::test]
+    async fn git_internals_are_admin_only_writes() {
+        let (_base, store) = temp_store();
+        let staff = FileCaller::of_principal(Role::of(40), Some("u1".into()));
+        for path in [
+            "web/HEAD",
+            "HEAD",
+            "web/.git/config",
+            "web/.git",
+            "a/GIT~1/HEAD",
+        ] {
+            assert_eq!(
+                StorePath::parse(path).unwrap().host_code_kind(),
+                Some(HostCode::GitInternals),
+                "{path}"
+            );
+            let err = check_write(&store, None, path, &staff).await.unwrap_err();
+            assert!(
+                err.to_string().contains("which repository git runs"),
+                "{path}: {err}"
+            );
+            assert!(
+                check_write(&store, None, path, &FileCaller::at_role(Role::ADMIN))
+                    .await
+                    .is_ok(),
+                "{path}"
+            );
+        }
+        // On Linux only the exact spelling; elsewhere `head` is `HEAD` to git.
+        let lower = if cfg!(any(target_os = "macos", windows)) {
+            Some(HostCode::GitInternals)
+        } else {
+            None
+        };
+        assert_eq!(
+            StorePath::parse("web/head").unwrap().host_code_kind(),
+            lower
+        );
+        for path in [
+            "web/config",
+            "web/objects/a.png",
+            "web/refs/x",
+            "web/src/components/head/Meta.astro",
+            "web/HEAD.md",
+        ] {
+            assert_eq!(
+                StorePath::parse(path).unwrap().host_code_kind(),
+                None,
+                "{path}"
+            );
             assert!(
                 check_write(&store, None, path, &staff).await.is_ok(),
                 "{path}"
@@ -554,7 +694,7 @@ mod tests {
             .write(&StorePath::from_static("a.txt"), Bytes::from_static(b"a"))
             .await
             .unwrap();
-        let staff = FileCaller::new(Role::of(40), Some("u1".into()));
+        let staff = FileCaller::of_principal(Role::of(40), Some("u1".into()));
         for path in [".git/config", ".git", ".GIT/config"] {
             assert!(
                 check_access(&store, None, path, &staff).await.is_err(),
@@ -567,9 +707,14 @@ mod tests {
             );
         }
         assert!(
-            check_access(&store, None, ".git/config", &FileCaller::role(Role::ADMIN))
-                .await
-                .is_ok()
+            check_access(
+                &store,
+                None,
+                ".git/config",
+                &FileCaller::at_role(Role::ADMIN)
+            )
+            .await
+            .is_ok()
         );
         let names = |v: Vec<VisibleEntry>| v.into_iter().map(|e| e.entry.name).collect::<Vec<_>>();
         assert_eq!(
@@ -578,7 +723,7 @@ mod tests {
         );
         assert_eq!(
             names(
-                list_visible(&store, None, "", &FileCaller::role(Role::ADMIN))
+                list_visible(&store, None, "", &FileCaller::at_role(Role::ADMIN))
                     .await
                     .unwrap()
             ),
@@ -956,7 +1101,7 @@ mod tests {
                 &store,
                 None,
                 "private/secret.txt",
-                &FileCaller::role(Role::ADMIN)
+                &FileCaller::at_role(Role::ADMIN)
             )
             .await
             .is_ok()
@@ -966,7 +1111,7 @@ mod tests {
                 &store,
                 None,
                 "private/secret.txt",
-                &FileCaller::role(Role::PUBLIC)
+                &FileCaller::at_role(Role::PUBLIC)
             )
             .await
             .is_err()
@@ -1072,14 +1217,14 @@ mod tests {
 
         // A listing must be filtered rather than merely refused: showing a name
         // the caller cannot open leaks exactly what the rule was set to hide.
-        let visible = filter_visible(&store, None, all.clone(), &FileCaller::anonymous())
+        let visible = access::filter_visible(&store, None, all.clone(), &FileCaller::anonymous())
             .await
             .unwrap();
         let names: Vec<&str> = visible.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["open.txt"]);
 
         // An admin sees everything.
-        let admin = filter_visible(&store, None, all, &FileCaller::role(Role::ADMIN))
+        let admin = access::filter_visible(&store, None, all, &FileCaller::at_role(Role::ADMIN))
             .await
             .unwrap();
         assert_eq!(admin.len(), 2);
@@ -1109,8 +1254,8 @@ mod tests {
                 .unwrap();
             record_owner(&store, path, owner).await;
         }
-        let a = FileCaller::new(Role::of(80), Some("user-a".into()));
-        let b = FileCaller::new(Role::of(80), Some("user-b".into()));
+        let a = FileCaller::of_principal(Role::of(80), Some("user-a".into()));
+        let b = FileCaller::of_principal(Role::of(80), Some("user-b".into()));
         let anonymous = FileCaller::anonymous();
 
         assert!(check_access(&store, None, "drops/a.png", &a).await.is_ok());
@@ -1128,9 +1273,14 @@ mod tests {
         assert!(check_write(&store, None, "drops/a.png", &a).await.is_ok());
         assert!(check_write(&store, None, "drops/a.png", &b).await.is_err());
         assert!(
-            check_write(&store, None, "drops/a.png", &FileCaller::role(Role::ADMIN))
-                .await
-                .is_ok()
+            check_write(
+                &store,
+                None,
+                "drops/a.png",
+                &FileCaller::at_role(Role::ADMIN)
+            )
+            .await
+            .is_ok()
         );
         // An owned file is the owner's even where the floor is public.
         store
@@ -1183,7 +1333,7 @@ mod tests {
             names(list_visible(&store, None, "drops", &b).await.unwrap()),
             ["b.png"]
         );
-        let c = FileCaller::new(Role::of(80), Some("user-c".into()));
+        let c = FileCaller::of_principal(Role::of(80), Some("user-c".into()));
         assert!(list_visible(&store, None, "drops", &c).await.is_err());
         assert!(
             list_visible(&store, None, "drops", &anonymous)
@@ -1192,7 +1342,7 @@ mod tests {
         );
         assert!(list_visible(&store, None, "nowhere", &c).await.is_err());
         assert_eq!(
-            list_visible(&store, None, "drops", &FileCaller::role(Role::ADMIN))
+            list_visible(&store, None, "drops", &FileCaller::at_role(Role::ADMIN))
                 .await
                 .unwrap()
                 .len(),
@@ -1504,7 +1654,7 @@ mod tests {
         let found = search_store(
             &store,
             None,
-            &FileCaller::role(Role::ADMIN),
+            &FileCaller::at_role(Role::ADMIN),
             &SearchQuery::literal("todo"),
         )
         .await
@@ -1533,7 +1683,7 @@ mod tests {
 
         let mut query = SearchQuery::literal("todo");
         query.dir = "src/deep".to_owned();
-        let found = search_store(&store, None, &FileCaller::role(Role::ADMIN), &query)
+        let found = search_store(&store, None, &FileCaller::at_role(Role::ADMIN), &query)
             .await
             .unwrap();
         let paths: Vec<&str> = found.hits.iter().map(|h| h.path.as_str()).collect();
@@ -1541,7 +1691,7 @@ mod tests {
 
         let mut query = SearchQuery::literal("todo");
         query.glob = Some("*.ts".to_owned());
-        let found = search_store(&store, None, &FileCaller::role(Role::ADMIN), &query)
+        let found = search_store(&store, None, &FileCaller::at_role(Role::ADMIN), &query)
             .await
             .unwrap();
         let paths: Vec<&str> = found.hits.iter().map(|h| h.path.as_str()).collect();
@@ -1601,7 +1751,7 @@ mod tests {
         }
         let mut query = SearchQuery::literal("needle");
         query.max_results = 5;
-        let found = search_store(&store, None, &FileCaller::role(Role::ADMIN), &query)
+        let found = search_store(&store, None, &FileCaller::at_role(Role::ADMIN), &query)
             .await
             .unwrap();
         assert_eq!(found.hits.len(), 5);
@@ -1616,7 +1766,7 @@ mod tests {
         let found = find_files(
             &store,
             None,
-            &FileCaller::role(Role::ADMIN),
+            &FileCaller::at_role(Role::ADMIN),
             "",
             "LIST",
             DEFAULT_MAX_FOUND,
@@ -1633,7 +1783,7 @@ mod tests {
         let found = find_files(
             &store,
             None,
-            &FileCaller::role(Role::ADMIN),
+            &FileCaller::at_role(Role::ADMIN),
             "",
             "de",
             DEFAULT_MAX_FOUND,
@@ -1652,7 +1802,7 @@ mod tests {
         let hit = find_files(
             &store,
             None,
-            &FileCaller::role(Role::ADMIN),
+            &FileCaller::at_role(Role::ADMIN),
             "",
             "readme",
             DEFAULT_MAX_FOUND,
@@ -1669,7 +1819,7 @@ mod tests {
         let found = find_files(
             &store,
             None,
-            &FileCaller::role(Role::ADMIN),
+            &FileCaller::at_role(Role::ADMIN),
             "src",
             "ts",
             DEFAULT_MAX_FOUND,
@@ -1681,7 +1831,7 @@ mod tests {
         // Rooted at `src`, so `readme.md` and the dependency tree are outside it.
         assert_eq!(paths, ["src/app.ts", "src/deep/list.tsx"]);
 
-        let found = find_files(&store, None, &FileCaller::role(Role::ADMIN), "", "ts", 1)
+        let found = find_files(&store, None, &FileCaller::at_role(Role::ADMIN), "", "ts", 1)
             .await
             .unwrap();
         assert_eq!(found.entries.len(), 1);
@@ -1690,9 +1840,16 @@ mod tests {
         // A blank search is not "everything": it is a caller with nothing to
         // look for, and a walk of the whole store is not the answer to it.
         assert!(
-            find_files(&store, None, &FileCaller::role(Role::ADMIN), "", "  ", 10)
-                .await
-                .is_err()
+            find_files(
+                &store,
+                None,
+                &FileCaller::at_role(Role::ADMIN),
+                "",
+                "  ",
+                10
+            )
+            .await
+            .is_err()
         );
     }
 

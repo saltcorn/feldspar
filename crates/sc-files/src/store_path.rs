@@ -172,6 +172,120 @@ impl StorePath {
     }
 }
 
+/// What a file at a path becomes when the server runs something over the
+/// store: the kinds of [`StorePath::host_code_kind`] (security review 2026-11
+/// §4, C1/C2/C8; TODO-type-hardening H4.3).
+///
+/// Whoever writes one of these decides what runs as the server's
+/// operating-system user — at an admin's next build, install, `git` command,
+/// or in the admin's Claude Code terminal — so below admin a write to one is
+/// refused on every write route ([`check_write`](crate::check_write)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostCode {
+    /// Inside a `.git` directory ([`StorePath::in_git_dir`]), or a file named
+    /// `HEAD`: with an `objects/` and a `refs/` beside it, that is a bare
+    /// repository's layout, which git would take for the repository a command
+    /// in that directory runs against — `config`, `core.fsmonitor` and all.
+    GitInternals,
+    /// What a package manager reads as instructions: `package.json` (its
+    /// scripts), the lockfiles (where packages come from), the managers' rc
+    /// files (`script-shell`, registries), and anything under `node_modules`.
+    PackageManager,
+    /// Code a bundler or tool loads as its configuration: `<tool>.config.<ext>`
+    /// (`vite.config.ts`, `vite.config.prod.ts`) and a tool's rc file in code
+    /// (`.postcssrc.js`).
+    BuildConfig,
+    /// What Claude Code reads from the directory it starts in: anything under
+    /// `.claude` (`settings.json` hooks run shell commands, `permissions.allow`
+    /// grants tools), `CLAUDE.md`, `CLAUDE.local.md` and `.mcp.json`.
+    ///
+    /// Not `AGENTS.md`: it is instructions only, the coding agents are told to
+    /// keep project facts in it whoever runs them, and the in-app agents read
+    /// it for every run already.
+    AgentConfig,
+}
+
+impl HostCode {
+    /// What a refusal says the file decides.
+    pub fn decides(self) -> &'static str {
+        match self {
+            HostCode::GitInternals => "which repository git runs against, and what it runs",
+            HostCode::PackageManager | HostCode::BuildConfig => {
+                "what a build or install runs on the server"
+            }
+            HostCode::AgentConfig => {
+                "how the coding agent an administrator runs on the server behaves"
+            }
+        }
+    }
+}
+
+impl StorePath {
+    /// Whether a file here becomes code the server runs, and how (see
+    /// [`HostCode`]). Matched on any segment, in any case, with trailing dots
+    /// and spaces ignored (Windows drops them), as [`in_git_dir`](Self::in_git_dir)
+    /// is. A directory that merely *contains* one is not matched: moving it
+    /// keeps the names inside, and no new file can be given one of these names
+    /// below admin.
+    pub fn host_code_kind(&self) -> Option<HostCode> {
+        host_code_kind(&self.path, self.git)
+    }
+}
+
+/// [`StorePath::host_code_kind`] over a spelling and whether it is in `.git`.
+fn host_code_kind(path: &str, in_git: bool) -> Option<HostCode> {
+    const PACKAGE_FILES: [&str; 14] = [
+        "package.json",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        "bun.lock",
+        "bun.lockb",
+        "deno.json",
+        "deno.jsonc",
+        ".npmrc",
+        ".yarnrc",
+        ".yarnrc.yml",
+        ".pnpmfile.cjs",
+    ];
+    const AGENT_FILES: [&str; 3] = ["claude.md", "claude.local.md", ".mcp.json"];
+    const CONFIG_EXTS: [&str; 7] = ["js", "cjs", "mjs", "ts", "cts", "mts", "json"];
+    if in_git {
+        return Some(HostCode::GitInternals);
+    }
+    let segments: Vec<String> = path
+        .split(['/', '\\'])
+        .map(|s| s.trim_end_matches(['.', ' ']).to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let name = segments.last()?;
+    // Exactly `HEAD` where file names are case-sensitive (a `head/` component
+    // directory is not one); in any case on the hosts whose filesystems
+    // usually are not, where git would open `head` as `HEAD`.
+    let raw = path
+        .rsplit(['/', '\\'])
+        .find(|s| !s.is_empty())
+        .unwrap_or_default()
+        .trim_end_matches(['.', ' ']);
+    if raw == "HEAD" || (cfg!(any(target_os = "macos", windows)) && name == "head") {
+        return Some(HostCode::GitInternals);
+    }
+    // `.claude.` trims to `.claude` too.
+    if segments.iter().any(|s| s == ".claude") || AGENT_FILES.contains(&name.as_str()) {
+        return Some(HostCode::AgentConfig);
+    }
+    if segments.iter().any(|s| s == "node_modules") || PACKAGE_FILES.contains(&name.as_str()) {
+        return Some(HostCode::PackageManager);
+    }
+    let (stem, ext) = name.rsplit_once('.')?;
+    let config = CONFIG_EXTS.contains(&ext)
+        && (stem.split('.').skip(1).any(|part| part == "config")
+            || (stem.starts_with('.') && stem.ends_with("rc")));
+    config.then_some(HostCode::BuildConfig)
+}
+
 /// One segment, which is neither empty nor `.`: refused when it could leave
 /// the store, here or on Windows.
 fn check_segment(segment: &str, raw: &str) -> Result<()> {

@@ -207,14 +207,45 @@ impl ChangeCounters {
 /// a re-read session (a role lowered, a field changed) reaches every verdict
 /// made after it — and, for a visitor who is not signed in, the public id of
 /// their guest session (TODO-payments P2.8), which an ownership formula reads
-/// as `session.id`.
+/// as `session.id` — and the values the connection presents to ownership
+/// formulas as `_request` (TODO-type-hardening H7.6).
 #[derive(Debug, Clone, Default)]
-pub struct CallerCell(Arc<RwLock<Option<User>>>, Arc<RwLock<Option<String>>>);
+pub struct CallerCell(
+    Arc<RwLock<Option<User>>>,
+    Arc<RwLock<Option<String>>>,
+    Arc<RwLock<sc_expr::RequestValues>>,
+);
 
 impl CallerCell {
     /// A cell holding `user` (or nobody).
     pub fn new(user: Option<User>) -> CallerCell {
-        CallerCell(Arc::new(RwLock::new(user)), Arc::default())
+        CallerCell(Arc::new(RwLock::new(user)), Arc::default(), Arc::default())
+    }
+
+    /// Replace the values the connection presents (a `present` frame).
+    pub fn set_request(&self, values: sc_expr::RequestValues) {
+        match self.2.write() {
+            Ok(mut guard) => *guard = values,
+            Err(poisoned) => *poisoned.into_inner() = values,
+        }
+    }
+
+    /// The values the connection presents.
+    pub fn request(&self) -> sc_expr::RequestValues {
+        match self.2.read() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// The origin a verdict for this connection is asked inside: its guest
+    /// session and the values it presents.
+    pub fn origin(&self) -> sc_catalog::Origin {
+        sc_catalog::Origin {
+            app: None,
+            session: self.guest_session(),
+            request: self.request(),
+        }
     }
 
     /// Replace the guest session the connection's caller has.
@@ -302,9 +333,9 @@ impl<'e> Change<'e> {
     }
 }
 
-/// A caller as verdicts are shared: their id (none for anonymous), role and
-/// guest session.
-type Who = (Option<Uuid>, Role, Option<String>);
+/// A caller as verdicts are shared: their id (none for anonymous), role,
+/// guest session and presented values.
+type Who = (Option<Uuid>, Role, Option<String>, sc_expr::RequestValues);
 
 /// What is known of one caller's verdicts on the old and the new image — each
 /// asked only once its image matched a filter.
@@ -358,14 +389,16 @@ pub(crate) async fn decide(
         });
         let user = subscriber.caller.get();
         let role = user.as_ref().map_or(Role::PUBLIC, |user| user.role());
-        let guest = subscriber.caller.guest_session();
         // The verdict is asked inside the caller's origin, so that an
-        // ownership formula's `session.id` is their guest session's.
-        let origin = sc_catalog::Origin {
-            app: None,
-            session: guest.clone(),
-        };
-        let who = (user.as_ref().map(|user| user.id()), role, guest);
+        // ownership formula's `session.id` is their guest session's and its
+        // `_request` what the connection presents.
+        let origin = subscriber.caller.origin();
+        let who = (
+            user.as_ref().map(|user| user.id()),
+            role,
+            origin.session.clone(),
+            origin.request.clone(),
+        );
         let known = readable.entry(who).or_insert((None, None));
         let started = Instant::now();
         if matches_old
@@ -427,9 +460,10 @@ pub(crate) async fn decide(
         });
         *slot = Some(Arc::clone(envelope));
     }
-    counters
-        .evaluator_micros
-        .fetch_add(evaluating.as_micros() as u64, Ordering::Relaxed);
+    counters.evaluator_micros.fetch_add(
+        u64::try_from(evaluating.as_micros()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
     out
 }
 

@@ -316,7 +316,7 @@ impl DataField {
     /// the column. `unique` is `false`: a unique constraint is one of the
     /// table's constraints, not a fact about the column. The caller supplies
     /// primary-key membership and the kind, both of which are table-level facts.
-    pub fn from_column(col: &Column, primary_key: bool, kind: DataFieldKind) -> DataField {
+    pub(crate) fn from_column(col: &Column, primary_key: bool, kind: DataFieldKind) -> DataField {
         DataField {
             base: BaseField {
                 name: col.name.clone(),

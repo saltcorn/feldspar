@@ -272,7 +272,7 @@ async fn a_failed_write_leaves_the_instance_fitting_with_no_draws(
     cat: &Catalog,
     poison: &str,
 ) -> Result<()> {
-    cat.apply_schema_batch(&[SchemaStep::Sql(poison.to_owned())])
+    cat.apply_schema_batch(&[SchemaStep::Sql(sc_query::TrustedSql::composed(poison))])
         .await?;
     let model = radon();
     let started = ModelInstance::starting(model.id);

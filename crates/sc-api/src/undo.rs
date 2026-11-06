@@ -24,9 +24,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use sc_auth::User;
-use sc_catalog::history::{self, AsOf, HistoryEntry};
+use sc_catalog::history::{self, AsOf, HistoryEntry, RawRow};
 use sc_catalog::{
-    Catalog, Changeset, ChangesetSource, DataFieldKind, Principal, SharedTx, Table, changeset,
+    AdminPrincipal, Catalog, Changeset, ChangesetSource, DataFieldKind, Principal, SharedTx, Table,
+    changeset,
 };
 use sc_error::{Error, Result};
 use sc_expr::JsEvaluator;
@@ -39,18 +40,27 @@ use sc_access::ownership::principal_at;
 use sc_access::rows::{self, Executor};
 use sc_access::write_as::{self, Caller, Denied};
 
+/// What stands behind the admin-role reads a restore or an undo makes to
+/// decide (whether a row is there, what it holds, whether a reference still
+/// resolves): they return nothing to the caller, whose own write follows and is
+/// checked as theirs. Listed in the system-authority inventory.
+const UNDO_CHECK_READ: &str = "history: the existing-row checks of a restore or an undo";
+
 /// Who is restoring or undoing: their role and user, and the evaluator a
 /// write rule may need.
 #[derive(Clone, Copy)]
+///
+/// A view of one caller, as [`HistoryReader`] is (TODO-type-hardening H3.4):
+/// private fields, the role from the user, a principal, or the admin's proof.
 pub struct Reverser<'a> {
     /// The catalog.
-    pub catalog: &'a Catalog,
+    catalog: &'a Catalog,
     /// The caller's role (public when nobody is signed in).
-    pub role: Role,
+    role: Role,
     /// The caller, when signed in.
-    pub user: Option<&'a User>,
+    user: Option<&'a User>,
     /// For a write rule that needs JavaScript.
-    pub evaluator: Option<&'a Arc<dyn JsEvaluator>>,
+    evaluator: Option<&'a Arc<dyn JsEvaluator>>,
 }
 
 /// A restored or reverted row.
@@ -192,17 +202,38 @@ impl<'a> Reverser<'a> {
         }
     }
 
+    /// The reverser `principal` is, at its role; `user` is its user as loaded.
+    pub fn of(
+        catalog: &'a Catalog,
+        principal: &Principal,
+        user: Option<&'a User>,
+        evaluator: Option<&'a Arc<dyn JsEvaluator>>,
+    ) -> Result<Reverser<'a>> {
+        crate::history::same_user(principal, user)?;
+        Ok(Reverser {
+            catalog,
+            role: principal.role(),
+            user,
+            evaluator,
+        })
+    }
+
+    /// An administrator's reverser, from the proof.
+    pub fn admin(
+        catalog: &'a Catalog,
+        admin: &AdminPrincipal,
+        user: Option<&'a User>,
+        evaluator: Option<&'a Arc<dyn JsEvaluator>>,
+    ) -> Result<Reverser<'a>> {
+        Reverser::of(catalog, admin.principal(), user, evaluator)
+    }
+
     fn is_admin(&self) -> bool {
         self.role.is_admin()
     }
 
     fn reader(&self) -> HistoryReader<'a> {
-        HistoryReader {
-            catalog: self.catalog,
-            role: self.role,
-            user: self.user,
-            evaluator: self.evaluator,
-        }
+        HistoryReader::same_caller(self.catalog, self.role, self.user, self.evaluator)
     }
 
     /// `name` when its history is on and this caller may read row `key`'s:
@@ -244,8 +275,8 @@ impl<'a> Reverser<'a> {
     /// For the reads the checks make: whether a row is there, and what it
     /// holds. At the admin's role so a policy cannot make a row look gone; the
     /// write that follows is the caller's and is checked as theirs.
-    fn checking(&self) -> Principal {
-        principal_at(Role::ADMIN, self.user)
+    fn checking(&self) -> AdminPrincipal {
+        AdminPrincipal::vouched(self.user.map(User::fields_json), UNDO_CHECK_READ)
     }
 
     /// `POST {table}/deleted/{key}/restore`: insert the deleted row's image
@@ -528,8 +559,12 @@ impl<'a> Reverser<'a> {
                     return None;
                 };
                 let left = entry.new_values.clone().unwrap_or_default();
-                for (column, expected) in &left {
-                    if table.field(column).is_none() {
+                for (column, expected) in left.iter() {
+                    // A column no API reads (`users.password_hash`) is neither
+                    // compared nor written back: the caller never saw it.
+                    if table.field(column).is_none()
+                        || sc_access::user_rows::is_hidden_column(table, column)
+                    {
                         continue;
                     }
                     let actual = now.get(column).cloned().unwrap_or(Json::Null);
@@ -651,7 +686,7 @@ impl<'a> Reverser<'a> {
                         vec![Value::Text(text.clone())],
                     );
                     let checking = self.checking();
-                    !tx.run(sc_access::admin_access(&checking)?, &stmt)
+                    !tx.run(sc_access::admin_access(&checking), &stmt)
                         .await?
                         .is_empty()
                 }
@@ -686,7 +721,7 @@ fn json_text(value: &Json) -> String {
 async fn current_row(
     catalog: &Catalog,
     tx: &SharedTx,
-    context: &Principal,
+    context: &AdminPrincipal,
     table: &Table,
     key: &str,
 ) -> Result<Option<Map<String, Json>>> {
@@ -702,7 +737,7 @@ async fn current_row(
     };
     let found = tx
         .run(
-            sc_access::admin_access(context)?,
+            sc_access::admin_access(context),
             &Statement::raw(
                 sc_query::TrustedSql::composed(sql),
                 vec![Value::Text(key.to_owned())],
@@ -720,16 +755,17 @@ async fn current_row(
 /// and the names of those that are gone. A calculated or document column is
 /// not written by a row write, so it is left out (and not reported: it is
 /// still there). The key is kept only for an insert (`with_key`).
-fn writable(
-    table: &Table,
-    values: Map<String, Json>,
-    with_key: bool,
-) -> (Map<String, Json>, Vec<String>) {
+fn writable(table: &Table, values: RawRow, with_key: bool) -> (Map<String, Json>, Vec<String>) {
     let pk = table.primary_key.first().map(String::as_str);
     let (mut kept, mut dropped) = (Map::new(), Vec::new());
-    for (column, value) in values {
+    // Written back to the table, never into a response: the one place an
+    // image's map is taken out (TODO-type-hardening H3.5).
+    for (column, value) in values.into_map() {
         match table.field(&column) {
             None => dropped.push(column),
+            // A hidden column (`users.password_hash`) is not the caller's to
+            // write: restoring a `users` row leaves the password as it is.
+            Some(_) if sc_access::user_rows::is_hidden_column(table, &column) => {}
             Some(field) if field.is_calc() || field.is_collab_doc() => {}
             Some(_) if !with_key && Some(column.as_str()) == pk => {}
             Some(_) => {
@@ -744,7 +780,11 @@ fn writable(
 fn shown_value(table: &Table, column: &str, value: &Json) -> Json {
     let mut one = Map::new();
     one.insert(column.to_owned(), value.clone());
-    redacted(table, one).remove(column).unwrap_or(Json::Null)
+    redacted(table, RawRow::new(one))
+        .as_map()
+        .get(column)
+        .cloned()
+        .unwrap_or(Json::Null)
 }
 
 fn redacted_json(table: &Table, mut row: Json) -> Json {

@@ -44,7 +44,7 @@ use std::time::{Duration, Instant};
 use axum::Json;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::{HeaderValue, StatusCode, Uri, header};
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use base64::Engine;
@@ -52,14 +52,16 @@ use sc_api::SessionAction;
 use sc_auth::User;
 use sc_catalog::{PublicBaseUrl, TrustedHost};
 use sc_config::OAuthProvider;
+use sc_http::RedirectTarget;
 use sc_module::consent::ConsentFlow;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::router::{
     AppState, Resolved, SessionClient, apply_session, log_failure, parse_query, refuse_sign_in,
-    resolve_app, served_request_host, session_user,
+    resolve_app, served_request_host,
 };
+use crate::session::HostSession;
 
 /// Where every route of the flow lives.
 pub const OAUTH_PREFIX: &str = "/_feldspar/oauth";
@@ -115,7 +117,7 @@ struct Pending {
     /// The host it started on (with its port), which it finishes on: a host
     /// this server serves (TODO-code-quality Q4.2).
     host: TrustedHost,
-    return_to: String,
+    return_to: RedirectTarget,
     binding: String,
     redirect_uri: String,
     expires: Instant,
@@ -136,7 +138,7 @@ enum Outcome {
 struct Completion {
     outcome: Outcome,
     host: TrustedHost,
-    return_to: String,
+    return_to: RedirectTarget,
     binding: String,
     expires: Instant,
 }
@@ -180,34 +182,15 @@ impl OAuthFlows {
 }
 
 /// A `return_to` the flow may send the browser to: a path on the host it
-/// started on, never another site (`//evil.example` is one).
-pub fn safe_return_to(raw: Option<&str>) -> String {
-    match raw.map(str::trim) {
-        Some(path)
-            if path.starts_with('/')
-                && !path.starts_with("//")
-                && !path.starts_with("/\\")
-                && !path.chars().any(char::is_control) =>
-        {
-            path.to_owned()
-        }
-        _ => "/".to_owned(),
-    }
+/// started on, never another site (`//evil.example` is one) — the one rule of
+/// [`RedirectTarget`] (security review 2026-11 D6), `/` for anything else.
+pub fn safe_return_to(raw: Option<&str>) -> RedirectTarget {
+    RedirectTarget::or_root(raw)
 }
 
-/// `path` with `oauth_error=message` added to its query.
-pub fn with_error(path: &str, message: &str) -> String {
-    let (path, fragment) = match path.split_once('#') {
-        Some((path, fragment)) => (path, Some(fragment)),
-        None => (path, None),
-    };
-    let sep = if path.contains('?') { '&' } else { '?' };
-    let mut out = format!("{path}{sep}{ERROR_PARAM}={}", encode(message));
-    if let Some(fragment) = fragment {
-        out.push('#');
-        out.push_str(fragment);
-    }
-    out
+/// `target` with `oauth_error=message` added to its query.
+pub fn with_error(target: &RedirectTarget, message: &str) -> String {
+    target.with_param(ERROR_PARAM, message).into_string()
 }
 
 /// Form-encode one value.
@@ -421,7 +404,7 @@ pub(crate) async fn consent(
 ) -> Response {
     let Some(flow) = sc_module::consent::flows().take(&id) else {
         return Redirect::to(&with_error(
-            "/",
+            &RedirectTarget::root(),
             "connecting the account took too long or was already started; please try again",
         ))
         .into_response();
@@ -429,11 +412,13 @@ pub(crate) async fn consent(
     let return_to = flow.return_to.clone();
     // The one who asked, and nobody else: a link to this flow sent to somebody
     // else must not connect *their* account to the asker's row.
-    let user = match session_user(&state, &jar).await {
-        Ok(user) => user,
-        Err(response) => return *response,
+    // Whoever the host the consent page is on reads the session as: the
+    // admin host's own, or the user an application serves.
+    let session = match HostSession::of_request(&state, &headers, &jar).await {
+        Ok(session) => session,
+        Err(failed) => return failed.into_response(),
     };
-    if user.is_none_or(|u| u.id().to_string() != flow.user) {
+    if session.is_none_or(|s| s.user().id().to_string() != flow.user) {
         return Redirect::to(&with_error(
             &return_to,
             "sign in as the user who asked to connect this account",
@@ -517,7 +502,7 @@ pub(crate) async fn callback(State(state): State<AppState>, uri: Uri) -> Respons
     else {
         // No flow to send the browser back to: the sign-in page of this host.
         return Redirect::to(&with_error(
-            "/",
+            &RedirectTarget::root(),
             "the sign-in took too long or was already used; please try again",
         ))
         .into_response();
@@ -600,7 +585,7 @@ async fn exchange(
     code: &str,
     pending: &Pending,
 ) -> std::result::Result<(reqwest::Client, Value), String> {
-    let client = reqwest::Client::builder()
+    let client = sc_net::client_builder()
         .timeout(PROVIDER_TIMEOUT)
         .user_agent("Saltcorn Feldspar")
         .build()
@@ -775,11 +760,10 @@ async fn account_for(
         let claimed = sc_auth::claim_unproven_account(catalog, user)
             .await
             .map_err(failed)?;
-        sessions
-            .end_user_sessions(claimed.id())
-            .await
-            .map_err(failed)?;
-        return Ok(claimed);
+        if let Some(changed) = claimed.credentials {
+            sessions.bump_epoch(changed, None).await.map_err(failed)?;
+        }
+        return Ok(claimed.user);
     }
     Ok(user)
 }
@@ -798,8 +782,11 @@ pub(crate) async fn complete(
     let host = sent_host(&headers);
     let completion = token.and_then(|token| state.apps.oauth().redeem(&token));
     let Some(completion) = completion.filter(|c| c.host.as_str() == host) else {
-        return Redirect::to(&with_error("/", "the sign-in could not be completed"))
-            .into_response();
+        return Redirect::to(&with_error(
+            &RedirectTarget::root(),
+            "the sign-in could not be completed",
+        ))
+        .into_response();
     };
     let bound = jar
         .get(BINDING_COOKIE)
@@ -820,7 +807,7 @@ pub(crate) async fn complete(
             let jar = jar.remove(binding_removal());
             let target = match state.apps.catalog() {
                 Some(catalog) => match store_tokens(catalog, &flow, &tokens).await {
-                    Ok(()) => completion.return_to,
+                    Ok(()) => completion.return_to.into_string(),
                     Err(message) => with_error(&completion.return_to, &message),
                 },
                 None => with_error(&completion.return_to, "this server has no database"),
@@ -848,33 +835,51 @@ pub(crate) async fn complete(
         _ => SessionClient::of(&headers),
     };
     let jar = jar.remove(binding_removal());
-    // The provider's sign-in is trusted to have asked for its own second
-    // factor, unless Settings → Authentication says to ask for ours as well;
-    // then it is asked for on a page that comes back to `return_to`.
-    let ask = match state.apps.catalog() {
-        Some(catalog) => match sc_config::second_factor_for_identity_providers(catalog).await {
-            Ok(ask) => ask,
-            Err(e) => {
-                log_failure("could not read the two-factor settings", &e);
-                true
+    // An account with a second factor on, or whose role requires one, is asked
+    // for it here as after a password: `Start` meets the challenge in
+    // `apply_session`. A provider's own second factor is not one this server
+    // can see, and the account is matched by email, which the provider's
+    // directory decides (security review 2026-11, #10).
+    let signing_in = match state.apps.catalog() {
+        Some(catalog) => {
+            match sc_auth::PasswordVerified::by(
+                catalog,
+                user,
+                sc_auth::FirstFactor::IdentityProvider,
+            )
+            .await
+            {
+                Ok(signing_in) => signing_in,
+                Err(e) => {
+                    log_failure("could not finish an identity provider's sign-in", &e);
+                    return Redirect::to(&with_error(
+                        &completion.return_to,
+                        "the sign-in could not be completed",
+                    ))
+                    .into_response();
+                }
             }
-        },
-        None => false,
-    };
-    let session = if ask {
-        SessionAction::Start(user)
-    } else {
-        SessionAction::StartVerified {
-            user,
-            remember: true,
+        }
+        None => {
+            return Redirect::to(&with_error(
+                &completion.return_to,
+                "this server has no database",
+            ))
+            .into_response();
         }
     };
-    let client = client.returning_to(completion.return_to.clone());
+    let session = SessionAction::Start(signing_in);
+    let client = client.returning_to(completion.return_to.as_str());
     let cookies = match apply_session(&state, jar, session_token, client, session).await {
         Ok(cookies) => cookies,
         Err(rejection) => return *rejection,
     };
-    (cookies.jar, cookies.stale, leave_for(&completion.return_to)).into_response()
+    (
+        cookies.jar,
+        cookies.stale,
+        leave_for(completion.return_to.as_str()),
+    )
+        .into_response()
 }
 
 /// A page that goes on to `target`, rather than a redirect: the session cookie
@@ -882,14 +887,14 @@ pub(crate) async fn complete(
 /// end of a chain that began at the provider. Leaving from a page on this host
 /// is same-site.
 fn leave_for(target: &str) -> Response {
-    let target = sc_expr::html::escape(target);
     let mut out = (
         StatusCode::OK,
-        Html(format!(
+        crate::html_page::html(sc_expr::safe_html!(
             "<!doctype html><html><head><meta charset=\"utf-8\">\
              <meta http-equiv=\"refresh\" content=\"0;url={target}\">\
              <title>Continuing…</title></head>\
-             <body><p><a href=\"{target}\">Continue</a></p></body></html>"
+             <body><p><a href=\"{target}\">Continue</a></p></body></html>",
+            target = sc_expr::html::escape(target),
         )),
     )
         .into_response();
@@ -966,24 +971,28 @@ mod tests {
 
     #[test]
     fn only_a_path_on_this_host_is_returned_to() {
-        assert_eq!(safe_return_to(Some("/orders?x=1")), "/orders?x=1");
+        assert_eq!(safe_return_to(Some("/orders?x=1")).as_str(), "/orders?x=1");
         for bad in [
             "//evil.example",
             "/\\evil.example",
             "https://evil.example",
+            "javascript:alert(1)",
             "",
             "x",
         ] {
-            assert_eq!(safe_return_to(Some(bad)), "/", "{bad}");
+            assert_eq!(safe_return_to(Some(bad)).as_str(), "/", "{bad}");
         }
-        assert_eq!(safe_return_to(None), "/");
+        assert_eq!(safe_return_to(None).as_str(), "/");
     }
 
     #[test]
     fn an_error_is_added_to_the_query_before_the_fragment() {
-        assert_eq!(with_error("/", "no"), "/?oauth_error=no");
         assert_eq!(
-            with_error("/a?b=1#/login", "a b&c"),
+            with_error(&RedirectTarget::root(), "no"),
+            "/?oauth_error=no"
+        );
+        assert_eq!(
+            with_error(&RedirectTarget::parse("/a?b=1#/login").unwrap(), "a b&c"),
             "/a?b=1&oauth_error=a%20b%26c#/login"
         );
     }
@@ -1015,7 +1024,7 @@ mod tests {
             },
             verifier: "v".into(),
             host: TrustedHost::served("h").unwrap(),
-            return_to: "/".into(),
+            return_to: RedirectTarget::root(),
             binding: "b".into(),
             redirect_uri: "r".into(),
             expires: Instant::now() + FLOW_TTL,
@@ -1026,7 +1035,7 @@ mod tests {
         let token = flows.complete(Completion {
             outcome: Outcome::SignIn(User::new(uuid::Uuid::new_v4(), Role::ADMIN)),
             host: TrustedHost::served("h").unwrap(),
-            return_to: "/".into(),
+            return_to: RedirectTarget::root(),
             binding: "b".into(),
             expires: Instant::now() + COMPLETION_TTL,
         });

@@ -285,6 +285,10 @@ pub(crate) async fn invite(
 /// The one other answer is a `429` (TODO F4.4): too many requests from this
 /// IP, or for this address, counted before the address is looked up — so it
 /// comes the same for an address with an account and one without.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: the reset mail is sent off the request, so a slow mail server does not hold the response; it writes no rows"
+)]
 pub(crate) async fn forgot_password(
     req: &ApiRequest,
     cat: &Catalog,
@@ -350,8 +354,11 @@ pub(crate) async fn set_password(req: &ApiRequest, cat: &Catalog) -> Result<ApiR
     match redeem_password_token(cat, token, password).await? {
         Some(user) => {
             let summary = user_summary_json(&user);
+            let signing_in =
+                sc_auth::PasswordVerified::by(cat, user, sc_auth::FirstFactor::PasswordLink)
+                    .await?;
             Ok(ApiResponse::start_session_remembering(
-                user,
+                signing_in,
                 summary,
                 crate::auth::remember(&req.body),
             ))

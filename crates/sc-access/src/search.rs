@@ -113,7 +113,7 @@ pub fn relevance(search: &TextSearch) -> OrderBy {
 
 /// Whether the table's full-text index answers `search`, on the backend the
 /// table lives on.
-pub fn is_indexed(table: &Table, search: &TextSearch, sqlite: bool) -> bool {
+pub(crate) fn is_indexed(table: &Table, search: &TextSearch, sqlite: bool) -> bool {
     if full_text_constraint(table).is_none() {
         return false;
     }

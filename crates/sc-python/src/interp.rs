@@ -25,6 +25,11 @@
 //! key ([`BODY_CACHE`]), so a trigger firing a thousand times parses once: 35 µs
 //! to compile against 1 µs to execute a cached code object (phase 0.5). What is
 //! per run is what has to be — the globals, the bindings and the thread.
+//!
+//! May use `unsafe` (the workspace denies it): pyo3 has no safe API for
+//! CPython's pre-initialisation and `PyConfig`, nor for
+//! `PyThreadState_SetAsyncExc`.
+#![allow(unsafe_code)]
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;

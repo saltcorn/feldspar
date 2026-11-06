@@ -32,6 +32,11 @@ type BoxError = Box<dyn std::error::Error + Sync + Send>;
 #[derive(Debug)]
 pub struct PgParam<'a>(pub &'a Value);
 
+/// The error for an integer that does not fit the placeholder's narrower type.
+fn out_of_range(v: i64, ty: &str) -> BoxError {
+    format!("the value {v} is out of range for type {ty}").into()
+}
+
 impl PgParam<'_> {
     fn encode(&self, ty: &Type, out: &mut BytesMut) -> std::result::Result<IsNull, BoxError> {
         match self.0 {
@@ -44,10 +49,16 @@ impl PgParam<'_> {
             // integer (`int2`/`int4`) or `numeric` — the latter is common when a
             // formula compares against an aggregate (`sum(x) > 100`), since
             // `sum` widens to `numeric`. `i64::to_sql` only accepts `int8`, so
-            // coerce to the target rather than error the whole query.
+            // coerce to the target rather than error the whole query. A value
+            // out of the narrower type's range is an error, never a wrapped
+            // value: `4294967297` bound as `int4` would otherwise match row 1.
             Value::Int(v) => match *ty {
-                Type::INT2 => (*v as i16).to_sql_checked(ty, out),
-                Type::INT4 => (*v as i32).to_sql_checked(ty, out),
+                Type::INT2 => i16::try_from(*v)
+                    .map_err(|_| out_of_range(*v, "smallint"))?
+                    .to_sql_checked(ty, out),
+                Type::INT4 => i32::try_from(*v)
+                    .map_err(|_| out_of_range(*v, "integer"))?
+                    .to_sql_checked(ty, out),
                 Type::NUMERIC => Decimal::from(*v).to_sql_checked(ty, out),
                 // `price > 100000` on a `double precision` column: Postgres
                 // infers the placeholder from the column, and a whole-number
@@ -60,7 +71,7 @@ impl PgParam<'_> {
                 Type::NUMERIC => Decimal::try_from(*v)
                     .map_err(BoxError::from)
                     .and_then(|d| d.to_sql_checked(ty, out)),
-                Type::FLOAT4 => (*v as f32).to_sql_checked(ty, out),
+                Type::FLOAT4 => single_precision(*v).to_sql_checked(ty, out),
                 _ => v.to_sql_checked(ty, out),
             },
             // A geometry travels as GeoJSON and PostGIS takes EWKB (see
@@ -199,6 +210,17 @@ fn encode_geometry(
 /// itself: an extension's type has no fixed OID.
 pub(crate) const VECTOR_TYPE: &str = "vector";
 
+/// `v` rounded to the single precision a `float4` column (and a vector
+/// element) holds, as Postgres itself rounds a `float8` assigned to one. A value
+/// past `f32`'s range becomes infinite.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the narrowing is the point: a float4 holds single precision"
+)]
+fn single_precision(v: f64) -> f32 {
+    v as f32
+}
+
 /// A JSON array of numbers as pgvector's binary form: the dimension count and
 /// an unused word, as 16-bit integers, then each element as a big-endian
 /// `f32` (pgvector's `vector_recv`).
@@ -218,7 +240,7 @@ fn encode_vector(
     for item in items {
         let x = item
             .as_f64()
-            .map(|x| x as f32)
+            .map(single_precision)
             .filter(|x| x.is_finite())
             .ok_or_else(|| BoxError::from(format!("{item} is not a number of a vector")))?;
         out.extend_from_slice(&x.to_be_bytes());
@@ -470,6 +492,37 @@ mod tests {
                 .to_sql_checked(&Type::FLOAT4, &mut out)
                 .is_ok()
         );
+    }
+
+    /// An integer outside a narrower placeholder's range is refused, never
+    /// wrapped: `4294967297` bound as `int4` would otherwise read row 1
+    /// (security review 2026-11, F-1).
+    #[test]
+    fn an_out_of_range_int_is_refused_for_a_narrow_placeholder() {
+        let mut out = BytesMut::new();
+        for (v, ty) in [
+            (4_294_967_297, Type::INT4),
+            (-4_294_967_295, Type::INT4),
+            (i64::from(i32::MAX) + 1, Type::INT4),
+            (65_537, Type::INT2),
+            (i64::from(i16::MIN) - 1, Type::INT2),
+        ] {
+            let Err(err) = PgParam(&Value::Int(v)).to_sql_checked(&ty, &mut out) else {
+                panic!("{v} must not bind as {ty}");
+            };
+            assert!(err.to_string().contains("out of range"), "{err}");
+        }
+        for (v, ty) in [
+            (i64::from(i32::MAX), Type::INT4),
+            (i64::from(i32::MIN), Type::INT4),
+            (i64::from(i16::MAX), Type::INT2),
+        ] {
+            assert!(
+                PgParam(&Value::Int(v))
+                    .to_sql_checked(&ty, &mut out)
+                    .is_ok()
+            );
+        }
     }
 
     /// A formula's string literal compared with a date, an instant, a time

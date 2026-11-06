@@ -126,7 +126,7 @@ fn admin() -> User {
 }
 
 fn caller() -> Principal {
-    Principal::new(Role::ADMIN, Some(json!({ "id": ADMIN, "role": 1 })))
+    Principal::recorded(Role::ADMIN, Some(json!({ "id": ADMIN, "role": 1 })))
 }
 
 fn request() -> Arc<Changeset> {

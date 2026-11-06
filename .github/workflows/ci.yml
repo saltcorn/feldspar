@@ -51,6 +51,20 @@ jobs:
       # against a repository cache budget the other two jobs need.
       - run: cargo fmt --all --check
 
+  # The dependency tree against `deny.toml`: RustSec advisories, licences,
+  # banned crates and where crates may come from (security review 2026-11,
+  # F §4). It reads `Cargo.lock` and the advisory database and builds nothing,
+  # so it needs neither the cache nor the disk clean-up the other jobs do.
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
+          arguments: --locked
+
   clippy:
     name: clippy
     runs-on: ubuntu-latest
@@ -96,7 +110,47 @@ jobs:
               rm -rf "$fingerprints"/v8-*
             fi
           done
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # `--locked`: a `Cargo.lock` that no longer matches the manifests fails
+      # here instead of being resolved afresh to whatever is newest today.
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+  # The lints that are advisory for now (TODO-type-hardening H1.7): indexing,
+  # string slicing and unchecked arithmetic in the crates that handle request
+  # input, each a panic a request could cause. They have hundreds of existing
+  # hits, so this job reports and does not gate; the crates' `lib.rs` turn them
+  # on under `--cfg feldspar_advisory_lints`, which goes to the linted crates
+  # only (after `--`), so the dependencies are the clippy job's, from the cache.
+  clippy-advisory:
+    name: clippy (advisory lints)
+    runs-on: ubuntu-latest
+    # Under the workflow's `-D warnings` every hit is an error, so this job is
+    # red until they are fixed; `continue-on-error` keeps that from failing the
+    # run, and `--keep-going` lists every crate's hits rather than the first's.
+    # (Clearing `RUSTFLAGS` here would rebuild every dependency.)
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain (clippy)
+        run: rustup toolchain install stable --profile minimal --component clippy
+      - name: Free disk space on the runner
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup /opt/ghc || true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Re-fetch the prebuilt V8 library if the cache dropped it
+        run: |
+          for profile in debug release; do
+            fingerprints="target/$profile/.fingerprint"
+            lib="target/$profile/gn_out/obj/librusty_v8.a"
+            if [ -d "$fingerprints" ] && [ ! -f "$lib" ]; then
+              rm -rf "$fingerprints"/v8-*
+            fi
+          done
+      - run: >-
+          cargo clippy --locked --keep-going --lib
+          -p sc-access -p sc-api -p sc-auth -p sc-backup -p sc-files -p sc-live -p sc-server
+          -- --cfg feldspar_advisory_lints
 
   test:
     name: test
@@ -178,4 +232,4 @@ jobs:
               rm -rf "$fingerprints"/v8-*
             fi
           done
-      - run: cargo test --workspace --all-targets
+      - run: cargo test --locked --workspace --all-targets

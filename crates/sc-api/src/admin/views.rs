@@ -21,20 +21,19 @@ pub(super) fn register(set: &mut EndpointSet) {
     // accept is refused naming the step and the field (Phase 10).
     set.register(
         Endpoint::new(
-            "listViews",
+            ids::LIST_VIEWS,
             Method::Get,
             api()
                 .lit("applications")
                 .param("id", ValueType::Uuid)
                 .lit("views"),
         )
-        .output(TypeSchema::array(view_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(view_schema())),
     );
 
     set.register(
         Endpoint::new(
-            "getView",
+            ids::GET_VIEW,
             Method::Get,
             api()
                 .lit("applications")
@@ -42,13 +41,12 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("views")
                 .param("name", ValueType::Text),
         )
-        .output(view_schema())
-        .auth(AuthRequirement::admin()),
+        .output(view_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "saveView",
+            ids::SAVE_VIEW,
             Method::Put,
             api()
                 .lit("applications")
@@ -57,13 +55,12 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .param("name", ValueType::Text),
         )
         .input(view_input_schema())
-        .output(view_schema())
-        .auth(AuthRequirement::admin()),
+        .output(view_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "deleteView",
+            ids::DELETE_VIEW,
             Method::Delete,
             api()
                 .lit("applications")
@@ -74,8 +71,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // A new view (TODO "Saltcorn UI" 10.2): its name, pattern, table and role,
@@ -84,7 +80,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // where a save would overwrite.
     set.register(
         Endpoint::new(
-            "createView",
+            ids::CREATE_VIEW,
             Method::Post,
             api()
                 .lit("applications")
@@ -92,8 +88,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("views"),
         )
         .input(create_view_input_schema())
-        .output(view_schema())
-        .auth(AuthRequirement::admin()),
+        .output(view_schema()),
     );
 
     // One step of a view's configuration wizard (10.1): the pattern's
@@ -104,7 +99,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // fields, and a ListShowList's views are the views over its table.
     set.register(
         Endpoint::new(
-            "viewConfigStep",
+            ids::VIEW_CONFIG_STEP,
             Method::Post,
             api()
                 .lit("applications")
@@ -112,8 +107,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("view-config-step"),
         )
         .input(view_config_step_input_schema())
-        .output(view_config_step_schema())
-        .auth(AuthRequirement::admin()),
+        .output(view_config_step_schema()),
     );
 
     // What refers to a view by name (10.4) — the views that embed it or link
@@ -122,7 +116,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // a name that no longer exists. Nothing is rewritten.
     set.register(
         Endpoint::new(
-            "viewReferences",
+            ids::VIEW_REFERENCES,
             Method::Get,
             api()
                 .lit("applications")
@@ -131,26 +125,24 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .param("name", ValueType::Text)
                 .lit("references"),
         )
-        .output(view_references_schema())
-        .auth(AuthRequirement::admin()),
+        .output(view_references_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "listPages",
+            ids::LIST_PAGES,
             Method::Get,
             api()
                 .lit("applications")
                 .param("id", ValueType::Uuid)
                 .lit("pages"),
         )
-        .output(TypeSchema::array(page_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(page_schema())),
     );
 
     set.register(
         Endpoint::new(
-            "getPage",
+            ids::GET_PAGE,
             Method::Get,
             api()
                 .lit("applications")
@@ -158,13 +150,12 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("pages")
                 .param("name", ValueType::Text),
         )
-        .output(page_schema())
-        .auth(AuthRequirement::admin()),
+        .output(page_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "savePage",
+            ids::SAVE_PAGE,
             Method::Put,
             api()
                 .lit("applications")
@@ -173,13 +164,12 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .param("name", ValueType::Text),
         )
         .input(page_input_schema())
-        .output(page_schema())
-        .auth(AuthRequirement::admin()),
+        .output(page_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "deletePage",
+            ids::DELETE_PAGE,
             Method::Delete,
             api()
                 .lit("applications")
@@ -190,8 +180,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // What `ui/builder` calls, and nothing it does not: the two layout saves,
@@ -207,7 +196,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // library edits it carries in one transaction, moving the generation once.
     set.register(
         Endpoint::new(
-            "saveViewLayout",
+            ids::SAVE_VIEW_LAYOUT,
             Method::Put,
             api()
                 .lit("applications")
@@ -217,8 +206,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("layout"),
         )
         .input(view_layout_input_schema())
-        .output(view_schema())
-        .auth(AuthRequirement::admin()),
+        .output(view_schema()),
     );
 
     // A page's layout (§6): it replaces the page's, is checked as a page is —
@@ -227,7 +215,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // edits in one transaction.
     set.register(
         Endpoint::new(
-            "savePageLayout",
+            ids::SAVE_PAGE_LAYOUT,
             Method::Put,
             api()
                 .lit("applications")
@@ -237,8 +225,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("layout"),
         )
         .input(page_layout_input_schema())
-        .output(page_schema())
-        .auth(AuthRequirement::admin()),
+        .output(page_schema()),
     );
 
     // What names a page (§10): the menu entries opening it, the roles whose home
@@ -248,7 +235,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // the library items its own layout places. Nothing is rewritten.
     set.register(
         Endpoint::new(
-            "pageReferences",
+            ids::PAGE_REFERENCES,
             Method::Get,
             api()
                 .lit("applications")
@@ -257,23 +244,21 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .param("name", ValueType::Text)
                 .lit("references"),
         )
-        .output(page_references_schema())
-        .auth(AuthRequirement::admin()),
+        .output(page_references_schema()),
     );
 
     // The application's library (§8): its items, each with the views, pages
     // and other items that place it.
     set.register(
         Endpoint::new(
-            "listLibrary",
+            ids::LIST_LIBRARY,
             Method::Get,
             api()
                 .lit("applications")
                 .param("id", ValueType::Uuid)
                 .lit("library"),
         )
-        .output(TypeSchema::array(listed_library_item_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(listed_library_item_schema())),
     );
 
     // One item, read fresh rather than from the set the builder was opened
@@ -281,7 +266,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // it shows the latest layout.
     set.register(
         Endpoint::new(
-            "getLibraryItem",
+            ids::GET_LIBRARY_ITEM,
             Method::Get,
             api()
                 .lit("applications")
@@ -289,8 +274,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("library")
                 .param("item", ValueType::Uuid),
         )
-        .output(library_item_schema())
-        .auth(AuthRequirement::admin()),
+        .output(library_item_schema()),
     );
 
     // v1's `/library/savefrombuilder`: a new item from what the builder
@@ -298,7 +282,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // it, as is a layout placing an item the application does not have.
     set.register(
         Endpoint::new(
-            "createLibraryItem",
+            ids::CREATE_LIBRARY_ITEM,
             Method::Post,
             api()
                 .lit("applications")
@@ -306,15 +290,14 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("library"),
         )
         .input(create_library_item_input_schema())
-        .output(library_item_schema())
-        .auth(AuthRequirement::admin()),
+        .output(library_item_schema()),
     );
 
     // Rename an item, or change its icon or description. Its layout is the
     // builder's, and changes through a layout save or `saveLibraryUpdates`.
     set.register(
         Endpoint::new(
-            "saveLibraryItem",
+            ids::SAVE_LIBRARY_ITEM,
             Method::Put,
             api()
                 .lit("applications")
@@ -323,15 +306,14 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .param("item", ValueType::Uuid),
         )
         .input(save_library_item_input_schema())
-        .output(library_item_schema())
-        .auth(AuthRequirement::admin()),
+        .output(library_item_schema()),
     );
 
     // v1's `/library/save-updates`: edits made inside placed items, apart from
     // any view or page, all or none.
     set.register(
         Endpoint::new(
-            "saveLibraryUpdates",
+            ids::SAVE_LIBRARY_UPDATES,
             Method::Post,
             api()
                 .lit("applications")
@@ -343,8 +325,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "updated",
             TypeSchema::int(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // Delete an item. One that something places is refused with `409` and the
@@ -353,7 +334,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // names what did.
     set.register(
         Endpoint::new(
-            "deleteLibraryItem",
+            ids::DELETE_LIBRARY_ITEM,
             Method::Delete,
             api()
                 .lit("applications")
@@ -365,15 +346,14 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([
             StructField::new("deleted", TypeSchema::bool()),
             StructField::new("references", library_references_schema()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // v1's `/field/preview/:table/:field/:fieldview`: a fieldview rendered over
     // the first row the admin can read, as HTML for the canvas.
     set.register(
         Endpoint::new(
-            "builderFieldPreview",
+            ids::BUILDER_FIELD_PREVIEW,
             Method::Post,
             api()
                 .lit("applications")
@@ -382,8 +362,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("field-preview"),
         )
         .input(builder_field_preview_input_schema())
-        .output(builder_html_schema())
-        .auth(AuthRequirement::admin()),
+        .output(builder_html_schema()),
     );
 
     // v1's `/field/fieldviewcfgform/:table?accept=json`: a fieldview's
@@ -391,7 +370,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // so it is `json` here.
     set.register(
         Endpoint::new(
-            "builderFieldviewConfigForm",
+            ids::BUILDER_FIELDVIEW_CONFIG_FORM,
             Method::Post,
             api()
                 .lit("applications")
@@ -400,15 +379,14 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("fieldview-config"),
         )
         .input(builder_fieldview_config_input_schema())
-        .output(TypeSchema::json())
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::json()),
     );
 
     // v1's `/view/:name/preview`: an embedded view rendered for the canvas with
     // the state given.
     set.register(
         Endpoint::new(
-            "builderViewPreview",
+            ids::BUILDER_VIEW_PREVIEW,
             Method::Post,
             api()
                 .lit("applications")
@@ -420,14 +398,13 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("view", TypeSchema::text()),
             StructField::new("state", TypeSchema::optional(TypeSchema::json())),
         ]))
-        .output(builder_html_schema())
-        .auth(AuthRequirement::admin()),
+        .output(builder_html_schema()),
     );
 
     // v1's `/page/:name/preview`: an embedded page rendered for the canvas.
     set.register(
         Endpoint::new(
-            "builderPagePreview",
+            ids::BUILDER_PAGE_PREVIEW,
             Method::Post,
             api()
                 .lit("applications")
@@ -439,8 +416,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             "page",
             TypeSchema::text(),
         )]))
-        .output(builder_html_schema())
-        .auth(AuthRequirement::admin()),
+        .output(builder_html_schema()),
     );
 
     // v1's `/api/:table/distinct/:field`, which the builder's *Tabs* element
@@ -449,7 +425,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // is not a route on the subdomain, and this does not add one.
     set.register(
         Endpoint::new(
-            "builderDistinctValues",
+            ids::BUILDER_DISTINCT_VALUES,
             Method::Get,
             api()
                 .lit("applications")
@@ -462,17 +438,19 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "success",
             TypeSchema::json(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // The view patterns a view may be saved with: the registry save checks
     // against, described by the view runtime where one is running. Server-wide
     // rather than per application, because a pattern is the server's.
     set.register(
-        Endpoint::new("listViewPatterns", Method::Get, api().lit("view-patterns"))
-            .output(TypeSchema::array(view_pattern_schema()))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::LIST_VIEW_PATTERNS,
+            Method::Get,
+            api().lit("view-patterns"),
+        )
+        .output(TypeSchema::array(view_pattern_schema())),
     );
 
     // Whether this server has the builder bundle (TODO "The builder" §2, §9), so
@@ -480,12 +458,9 @@ pub(super) fn register(set: &mut EndpointSet) {
     // binary built without `ui/builder` answers `false`, and the admin screens
     // keep a layout as read-only JSON with a sentence saying why.
     set.register(
-        Endpoint::new("builderStatus", Method::Get, api().lit("builder"))
-            .output(TypeSchema::struct_of([StructField::new(
-                "available",
-                TypeSchema::bool(),
-            )]))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(ids::BUILDER_STATUS, Method::Get, api().lit("builder")).output(
+            TypeSchema::struct_of([StructField::new("available", TypeSchema::bool())]),
+        ),
     );
 }
 

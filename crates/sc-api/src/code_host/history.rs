@@ -35,7 +35,7 @@ use sc_types::Role;
 use serde_json::{Map, Value as Json, json};
 
 use sc_catalog::Table;
-use sc_catalog::history::{self, AsOf, HistoryEntry};
+use sc_catalog::history::{self, AsOf, HistoryEntry, RawRow};
 use sc_error::{Error, Result};
 
 use super::plan::Authority;
@@ -101,27 +101,28 @@ pub(super) async fn answer(host: &TableHost<'_>, request: Json) -> Result<Json> 
             WHATS.join(", ")
         )));
     }
-    let actor = host.actor(&plan.authority).await?;
-    let (role, user) = match &actor {
-        // The admin's authority, in the event's user's name.
-        Actor::Admin(_) => (
-            Role::ADMIN,
-            sc_auth::User::from_json(Role::ADMIN, host.caller.user.as_ref())?,
-        ),
-        Actor::Caller { principal, user } => (principal.role, user.clone()),
-    };
+    // Row history is read from the change log, past the table's policies, so
+    // on a table with row-level security an admin actor reads it as its cause
+    // (TODO-type-hardening H8.2).
+    let actor = host.actor_on(&plan.authority, &plan.table).await?;
+    let actor = host.as_cause_on(actor, &plan.table)?;
     let evaluator = host.evaluator.as_ref();
-    let reader = HistoryReader {
-        catalog: host.catalog,
-        role,
-        user: user.as_ref(),
-        evaluator,
-    };
-    let reverser = Reverser {
-        catalog: host.catalog,
-        role,
-        user: user.as_ref(),
-        evaluator,
+    // Views of the actor (TODO-type-hardening H3.4): the admin's from its
+    // proof, in the event's user's name; a delegated caller's from its
+    // principal and the user as it was loaded.
+    let admin_user;
+    let (reader, reverser) = match &actor {
+        Actor::Admin(admin) => {
+            admin_user = sc_auth::User::from_json(Role::ADMIN, admin.user())?;
+            (
+                HistoryReader::admin(host.catalog, admin, admin_user.as_ref(), evaluator)?,
+                Reverser::admin(host.catalog, admin, admin_user.as_ref(), evaluator)?,
+            )
+        }
+        Actor::Caller { principal, user } => (
+            HistoryReader::of(host.catalog, principal, user.as_ref(), evaluator)?,
+            Reverser::of(host.catalog, principal, user.as_ref(), evaluator)?,
+        ),
     };
     let table = plan.table.as_str();
     let key = || -> Result<String> {
@@ -208,7 +209,7 @@ pub(super) async fn answer(host: &TableHost<'_>, request: Json) -> Result<Json> 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Version {
     pub(crate) entry: HistoryEntry,
-    pub(crate) row: Option<Map<String, Json>>,
+    pub(crate) row: Option<RawRow>,
 }
 
 impl Version {
@@ -224,16 +225,21 @@ impl Version {
     fn to_v1_json(&self, table: &Table) -> Json {
         let deleted = self.row.is_none();
         let mut out = match &self.row {
-            Some(row) => redacted(table, row.clone()),
+            Some(row) => match redacted(table, row.clone()).into_json() {
+                Json::Object(map) => map,
+                _ => Map::new(),
+            },
             None => Map::new(),
         };
         out.insert(
             table.primary_key.first().cloned().unwrap_or_default(),
-            match self
-                .row
-                .as_ref()
-                .and_then(|r| table.primary_key.first().and_then(|pk| r.get(pk)).cloned())
-            {
+            match self.row.as_ref().and_then(|r| {
+                table
+                    .primary_key
+                    .first()
+                    .and_then(|pk| r.get(pk.as_str()))
+                    .cloned()
+            }) {
                 Some(key) => key,
                 None => Json::String(self.entry.key.clone()),
             },
@@ -261,10 +267,10 @@ async fn versions(
     if !reader.may_see_row(&table, key).await? {
         return Ok((table, Vec::new()));
     }
-    let entries = history::row_history(reader.catalog, &table, key).await?;
-    let now = history::row_as_of(reader.catalog, &table, key, AsOf::Seq(i64::MAX)).await?;
+    let entries = history::row_history(reader.catalog(), &table, key).await?;
+    let now = history::row_as_of(reader.catalog(), &table, key, AsOf::Seq(i64::MAX)).await?;
     let current = now.row.map(|mut row| {
-        row.extend(now.removed);
+        row.extend(now.removed.into_map());
         row
     });
     let versions = rebuild(&|c| table.field(c).is_some(), current, entries);
@@ -277,22 +283,24 @@ async fn versions(
 /// table still has.
 pub(crate) fn rebuild(
     has_column: &dyn Fn(&str) -> bool,
-    current: Option<Map<String, Json>>,
+    current: Option<RawRow>,
     entries: Vec<HistoryEntry>,
 ) -> Vec<Version> {
     let mut state = current;
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
         let row = state.as_ref().map(|row| {
-            row.iter()
-                .filter(|(column, _)| has_column(column))
-                .map(|(c, v)| (c.clone(), v.clone()))
-                .collect()
+            RawRow::new(
+                row.iter()
+                    .filter(|(column, _)| has_column(column))
+                    .map(|(c, v)| (c.clone(), v.clone()))
+                    .collect(),
+            )
         });
         match entry.op.as_str() {
             "u" => {
                 if let (Some(row), Some(old)) = (state.as_mut(), entry.old_values.clone()) {
-                    row.extend(old);
+                    row.extend(old.into_map());
                 }
             }
             "d" => state = entry.old_values.clone(),
@@ -360,7 +368,7 @@ mod tests {
 
     fn entry(version: i64, op: &str, source: &str, old: Json, new: Json) -> HistoryEntry {
         let object = |j: Json| match j {
-            Json::Object(m) => Some(m),
+            Json::Object(m) => Some(RawRow::new(m)),
             _ => None,
         };
         HistoryEntry {
@@ -387,9 +395,9 @@ mod tests {
         }
     }
 
-    fn row(title: &str) -> Option<Map<String, Json>> {
+    fn row(title: &str) -> Option<RawRow> {
         match json!({ "id": 1, "title": title }) {
-            Json::Object(m) => Some(m),
+            Json::Object(m) => Some(RawRow::new(m)),
             _ => None,
         }
     }

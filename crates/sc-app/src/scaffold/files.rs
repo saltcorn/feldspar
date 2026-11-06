@@ -1591,8 +1591,8 @@ fonts, and `blob:` images and media (object URLs from \
 API. To widen one directive, use the administration MCP tool \
 `update_application` with a `csp` section (`{ \"img-src\": [\"'self'\", \
 \"data:\", \"blob:\", \"https://tiles.example.com\"] }`, the whole new \
-list) — it needs the `allow_access_changes` grant, because a CSP is a security \
-boundary. `describe_applications` shows the current policy.\n";
+list) — a CSP is a security boundary, so say what you widen and why. \
+`describe_applications` shows the current policy.\n";
 
 /// `` `a`, `b` and `c` `` — the app's table names, for a sentence.
 fn names_list(tables: &[Table]) -> String {
@@ -2818,8 +2818,9 @@ export default function SecondFactor() {
 "#;
 
 /// The signed-in person's own **two-factor authentication**: turn it on (scan,
-/// first code, recovery codes), make new recovery codes, or turn it off — each
-/// of the last two with a current code. At `/security`, linked from the header.
+/// first code, recovery codes) after giving the password again, make new
+/// recovery codes, or turn it off — each of the last two with a current code.
+/// At `/security`, linked from the header.
 const SECURITY_TSX: &str = r#"import { useEffect, useState, type FormEvent } from "react";
 import type { SecondFactorSetup, SecondFactorStatus } from "./feldspar/client";
 import { api } from "./feldspar/hooks";
@@ -2833,6 +2834,7 @@ export default function Security() {
   const [codes, setCodes] = useState<string[] | null>(null);
   const [action, setAction] = useState<"disable" | "codes" | null>(null);
   const [code, setCode] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
 
   const load = () =>
@@ -2929,9 +2931,29 @@ export default function Security() {
       ) : (
         <>
           <p>{t("Off: signing in takes your password only.")}</p>
-          <button onClick={() => void run(async () => setSetup(await api.secondFactorSetup()))}>
-            {t("Set up two-factor authentication")}
-          </button>
+          {/* Setting one up proves the password again. */}
+          <form
+            onSubmit={(e: FormEvent) => {
+              e.preventDefault();
+              void run(async () => {
+                setSetup(await api.secondFactorSetup({ password }));
+                setPassword("");
+              });
+            }}
+          >
+            <label>
+              {t("Your current password")}
+              <input
+                type="password"
+                value={password}
+                autoComplete="current-password"
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </label>
+            <button type="submit" disabled={!password}>
+              {t("Set up two-factor authentication")}
+            </button>
+          </form>
         </>
       )}
     </div>
@@ -5325,6 +5347,10 @@ pub(super) fn ts_empty(field: &sc_catalog::DataField) -> &'static str {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: type-checks the generated files with the admin UI's tsc"
+)]
 mod tests {
     use super::*;
     use sc_api::{ApiProvider, RestProvider};
@@ -5991,7 +6017,7 @@ export function Board({ id }: { id: number }) {
             "Never hand-write base64",
             "## The Content-Security-Policy",
             "`update_application` with a `csp` section",
-            "allow_access_changes",
+            "a CSP is a security boundary",
             "blob:",
             // TODO F2.9–F2.11: uploads, bytes, files and the share pattern.
             "api.uploads.<slot>(file",

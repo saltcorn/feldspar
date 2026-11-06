@@ -172,6 +172,7 @@ pub async fn bootstrap(catalog: &Catalog) -> Result<Table> {
     crate::password_tokens::bootstrap_password_tokens(catalog).await?;
     crate::guest::bootstrap_guest_sessions(catalog).await?;
     crate::second_factor::bootstrap_second_factor(catalog).await?;
+    crate::epoch::bootstrap_auth_epochs(catalog).await?;
     Ok(users)
 }
 

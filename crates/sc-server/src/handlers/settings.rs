@@ -9,7 +9,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
     let apps = state.apps.clone();
 
-    reg.register_admin("getHelp", {
+    reg.handle(sc_api::handler_ids::GET_HELP, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -39,7 +39,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // way in (§11.1), and a certificate is parsed before it is saved, because a
     // key that does not match its chain must fail in front of the admin rather
     // than at the next restart (§13.5).
-    reg.register_admin("getSettings", {
+    reg.handle(sc_api::handler_ids::GET_SETTINGS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -51,7 +51,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateSettings", {
+    reg.handle(sc_api::handler_ids::UPDATE_SETTINGS, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -201,7 +201,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // out (`oauth_provider_json`) and the sentinel merged back on the way in,
     // as an LLM provider's key is.
 
-    reg.register_admin("listOAuthProviders", {
+    reg.handle(sc_api::handler_ids::LIST_O_AUTH_PROVIDERS, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -216,14 +216,17 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("getOAuthProviderSpec", |ctx| async move {
-        Ok(HandlerResponse::ok(json!({
-            "fields": spec_json(&sc_config::oauth_provider_spec(), &ctx.locale),
-            "callback_path": crate::oauth::CALLBACK_ROUTE,
-        })))
-    });
+    reg.handle(
+        sc_api::handler_ids::GET_O_AUTH_PROVIDER_SPEC,
+        |ctx| async move {
+            Ok(HandlerResponse::ok(json!({
+                "fields": spec_json(&sc_config::oauth_provider_spec(), &ctx.locale),
+                "callback_path": crate::oauth::CALLBACK_ROUTE,
+            })))
+        },
+    );
 
-    reg.register_admin("createOAuthProvider", {
+    reg.handle(sc_api::handler_ids::CREATE_O_AUTH_PROVIDER, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -241,7 +244,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateOAuthProvider", {
+    reg.handle(sc_api::handler_ids::UPDATE_O_AUTH_PROVIDER, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -264,7 +267,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteOAuthProvider", {
+    reg.handle(sc_api::handler_ids::DELETE_O_AUTH_PROVIDER, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -286,7 +289,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // yet (Settings → Development → Admin subdomain). Polled by the dialog a
     // move opens: the certificate for a new name is a minute of ACME traffic
     // away, and the admin is not let go to an address that would refuse them.
-    reg.register_admin("getAdminAddress", {
+    reg.handle(sc_api::handler_ids::GET_ADMIN_ADDRESS, {
         let apps = apps.clone();
         move |_ctx| {
             let apps = apps.clone();
@@ -297,7 +300,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // A single-use token that gives the signed-in admin a session on the admin
     // UI's current host. The session cookie is host-only, so without this
     // following a move would mean logging in again (`crate::admin_host`).
-    reg.register_admin("createAdminHandoff", {
+    reg.handle(sc_api::handler_ids::CREATE_ADMIN_HANDOFF, {
         let apps = apps.clone();
         move |ctx| {
             let apps = apps.clone();
@@ -332,7 +335,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // "authentication failed" and "relay access denied" are three different
     // problems with three different fixes, and the whole value of a test button
     // is learning which one you have.
-    reg.register_admin("sendTestEmail", {
+    reg.handle(sc_api::handler_ids::SEND_TEST_EMAIL, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -384,7 +387,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // modules because none of it is a *setting* — every number here is a fact
     // about the running process, and the two that are configurable are flags
     // that need a restart, which is precisely the thing an admin needs told.
-    reg.register_admin("getPythonStatus", {
+    reg.handle(sc_api::handler_ids::GET_PYTHON_STATUS, {
         let apps = apps.clone();
         move |_ctx| {
             let apps = apps.clone();
@@ -421,7 +424,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
 
     // Settings → System: which build this is, its database, and what the
     // process is doing to the machine (`crate::system`).
-    reg.register_admin("getSystemInfo", {
+    reg.handle(sc_api::handler_ids::GET_SYSTEM_INFO, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -435,7 +438,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
 
     // Settings → Development: which Claude Code the IDE's terminal would run,
     // so an admin sees which one without opening a terminal to find out.
-    reg.register_admin("getClaudeCodeStatus", {
+    reg.handle(sc_api::handler_ids::GET_CLAUDE_CODE_STATUS, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |_ctx| {
@@ -456,10 +459,13 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
 
     // Exit for whatever manages the process to start it again. The answer goes
     // out first; the exit follows it (`crate::system::schedule_restart`).
-    reg.register_admin("restartServer", move |_ctx| async move {
-        crate::system::schedule_restart();
-        Ok(HandlerResponse::ok(json!({ "restarting": true })))
-    });
+    reg.handle(
+        sc_api::handler_ids::RESTART_SERVER,
+        move |_ctx| async move {
+            crate::system::schedule_restart();
+            Ok(HandlerResponse::ok(json!({ "restarting": true })))
+        },
+    );
 }
 
 /// The `text/plain` half of the Email tab's test message.

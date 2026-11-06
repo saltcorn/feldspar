@@ -60,10 +60,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use sc_catalog::{
     ATTR_OWNERSHIP_FORMULA, Catalog, ChangeLogFeature, ConstraintKind, DataField, DataFieldKind,
-    DbId, FIELD_META_TABLE, FieldId, FieldMeta, ReprojectedApp, SchemaChanged, SchemaProjection,
-    SchemaStep, Table, TableConstraint, TableMeta, create_constraint_steps, disable_rls_sql,
-    drop_constraint_steps, enable_rls_sql, formula_fields, load_field_meta_by_field,
-    load_table_meta_by_name, save_field_meta_row, save_table_meta_row, validate_formula,
+    DbId, Editor, FIELD_META_TABLE, FieldId, FieldMeta, ReprojectedApp, SchemaChanged,
+    SchemaProjection, SchemaStep, Table, TableConstraint, TableMeta, create_constraint_steps,
+    disable_rls_sql, drop_constraint_steps, enable_rls_sql, formula_fields,
+    load_field_meta_by_field, load_table_meta_by_name, save_field_meta_row, save_table_meta_row,
+    validate_formula,
 };
 use sc_db::{ColumnGenerator, ColumnRef, SchemaChange};
 use sc_error::{Error, Result};
@@ -186,23 +187,27 @@ const PROTECTED_COLUMNS: &[(&str, &[&str])] = &[
 
 // --- what a batch may do ------------------------------------------------------
 
-/// The four grants a batch is checked against (§11.3).
+/// The three grants a batch is checked against (§11.3).
 ///
-/// Four rather than one for the reason `insert_row`/`update_rows`/`delete_rows`
+/// Three rather than one for the reason `insert_row`/`update_rows`/`delete_rows`
 /// are three traits: each is a different thing to trust a caller with. Dropping
-/// and access changes default **off**, and access changes sit above dropping —
-/// a drop announces itself, a widened role floor does not.
+/// defaults **off**.
+///
+/// There was a fourth, `allow_access_changes`, for a table's floors, formula
+/// and RLS flag. TODO-type-hardening H8.9 removed it: grants on agents are
+/// options nobody keeps track of, and row-level security is the one lever — a
+/// table without RLS has access rules an agent may change, and a table with RLS
+/// has access rules only a person may change ([`ApplyOptions::editor`]). A
+/// stored configuration that carries the key keeps loading; it is ignored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Grants {
     /// May create tables and their fields.
     pub create: bool,
-    /// May alter a table's label/description and add or alter its fields.
+    /// May alter a table's settings (its access rules included, on a table
+    /// without row-level security) and add or alter its fields.
     pub edit: bool,
     /// May drop tables and fields.
     pub drop: bool,
-    /// May write `min_role_read`, `min_role_write`, the ownership formula and
-    /// the RLS flag.
-    pub access_changes: bool,
 }
 
 /// The configuration key each grant is stored under, so the refusal can name the
@@ -212,7 +217,9 @@ pub const GRANT_CREATE: &str = "allow_create";
 pub const GRANT_EDIT: &str = "allow_edit";
 /// See [`GRANT_CREATE`].
 pub const GRANT_DROP: &str = "allow_drop";
-/// See [`GRANT_CREATE`].
+/// The key the retired `allow_access_changes` grant was stored under
+/// (TODO-type-hardening H8.9). Nothing reads its value; it is named so the
+/// places that accept a stored or submitted configuration can say so.
 pub const GRANT_ACCESS_CHANGES: &str = "allow_access_changes";
 
 impl Grants {
@@ -224,7 +231,6 @@ impl Grants {
             create: true,
             edit: true,
             drop: true,
-            access_changes: true,
         }
     }
 
@@ -234,7 +240,6 @@ impl Grants {
             create: false,
             edit: false,
             drop: false,
-            access_changes: false,
         }
     }
 
@@ -257,6 +262,11 @@ pub struct ApplyOptions {
     /// Validate the whole batch and apply **none** of it. The same refusals, the
     /// same messages, no DDL and no overlay writes.
     pub dry_run: bool,
+    /// Who is making the edit (TODO-type-hardening H8.5, §7.3a): on a table
+    /// with row-level security, only a person or the operator changes its
+    /// access settings, disables RLS or drops it. Delegated by default, so a
+    /// path that names nobody cannot.
+    pub editor: Editor,
 }
 
 impl Default for ApplyOptions {
@@ -264,6 +274,17 @@ impl Default for ApplyOptions {
         ApplyOptions {
             grants: Grants::all(),
             dry_run: false,
+            editor: Editor::default(),
+        }
+    }
+}
+
+impl ApplyOptions {
+    /// Everything permitted, made by `editor`.
+    pub fn by(editor: Editor) -> ApplyOptions {
+        ApplyOptions {
+            editor,
+            ..ApplyOptions::default()
         }
     }
 }
@@ -364,8 +385,8 @@ pub struct TableSettings {
 }
 
 impl TableSettings {
-    /// Whether anything here touches the access rules — the settings behind
-    /// [`Grants::access_changes`].
+    /// Whether anything here touches the access rules — the settings that, on
+    /// a table with row-level security, only a person changes.
     pub fn touches_access(&self) -> bool {
         self.min_role_read.is_some()
             || self.history_min_role.is_some()
@@ -651,7 +672,7 @@ pub async fn apply(
     for (index, op) in operations.iter().enumerate() {
         refuse_on_provided(catalog, op).map_err(|e| at(index, op, e))?;
         refuse_on_module_table(catalog, op).map_err(|e| at(index, op, e))?;
-        plan.push(catalog, index, op, &options.grants)
+        plan.push(catalog, index, op, &options.grants, &options.editor)
             .await
             .map_err(|e| at(index, op, e))?;
     }
@@ -739,6 +760,58 @@ pub async fn apply(
     Ok(applied)
 }
 
+/// Whether `table` has row-level security now, before the batch.
+fn has_rls(catalog: &Catalog, table: &str) -> bool {
+    catalog
+        .get(table)
+        .ok()
+        .flatten()
+        .is_some_and(|t| t.rls_enabled)
+}
+
+/// Refuse a change to the access settings of a table that has row-level
+/// security, unless a person or the operator makes it (TODO-type-hardening
+/// H8.5, §7.3a). A table without RLS is anyone's to change, and so is turning
+/// RLS **on**; a setting sent with the value it already has changes nothing and
+/// is not refused.
+///
+/// Every change counts, stricter as well as looser: a formula cannot in general
+/// be proven stricter than another, a rule that accepted some tightenings would
+/// be one an agent cannot predict, and a tightening can break an application.
+async fn refuse_rls_access_change(
+    catalog: &Catalog,
+    table: &str,
+    settings: &TableSettings,
+    editor: &Editor,
+) -> Result<()> {
+    if !has_rls(catalog, table) || editor.rls_table_access().is_some() {
+        return Ok(());
+    }
+    let Some(meta) = load_table_meta_by_name(catalog, table).await? else {
+        return Ok(());
+    };
+    let differs = settings
+        .min_role_read
+        .is_some_and(|r| r != meta.access.min_role_read)
+        || settings
+            .min_role_write
+            .is_some_and(|r| r != meta.access.min_role_write)
+        || settings
+            .ownership_formula
+            .as_deref()
+            .is_some_and(|f| f.trim() != meta.ownership_formula().unwrap_or_default().trim())
+        || settings
+            .rls_enabled
+            .is_some_and(|on| on != meta.rls_enabled())
+        || settings
+            .history_min_role
+            .is_some_and(|r| r != sc_catalog::history::history_min_role(&meta.attributes));
+    if differs {
+        return Err(sc_query::rls_refusal(table));
+    }
+    Ok(())
+}
+
 /// Refuse a DDL operation on a **provided** table (§8.3), naming the provider
 /// that decides its columns.
 ///
@@ -824,8 +897,16 @@ fn refuse_on_module_table(catalog: &Catalog, op: &Operation) -> Result<()> {
 /// policies", which is the same rule `alter_table` applies when it turns the flag
 /// off. A `FORCE`'d table whose policies outlived the settings that generated
 /// them would deny everyone.
-pub async fn forget_table_settings(catalog: &Catalog, table: &str) -> Result<bool> {
+pub async fn forget_table_settings(
+    catalog: &Catalog,
+    table: &str,
+    editor: &Editor,
+) -> Result<bool> {
     let was_rls = catalog.get(table)?.is_some_and(|t| t.rls_enabled);
+    // Forgetting the settings drops the policies (TODO-type-hardening H8.5).
+    if was_rls && editor.rls_table_access().is_none() {
+        return Err(sc_query::rls_refusal(table));
+    }
     let Some(meta) = load_table_meta_by_name(catalog, table).await? else {
         return Ok(false);
     };
@@ -1041,6 +1122,7 @@ impl Plan {
         index: usize,
         op: &Operation,
         grants: &Grants,
+        editor: &Editor,
     ) -> Result<()> {
         // Which database this operation lands in, pinned for the whole batch. A
         // create says so itself; everything else reads it off the table it names,
@@ -1071,11 +1153,7 @@ impl Plan {
             Operation::AlterTable { table, settings } => {
                 grants.check(grants.edit, "change a table's settings", GRANT_EDIT)?;
                 if settings.touches_access() {
-                    grants.check(
-                        grants.access_changes,
-                        "change a table's access rules",
-                        GRANT_ACCESS_CHANGES,
-                    )?;
+                    refuse_rls_access_change(catalog, table, settings, editor).await?;
                 }
                 self.alter_table(catalog, index, op, table, settings).await
             }
@@ -1102,6 +1180,10 @@ impl Plan {
             }
             Operation::DropTable { table } => {
                 grants.check(grants.drop, "drop a table", GRANT_DROP)?;
+                // Drop-and-recreate would turn RLS off with extra steps.
+                if has_rls(catalog, table) && editor.rls_table_access().is_none() {
+                    return Err(sc_query::rls_refusal(table));
+                }
                 self.drop_table(catalog, index, op, table)
             }
             Operation::RenameTable { table, to } => {
@@ -2818,7 +2900,7 @@ impl Plan {
             let Some(table) = self.projection.get(name) else {
                 continue;
             };
-            validate_ownership(catalog, &self.projection, table)?;
+            notes.extend(validate_ownership(catalog, &self.projection, table)?);
         }
         for name in &self.change_log_dirty {
             let Some(table) = self.projection.get(name) else {
@@ -2879,13 +2961,13 @@ impl Plan {
             };
             let was = self.was_rls.get(name).copied().unwrap_or(false);
             if table.rls_enabled {
-                steps.push(SchemaStep::Sql(enable_rls_sql(
-                    dialect,
-                    &self.projection,
-                    table,
-                )?));
+                steps.push(SchemaStep::Sql(sc_query::TrustedSql::composed(
+                    enable_rls_sql(dialect, &self.projection, table)?,
+                )));
             } else if was {
-                steps.push(SchemaStep::Sql(disable_rls_sql(dialect, name)));
+                steps.push(SchemaStep::Sql(sc_query::TrustedSql::composed(
+                    disable_rls_sql(dialect, name),
+                )));
                 self.applied.notes.push(format!(
                     "row-level security is no longer enforced on `{name}`: its policies \
                      were dropped, and the database now returns every row of it to any \
@@ -2907,16 +2989,21 @@ impl Plan {
                     ChangeLogFeature::History
                 };
                 let pk = sc_catalog::change_log_key(catalog, table, feature)?;
-                steps.push(SchemaStep::Sql(sc_catalog::enable_change_log_sql(
-                    dialect, table, &pk,
+                steps.push(SchemaStep::Sql(sc_query::TrustedSql::composed(
+                    sc_catalog::enable_change_log_sql(dialect, table, &pk),
                 )));
             } else if self.was_logged.contains(name) {
-                steps.push(SchemaStep::Sql(sc_catalog::disable_change_log_sql(
-                    dialect, name,
+                steps.push(SchemaStep::Sql(sc_query::TrustedSql::composed(
+                    sc_catalog::disable_change_log_sql(dialect, name),
                 )));
             }
         }
-        steps.extend(self.change_log_edits.iter().cloned().map(SchemaStep::Sql));
+        steps.extend(
+            self.change_log_edits
+                .iter()
+                .cloned()
+                .map(|sql| SchemaStep::Sql(sc_query::TrustedSql::composed(sql))),
+        );
         Ok(steps)
     }
 }
@@ -3081,7 +3168,7 @@ fn validate_ownership(
     catalog: &Catalog,
     projection: &SchemaProjection,
     table: &Table,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let source = table
         .ownership
         .as_ref()
@@ -3102,7 +3189,7 @@ fn validate_ownership(
                 table.name
             )));
         }
-        return Ok(());
+        return Ok(Vec::new());
     }
     let formula = sc_expr::Formula::parse(&source)
         .map_err(|e| Error::invalid(format!("table `{}`: {e}", table.name)))?;
@@ -3110,6 +3197,13 @@ fn validate_ownership(
     let analysis = formula
         .validate(&shape, &table.name)
         .map_err(|e| Error::invalid(format!("table `{}`: {e}", table.name)))?;
+    // `_request` only as `column === _request.key` on a unique column
+    // (TODO-type-hardening H7.5); what is merely unwise is a warning.
+    let warnings = sc_expr::check_request_uses(&formula, &shape, &table.name)?
+        .warnings
+        .into_iter()
+        .map(|w| format!("table `{}`: {w}", table.name))
+        .collect::<Vec<_>>();
     // An **ownership** formula may not call a module function at all, hoistable
     // or not (§4b). `JsEvaluator`'s contract is that `Err` is deny, so a rule
     // calling `geocode_lat` turns a Nominatim outage into "nobody may read
@@ -3137,7 +3231,7 @@ fn validate_ownership(
         )));
     }
     if !table.rls_enabled {
-        return Ok(());
+        return Ok(warnings);
     }
     if !catalog.primary_info().capabilities().row_level_security {
         return Err(Error::invalid(
@@ -3167,7 +3261,24 @@ fn validate_ownership(
             )));
         }
     }
-    Ok(())
+    // A formula that reads `old` has its proposed-row check in a trigger over
+    // `NEW` and `OLD` (TODO-type-hardening H7.4), which must translate too.
+    if analysis.uses(sc_expr::Ambient::Old)
+        && let Err(e) = sc_expr::translate_update_check(
+            &formula,
+            &sc_expr::Env::new(&env).with_calc(&calc),
+            &shape,
+            &table.name,
+            "new",
+            "old",
+        )
+    {
+        return Err(Error::invalid(format!(
+            "table `{}`: cannot enable row-level security: {e}",
+            table.name
+        )));
+    }
+    Ok(warnings)
 }
 
 /// Validate a field's default-value expression against a projected schema: it
@@ -3192,9 +3303,14 @@ fn validate_default_expression(
     }
     let formula = sc_expr::Formula::parse(expression)
         .map_err(|e| Error::invalid(format!("default value of `{table}.{name}`: {e}")))?;
-    formula
+    let analysis = formula
         .validate(shape, table)
         .map_err(|e| Error::invalid(format!("default value of `{table}.{name}`: {e}")))?;
+    if analysis.uses(sc_expr::Ambient::Old) || analysis.uses(sc_expr::Ambient::Request) {
+        return Err(Error::invalid(format!(
+            "default value of `{table}.{name}`: a default cannot use `old` or `_request`"
+        )));
+    }
     Ok(())
 }
 
@@ -3309,10 +3425,14 @@ fn validate_calc_expression(
     let analysis = formula
         .validate(shape, table)
         .map_err(|e| Error::invalid(format!("calculated field `{table}.{field}`: {e}")))?;
-    if analysis.uses_caller() || !analysis.flags.is_empty() {
+    if analysis.uses_caller()
+        || !analysis.flags.is_empty()
+        || analysis.uses(sc_expr::Ambient::Old)
+        || analysis.uses(sc_expr::Ambient::Request)
+    {
         return Err(Error::invalid(format!(
             "calculated field `{table}.{field}`: a calculated field cannot use `user`, \
-             `session` or the operation flags"
+             `session`, `old`, `_request` or the operation flags"
         )));
     }
     Ok(analysis)
@@ -3575,25 +3695,12 @@ fn vector_storage(name: &str, given: u32, attributes: &Attrs) -> Result<BasicTyp
 /// TypeScript, in REST paths and in a model's tool arguments, and a name that
 /// needs quoting in one of those is a bug waiting somewhere else.
 pub(crate) fn check_identifier(name: &str, what: &str) -> Result<()> {
-    if name.is_empty() {
-        return Err(Error::invalid(format!("a {what} needs a name")));
-    }
-    if name.len() > 63 {
-        return Err(Error::invalid(format!(
-            "{what} name `{name}` is longer than the 63 characters a database identifier allows"
-        )));
-    }
-    let mut chars = name.chars();
-    let first = chars.next().unwrap_or_default();
-    if !(first.is_ascii_alphabetic() || first == '_')
-        || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
-        return Err(Error::invalid(format!(
-            "{what} name `{name}` must start with a letter or underscore and contain \
-             only letters, digits and underscores"
-        )));
-    }
-    Ok(())
+    // The one rule for a name this program is about to create
+    // ([`sc_query::Ident::new`], security review 2026-11 §7), with the
+    // sentences this check has always given.
+    sc_query::Ident::new(name)
+        .map(drop)
+        .map_err(|e| Error::invalid(e.sentence(what)))
 }
 
 /// Refuse what a [`Secret`](DataFieldKind::Secret) field cannot be: a key, unique, a

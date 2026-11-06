@@ -15,7 +15,10 @@
 //! number of isolates. Two. The other 498 waited for a thread and died at the
 //! clock. What is asserted here is therefore not throughput but **arithmetic**:
 //! 500 > 2, and every one of the 500 was served anyway.
-
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashMap;

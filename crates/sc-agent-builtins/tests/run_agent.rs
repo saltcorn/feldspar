@@ -17,7 +17,10 @@
 //!   a prompt naming something that is not in the event's scope, and an agent
 //!   deleted after the trigger was saved, which leaves the trigger out of the
 //!   live set with a reason instead of failing when a row is inserted.
-
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::common;

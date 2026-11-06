@@ -73,6 +73,18 @@ pub const COL_ATTRIBUTES: &str = "attributes";
 /// databases through the additive bootstrap (`Catalog::bootstrap_table`).
 pub const COL_LAST_RUN_AT: &str = "last_run_at";
 
+/// The hash of the configuration a person approved this trigger to run as
+/// system for (TODO-type-hardening H8.10), or NULL. Like
+/// [`last_run_at`](COL_LAST_RUN_AT) it is never written by [`save_trigger`]: only
+/// [`approve_system_trigger`] and [`clear_system_approval`] write the three
+/// approval columns, so an edit cannot carry an approval with it. Nullable and
+/// additive, so the bootstrap adds them.
+pub const COL_SYSTEM_APPROVED_HASH: &str = "system_approved_hash";
+/// Who approved it: the person's user id, or NULL for the operator.
+pub const COL_SYSTEM_APPROVED_BY: &str = "system_approved_by";
+/// When it was approved.
+pub const COL_SYSTEM_APPROVED_AT: &str = "system_approved_at";
+
 /// The fields of the `_fd_triggers` table, in declaration order.
 ///
 /// `name` carries the `UNIQUE` constraint for the same reason an application's
@@ -104,6 +116,11 @@ fn trigger_fields() -> Vec<DataField> {
         // Nullable, and necessarily so: it is reconciled onto tables that
         // already have rows, and "never run" is its honest value for those.
         DataField::plain(COL_LAST_RUN_AT, TypeRef::Basic(BasicType::Timestamp)),
+        // A person's approval to run as system, all three nullable
+        // (TODO-type-hardening H8.10).
+        DataField::plain(COL_SYSTEM_APPROVED_HASH, text()),
+        DataField::plain(COL_SYSTEM_APPROVED_BY, uuid()),
+        DataField::plain(COL_SYSTEM_APPROVED_AT, TypeRef::Basic(BasicType::Timestamp)),
         // When it was last saved (`sc_catalog::edited`): bookkeeping for the
         // entities list, written by every save and read by nothing else.
         sc_catalog::updated_at_field(),
@@ -195,6 +212,84 @@ pub async fn record_trigger_run(catalog: &Catalog, id: TriggerId, at: DateTime<U
             COL_LAST_RUN_AT.to_owned(),
             Expr::Lit(Value::Timestamp(at)),
         )],
+    )
+    .filter(Expr::col(COL_ID).eq(Expr::lit(id.0)));
+    run(catalog, Statement::from(update)).await
+}
+
+/// Record a person's approval of trigger `id` to run as system, for the
+/// configuration whose hash is `hash` (TODO-type-hardening H8.10, §7.3a).
+///
+/// Only a person approves: `editor` must be a person in an admin session or the
+/// operator at the CLI. An agent, an MCP client or a code body that sets
+/// [`ATTR_RUNS_AS_SYSTEM`](crate::ATTR_RUNS_AS_SYSTEM) leaves a pending request,
+/// and is refused here.
+pub async fn approve_system_trigger(
+    catalog: &Catalog,
+    editor: &sc_catalog::Editor,
+    id: TriggerId,
+    hash: &str,
+) -> Result<()> {
+    if !editor.is_person() {
+        return Err(Error::auth(
+            "only a person approves a trigger to run as system: an administrator in the admin \
+             UI, or the operator with the CLI",
+        ));
+    }
+    write_approval(
+        catalog,
+        id,
+        Value::Text(hash.to_owned()),
+        editor.person_id().map_or(Value::Null, Value::Uuid),
+        Value::Timestamp(Utc::now()),
+    )
+    .await
+}
+
+/// Put back an approval a backup carried, as it was — hash, approver and time
+/// — for a restore a **person** makes (TODO-type-hardening H8.10). A restore an
+/// agent starts drops approvals instead, leaving the request pending.
+pub async fn restore_system_approval(
+    catalog: &Catalog,
+    editor: &sc_catalog::Editor,
+    id: TriggerId,
+    approval: &crate::SystemApproval,
+) -> Result<()> {
+    if !editor.is_person() {
+        return Err(Error::auth(
+            "only a person's restore keeps a trigger's approval to run as system",
+        ));
+    }
+    write_approval(
+        catalog,
+        id,
+        Value::Text(approval.hash.clone()),
+        approval.by.map_or(Value::Null, Value::Uuid),
+        Value::Timestamp(approval.at),
+    )
+    .await
+}
+
+/// Forget trigger `id`'s approval to run as system, if it has one.
+pub async fn clear_system_approval(catalog: &Catalog, id: TriggerId) -> Result<()> {
+    write_approval(catalog, id, Value::Null, Value::Null, Value::Null).await
+}
+
+/// Write the three approval columns, and nothing else.
+async fn write_approval(
+    catalog: &Catalog,
+    id: TriggerId,
+    hash: Value,
+    by: Value,
+    at: Value,
+) -> Result<()> {
+    let update = sc_query::Update::new(
+        TRIGGERS_TABLE,
+        vec![
+            Assignment::new(COL_SYSTEM_APPROVED_HASH.to_owned(), Expr::Lit(hash)),
+            Assignment::new(COL_SYSTEM_APPROVED_BY.to_owned(), Expr::Lit(by)),
+            Assignment::new(COL_SYSTEM_APPROVED_AT.to_owned(), Expr::Lit(at)),
+        ],
     )
     .filter(Expr::col(COL_ID).eq(Expr::lit(id.0)));
     run(catalog, Statement::from(update)).await
@@ -370,8 +465,32 @@ fn trigger_from_row(row: &Row) -> Result<Trigger> {
         body,
         min_role,
         attributes: object(row, COL_ATTRIBUTES)?,
+        system_approval: system_approval(row)?,
         last_run_at: last_run_at(row)?,
     })
+}
+
+/// The approval to run as system: present when its hash is, and absent for a
+/// NULL or for a column the bootstrap has not added yet.
+fn system_approval(row: &Row) -> Result<Option<crate::SystemApproval>> {
+    let hash = match row.get(COL_SYSTEM_APPROVED_HASH) {
+        Some(Value::Text(t)) if !t.is_empty() => t.clone(),
+        Some(Value::Text(_) | Value::Null) | None => return Ok(None),
+        other => return Err(bad_column(COL_SYSTEM_APPROVED_HASH, "text", other)),
+    };
+    let by = match row.get(COL_SYSTEM_APPROVED_BY) {
+        Some(Value::Uuid(u)) => Some(*u),
+        Some(Value::Null) | None => None,
+        other => return Err(bad_column(COL_SYSTEM_APPROVED_BY, "a uuid", other)),
+    };
+    let at = match row.get(COL_SYSTEM_APPROVED_AT) {
+        Some(Value::Timestamp(t)) => *t,
+        // An approval with no time is still an approval; it reads as now
+        // rather than being dropped.
+        Some(Value::Null) | None => Utc::now(),
+        other => return Err(bad_column(COL_SYSTEM_APPROVED_AT, "a timestamp", other)),
+    };
+    Ok(Some(crate::SystemApproval { hash, by, at }))
 }
 
 /// The last-run instant: NULL, or a column the additive bootstrap has not added
@@ -488,14 +607,24 @@ mod tests {
         assert_eq!(trigger_columns().len(), trigger_values(&t).len());
         // Every declared field is a written column **except** `last_run_at`,
         // which only the scheduler writes — so an admin's save cannot silently
-        // claim a scheduled trigger ran, or that it never did.
+        // claim a scheduled trigger ran, or that it never did — and the three
+        // approval columns, which only a person's approval writes, so an edit
+        // cannot carry an approval to run as system (TODO-type-hardening H8.10).
         let written: Vec<String> = trigger_columns();
         let declared: Vec<String> = trigger_fields()
             .iter()
             .map(|f| f.base.name.clone())
             .collect();
-        assert_eq!(written.len() + 1, declared.len());
-        assert!(!written.contains(&COL_LAST_RUN_AT.to_owned()));
+        let unwritten = [
+            COL_LAST_RUN_AT,
+            COL_SYSTEM_APPROVED_HASH,
+            COL_SYSTEM_APPROVED_BY,
+            COL_SYSTEM_APPROVED_AT,
+        ];
+        assert_eq!(written.len() + unwritten.len(), declared.len());
+        for column in unwritten {
+            assert!(!written.contains(&column.to_owned()), "{column} is written");
+        }
         for column in &written {
             assert!(declared.contains(column), "{column} is not a column");
         }

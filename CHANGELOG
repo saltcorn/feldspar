@@ -2,6 +2,987 @@
 
 Changes in reverse chronological order.
 
+## Security hardening H8: RLS as a hard boundary
+
+The eighth part of `docs/SECURITY_REVIEW_2026-11.md` (TECHNICAL_DESIGN §7.3a;
+TODO-type-hardening H8): on a table with row-level security nothing elevates — no `asAdmin()`,
+no implicit admin authority, no forged caller context — and only a person changes its access
+rules or approves a trigger to run as system.
+
+**Behaviour change, on purpose.** On an instance that combines RLS tables with code that
+elevates: a trigger's or code body's default admin authority now sees, on an RLS table, what its
+cause sees; and an explicit `asAdmin()` over an RLS table is an error. Tables without RLS are
+unchanged. There is no setting to restore the old behaviour (§7.3a, "Compatibility").
+
+- **RLS takes the cause's authority** (H8.1).
+  - `sc_catalog::Cause` (a caller's role and user, or the system) is carried by every
+    `Principal` (`Principal::cause`). `Principal::elevated(&cause, reason)` is admin authority in
+    the cause's name that keeps the cause; it replaces `AdminPrincipal::vouched` with
+    `TRIGGER_ACTION_RULE` (`ActionContext::scoped`, the trigger default and the built-in row
+    actions) and with `CODE_ADMIN_RULE` (the code host's `db`, `fs` and `trigger`, and a file a
+    body serves as admin). Elevating an elevated principal does not stack, and
+    `Principal::capped_at` (an application's maximum role) caps the cause too.
+  - `set_caller_context` (and a shared transaction's re-apply check) writes
+    `Principal::policy_role` / `policy_user` to `sc.role` / `sc.user`: an elevated principal's
+    cause's, anyone else's own. The row layer still checks the elevated role, so tables without
+    RLS are read and written as before.
+  - `Event::caused_by` records the policy role and user, so a cascade started by a user stays
+    that user's at every level. `Event::system` (new, `Event::by_system`) marks an event with no
+    human cause — `Event::startup`, `Event::stream`, a run or a write at `Authority::System` (the
+    scheduler's) — and `ActionContext::caller` gives its caller a system cause
+    (`Principal::with_system_cause(NO_HUMAN_CAUSE)`), so a scheduled trigger's admin authority is
+    the system's on RLS tables (H8.7); `asUser()` there is still the public role. A workflow run
+    keeps the flag (`StoredEvent::system`, absent in older runs). A stream element's triggers are
+    treated as scheduled ones: the subscription is configuration, and nobody sent the element.
+  - Code hosts keep the caller they are handed (`TableHost`, `FileStoreHost`,
+    `TriggerRunHost::for_caller` clone it) so its cause reaches the elevation.
+  - Inventory: `Principal::elevated(` and `with_system_cause(` are makers checked by
+    `admin_proofs_are_in_the_inventory`; `NO_HUMAN_CAUSE` is listed in
+    `docs/SECURITY_REVIEW_2026-10.md`.
+  - Tests (`sc-action-builtins` `rls_cause.rs`, real Postgres policies and V8): a code action run
+    by a role-80 user reads only that user's rows from an RLS table while an admin's run reads
+    all of them; a scheduled trigger (the scheduler's `Authority::system` call) reads all of
+    them; a three-trigger cascade started by a user on a `spawn_scoped` task reads only that
+    user's rows at its last step; and the value type (no stacking, the capped cause).
+  - Existing tests that pinned the old behaviour now pin the new one: `code_host_as_user.rs`
+    `a_delegated_read_of_an_rls_table_sees_what_the_policies_allow` and `code_host_sql.rs`
+    `a_delegated_statement_runs_where_the_policies_can_see_it` /
+    `both_spellings_of_delegation_reach_the_same_statement` (a body's default authority over an
+    RLS table sees its caller's rows; an administrator's run sees all of them).
+- **`asAdmin()` on an RLS table, and named users** (H8.2).
+  - An explicit `asAdmin()` over a table with RLS is refused, naming the table and saying to use
+    `asUser(id)` instead: `db` reads, writes and aggregates and `db.x.history(…)`
+    (`TableHost::actor_on`), `trigger(name).asAdmin()` when the trigger's table has RLS
+    (`TriggerRunHost`), and a model's `writePosterior` into an RLS table. A body's *default*
+    authority is not refused; it is the elevation of H8.1. A view's host (`viewer_only`) maps
+    `asAdmin()` to the viewer, as before, and is not refused. `fs` reaches no table, so it is
+    unchanged; `db.sql()` names no table to refuse and runs at the cause's settings (H8.3
+    checks its text).
+  - Row history over an RLS table, read at a body's default admin authority, is read as the
+    cause (`TableHost::as_cause_on`): the change log is past the table's policies.
+  - `forUser` / `{ "user": id }` (`Authority::Named`) on `db` and `trigger(…)` goes through
+    `Principal::narrowed`, which refuses a named user with more authority than the cause, on
+    every table: the system or an administrator may name anyone; anyone else only themselves
+    (`Cause::admits`). `load_named_user` no longer stands alone.
+  - Tests: `sc-api` `code_host_rls_boundary.rs` — `asAdmin()` refused for a role-80 caller, an
+    administrator and a scheduled trigger alike, on a read and a write, while the default reads
+    the cause's rows and `asAdmin()` over a table without RLS still works; a role-80 caller
+    naming the administrator (on tables with and without RLS) or another user is refused, naming
+    herself is her view, an administrator may name anyone. `sc-action-builtins` `rls_cause.rs`
+    `as_admin_on_an_rls_table_is_refused_by_every_surface_of_a_body` (`db.asAdmin()`,
+    `db.books.asAdmin()`, `trigger(…).asAdmin()`, through V8).
+  - `sc-api` `v1_table_writes.rs`: the v1 helper's host is caused by an administrator, as its
+    comment always said, since a host with no caller is the public role and may name nobody.
+- **Statements cannot forge the caller context** (H8.3).
+  - `sc_query::check_admin_sql` reads admin-authored SQL with a scanner that knows every way SQL
+    hides text (literals, `E'…'` backslash escapes, dollar quotes, quoted identifiers, nested
+    comments; a `U&` Unicode-escaped name is refused outright) and refuses a statement that calls
+    `set_config`, names `pg_settings`, calls a function that runs SQL text (`query_to_xml` and
+    kin, `dblink`), is a `SET`, `RESET` or `DO`, creates, alters or drops a function or a
+    procedure, or alters a role, user, database or the system. With H8.5 it also refuses
+    reshaping row-level security (below).
+  - Checked when a custom SQL query is saved (`check_sql`, so `validate_custom_queries` and an
+    application save), again each time it runs (`prepare`: a query stored before the check, or
+    restored, is read there too), and each time a body's `db.sql()` runs (`plan::statement`).
+    **Behaviour change**: a stored custom query holding one of these no longer runs, and an
+    application holding one cannot be saved until it is removed.
+  - Tests: `sc-query` `guard::tests` (the CTE of the TODO, eight spellings of `set_config`,
+    `SET`/`RESET`/`DO`/functions/`ALTER ROLE`, ordinary SQL and text that only mentions the words
+    accepted, every statement read); `sc-api` `code_host_rls_boundary.rs`
+    `db_sql_that_sets_the_caller_context_is_refused_and_runs_nothing` (five forms through the
+    code host, and the policies still hold afterwards) and
+    `a_custom_sql_query_that_sets_the_caller_context_is_refused_on_save`.
+- **Unforgeable caller settings: designed, not built** (H8.4). TECHNICAL_DESIGN §7.3a now
+  describes it: a `NOLOGIN` guard role owning a secret and `SECURITY DEFINER` functions that
+  check a per-transaction HMAC (bound to the transaction id) of the caller settings, which
+  `set_caller_context` would set; policies reading `(SELECT sc_guard.caller_role())` (an
+  InitPlan, once per statement); provisioning by an operator command with a privileged
+  connection; a startup self-check. It is not built because it needs a role the server's own
+  database role cannot create (`CREATEROLE`, which neither this machine's test role nor a typical
+  deployment's has), so it is a deployment decision; H8.3's statement check is the boundary
+  until then.
+- **On an RLS table, only a person changes who may access it** (H8.5).
+  - `sc_catalog::Editor` (`editor.rs`): `Person` (an administrator in a browser session; made only
+    by sc-server's `AdminSession::person`), `Operator` (the CLI; `Operator::at_cli`) or
+    `Delegated` (anything else, and the default). Only the first two give the `RlsTableAccess`
+    that changing an RLS table's access settings, disabling RLS or dropping an RLS table needs.
+    Both makers are inventoried and checked by `admin_proofs_are_in_the_inventory`.
+  - `schema_edit::ApplyOptions::editor` (`ApplyOptions::by(editor)`): an `alter_table` on a table
+    that has RLS now (before the batch) whose `min_role_read`, `min_role_write`,
+    `ownership_formula`, `rls_enabled` or `history_min_role` differs from the stored value, and a
+    `drop_table` of such a table, are refused for a delegated editor with
+    `sc_query::rls_refusal`: "`<table>` has row-level security, so its access rules can only be
+    changed by a person in the admin UI. Tell the user what change you need and why."
+    (`sc_query::PERSON_ONLY`). Enabling RLS, columns, rows, queries and code stay open; a value
+    re-sent unchanged (the admin form's whole-object `PUT`) is not a change.
+    `forget_table_settings` (which drops the policies) takes the editor too.
+  - Who is who: `Admin::editor` is `Person` for a browser session and `Delegated` for an endpoint
+    reached through `Admin::delegated` (the catalog's admin host, an MCP endpoint tool), and the
+    table handlers (`updateTable`, `dropTable`, `deleteTableSettings`) and `clearAll` pass it; the
+    MCP and `admin_copilot` `edit_schema` is `Delegated`; `restore_backup` takes the editor (the
+    CLI's `feldspar restore` is `Operator`, the restore endpoint the session's), so an
+    agent-started partial restore does not change an existing RLS table's access settings (the
+    refusal is in the report). There is no application import or app sync yet (TODO-app-sync is
+    unbuilt); they will take the same editor. `clear_all` is refused whole for a delegated editor
+    when any table has RLS.
+  - Custom SQL and `db.sql()`: H8.3's statement check also refuses `ALTER TABLE … DISABLE | NO
+    FORCE ROW LEVEL SECURITY`, `… DISABLE TRIGGER`, `DROP TRIGGER` and `CREATE | ALTER | DROP
+    POLICY`, with the same reply naming the table, for everyone (a person changes RLS in the
+    admin UI, not from a query).
+  - The `edit_schema` tool's description says it: agents may set access rules and turn RLS on;
+    once on, a table's access rules are a person's; do not ask for RLS to be turned off.
+    TECHNICAL_DESIGN §7.3's "Who may write these rules" is rewritten.
+  - Tests: `sc-server` `mcp_server.rs` `on_an_rls_table_only_a_person_changes_who_may_access_it` —
+    through MCP, enabling RLS succeeds; changing the formula, raising a floor, `rls_enabled:
+    false` and dropping the table are each refused with the reply; a custom query running `ALTER
+    TABLE notes DISABLE ROW LEVEL SECURITY` is refused on save with it; adding a column succeeds;
+    then the same changes, and the drop, succeed through the admin session. `sc-catalog`
+    `editor::tests`; `sc-agent-builtins` `admin_copilot.rs`
+    `enabling_row_level_security_makes_two_callers_read_differently` now shows the agent refused
+    and the operator turning RLS off (with the "no longer enforced" note).
+- **Upgrade report** (H8.6). On the first start of this version (`serve`, before the startup
+  triggers), `sc_server::report_rls_elevation` reads the code and the trigger definitions and
+  lists, in the log and in an admin notice, every place the behaviour change reaches: each
+  trigger a user's event fires whose table has RLS or whose code names an RLS table (its default
+  admin authority there now sees what its cause sees; it may be approved to run as system), and
+  each trigger, custom code query or code library that says `asAdmin()` and names an RLS table
+  (now refused). Scheduled, startup and stream triggers still run as system and are not listed;
+  SQL custom queries run at their caller's settings and are not listed. It is a reading of the
+  text (`db.t`, `.t` after `asAdmin()`, `"t"`), so it errs towards listing. It runs once
+  (`sc_config::RLS_BOUNDARY_REPORTED`), and an instance with no RLS table gets no notice.
+  - Admin notices, new: `sc_config::ADMIN_NOTICES` holds them; `sc_server::{add_notice,
+    list_notices, dismiss_notice}`; the admin API's `listAdminNotices` (`GET
+    /api/admin-notices`) and `dismissAdminNotice` (`DELETE /api/admin-notices/{id}`); the admin
+    UI shows them above every screen until dismissed (`ui/admin/src/AdminNotices.tsx`).
+  - Tests: `sc-server` `mcp_server.rs`
+    `the_upgrade_report_lists_what_elevated_over_an_rls_table_once` (an insert trigger on an RLS
+    table is listed for its default authority and its `asAdmin()`, a daily one and an unrelated
+    one are not; a second run adds nothing; the notice is read and dismissed through the admin
+    API), and `notices::tests`.
+- **Triggers that run as system** (H8.10, §7.3a).
+  - The setting: `sc_action::ATTR_RUNS_AS_SYSTEM` (`Trigger::runs_as_system`,
+    `set_runs_as_system`), sparse in the trigger's attributes; the admin API's trigger body and
+    the MCP `save_trigger` tool take `runs_as_system`. It elevates nothing by itself.
+  - The approval: three nullable columns on `_fd_triggers` (`system_approved_hash`,
+    `system_approved_by`, `system_approved_at`; the bootstrap adds them, no migration), read into
+    `Trigger::system_approval` and never written by `save_trigger`. `Trigger::configuration_hash`
+    is SHA-256 over the event, table, `only_if`, body, action and configuration (the code), and
+    for a workflow the current definition without its version number
+    (`WorkflowEngine::fingerprint`, `sc_workflow::workflow_fingerprint` / `approval_hash`).
+    `Trigger::system_state(hash)` / `TriggerDispatcher::system_state` answer `Off`, `Pending` or
+    `Approved(ApprovedTrigger)`; `sc_catalog::ApprovedTrigger::verified` exists only when the
+    stored hash is the current one, so any change the person did not approve makes it lapse.
+  - Only a person approves: `sc_action::approve_system_trigger(catalog, &Editor, id, hash)`
+    refuses a delegated editor. The admin API's `approveTriggerSystem` /
+    `revokeTriggerSystem` (`POST` / `DELETE /api/triggers/{id}/system-approval`, not MCP tools)
+    and `feldspar trigger approve-system|revoke-system NAME` (it prints what it approves and what
+    approving takes on) are the two ways. An admin session's `updateTrigger` of a trigger that
+    was approved re-approves it for what it now is; anybody else's edit lets it lapse; turning the
+    setting off forgets the approval. An agent's `save_trigger` that leaves it pending answers
+    `system: "pending"` and the note "`<trigger>` will run as system once a person approves it in
+    the admin UI. Until then it runs as the user who caused it."
+  - Running: `Principal::system_for_trigger(&cause, &ApprovedTrigger)` (`SYSTEM_TRIGGER_RULE`)
+    is the only way to build the trigger's elevated principal. Its statements see the system on
+    RLS tables (`policy_role` admin, no `sc.user`), while `user` in the code is the cause's and
+    the events its writes raise are caused by the cause (`Principal::event_role` /
+    `event_user`, now distinct from the policy identity), so elevation does not cascade.
+    `fire_trigger_with` hands an approved trigger's context `with_system_approval`;
+    `ActionContext::admin_principal` is that principal, used by the row actions and, through
+    `TableHost::acting_as` / `FileStoreHost::acting_as`, by a code body's `db` and `fs`. A
+    trigger run directly (`trigger(name).run()`) is elevated only if it is itself approved. A
+    workflow run records the hash it started approved for (`ATTR_SYSTEM`), and its steps run as
+    system while the trigger's approval is still for that hash.
+  - Restores: the backup carries the approval (`trigger_json`'s `system_approval`); a person's
+    restore (`Editor::is_person`) writes it back (`restore_system_approval`), an agent's leaves
+    the request pending.
+  - Admin UI (`Triggers.tsx`, `TriggerForm.tsx`): the list marks "Runs as system" and "Awaiting
+    approval to run as system" (`system_state`); Approve… opens a dialog with the code (or a link
+    to the workflow's steps) and what approving takes on (input the user controls, deliberate
+    disclosure); Revoke withdraws it; the form has the "Run as system" switch and sends it back
+    on every save (the update is a whole-object `PUT`). Strings are translated into the five
+    shipped locales. The inventory (`docs/SECURITY_REVIEW_2026-10.md`) lists
+    `SYSTEM_TRIGGER_RULE` and the CLI's operator; approved triggers are listed by `listTriggers`.
+  - Tests: `sc-action-builtins` `rls_cause.rs`
+    `an_approved_trigger_reads_every_row_and_lapses_when_its_code_changes` — pending, a trigger
+    fired by a role-80 user's insert reads that user's rows at every level and a delegated
+    editor's approval is refused; approved, it reads every row while the trigger its write fires
+    still reads only that user's; after an edit that is not a person's re-approval, it is pending
+    and reads that user's rows again. `sc-server` `mcp_server.rs`
+    `only_a_person_approves_a_trigger_to_run_as_system` — an agent asks and is told it is pending,
+    a person approves in the admin session, a person's edit keeps the approval, the agent's edit
+    makes it lapse, revoking clears it. `backup_api.rs`: a person's restore keeps an approval.
+  - `sc-cli` depends on `sc-workflow` now (the CLI's approval hash), recorded in
+    TECHNICAL_DESIGN §2's crate table; `repo_hygiene.rs` pins §11.3's reworded "The grants cover
+    both halves". `sc-action` `store::tests::columns_and_values_stay_in_step` asserts that the
+    approval columns, like `last_run_at`, are not written by a save.
+- **`asUser(id)` in the code API** (H8.8). `.asUser(id)` — an id or a user row — on `db`, a
+  table, one query, `db.sql()` (through `db.asUser(id).sql(…)`), a store (`fs(s).asUser(id)`), a
+  model and a trigger handle sends the plan's `{ "user": id }` (the prelude's `userAuthority`);
+  `asUser()` with no argument is still the event's caller. The host narrows to the named user
+  with `Principal::narrowed` (H8.2), so it is refused when that user holds more authority than
+  whoever caused the run, and the statement runs at the named user's `sc.role` / `sc.user`. The
+  file host, which refused a named user before, now serves it as a delegated caller on a host of
+  its own for that request; a file a body serves (`response({ file })`) opened `asUser(id)` is
+  served as the request's user, never as the admin. `code_api_js.md` documents RLS's "nothing
+  elevates" and the per-user loop (the nightly reminder); the IDE's code types
+  (`ui/admin/src/codeTypes.ts`) take the optional argument.
+  - **Deviation**: §7.3a has the narrowed principal "keep the cause". It keeps the cause's chain
+    and changeset; its *cause* becomes the named user, since from there the work is theirs (what
+    the policies read, what an event its write raises is caused by). The check against the
+    original cause is made when it is narrowed, which is the only place it is needed.
+  - Tests: `sc-api` `code_host_rls_boundary.rs`
+    `a_scheduled_trigger_reads_one_users_rows_through_as_user` (through V8: the system's view,
+    then one user's by id and by row, and `db.asUser(bob).sql(…)` at bob's settings) and
+    `a_role_80_callers_as_user_of_an_admin_is_refused_on_every_surface` (`db`, `db.sql()`, `fs`;
+    naming herself is allowed).
+- **The `allow_access_changes` grant is retired** (H8.9). Every surface it guarded is open to
+  agents; H8.5 alone limits them, for RLS tables.
+  - `schema_edit::Grants` has three fields (`access_changes` removed). `GRANT_ACCESS_CHANGES` stays
+    as the retired key's name; `FLAG_KEYS` has seven keys; `grants_from_attrs`,
+    `flags_to_attrs` and `token_flags_from_submitted` no longer read or write it. A stored token
+    or `admin_copilot` configuration that carries it keeps loading, ignored:
+    `AgentTrait::retired_settings` (new, default empty; `admin_copilot` names the key) is removed
+    before `validate_trait` checks a configuration against its spec, which would otherwise refuse
+    the unknown key. `mcp::Grant::AccessChanges` stays for endpoint sets that name it, held by
+    everyone, and no endpoint uses it.
+  - Now open: a query's and a stream's `min_role` (`save_api_query`, `edit_streams`), a trigger's
+    `min_role` (`save_trigger`), `update_application`'s `api_tables`, public triggers and
+    signed-out agents (`allow_edit`, as the rest of the section), its `csp` and `access` sections
+    (`allow_edit`). Roles and accounts: `createRole` needs `allow_create`, `setUserDisabled`
+    `allow_edit`, `deleteRole` and `deleteUser` `allow_drop` only; the last enabled admin is still
+    protected by `sc_auth::refuse_last_admin`.
+  - `feldspar mcp-token create` accepts `--allow-access-changes` / `--no-allow-access-changes` with
+    a deprecation warning and stores nothing (`CreateArgs::warnings`); the help no longer lists
+    it. The tool descriptions, the agent skill (`sc-app/src/skill.rs`), the scaffold's CSP note,
+    `admin_copilot`'s form and the admin UI's token checkboxes (`ui/admin/src/mcpTokens.ts`) drop
+    it; the four generated admin clients are regenerated (the token grants' schema). The
+    TECHNICAL_DESIGN mentions in §7.3, §11.3, §13 and §15 are updated.
+  - Tests: `sc-server` `mcp_server.rs` `roles_and_accounts_need_no_access_grant_and_deleting_needs_drop`
+    (a token minted with the old flag off creates a role and disables an account; `deleteUser`
+    and `deleteRole` are refused without `allow_drop` and succeed with it; the last admin holds),
+    the stream and trigger-exposure tests set `min_role` and expose a public trigger without the
+    grant; `sc-agent-builtins` `admin_copilot.rs`
+    `a_configuration_with_the_retired_access_grant_still_loads` (and a typo'd key is still
+    refused), `admin_copilot_apps.rs` (a query's `min_role` and `public`, an application's CSP and
+    a row API with the default grants), `admin_copilot_triggers.rs`; `sc-cli`
+    `the_retired_access_flag_is_accepted_with_a_warning_and_ignored`; `sc-api` grant tests;
+    `ui/admin` `mcpTokens.test.ts`.
+
+## Security hardening H7: ownership formula additions
+
+The seventh part of `docs/SECURITY_REVIEW_2026-11.md` (TECHNICAL_DESIGN §7.3a;
+TODO-type-hardening H7): the ownership formula states the common cases that drove application
+code to `asAdmin()`. No new configuration fields.
+
+- **What the formula already expresses, documented** (H7.1): `docs/tutorial-ownership.md`
+  gains "Step 4b — Three rules that need no code": rows shared with a group (a `Ↄ` aggregation
+  over a `shares` table), append-only tables (both floors admin, `_insert && owner ===
+  user.email`, whose create answers with the key only) and a deny that binds every role but
+  admin (floors admin, `user.role` in the formula). The same three, shorter, are in the agent
+  guidance: `code_api_js.md`'s "Choosing where logic goes" and `save_query`'s "Whose rows it
+  sees" (`sc-app/src/mcp/mod.rs`). Test (`sc-server` `ownership_enforcement.rs`):
+  `an_insert_only_formula_appends_and_answers_with_the_key_only` — a member's create answers
+  `{ "id" }` only, a row in someone else's name is refused, and the member can neither list,
+  update nor delete what they appended.
+- **Time in formulas** (H7.2): `new Date()` and `Date.now()` are one instant per statement,
+  and `new Date(…)`, `.getTime()`, millisecond arithmetic and comparisons translate, so an
+  embargo (`published_at <= new Date()`) and an edit window (`created_at.getTime() > Date.now()
+  - 15*60e3`) are SQL on the runtime path and can be RLS policies.
+  - `sc_query::time`: `instant`, `date_instant`, `epoch_ms`, `from_epoch_ms`, rendered per
+    backend (Postgres casts, `AT TIME ZONE 'UTC'` and `EXTRACT(EPOCH …)`; SQLite `strftime` and
+    `julianday` over its fixed-width UTC text). A calendar date is its UTC midnight.
+  - `sc_expr::FieldKind` on `FieldShape` (`TableShape::typed_field`, `with_kind`), filled by the
+    catalog from each field's SQL type. `Env::with_now`/`Env::now`, and `NOW_GUC` (`sc.now`),
+    which `set_caller_context` sets and `clear_caller_context` empties. Two numeric literals in
+    arithmetic fold into one.
+  - `FormulaCall::now` (a new required field): the evaluator binds it as `__scNow`;
+    `new Date()` renders as `new Date(__scNow)`, `Date.now()` as `__scNow`, and `.getTime()`,
+    `new Date(x)` and comparisons with a constructed `Date` through two frozen helpers that read
+    the ISO text date columns are bound as. **Behaviour change**: on the evaluator, `new
+    Date(null)` is now `null` (it was the 1970 epoch), and `x.getTime()` of a date column's text
+    or of `null` is its milliseconds or `null` (it threw), so both evaluators agree.
+  - The runtime read decides its SQL predicate and every row it evaluates at one instant, and a
+    calculated-field read its projections and after-read fields at another (`CalcPlan::now`).
+  - Tests: `sc-expr` `parity_time.rs` decides an embargo, an edit window, whole milliseconds,
+    `new Date(<ms>)`, equality with a constructed date and a calendar date three ways — the
+    runtime SQL with a bound instant, the RLS SQL under `sc.now`/`sc.user` GUCs (on sessions in
+    two time zones far from UTC), and V8 — and checks that a text column, `new Date(<text>)`,
+    arithmetic on an instant and `new Date(y, m)` are untranslatable; `sc-query`
+    `time::tests` pin both spellings; `sc-access` `time_sqlite.rs` runs an embargo and an edit
+    window on SQLite with no evaluator; `sc-server` `rls_enforcement.rs`
+    `an_embargo_and_an_edit_window_hold_with_rls_and_without` runs both through the app's REST
+    API with RLS on and off.
+- **`old` in an update** (H7.3): an ownership formula compares the proposed row with the stored
+  one — a status that only moves forward, a column nobody may edit.
+  - `SchemaShape::old_row` (`with_old_row`, `declares_ambient_on`, `old_row_on`): the catalog's
+    shape declares `old` as the formula's own previous row, validated against the table's
+    fields. A field called `old` still wins. Calculated fields, row constraints and default
+    values refuse `old`.
+  - Translated, `old.x` is the row's own column in an update's predicate and `null` in every
+    other operation; the evaluator binds `old` to `null` where nothing is bound.
+  - `sc_access::ownership::update_allowed` decides the proposed row with `old` bound to the
+    stored row; the row layer, `write_as` and the REST upload use it. `update_guard` adds to the
+    UPDATE's `WHERE` a pin of every `old.x` the formula read to the value the check saw.
+  - **Deviation from §7.3a**: `old` is the stored row in the existing-row check of an update
+    too, not `null`. With `null`, the design's own transition example refused every update
+    before the proposed row was looked at. TECHNICAL_DESIGN §7.3a says so.
+  - Tests: `sc-server` `ownership_enforcement.rs` `old_decides_how_an_update_may_change_the_row`
+    (draft → submitted allowed, submitted → draft refused, a frozen title, `old` null in a read,
+    `old.titel` refused on save); `sc-expr`
+    `old_is_the_stored_row_in_an_update_and_null_elsewhere`; `sc-catalog` constraint tests
+    (`old` refused in a row constraint).
+- **`old` under RLS** (H7.4): with RLS on, the `UPDATE` policy checks the stored row (`USING`,
+  `WITH CHECK (true)`) and a generated `BEFORE UPDATE` trigger, `sc_owner_update_old`, checks
+  the proposed row with `old` read from `OLD`: its PL/pgSQL function `_fd_owner_old_<table>`
+  (hashed past 63 bytes) evaluates the write floor OR the formula
+  (`sc_expr::translate_update_check`) under the caller GUCs and raises `42501`, which the row
+  layer reports as not found, as for a policy. The function's dollar-quote tag is one the body
+  does not contain. `enable_rls_sql` drops and recreates the pair; `disable_rls_sql` drops it.
+  Enabling RLS requires the trigger's check to translate. Tests: `sc-server`
+  `rls_enforcement.rs` `old_is_enforced_by_a_trigger_under_rls` (a status transition and a
+  frozen title with RLS on and off, a `"$fd$"` literal in the formula, the trigger and function
+  gone when the formula stops reading `old`); `sc-catalog`
+  `rls::tests::a_long_table_name_gets_its_own_trigger_function`.
+
+- **Presented values, `_request`** (H7.5): an ownership formula can grant the row whose secret
+  the caller presents, `_read && token === _request.token`, and nothing else.
+  - `sc_expr::Ambient::Request` (`_request`); `SchemaShape::request` (`with_request`,
+    `request_on`), set on the catalog's shape. Calculated fields, row constraints and defaults
+    refuse it.
+  - `sc_expr::RequestValues`: keys `[a-z][a-z0-9_]{0,31}`, at most 8, an empty value absent,
+    `Debug` without values. `request_guc(key)` names `sc.request.<key>`.
+  - Translated, `column === _request.key` is a plain `=` against the column as text: an absent
+    value matches nothing, not even a null column. The evaluator binds `_request` (`{}` when
+    nothing was presented).
+  - `sc_expr::check_request_uses`: `_request.<key>` only as one side of `===` with a column of
+    the table or one a Ⱶ path reaches; the column unique, not the primary key, not an integer
+    or identity. Everything else is refused with its reason (`!==`, `==`, `user`, `old`, a
+    literal, another presented value, a condition, arithmetic, `_request` itself, a computed
+    key, more than 8 keys). A column without a random default (`gen_random_uuid()`) is a
+    warning, which the schema editor returns among its notes. `Catalog::reload` runs the check
+    too and clears a formula that fails it. `FieldShape` gains `unique`, `primary_key`,
+    `identity` and `random_default`, filled by the catalog.
+  - `sc_catalog::Origin::request` and `Principal::request` carry the values in memory;
+    `Event::origin` leaves them out. `sc-access` binds them for every ownership check.
+  - `set_caller_context` sets `sc.request.<key>` for every key any loaded formula reads, empty
+    when not presented; `clear_caller_context` empties them.
+  - **Fix**: `SharedTx` re-applies the caller GUCs when the guest session or the presented
+    values differ from the last writer's, not only the role, user and changeset. Two anonymous
+    writers with different guest sessions on one transaction used to share the first one's
+    `sc.session`.
+  - Tests: `sc-expr` `request::tests` (the values' rules; every accepted and refused shape) and
+    `parity_request.rs` (runtime SQL, RLS SQL under `sc.request.*` and V8 agree, on a text and a
+    UUID column, absent and empty values, `!`); `sc-catalog` `rls_policies.rs`
+    `a_presented_value_reaches_the_policy_and_does_not_carry_over` (through a policy, across two
+    writers on one shared transaction, and a stored formula over a non-unique column cleared on
+    load).
+
+- **How a caller presents a value** (H7.6):
+  - **HTTP**: `X-Sc-Request-<key>` headers on any app request (`sc-server` `router.rs`
+    `presented_values`); a bad name, a non-text value or more than 8 is a `400`. A response to a
+    request that presented a value is `Cache-Control: private, no-store`.
+  - **Rate limit**: a presenting request counts against `presented:<ip>` at
+    `PRESENTED_VALUES_RATE`, 120 a minute, automatically; past it a `429` with `Retry-After`.
+  - **Generated client**: `ClientOptions.request` (sent as headers on every call, through the new
+    runtime `presenting` wrapper) and `LiveOptions.request` (a `present` frame each time the
+    socket opens). The four admin clients are regenerated (`emit_admin_client`); they gain the
+    import and the option, nothing else.
+  - **Code API**: `db.<table>.withRequest({ … })`, sent as the plan's new `request` field; the
+    host runs the call in an origin presenting exactly those values.
+  - **GraphQL**: a `request: JSON` argument on every root query and mutation field
+    (`resolve::presenting`). The schema gains the argument (`snapshots/*.graphql` updated);
+    nothing else changes.
+  - **Live**: a `present` client frame (`sc_live::ClientFrame::Present`); `CallerCell` and
+    `Connection` carry the values (`set_request`, `request`, `origin`), the socket's loop decides
+    every event inside an origin with them, and the `table_changes` fan-out asks each verdict with
+    them.
+  - **Agents**: `query_table` offers a `request` argument with the keys the table's formula
+    reads, and presents what the model passes; `call_api`'s `headers` already reach the router.
+    The administration MCP server's callers are administrators, whose floors decide before any
+    formula, so its tools take no such argument.
+  - The share example in `code_api_js.md` no longer uses `asAdmin()`: a share link is the
+    formula plus `createClient({ request: { token } })`, and a password-protected share is a
+    query reading the row with `withRequest`. `docs/tutorial-ownership.md` has a "share link"
+    rule, and `save_api_query`'s guidance points at it.
+  - Tests: `sc-server` `ownership_enforcement.rs`
+    `a_presented_token_reaches_its_row_and_no_other` (the header, with RLS off and on: the row
+    with the token, nothing without, a wrong token, a non-UUID, `private, no-store`, a `400` for a
+    bad name and for nine values, a non-unique column refused on save) and `router::tests::
+    presented_values_come_from_headers_and_are_rate_limited`; `sc-api` `code_host_as_user.rs`
+    `with_request_presents_a_token_to_the_ownership_formula` (through the real code runtime, and
+    not inherited from the request's origin) and `graphql_authz.rs`
+    `a_root_fields_request_argument_presents_a_token` (RLS off and on, `_by_pk`, a non-string
+    value refused); `sc-live` `readers.rs`
+    `each_connection_is_sent_the_row_its_presented_code_reaches` and the `present` frame in the
+    protocol tests; `sc-agent-builtins` `query_table.rs`
+    `the_request_argument_presents_what_the_formula_reads`.
+
+## Security hardening H6: typed endpoints and identifiers
+
+The sixth part of `docs/SECURITY_REVIEW_2026-11.md` (§7, §8; area reports D2–D7 and E4;
+TODO-type-hardening H6): who may call an endpoint is its handler id's type, every route outside
+the typed endpoint set is listed with how it authenticates, DDL names go through an `Ident`, and
+a redirect target and a download name are each made by one rule. No change to the wire format,
+the generated clients or stored data; no migration.
+
+- **Endpoints declare authority in their type** (H6.1, E4):
+  - `sc_api::Auth`, a sealed trait with four markers — `Anyone` (`Public`), `SignedIn`
+    (`LoggedIn`), `AdminOnly` and `AnalyticsUi` (both `admin()`) — and `HandlerId<A>`, a typed
+    handler name. `sc_api::handler_ids` holds one `HandlerId` for each of the 319 built-in
+    handlers (the 315 typed endpoints' and the four the upload, download and backup routes
+    dispatch to): the one list to read for every handler's authority.
+  - `Endpoint::new(HandlerId<A>, method, path)` takes its name and its `AuthRequirement` from the
+    id. The `LoggedIn` default and the `.auth()` setter are gone, so an endpoint cannot be
+    declared without saying who may call it. An endpoint an application's API provider projects
+    from configuration (REST tables at their floors, custom queries at their `min_role`, sign-up,
+    invite, GraphQL) states its requirement as data with `Endpoint::projected(name, method, path,
+    auth)`; the provider enforces it, as before.
+  - `sc-server`'s `HandlerRegistry::handle(id, handler)` replaces `register`,
+    `register_signed_in`, `register_admin` and `register_analytics`: the gate, and what the
+    handler is handed (`Caller`, `AuthenticatedUser`, `Admin`, `AnalyticsCaller`), come from the
+    id's type through the new `Gated` trait. An endpoint and its handler share one const, so they
+    cannot disagree; `check_gates` now requires the gate's requirement to *equal* the endpoint's
+    (`Gate::requirement`), which still refuses at startup a handler registered under a second id
+    of the same name and another type. Every existing registration already matched its
+    declaration; every endpoint keeps the requirement it had.
+  - The raw routes: `sc-server`'s `raw_routes::RAW_ROUTES` lists the 34 routes outside the
+    endpoint set with their methods and a `RouteAuth` (`AdminSession`, `McpToken`,
+    `TerminalToken`, `BuildHostToken`, `OwnSession`, `SessionOrChallenge`, `Challenge`,
+    `OAuthFlow`, `HandoffToken`, `ModuleVerifies`, `ScopedSession`, `HostSession`, `Public`),
+    building on H2.1's scoped session extractors. The router mounts exactly that list
+    (`raw_routes::mount`); `sc_server::raw_routes()` reads it. Tests
+    (`tests/raw_routes.rs`): `every_raw_route_is_registered_with_how_it_authenticates` (the list
+    against a pinned copy, so a new route fails until it is classified),
+    `no_route_is_mounted_outside_the_registry` (no `.route(` with a path anywhere else in
+    `src/`), and `a_route_that_needs_a_caller_refuses_an_anonymous_one` (against a real server:
+    every `AdminSession`, token and own-session route answers an anonymous request 401/403, and
+    every route answers 405 to a method it does not list). Also
+    `handler_ids::tests::the_admin_set_is_admin_but_for_the_sign_in_plumbing`;
+    `router::an_admin_endpoint_cannot_be_served_by_an_open_handler` now registers the open
+    handler under a `HandlerId<Anyone>`.
+  - Deviation from the review's sketch: `Endpoint` stays one (serialized, runtime-registered)
+    struct rather than `Endpoint<A>`; the type parameter is on its constructor and on the
+    `HandlerId`, which is where a declaration and its handler meet.
+- **Identifiers** (H6.2, D2–D5):
+  - `sc_query::Ident`: `Ident::new` for a name this program creates (non-empty, at most 63
+    bytes, `[A-Za-z_][A-Za-z0-9_]*` — the schema editor's rule; `check_identifier` now calls it,
+    with the same messages), `Ident::existing` for a name a database already has or stored data
+    carries (anything but a NUL: quotes, spaces, `$`, non-ASCII and, on SQLite, any length are
+    kept), no `Display`. It serializes as its text and deserializes through `existing`.
+    `SqlDialect::quote(&Ident) -> QuotedIdent` is the typed way into SQL text.
+  - Both DDL renderers (`sc-db-postgres`, `sc-db-sqlite`) quote every name through
+    `Ident::existing` and `quote`: a quote is doubled as before, a NUL is refused rather than
+    sent. The catalog's table map is keyed by `Ident`; a stored provided-table row whose name
+    has a NUL is reported as a provided-table issue instead of loaded (no database can hold one).
+  - `SchemaStep::Sql` carries a `TrustedSql` (was `String`), like `Statement::Raw`: the
+    places that build one say `TrustedSql::composed` (D2). New `TrustedSql::do_block(body)` wraps
+    PL/pgSQL in a dollar-quote tag that does not occur in the body (`$sc$`, else `$sc1$`, …), so
+    a name with `$sc$` in it cannot end the block (D4); the Postgres renderer's blocks and the
+    CSV/geo import's sequence advance use it. That sequence advance also quoted a table name
+    twice (`%I` over an already-doubled `"`), wrong for a name with a quote in it; it now passes
+    the quoted name as `%s` (D4).
+  - **Primary-key names** (D3). `Ident::derived(label)` is Postgres' `makeObjectName`: the
+    *table name* cut at a character boundary so `<name>_pkey` fits 63 bytes. `SetPrimaryKey`
+    used to drop `"<table>_pkey"` by name, which for a 59–63 byte table name (or a key Postgres
+    numbered, `<table>_pkey1`, because the name was taken, or a key left named after a table that
+    was renamed) is not the key's name, so the old key stayed and `ADD PRIMARY KEY` failed with
+    "multiple primary keys". It now drops the key found by `contype = 'p'`, whatever it is
+    called, and lets Postgres name the new one. `RenameTable` renames the key to the derived
+    name of the new table when it still has a name Postgres gave it after the old one (the
+    derived name, or the first 63 bytes of `<from>_pkey` an earlier rename left), and leaves it
+    alone when that name is taken. Existing databases need nothing: their keys are found by
+    type, and their names are kept. Tests against a real Postgres (`sc-db-postgres`'s
+    `pkey_names`): `the_derived_key_name_is_the_one_postgres_gives` (short, 58, 59 and 63 bytes,
+    a two-byte character at the cut), `the_key_of_a_long_named_table_can_be_replaced`,
+    `a_rename_takes_the_key_name_along_whatever_its_length` (including a key an earlier version
+    left at 63 bytes of `<from>_pkey`), `a_numbered_key_and_a_taken_name_are_handled`,
+    `a_name_with_quotes_and_a_dollar_tag_is_quoted`; unit tests in `ident.rs` and both
+    renderers (`names_are_quoted_and_a_dollar_tag_in_one_cannot_end_the_block`,
+    `the_key_is_found_by_what_it_is_not_by_a_computed_name`,
+    `names_are_quoted_through_ident_and_a_nul_is_refused`).
+  - Not done here: `SchemaChange`'s and `ColumnDef`'s name fields, the ≈550 `table: &str` /
+    column `&str` parameters and the 163 `quote_ident(&str)` calls outside the DDL renderers stay
+    `String`/`&str` (the first is part of stored and serialized change sets; the rest is the
+    follow-on the review describes). `IndexOn::Expression` and `ColumnGenerator::Default` still
+    carry `String` fragments.
+- **One redirect target and one download name** (H6.3, D6, D7): a new layer-0 crate, `sc-http`.
+  - `RedirectTarget::parse` / `or_root`: a path on this host — one leading `/` not followed by
+    `/` or `\`, no `\` anywhere, no control character — percent-encoded the way Express's
+    `res.redirect` encodes a `Location`; `with_param` adds a query parameter before the fragment;
+    it converts to a `HeaderValue` that cannot fail. It replaces `sc-server`'s `safe_return_to`
+    rule (the identity-provider flow's and the second factor's `return_to`, now typed in the
+    flow state), `sc-module`'s `is_local_path` (`ConsentFlow::return_to` is a `RedirectTarget`)
+    and `sc-viewpattern`'s `safe_redirect` rule. Behaviour: a backslash later in a `return_to`
+    is now refused too (it went to `/`, or the consent request is refused, as for any other
+    off-site target), what is kept is encoded, and a v1 `redirect` with surrounding whitespace is
+    trimmed rather than sent to `/`. Tests: `sc-http`'s
+    `an_off_site_target_is_refused` (`//evil`, `/\evil`, `https:`, `javascript:`, a tab, CR/LF,
+    NUL), `what_is_kept_is_encoded_for_the_header`, `a_param_goes_before_the_fragment`;
+    `consent::tests::return_to_is_a_path_here`.
+  - `DownloadName::sanitised`: CR, LF, other control characters and `/` `\` become `_`, an empty
+    name is `download`; `disposition` renders RFC 6266 with an RFC 5987 `filename*` (the
+    rendering `file_response` already had, unchanged for an ordinary name). A backup, posterior
+    or tile `Download` carries an `Option<DownloadName>`, so the router's
+    `Content-Disposition` is `attachment; filename="…"; filename*=UTF-8''…` and can carry no
+    quote or `;` of the name's (was `attachment; filename="{name}"`; the admin and Analytics
+    SPAs read the `filename="…"` part, which comes first as before). Tests: `sc-http`'s
+    `a_download_name_cannot_break_out_of_the_header`, `a_download_name_has_no_path`,
+    `an_ordinary_name_renders_as_it_did`; `file_response::tests::a_hostile_name_is_sanitised_in_the_header`.
+- `docs/TECHNICAL_DESIGN.md` §2 lists `sc-http` in the crate tree, the diagram and the
+  dependency table.
+
+## Security hardening H5: bounded input and robustness
+
+The fifth part of `docs/SECURITY_REVIEW_2026-11.md` (§5; area report F, F-3 to F-11, F-14;
+TODO-type-hardening H5): how much a peer may send is part of reading it, a panic is a 500 or a
+restart rather than a dead connection or a dead loop, and every recursive walk over untrusted
+input has a depth bound. No change to the wire format or stored data; no migration.
+
+- **Size caps** (H5.1):
+  - A Shapefile zip's member is refused past 256 MiB (`MAX_MEMBER_BYTES`), by its declared size
+    first and by a capped read (`read_member`) whatever it declares (F-6, zip bomb). Test:
+    `geo_import::shapefile::tests::a_member_that_inflates_past_the_limit_is_refused_not_read`.
+  - New `sc_net::ByteLimit` and `sc_net::read_body(response, limit)`: a body read chunk by chunk
+    and refused (`BodyError::TooLarge`) past the limit or a `Content-Length` over it. The `fetch`
+    action now reads at most 8 MiB, the cap a code body's `fetch` already had (F-8); both use it.
+    A non-2xx answer still names its status when its body is too large to quote. Tests:
+    `sc-net`'s `a_body_up_to_the_limit_is_read_and_one_past_it_is_refused`,
+    `a_body_with_no_declared_length_is_refused_as_it_arrives`;
+    `fetch_action::a_response_past_the_cap_is_refused_rather_than_read_whole`.
+  - Every WebSocket is accepted through `sc-server`'s `ws::upgrade(ws, MessageLimit, …)`, which
+    sets the message and frame limit; `WebSocketUpgrade::on_upgrade` is a disallowed method
+    elsewhere (`clippy.toml`, and the workspace-invariants test). Limits: the chat and the
+    language server 16 MiB (tungstenite's frame limit, which a browser's message could already
+    not exceed), the terminal 1 MiB, Observe and fit progress 64 KiB (they only listen), a
+    socket opened only to be closed with a reason 4 KiB, the live socket as before (F-9). A
+    message over the limit ends the connection before the handler reads it. Tests:
+    `ws::tests::a_message_at_the_limit_is_read_and_one_past_it_ends_the_socket`,
+    `agent_chat::a_message_past_the_limit_ends_the_socket_and_the_server_keeps_serving`.
+  - The Anthropic, OpenAI Responses and Chat Completions adapters stream on a client built from
+    `sc_net::client_builder` (its connect timeout) with a read timeout of 10 minutes between two
+    reads (`sc_llm::PROVIDER_READ_TIMEOUT`); before, rig built a bare client with neither,
+    and a provider that went silent held the turn for ever (F-11). No total timeout: a long
+    answer streams for as long as it streams. Test:
+    `http::tests::a_provider_that_goes_silent_fails_the_call_at_the_read_timeout`.
+- **Panics** (H5.2):
+  - The router has a panic boundary (tower-http `catch-panic`, innermost): a handler that panics
+    is answered 500 with the usual `{error}` body and the security headers, and the request's
+    changeset and log see the answer (F-3). `sc_log::install_panic_hook` (installed by the
+    binary) logs each panic as one line naming the thread and the place, at every verbosity,
+    with the backtrace when `RUST_BACKTRACE` asks; `sc_log::panic_message` reads a payload. Tests:
+    `router::a_panicking_handler_is_a_500_and_the_server_keeps_serving`,
+    `sc-log`'s `a_panic_is_logged_as_one_line_saying_where`.
+  - `sc_catalog::supervise(name, make)` runs a background loop and starts it again after a
+    panic (logged by name), with a pause from 1 second doubling to 5 minutes; a loop that
+    returns is done, and aborting the handle stops it. The trigger scheduler, the backup
+    scheduler, the stream supervisor, the change-log cleanup, the upload and preview sweeps and
+    the `SIGHUP` reload listener run under it (F-5). The backup scheduler's `busy` flag is given
+    back by a drop guard, so a backup that panics no longer stops every later one. Tests:
+    `supervise::tests::a_loop_that_panics_is_started_again_until_it_finishes`,
+    `aborting_the_handle_stops_the_loop`.
+  - The session store's locks recover from poisoning (and clear it) instead of failing every
+    later sign-in and session check with "session store lock poisoned"; a poisoned cache is
+    emptied (F-4). The cascade's refusals are kept, not dropped, on a poisoned lock. Tests:
+    `session::tests::a_poisoned_session_lock_recovers`,
+    `a_poisoned_cache_is_emptied_and_used_again`.
+  - `sc-dns`'s `getaddrinfo` wrapper answers `EAI_FAIL` instead of unwinding out of
+    `extern "C"`, which aborts the process (U-2).
+- **Depth limits** (H5.3) — a stack overflow aborts the whole process, so each of these was a
+  way for one input to take every application on the node down:
+  - **Live documents.** An update is read first by a new iterative scanner of the Yjs v1 format
+    (`sc_live::yjs_scan`, mirroring `yrs` 0.28's decoder), which refuses a value nested more than
+    64 levels (yrs's `Any::decode` recursed once per two bytes: a 1 MiB `doc_update` from any
+    member was half a million frames) and counts the shared types the update creates. A
+    document is kept within `MAX_DOC_DEPTH` (256) levels of shared types, which yrs walks
+    recursively to delete, collect and print: a bound plus the new types, and when that would
+    pass the limit the depth is measured from the encodings — the document's state, its pending
+    update and the new one, parent chains resolved iteratively (`yjs_scan::depth`), never by
+    walking a yrs tree (yrs's own iterators were not safe to run over every branch kind) — and an
+    update past it is refused, not applied. Stored states are scanned and measured before they
+    are loaded or merged; a stored document past the bound is not loaded. Tests in `doc.rs` and `yjs_scan.rs`
+    (`a_value_nested_half_a_million_deep_is_refused_before_it_is_decoded`,
+    `a_document_nested_past_the_limit_is_refused_and_not_applied`,
+    `nesting_one_level_an_update_is_stopped_at_the_limit`,
+    `what_yrs_writes_is_read_and_its_new_types_counted`,
+    `the_depth_of_a_document_is_read_from_its_encoding`); the recorded-Yjs format tests pass
+    through the scanner unchanged.
+  - **The agent's `http` trait.** A page's elements nested past 256 levels are kept as their text
+    (`flatten_below`, iterative) before the Markdown conversion and the walks over the tree.
+    Test: `a_page_nested_past_the_limit_keeps_its_text_and_does_not_overflow` (30 000 `<span>`s).
+  - **Geometry.** EWKB read from the database and GeoJSON written to it nest at most 32 levels
+    (`MAX_GEOMETRY_DEPTH`): a GeometryCollection in a collection in a collection. Test:
+    `nesting_is_bounded_both_ways` (100 000 levels of bytes).
+  - **The browser's accessibility snapshot** stops 256 levels down (a page's script nests as
+    deep as it likes; a cyclic tree ends too). Test:
+    `a_tree_nested_past_the_limit_or_cyclic_is_cut_not_overflowed`.
+  - Formulas were bounded in H0.7; JSON from text keeps serde_json's 128 levels; Python values
+    are bounded at 64 (`sc-python`'s `convert`).
+- The workspace-invariants test's list of files with `unsafe` code names `sc-proc`'s
+  `command.rs` instead of `sc-stan`'s `process.rs` (stale since H4 moved those calls).
+
+## Security hardening H4: one way to start a process (`sc-proc`)
+
+The fourth part of `docs/SECURITY_REVIEW_2026-11.md` (§4, area report C; TODO-type-hardening H4):
+every program the server starts goes through one builder. No change to the wire format or stored
+data; no migration. One new Development setting (`install_scripts_on_save`, default off).
+
+- **New crate `sc-proc`** (H4.1, layer 0). `HostCommand::new(program, &who, timeout)`:
+  - the child's environment is **cleared** and gets `sc_proc::BASE_ENV` (path, locale, home and
+    temporary directories, proxies, certificate bundles) plus what `.env(EnvName, value)` adds;
+    `EnvName` refuses `LD_*`, `DYLD_*`, `NODE_OPTIONS`, `BASH_ENV`, `ENV`, `PYTHON*`, `GIT_*` (but
+    `GIT_PAGER` / `GIT_TERMINAL_PROMPT`) and the other loader and interpreter hooks, and
+    `env_name!` checks a literal at compile time;
+  - the `Timeout` is mandatory and has no default (`Timeout::unbounded(reason)` for a process that
+    lives as long as a socket or a run); at the limit the whole process group is killed
+    (`ProcError::TimedOut`);
+  - arguments the program writes are `&'static str` (`arg`); data is an `Operand`, which refuses
+    a leading `-`, after a `--` that `operand` emits once (`positional` where `--` means
+    something else), or a flag's value (`flag_value`, `flag_eq`); a command line an administrator
+    or operator configured as a whole is `configured_args`;
+  - the child has its own process group, killed when the `Child` is dropped, stdin `/dev/null`,
+    and on Linux `PR_SET_PDEATHSIG`; `output`, `output_bounded`, `status`, `spawn` and their
+    `_blocking` forms; `operator_terminal(&OperatorCli)` for the CLI's interactive steps,
+    `spawn_detached` for the browser's watchdog, `spawn_on_pty` for the IDE terminal;
+  - `SpawnAuthority` is sealed: `AdminProof` (`ConsoleAdmin::spawn_proof`, or `vouched(user, by)`
+    naming the check), `OperatorCli`, `SystemTask(reason)`. Every spawn is logged (verbose) with
+    it, and the named ones are in the system-authority inventory, which
+    `admin_proofs_are_in_the_inventory` now checks for spawn authorities too.
+  - `Git` over a `RepoRoot` (`at` / `enclosing`, found by `.git` only): `GIT_DIR`,
+    `GIT_WORK_TREE`, `GIT_TERMINAL_PROMPT=0` and `-c safe.bareRepository=explicit -c
+    core.fsmonitor=false -c core.hooksPath=/dev/null -c protocol.ext.allow=never`; `ssh_key`,
+    `index_file`. It replaces `sc_files::git_command`.
+  - `clippy.toml` forbids `std::process::Command::new`, `tokio::process::Command::new`,
+    `pty_process::Command::new` and `chromiumoxide::Browser::launch` outside it; test fixtures
+    and the CLI's build script say so with an `#[allow]` and a reason.
+- **Every spawn site migrated** (H4.2): the git store (clone URL and branch can no longer be
+  options; 5 / 30 minute limits), `ssh-keygen`, app builds, installs, npm scripts, `tsc`, target
+  builds, the build cache key, the scaffold's `git init`, module `npm install` (the spec after
+  `--`), `venv` and `pip` (the spec after `--`: `-r`, `--index-url` and `-e` are refused), the
+  toolchain probes, Stan's `make`, chains, `stanc` and the CmdStan installer
+  (`cmdstan::install` takes the `&OperatorCli`), the coding shell, named processes, scripts,
+  checks, prettier, session header, snapshot and commit, the language server, the terminal, the
+  browser's sandbox check and watchdog, `feldspar setup` and `feldspar eval`. Where the console's
+  proof reaches the spawn it is passed: `permit_shell` returns the `AdminProof` the shell and
+  processes run on, and the project's scripts, checks and formatter take
+  `coding::host_code_proof` (a run without one fails closed). The headless browser, which
+  chromiumoxide launches itself, is the one exception, allowed by name. **Behaviour changes**
+  (security review 2026-11 C3–C5, C7): a build, install, shell command, git or LSP child no
+  longer sees the server's environment — a build that read a variable from the server's unit
+  must get it from a target's `env` or a module setting (a target still inherits the variables
+  its requirements name and `JAVA_HOME`, `ANDROID_HOME`, `ANDROID_SDK_ROOT`,
+  `ANDROID_NDK_HOME`, `GRADLE_USER_HOME`, `GRADLE_OPTS`, `DEVELOPER_DIR`); the container sandbox
+  mounts with `--mount type=bind` (a scope path with `,` or `=` is refused); an npm script's
+  `node_modules/.bin` search stops at the store root. Tests: `sc-proc`'s
+  (`the_child_sees_only_the_base_environment_and_what_was_given`,
+  `the_timeout_kills_the_whole_group`, `operands_follow_a_single_separator`,
+  `a_variable_that_changes_what_runs_is_refused`,
+  `a_planted_bare_layout_is_not_the_repository_and_its_fsmonitor_never_runs`, …),
+  `build::tests::a_build_does_not_see_the_servers_environment`,
+  `shell::tests::a_container_mounts_only_the_scope_and_has_no_network_by_default`.
+- **One predicate for "a write here becomes server code"** (H4.3): `StorePath::host_code_kind()
+  -> Option<HostCode>` (`GitInternals`, `PackageManager`, `BuildConfig`, `AgentConfig`) replaces
+  `sc_files::controls_build` and `configures_coding_agent` in `check_write` (and so every
+  `CheckedStore` write) and the agent file tool. New below admin: a file named `HEAD` (a bare
+  repository's layout; any case on macOS and Windows), anything in `.git`, and `.mcp.json`.
+  `AGENTS.md` stays writable (the coding agents keep project facts there). Test:
+  `git_internals_are_admin_only_writes`.
+- **Builds release their lock; saves skip install scripts** (H4.4). Install and bundler have 20
+  minutes each, a type check 15, a native target 2 hours; at the limit the process group is
+  killed, the build fails saying so, and `BUILD_LOCK` is released. An IDE save that installs
+  (`build_application_quick`, which now takes an `InstallScripts`) runs npm, pnpm, yarn or bun
+  with `--ignore-scripts` unless an administrator turned on **Run install scripts on save**
+  (Development settings); another installer is not run on a save. The stamp of such an install
+  records it, so the next Build installs again with the scripts, and a save after a Build has
+  nothing to install; the hash of an install with scripts is unchanged, so no application
+  reinstalls on upgrade. Fixed the stale "no install" docs of the quick build. Tests:
+  `a_hung_bundler_is_stopped_and_the_build_lock_released`,
+  `a_save_installs_without_scripts_and_the_next_build_with_them`,
+  `a_save_does_not_run_an_installer_it_cannot_keep_from_running_scripts`,
+  `an_npm_scripts_path_stops_at_the_store_root`.
+
+## Security hardening H3: proof-taking constructors
+
+The third part of `docs/SECURITY_REVIEW_2026-11.md` (§1, §3; TODO-type-hardening H3): functions
+that grant a capability take the proof, not the role number or user it was derived from. No
+change to the wire format or stored data; no migration.
+
+- **`Principal` is made from a proof** (H3.1, review #15). Its fields are private (getters
+  `role()`, `user()`, `chain()`, `app()`, `session()`, `changeset()`) and it has no `Default`.
+  Constructors: `anonymous()` (the public role), `of(&impl VerifiedUser)` (sc-auth's
+  `AuthenticatedUser`, the one implementation), `recorded(role, user)` (a caller a layer above
+  established: `sc_access::principal_of`, an event's cause, a stored run's caller) and the
+  crate-private system principal. A new `AdminPrincipal`, made only by `AdminPrincipal::system(reason)`
+  or `AdminPrincipal::vouched(user, by)`, is what `sc_access::admin_access` and
+  `Unchecked::admin` take (now infallible): an admin role written into a `Principal` meets every
+  floor, as the rule says, but opens no unchecked layer. `admin_caller` in sc-server's handlers
+  takes the handler's `Admin` proof (`Admin::principal()`), so moving one of its lines into a
+  non-admin handler no longer compiles. `Authority::unchecked` for an admin-role caller now says
+  so (`ADMIN_MEETS_EVERY_FLOOR`). The view configurer takes the admin's proof
+  (`Configurer::new(…, &AdminPrincipal, …)`). Tests: `caller::tests::a_principal_comes_from_a_proof_and_only_the_admin_proof_is_unchecked`,
+  two `compile_fail` doctests on `Principal`, `scoped::only_the_system_and_an_administrator_make_an_unchecked_token`.
+- **A file store reads its own floor** (H3.2, review #14). `Catalog::checked_file_store(name, who)`
+  and `open_checked_store(catalog, name, who)` take an authority (`&Principal`,
+  `&AdminPrincipal` or `Authority::system`) and read the store's `min_role` themselves. For a
+  caller below the administrator a definition that cannot be read refuses the binding instead
+  of meaning "no floor"; an administrator, who clears every floor, still gets the store (the
+  floor is only reported). **Fixed:** an agent's file scope (`FileScope::connect`) read the floor
+  with `.ok().flatten()`, which failed open on a database error for a non-admin run; it now
+  reads as the admin-only floor. `FileCaller`'s fields are private and its role-taking constructor is
+  `#[doc(hidden)] of_principal` for `Principal::file_caller` alone; `Catalog::admin_file_store`
+  binds an administrator without a floor read (the language server, the terminal, the upload
+  folder). An agent's file tools bind through `FileScope::bind`. Test:
+  `file_store_live::a_bound_store_reads_its_own_floor_and_fails_closed`.
+- **The admin host takes a `ConsoleAdmin`** (H3.3, review #16). Every `AdminHost` method takes
+  an `sc_catalog::ConsoleAdmin` (`at_console(user, by)` or `system(reason)`; no conversion from
+  an `AdminPrincipal`, since a code body's admin authority is not the console's) instead of an
+  `Option<Uuid>`, and the server loads the named user again and refuses one that is not an
+  enabled administrator. `RunCaller`'s fields are private (`user_ref()`, `role()`, `chain()`,
+  `is_triggered()`, `is_exposed()`), and whether a run holds the server's own tools is an origin
+  that defaults to withheld: only `RunCaller::console(user, proof)` (an admin's console chat, with
+  the session's proof — `AdminSession::run_caller`) and `RunCaller::system()` carry a
+  `ConsoleAdmin`, read with `console_admin()`; `RunCaller::user(admin)` alone no longer gets the
+  shell. `capped_at` replaces struct updates in tests. Tests:
+  `agent_trait::tests::only_a_proven_console_run_holds_the_servers_own_tools`,
+  `admin_applications_api::the_admin_host_refuses_a_proof_for_a_user_who_is_not_an_admin`.
+- **Callers are views of a principal** (H3.4, review #19, Q1.8). `sc_dataset::Caller` has private
+  fields and a `TableScope` (`Every` / `Only`) in place of `tables: None`; only
+  `Caller::system(reason)` and `Caller::admin(&AdminPrincipal)` read with the administrator's
+  authority (`Caller::of_user` and `Caller::of(&Principal)` never do). **Fixed:** on an Analytics
+  application's host an admin-role user read `users.password_hash`, model fit outputs and
+  relations that are not catalog tables; the administrator's reads are now the admin host's
+  alone. `ToolContext.role` is replaced by `admin: Option<ConsoleAdmin>`
+  (`ToolContext::require_admin`). `HistoryReader` and `Reverser` have private fields and are made
+  with `new(user)`, `of(principal, user)` or `admin(&AdminPrincipal, user)`, which refuse a
+  principal paired with another user. `sc_live::access::Caller` is `Caller::of(&Principal)` or
+  `anonymous()`. Tests: `access::tests::a_caller_knows_its_user_and_its_tables`,
+  `history_read::history_is_the_admins_until_opened_and_then_follows_the_read_rule`.
+- **A row leaves the server as an `ApiRow`** (H3.5, review #6). `sc_access::ApiRow` (made by
+  `of`, `of_image`, `of_values`, `shaped`, `own_columns`; no `Deserialize`, `Default` or `From`)
+  drops the columns no API reads and turns each secret into its sentinel; it is what REST's
+  list renders, what the ownership rule's and `Scoped::read`'s JSON rows are, what `api_row` (the
+  live hub) returns and what every history answer is built from. The change log's row images are
+  `sc_catalog::history::RawRow`, which has no `Serialize` (a `compile_fail` doctest says so);
+  `HistoryEntry`'s values, `RowAsOf` and `deleted_image` carry one, and a restore takes the map
+  out only to write it back. Test: `user_rows::tests::an_api_row_never_carries_the_password_hash`.
+- **Module webhooks and services are in the inventory** (H3.6, review E5). They run as
+  `AdminPrincipal::vouched(…, MODULE_WEBHOOK | MODULE_SERVICE)` through
+  `TableHost::for_admin` / `TriggerRunHost::for_admin`; the terminal's store binding is
+  `TERMINAL_ROOT`. The system-authority inventory in `docs/SECURITY_REVIEW_2026-10.md` has a
+  table of every admin proof, and `caller::tests::admin_proofs_are_in_the_inventory` fails when a
+  non-test `AdminPrincipal::vouched/system`, `ConsoleAdmin::at_console/system` or
+  `Caller::system` names a reason the inventory does not list.
+- **HTML pages are `SafeHtml`, LLM keys are `Secret`** (H3.7, review A10). `axum::response::Html`
+  is a disallowed type (`clippy.toml`, `disallowed_types = "deny"`); a page this server builds goes
+  out through `html_page::html(SafeHtml)`. `sc_expr::safe_html!` formats a literal through
+  `concat!` (so no implicit captures) and takes only `SafeHtml` arguments;
+  `SafeHtml::json_in_script` and `SafeHtml::generated(markup, generator)` cover boot JSON and the
+  two-factor QR code. The builder document, the OAuth hand-off page, the two-factor pages and
+  the bootstrap page are built that way (the two-factor pages now also escape `'`). An LLM
+  provider's API key is read with `LlmProviderDef::api_key() -> Secret<String>`; `setting` no
+  longer answers it and `Debug` prints it redacted. Tests:
+  `html::tests::safe_html_interpolates_only_safe_html` (and two `compile_fail` doctests),
+  `def::tests::the_api_key_is_a_secret_and_not_a_setting`.
+
+## Security hardening H2: sessions and sign-in as types
+
+The second part of `docs/SECURITY_REVIEW_2026-11.md` §2 (TODO-type-hardening H2). Additive storage
+only: a new table `_fd_auth_epochs` and nullable `auth_epoch` columns on `_fd_sessions` and
+`_fd_password_tokens`, all made by the bootstrap. Nobody is signed out by the upgrade.
+
+- **A session names the application that issued it, and every route names the scope it takes**
+  (H2.1). An application session's token is now `app-<application id>-<random>`, hashed whole,
+  so it cannot be pointed at another application; a token from before (`app-` and 64 hex
+  digits) works where it did until it expires. `crates/sc-server/src/session.rs` is the one
+  place a request's session is read: `Session<AdminScope>`, `Session<AppScope>` (one
+  application's own), `Session<Visiting>` (a session a shared sign-in cookie carries to an
+  application's host from the admin host or another application: still the user there, as
+  before), and `OwnSession` (the admin host's or the application's own, whichever the host is),
+  as axum extractors or `of_request`. `router::session_user`, which ignored the scope, is
+  deleted (the module consent flow now uses `HostSession`); the admin session, the module
+  routes, the application caller and the live socket's re-check go through the module. **Fixed:**
+  the second factor's routes on an application's host took any application's session, so with
+  shared sign-in application B's script could enroll a second factor on a member signed in to
+  application A; they now take an `OwnSession`. Test:
+  `second_factor_sign_in::a_session_names_the_application_that_issued_it`.
+- **Signing in is typestate** (H2.2). `SessionStore::start(FullyAuthenticated, ttl, scope)` is the
+  only way to start a session; `login`, `login_in`, `login_for` and `login_scoped` (from a bare
+  `User`) exist only behind sc-auth's new `testing` feature, which only dev-dependencies enable.
+  `authenticate` returns a `PasswordVerified` (also from `PasswordVerified::by` with a named
+  `FirstFactor`: password link, email link, sign-up, identity provider), completed with a
+  `SecondFactorProof` (a right code) or `NoSecondFactorNeeded` (from `second_factor_needed`,
+  whose `No` variant now carries it); a proof for another account is refused.
+  `SessionAction::Start` carries a `PasswordVerified` and `StartVerified` a
+  `FullyAuthenticated`, so `apply_session`'s second-factor decision is the only way a sign-in
+  becomes a session. The sessions started for somebody who did not sign in are named
+  `SecondFactorWaiver`s: `BecomeUser`, `FirstUser`, `AdminHandoff`, `CallApi`, `BrowserDriver`,
+  `Cli`. `create_session` (`feldspar auth token`) takes a `FullyAuthenticated`. A second-factor
+  challenge spent with a right code gives back the `PasswordVerified` it held.
+- **Credential changes raise an auth epoch** (H2.3). A new password (admin-set, `update_user`,
+  a reset link), the second factor turned on or off, the account disabled and a role made to
+  require a second factor the account lacks raise the account's epoch. A session row or a
+  challenge from an earlier epoch is nobody on every node at its next read, even before its row
+  is deleted, and a sign-in whose password was checked before a change starts no session (a
+  password reset by an admin while a stolen password waits at the code prompt). The changing
+  functions return a `#[must_use] CredentialsChanged` — `update_user`, `set_user_password`,
+  `set_user_disabled` and `claim_unproven_account` now return `UserChanged { user, credentials }`
+  (which derefs to the user), `disable_second_factor` a `SecondFactorRemoved { existed, changed }`,
+  `delete_sessions_lacking_second_factor` the changes — consumed by
+  `SessionStore::bump_epoch(changed, keep)`, which deletes the other session rows, restamps the
+  one that made the change, drops this node's cached copies and tells the live sockets. Handlers
+  return `HandlerResponse::credentials_changed` (`SessionAction::CredentialsChanged`). Tests:
+  `db_sessions::a_session_from_an_earlier_epoch_is_nobody`,
+  `second_factor::a_credential_change_ends_a_sign_in_waiting_for_its_code`,
+  `second_factor_sign_in::a_password_reset_ends_a_sign_in_waiting_for_its_code`.
+- **Every check of a code takes an `AttemptPermit`** (H2.4). `reserve_guess`/`GuessPermit`/`Guess`
+  are now `reserve_attempt`/`AttemptPermit`/`Attempt`. `verify_second_factor(catalog, permit,
+  user, code)` returns `Option<SecondFactorProof>` and `finish_second_factor_setup(catalog,
+  permit, user, code)` a `SecondFactorEnabled { recovery_codes, proof, changed }`; each settles
+  the permit itself (a right code gives the guess back) and refuses a permit counted against
+  another account. `regenerate_recovery_codes` takes the `SecondFactorProof` of a right code.
+- **The second factor's secrets are types** (H2.5). `TotpSecret`, `RecoveryCode` and
+  `ChallengeToken`: `Debug` redacted, no `Display`, constant-time equality, read through
+  `expose…`. `begin_second_factor_setup` returns a `TotpSecret`, `decode_secret` and `totp_at`
+  take one, and `issue_second_factor_challenge`, `second_factor_challenge` and
+  `spend_second_factor_challenge` take or return a `ChallengeToken` (and a `PendingChallenge` /
+  `SpentChallenge`). **Recovery codes are longer and keyed** (B5): 18 symbols, drawn without
+  modulo bias (about 89 bits, was about 49), shown as `xxxxxx-xxxxxx-xxxxxx`, and stored as
+  `k1:` + HMAC-SHA-256 under a key derived from the instance key, so a database dump without
+  the key file does not let them be searched offline. Codes made before keep their unkeyed hash
+  and still sign in once; an account gets keyed ones when it makes new codes. (No migration: a
+  hash cannot be re-keyed without the code.)
+- Starting a second-factor setup no longer deletes a factor turned on in the meantime (B6): it
+  deletes only a setup still waiting for its first code.
+- Workspace tests (`tests/harness/tests/workspace_invariants.rs`): sc-server reads sessions only
+  through `session.rs`; only dev-dependencies enable sc-auth's `testing`; the files that use a
+  `SecondFactorWaiver` are a fixed list. `Cargo.lock` gains sc-auth's dev-dependency on itself
+  (with `testing`).
+- A sign-in through a router that has no database (`build_router`, used only by tests) now
+  starts no session, since the second factor cannot be decided without one; it used to start
+  one unasked. The four test fixtures that signed in that way now pass their catalog
+  (`build_router_with_apps`).
+- TECHNICAL_DESIGN §7.2 describes the scoped sessions, the typestate and the epoch; §9.2's ER
+  diagram adds `_fd_auth_epochs` and the new columns. §2's crate table now lists the `sc-net`
+  dependencies H1 added to `sc-backup`, `sc-cli`, `sc-llm`, `sc-server` and `sc-stan` (the
+  `repo_hygiene` test had been failing on it since H1).
+
+## Security hardening H1: the compiler and CI enforce the review
+
+The lint and CI half of `docs/SECURITY_REVIEW_2026-11.md` §6 (TODO-type-hardening H1). No change to
+the wire format or stored data.
+
+- **`unsafe` only where C is called** (H1.1). `unsafe_code` is denied workspace-wide and allowed
+  again per module in `sc-dns`'s `addrinfo`, `sc-python`'s interpreter, the `libc` process,
+  terminal and statvfs calls (`sc-stan`, `sc-server`, `sc-agent-builtins`' shell, `sc-cli`), and
+  a one-function module for `sc-config-file`'s `getegid`. `undocumented_unsafe_blocks` is denied:
+  `addrinfo.rs`'s 53 blocks and the tests' `set_var` calls now each say why they are sound (or,
+  for the tests that set the environment, that they are not airtight). `todo`, `unimplemented`,
+  `dbg_macro` and `let_underscore_future` are denied. `sc-files`' tests set the data directory
+  through one helper under their lock.
+- **Release builds keep overflow checks** (H1.2): `overflow-checks = true` in `[profile.release]`.
+- **Disallowed methods** (H1.3), each with its replacement in `clippy.toml`:
+  - `std::env::set_var`/`remove_var`.
+  - `reqwest::Client::new`/`builder`/`reqwest::get`. The new `sc_net::client_builder()` sets a
+    30-second connect timeout. Every HTTP client now starts from it: the LLM endpoints and
+    model listing, OAuth, S3 backups, public datasets, the CmdStan download, the `fetch`
+    action, the agent `http` trait, the MCP client and the CLI build agent. Existing total
+    timeouts are unchanged.
+  - `tokio::spawn`: use `sc_catalog::spawn_scoped`. A deleted row's file removal after commit
+    now uses it, as the uncommitted path already ran in the caller's scope. Background loops,
+    detached jobs and I/O pumps keep `tokio::spawn`, each with a reason saying why they must not
+    inherit the caller's scope.
+  - `tokio::sync::mpsc::unbounded_channel`. Each existing use says what bounds it.
+- **Truncating casts** (H1.4): `cast_possible_truncation` is denied and its ~130 production sites are fixed (test code has a module-level `allow`).
+  Counts and limits use saturating `try_from`. A value that would wrap is an error: a geo import's
+  feature index, a model setting, an index position. Exact or saturating float casts have an
+  `allow` with a reason. **Fixed bug:** a public dataset's combined date (`[year, month, day]`)
+  cast an out-of-range year with `as i32`, so 4294969296 read as the year 2000. It is now
+  refused (test `a_combined_date_out_of_range_is_refused_rather_than_wrapped`).
+- **Narrower public surface** (H1.5): `sc-access`, `sc-auth`, `sc-files` and `sc-catalog` warn on
+  `unreachable_pub`. 71 functions no other crate calls are now `pub(crate)` and out of the
+  crate-root re-exports, among them `fetch_row_values`, `delete_row_in`, `list_rows_where`,
+  `run_select_over`, `refuse_last_admin`, `spend_password_token`, `hotp`, the `bootstrap_*` and
+  `sweep_*` functions, `filter_visible` and `check_range`. Five that nothing calls at all stay
+  `pub` for review: `RowQuery::sql_only`, `select_values`, `Catalog::create_table_in`,
+  `constrained_fields` and `clear_caller_context`.
+- **Dependencies are checked** (H1.6): a `deny.toml` covers advisories, licences, bans
+  (`fancy-regex`, `openssl-sys`) and sources. `RUSTSEC-2023-0071` (rsa, no fix upstream) is
+  ignored with its reason. CI has a `cargo-deny` job, and clippy and tests run with
+  `--locked`, in GitHub CI and in whale-ci's clippy step. **Note:** an offline check of
+  `Cargo.lock` against the RustSec database finds about 50 other advisories (tokio, rustls,
+  rustls-webpki, h2, quinn-proto, zip, zstd, hickory-proto, pulldown-cmark, lru, …). Most need
+  only a semver-compatible `cargo update`. Until the lock file is updated, the `cargo-deny`
+  job fails.
+- **Advisory panic lints** (H1.7): the request-facing crates (`sc-access`, `sc-api`, `sc-auth`,
+  `sc-backup`, `sc-files`, `sc-live`, `sc-server`) warn on `indexing_slicing`, `string_slice`
+  and `arithmetic_side_effects` under `--cfg feldspar_advisory_lints`. A non-gating
+  `clippy-advisory` CI job reports them. They have about 570 existing hits, so plain warnings
+  would fail every `-D warnings` run.
+- Tests in `tests/harness/tests/workspace_invariants.rs` check that every crate inherits the
+  workspace lints and that the lints above stay denied. They also check release overflow
+  checks, the disallowed methods and their replacements, the list of files that may contain
+  `unsafe`, the `unreachable_pub` and advisory attributes, `deny.toml`'s ignore list, and that
+  CI runs `cargo deny` with `--locked`.
+- An existing `too_many_lines` warning on `sc-expr`'s `nesting_bound` (from H0.7) gets the
+  usual `allow`.
+
+## Security hardening H0: the live findings of the November review
+
+Fixes for the live findings of `docs/SECURITY_REVIEW_2026-11.md` (TODO-type-hardening H0).
+
+- **Git never discovers a repository in an app's source directory** (#1). A user below admin
+  could plant a bare-repository layout (`HEAD`, `objects/`, `refs/`, a `config` naming a
+  `core.fsmonitor` command) in an app's source directory, and the next build, IDE save or coding
+  session ran it as the server user. Every git run over a working tree now goes through
+  `sc_files::git_command`: the work tree is found by looking for `.git` only (`work_tree_of`),
+  and is passed as `GIT_DIR`/`GIT_WORK_TREE` with `-c safe.bareRepository=explicit
+  -c core.fsmonitor=false -c core.hooksPath=/dev/null`. Used by the build cache, the git file
+  store, the coding agent's header, snapshot and commit, and the scaffold's `git init`. Hooks in
+  a store's own repository no longer run on a commit from Feldspar. Test:
+  `build_cache::a_planted_bare_repository_in_the_source_dir_is_not_run_by_a_build`.
+- **Claude Code's configuration is an admin-only write** (#2): `.claude/**`, `CLAUDE.md` and
+  `CLAUDE.local.md` are refused below admin on every file write route and in the agent's file
+  tools (`sc_files::configures_coding_agent`), as build inputs are, because the admin's terminal
+  starts Claude Code in a store and runs its hooks as the server user.
+- **Two-factor routes take only a session issued for this host** (#3). On an application's host
+  an admin session (sent there by shared sign-in) is nobody to `/_feldspar/second-factor/*`, so an
+  application's script cannot enroll a second factor on a visiting admin. Setting one up from a
+  session now needs the current `password` (held to the login form's budget); a challenge's token still
+  suffices. The generated client's `secondFactorSetup` takes `{ password }` (a string is still
+  the challenge token), and the admin UI and the scaffold's `Security.tsx` ask for it. An
+  application made before this keeps its own `Security.tsx`, whose "Set up" now answers 401
+  "enter your current password" until it sends one.
+- **Module routes use the admin host's session check** (#5): an application's session is nobody
+  there, and a module's answer can no longer set the admin origin's CSP, framing, HSTS,
+  `Cross-Origin-*` or CORS-credential headers; the admin host's own apply.
+- **`PublicClient` never uses a proxy** (#4): `.no_proxy()` always, so `HTTPS_PROXY` cannot route
+  around the public-address resolver. Test: `crates/sc-net/tests/proxy_env.rs`.
+- **Row history hides `users.password_hash`** (#6) and every other column no API reads, as
+  `api_row` does, in entries, `row_as_of` and the deleted-rows list. Restoring or reverting a
+  `users` row now works and leaves the password as it is. Existing change-log rows still hold
+  the hashes; they are only no longer shown. Test: `crates/sc-api/tests/history_users.rs`.
+- **Formulas are bounded** (#7): at most 64 KiB (`MAX_FORMULA_BYTES`) and 512 levels deep
+  (`MAX_FORMULA_DEPTH`). The depth is bounded by an iterative scan of the source before swc
+  parses it (swc's parser itself overflowed a debug thread's stack at 200 parentheses), the
+  parse runs on a stack sized for that bound (`stacker`), and lowering counts levels. 100 000
+  nested parentheses are an error, not a process abort.
+- **Integers are range-checked for `int2`/`int4` placeholders** (#8): `4294967297` is an error,
+  not row 1. A v1 backup's day-only value is cut on a character boundary (F-2).
+- **Wrong codes are counted before they are checked, in the database** (#9):
+  `sc_auth::reserve_guess` takes one of 5 guesses per 15 minutes in one conditional `UPDATE` of
+  the account's `_fd_second_factor` row (new nullable columns `guesses`, `guesses_since`, added by
+  the bootstrap), and a right code gives it back. Concurrent bursts get no more than 5 checked,
+  and every node shares the budget. Test: `concurrent_guesses_get_no_more_than_the_budget`.
+- **An identity-provider sign-in asks for the account's second factor** (#10) when the account has
+  one on or its role requires one, as a password sign-in does. The setting *Ask for a two-factor
+  code after an identity provider* is retired (no longer read or shown).
+- **Credential changes end sessions** (#11): a password set by an admin (random or in the edit
+  form, in the UI or the CLI) deletes the account's sessions and outstanding reset links and
+  challenges; disabling deletes its sessions; turning the second factor on or off ends the
+  account's other sessions and keeps the current one (`SessionStore::end_other_sessions`, a new
+  `SessionEnded::UserExcept`); making a role require a second factor ends the sessions of its
+  accounts without one (not the admin's making the change), and so does moving an account to
+  such a role. An admin who sets their own password in the users screen is signed out.
+
 ## Claude Code is found without a PATH, and can be named in Settings
 
 A server started by systemd or another service manager has a short `PATH`, so Claude Code
@@ -21,6 +1002,10 @@ installed in a home directory was reported as "not installed".
 - Claude Code starts with its own directory first on `PATH`, so an nvm or npm install finds its
   `node`.
 - The setting and the panel are translated into the admin UI's languages.
+- On merging into the type-hardening branch: `claude --version` runs through
+  `sc_proc::HostCommand` on a `Claude Code version probe` `SystemTask` (listed in the
+  system-authority inventory), and `getClaudeCodeStatus` is a typed
+  `handler_ids::GET_CLAUDE_CODE_STATUS` (`AdminOnly`); the wire name is unchanged.
 
 Tests: `crates/sc-server/tests/ide_terminal.rs`, `terminal.rs` and `development.rs` unit tests,
 `ui/admin/src/claudeStatus.test.ts`.

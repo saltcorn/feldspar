@@ -211,6 +211,112 @@ impl AuthRequirement {
     }
 }
 
+/// Who may call an endpoint, as a **type** (security review 2026-11 §8, E4;
+/// TODO-type-hardening H6.1).
+///
+/// An endpoint the server dispatches to a registered handler is declared with
+/// a [`HandlerId<A>`], and its [`AuthRequirement`] is `A`'s
+/// [`REQ`](Auth::REQ): there is no default, and no setter. The server registers
+/// the handler under the **same** `HandlerId<A>`, and `A` decides what the
+/// handler is handed — an admin's authority for [`AdminOnly`], a signed-in
+/// user for [`SignedIn`] — so a declaration and its handler cannot disagree
+/// about who may call it. Implemented only here: the four markers are the
+/// whole vocabulary.
+pub trait Auth: sealed::Sealed + Send + Sync + 'static {
+    /// The requirement an endpoint declared with this marker carries.
+    const REQ: AuthRequirement;
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for super::Anyone {}
+    impl Sealed for super::SignedIn {}
+    impl Sealed for super::AdminOnly {}
+    impl Sealed for super::AnalyticsUi {}
+}
+
+/// Open to anyone ([`AuthRequirement::Public`]): the auth plumbing (`login`,
+/// `authStatus`, `createFirstUser`), whose handler decides for itself who the
+/// caller is.
+#[derive(Debug)]
+pub enum Anyone {}
+
+/// Any signed-in user ([`AuthRequirement::LoggedIn`]).
+#[derive(Debug)]
+pub enum SignedIn {}
+
+/// The administrator ([`AuthRequirement::admin`]).
+#[derive(Debug)]
+pub enum AdminOnly {}
+
+/// The Analytics UI: declared [`admin`](AuthRequirement::admin) — on the admin
+/// host its handler is handed admin authority — and served through an
+/// Analytics application at that application's floor instead (analytics TODO
+/// A9.3), which the server decides from the application the host names.
+#[derive(Debug)]
+pub enum AnalyticsUi {}
+
+impl Auth for Anyone {
+    const REQ: AuthRequirement = AuthRequirement::Public;
+}
+impl Auth for SignedIn {
+    const REQ: AuthRequirement = AuthRequirement::LoggedIn;
+}
+impl Auth for AdminOnly {
+    const REQ: AuthRequirement = AuthRequirement::MinRole(Role::ADMIN);
+}
+impl Auth for AnalyticsUi {
+    const REQ: AuthRequirement = AuthRequirement::MinRole(Role::ADMIN);
+}
+
+/// The name of a built-in handler, typed by who may call it ([`Auth`]).
+///
+/// Declared once, in [`crate::handler_ids`], and used twice: by the endpoint
+/// ([`Endpoint::new`]) and by the server's registration of the handler. The
+/// endpoint's requirement and the handler's gate both come from `A`.
+pub struct HandlerId<A: Auth> {
+    name: &'static str,
+    auth: std::marker::PhantomData<fn() -> A>,
+}
+
+impl<A: Auth> HandlerId<A> {
+    /// The handler called `name`, callable as `A` says.
+    pub const fn new(name: &'static str) -> HandlerId<A> {
+        HandlerId {
+            name,
+            auth: std::marker::PhantomData,
+        }
+    }
+
+    /// The handler's name: the endpoint's operation name, and the key it is
+    /// registered and dispatched under.
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// The requirement an endpoint naming this handler declares.
+    pub const fn requirement(&self) -> AuthRequirement {
+        A::REQ
+    }
+}
+
+impl<A: Auth> Clone for HandlerId<A> {
+    fn clone(&self) -> HandlerId<A> {
+        *self
+    }
+}
+
+impl<A: Auth> Copy for HandlerId<A> {}
+
+impl<A: Auth> std::fmt::Debug for HandlerId<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HandlerId")
+            .field("name", &self.name)
+            .field("auth", &A::REQ)
+            .finish()
+    }
+}
+
 /// A reference to the code that runs an endpoint. The endpoint model itself is
 /// framework-agnostic, so it names the handler rather than holding it; the
 /// server resolves [`Named`](HandlerRef::Named) handlers through its dispatch
@@ -477,10 +583,36 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    /// Start a new endpoint. Defaults: empty input/output, [`LoggedIn`](AuthRequirement::LoggedIn)
-    /// auth, and a [`Named`](HandlerRef::Named) handler equal to `name`. Override
-    /// with the builder setters.
-    pub fn new(name: impl Into<String>, method: Method, path: PathSpec) -> Endpoint {
+    /// An endpoint the server dispatches to the built-in handler `handler`
+    /// (H6.1): its name is the handler's, and its [`auth`](Endpoint::auth) is
+    /// `A`'s requirement — there is no default and no setter, so an endpoint
+    /// cannot declare one requirement while its handler is registered behind
+    /// another. Defaults: empty input/output. Refine with the builder setters.
+    pub fn new<A: Auth>(handler: HandlerId<A>, method: Method, path: PathSpec) -> Endpoint {
+        Endpoint::with_auth(handler.name(), method, path, A::REQ)
+    }
+
+    /// An endpoint an [`ApiProvider`](crate::ApiProvider) projects from an
+    /// application's configuration, whose requirement is **data** — a table's
+    /// role floors, a custom query's `min_role` — and which the provider that
+    /// projected it enforces (`crate::provider`). Its handler is
+    /// [`Named`](HandlerRef::Named) after it unless [`handler`](Endpoint::handler)
+    /// says otherwise; the server's handler registry never serves it.
+    pub fn projected(
+        name: impl Into<String>,
+        method: Method,
+        path: PathSpec,
+        auth: AuthRequirement,
+    ) -> Endpoint {
+        Endpoint::with_auth(name, method, path, auth)
+    }
+
+    fn with_auth(
+        name: impl Into<String>,
+        method: Method,
+        path: PathSpec,
+        auth: AuthRequirement,
+    ) -> Endpoint {
         let name = name.into();
         let handler = HandlerRef::Named(name.clone());
         Endpoint {
@@ -494,7 +626,7 @@ impl Endpoint {
             binary_output: false,
             stream_output: false,
             open_args: false,
-            auth: AuthRequirement::LoggedIn,
+            auth,
             handler,
             mcp: None,
         }
@@ -516,12 +648,6 @@ impl Endpoint {
     /// Set the response value schema.
     pub fn output(mut self, schema: TypeSchema) -> Endpoint {
         self.output = schema;
-        self
-    }
-
-    /// Set the authorization requirement.
-    pub fn auth(mut self, auth: AuthRequirement) -> Endpoint {
-        self.auth = auth;
         self
     }
 

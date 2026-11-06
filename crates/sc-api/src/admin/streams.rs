@@ -39,7 +39,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // bug where "this build was made without it" reads like the decision it is.
     set.register(
         Endpoint::new(
-            "listStreamProviders",
+            ids::LIST_STREAM_PROVIDERS,
             Method::Get,
             api().lit("stream-providers"),
         )
@@ -51,24 +51,21 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("providers", TypeSchema::array(stream_provider_schema())),
             StructField::new("builtins_compiled_out", TypeSchema::bool()),
             StructField::new("notice", TypeSchema::optional(TypeSchema::text())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     set.register(
-        Endpoint::new("listStreams", Method::Get, api().lit("streams"))
-            .output(TypeSchema::array(stream_schema()))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(ids::LIST_STREAMS, Method::Get, api().lit("streams"))
+            .output(TypeSchema::array(stream_schema())),
     );
 
     set.register(
         Endpoint::new(
-            "getStream",
+            ids::GET_STREAM,
             Method::Get,
             api().lit("streams").param("id", ValueType::Uuid),
         )
-        .output(stream_schema())
-        .auth(AuthRequirement::admin()),
+        .output(stream_schema()),
     );
 
     // One endpoint for create and replace, as `saveModel` is and for its
@@ -80,10 +77,9 @@ pub(super) fn register(set: &mut EndpointSet) {
     // restart: a stream saved enabled is connected by the time the response is
     // written, and one whose broker moved has dropped the old session.
     set.register(
-        Endpoint::new("saveStream", Method::Post, api().lit("streams"))
+        Endpoint::new(ids::SAVE_STREAM, Method::Post, api().lit("streams"))
             .input(stream_input_schema())
-            .output(stream_schema())
-            .auth(AuthRequirement::admin()),
+            .output(stream_schema()),
     );
 
     // Refused while a trigger names this stream as its channel, listing them —
@@ -92,15 +88,14 @@ pub(super) fn register(set: &mut EndpointSet) {
     // listening to a channel nothing will ever raise.
     set.register(
         Endpoint::new(
-            "deleteStream",
+            ids::DELETE_STREAM,
             Method::Delete,
             api().lit("streams").param("id", ValueType::Uuid),
         )
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // How it is going **right now**: the one endpoint a stream needs that a
@@ -111,15 +106,14 @@ pub(super) fn register(set: &mut EndpointSet) {
     // has.
     set.register(
         Endpoint::new(
-            "streamStatus",
+            ids::STREAM_STATUS,
             Method::Get,
             api()
                 .lit("streams")
                 .param("id", ValueType::Uuid)
                 .lit("status"),
         )
-        .output(stream_status_schema())
-        .auth(AuthRequirement::admin()),
+        .output(stream_status_schema()),
     );
 }
 

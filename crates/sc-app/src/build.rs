@@ -20,22 +20,22 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Output};
 use std::sync::Arc;
+use std::time::Instant;
 
 use bytes::Bytes;
 use sc_action::TriggerDispatcher;
 use sc_api::{EndpointSet, generate_app_client};
 use sc_catalog::{Catalog, FileStoreId};
 use sc_error::{Context, Error, Result};
+use sc_proc::{AdminProof, EnvName, HostCommand, Program, Timeout};
 use sc_types::Attrs;
 use sc_types::FormField;
 use serde_json::Value as Json;
-use tokio::process::Command;
 use tokio::sync::Mutex;
 
 use crate::api::app_endpoints_with;
 use crate::application::{Application, FrameworkRef};
 use crate::build_cache::build_key;
-use crate::build_hosts::BUILD_TOKEN_ENV;
 use crate::declared::{
     FrameworkDecl, FrameworkSet, TargetRequirement, TargetRequirementKind, TargetSpec,
     installed_frameworks,
@@ -308,9 +308,18 @@ pub struct BuildReport {
 /// Fails if the store is not connected, has no on-disk path, or the build itself
 /// fails.
 pub async fn build_app(cat: &Catalog, source: &AppSource) -> Result<BuildReport> {
+    build_app_with(cat, source, InstallScripts::Run).await
+}
+
+/// [`build_app`], installing with or without the packages' install scripts.
+async fn build_app_with(
+    cat: &Catalog,
+    source: &AppSource,
+    scripts: InstallScripts,
+) -> Result<BuildReport> {
     let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
     let root = store_root(&store, source)?;
-    let mut report = run_build(&source.build, &root).await?;
+    let mut report = run_build_with(&source.build, &root, Limits::DEFAULT, scripts).await?;
     report.git_repo = store.is_git_repo();
     Ok(report)
 }
@@ -439,8 +448,19 @@ pub async fn build_application(
     source: &AppSource,
     dispatcher: Option<&Arc<TriggerDispatcher>>,
 ) -> Result<BuildReport> {
+    build_application_with(cat, app, source, dispatcher, InstallScripts::Run).await
+}
+
+/// [`build_application`], installing with or without install scripts.
+async fn build_application_with(
+    cat: &Catalog,
+    app: &Application,
+    source: &AppSource,
+    dispatcher: Option<&Arc<TriggerDispatcher>>,
+    scripts: InstallScripts,
+) -> Result<BuildReport> {
     let (client_path, _) = emit_generated(cat, app, source, dispatcher).await?;
-    let mut report = build_app(cat, source).await?;
+    let mut report = build_app_with(cat, source, scripts).await?;
     report.client_path = client_path;
     // A server-rendered site's `prerender = true` pages, written as files now
     // that the code body that renders them exists (`server_render`).
@@ -458,11 +478,20 @@ pub async fn build_application(
 /// are rendered per request until the next full build, which is slower and
 /// otherwise the same. When dependencies have never been installed it is a
 /// full build, because without them the bundler cannot run at all.
+///
+/// A save is not a decision to run third-party code, so an install it starts
+/// — the first one, or one a changed manifest asks for — runs the package
+/// manager with `--ignore-scripts` unless `scripts` is
+/// [`InstallScripts::Run`] (the administrator's Development setting, security
+/// review 2026-11 C3, TODO-type-hardening H4.4). The next Build installs
+/// again with the scripts, since what was installed is stamped as installed
+/// without them.
 pub async fn build_application_quick(
     cat: &Catalog,
     app: &Application,
     source: &AppSource,
     dispatcher: Option<&std::sync::Arc<sc_action::TriggerDispatcher>>,
+    scripts: InstallScripts,
 ) -> Result<BuildReport> {
     let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
     let root = store_root(&store, source)?;
@@ -473,7 +502,7 @@ pub async fn build_application_quick(
         .as_ref()
         .is_none_or(|install| source_dir.join(&install.marker).exists());
     if !installed {
-        let mut report = build_application(cat, app, source, dispatcher).await?;
+        let mut report = build_application_with(cat, app, source, dispatcher, scripts).await?;
         report.stdout.insert_str(
             0,
             "dependencies are not installed yet, so this was a full build\n",
@@ -482,7 +511,7 @@ pub async fn build_application_quick(
     }
     // The install step still runs if the manifests changed (a dependency added
     // between saves); when they did not, it is two small files hashed.
-    let mut report = run_build(&source.build, &root).await?;
+    let mut report = run_build_with(&source.build, &root, Limits::DEFAULT, scripts).await?;
     report.git_repo = store.is_git_repo();
     if source.build.server_entry.is_some() {
         report.stdout.push_str(
@@ -753,7 +782,14 @@ pub async fn typecheck_application(
     // With the builds, for the reason they are serialised: an install and a
     // `tsc` both hold a few hundred megabytes on a small server.
     let _serialised = BUILD_LOCK.lock().await;
-    run_install(source.build.install.as_ref(), &source_dir, &BTreeMap::new()).await?;
+    run_install(
+        source.build.install.as_ref(),
+        &source_dir,
+        &BTreeMap::new(),
+        InstallScripts::Run,
+        Limits::DEFAULT.install,
+    )
+    .await?;
 
     let script = BuildSpec {
         command: "npm".to_owned(),
@@ -761,22 +797,20 @@ pub async fn typecheck_application(
         ..source.build.clone()
     };
     let (command, output) = match NpmScript::resolve(&script, &source_dir) {
-        Some(npm) => (command_line(&script), npm.run(&source_dir).await),
+        Some(npm) => (
+            command_line(&script),
+            npm.run(&source_dir, &root, TYPECHECK_TIMEOUT).await,
+        ),
         None => {
             let local = source_dir.join("node_modules").join(".bin").join("tsc");
             let tsc = if local.is_file() {
-                local.into_os_string()
+                Program::path(local)
             } else {
-                OsString::from("tsc")
+                Program::named("tsc")
             };
-            (
-                "tsc --noEmit".to_owned(),
-                Command::new(tsc)
-                    .arg("--noEmit")
-                    .current_dir(&source_dir)
-                    .output()
-                    .await,
-            )
+            let mut tsc = HostCommand::new(tsc, &build_authority(), TYPECHECK_TIMEOUT);
+            tsc.arg("--noEmit").cwd(&source_dir);
+            ("tsc --noEmit".to_owned(), tsc.output().await)
         }
     };
     let output =
@@ -1184,7 +1218,14 @@ pub async fn run_target(spec: &TargetSpec, root: &Path, log_path: &str) -> Resul
     // or one APK would hold every web build for a quarter of an hour.
     let install = {
         let _serialised = BUILD_LOCK.lock().await;
-        run_install(spec.install.as_ref(), &source_dir, &spec.env).await
+        run_install(
+            spec.install.as_ref(),
+            &source_dir,
+            &spec.env,
+            InstallScripts::Run,
+            Limits::DEFAULT.install,
+        )
+        .await
     };
     let install_log = match install {
         Ok(output) => output,
@@ -1198,25 +1239,26 @@ pub async fn run_target(spec: &TargetSpec, root: &Path, log_path: &str) -> Resul
     }
     let _ = writeln!(log, "$ {line}");
 
-    let status = Command::new(&spec.command)
-        .args(&spec.args)
-        .envs(&spec.env)
-        .env_remove(BUILD_TOKEN_ENV)
-        .current_dir(&source_dir)
+    // A server that stops takes its builds with it, rather than leaving a
+    // Gradle nobody will read the result of (the command's process group).
+    let mut command = HostCommand::new(
+        Program::configured(&spec.command),
+        &build_authority(),
+        TARGET_TIMEOUT,
+    );
+    command
+        .configured_args(&spec.args)
+        .cwd(&source_dir)
         .stdout(log.try_clone().with_context(|| log_path.to_owned())?)
-        .stderr(log.try_clone().with_context(|| log_path.to_owned())?)
-        // A server that stops takes its builds with it, rather than leaving a
-        // Gradle nobody will read the result of.
-        .kill_on_drop(true)
-        .status()
-        .await
-        .with_context(|| {
-            format!(
-                "launching the {} build `{line}` in {}",
-                spec.label,
-                source_dir.display()
-            )
-        })?;
+        .stderr(log.try_clone().with_context(|| log_path.to_owned())?);
+    target_env(&mut command, spec)?;
+    let status = command.status().await.with_context(|| {
+        format!(
+            "launching the {} build `{line}` in {}",
+            spec.label,
+            source_dir.display()
+        )
+    })?;
     if !status.success() {
         return Err(failed(status.to_string()));
     }
@@ -1323,6 +1365,17 @@ fn file_tail(path: &Path, bytes: usize) -> String {
 /// Catalog-free so it is testable without a database; [`build_app`] wraps it.
 /// [`BuildReport::git_repo`] is always `false` here — only the store knows.
 pub async fn run_build(spec: &BuildSpec, root: &Path) -> Result<BuildReport> {
+    run_build_with(spec, root, Limits::DEFAULT, InstallScripts::Run).await
+}
+
+/// [`run_build`] with each step's time limit and whether the install runs the
+/// packages' scripts.
+pub(crate) async fn run_build_with(
+    spec: &BuildSpec,
+    root: &Path,
+    limits: Limits,
+    scripts: InstallScripts,
+) -> Result<BuildReport> {
     let source_dir = resolve_under(root, &spec.source_dir)?;
     if !source_dir.is_dir() {
         return Err(Error::config(format!(
@@ -1331,18 +1384,30 @@ pub async fn run_build(spec: &BuildSpec, root: &Path) -> Result<BuildReport> {
         )));
     }
 
-    // One build at a time, install included; see [`BUILD_LOCK`].
+    // One build at a time, install included; see [`BUILD_LOCK`]. Every step
+    // has a time limit, so a hung installer or a bundler left in watch mode is
+    // killed and the lock released, rather than holding every build, check
+    // and IDE save on the server until a restart (H4.4).
     let _serialised = BUILD_LOCK.lock().await;
 
-    let install_log = run_install(spec.install.as_ref(), &source_dir, &BTreeMap::new()).await?;
+    let install_log = run_install(
+        spec.install.as_ref(),
+        &source_dir,
+        &BTreeMap::new(),
+        scripts,
+        limits.install,
+    )
+    .await?;
 
-    let output = run_bundler(spec, &source_dir).await.with_context(|| {
-        format!(
-            "launching build command `{}` in {}",
-            command_line(spec),
-            source_dir.display()
-        )
-    })?;
+    let output = run_bundler(spec, root, &source_dir, limits.bundle)
+        .await
+        .with_context(|| {
+            format!(
+                "launching build command `{}` in {}",
+                command_line(spec),
+                source_dir.display()
+            )
+        })?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -1392,15 +1457,22 @@ pub async fn run_build(spec: &BuildSpec, root: &Path) -> Result<BuildReport> {
 
 /// Run the build command in `source_dir`: an `npm run <script>` the way npm
 /// would run it but without npm ([`NpmScript`]), anything else as it is.
-async fn run_bundler(spec: &BuildSpec, source_dir: &Path) -> std::io::Result<Output> {
+async fn run_bundler(
+    spec: &BuildSpec,
+    root: &Path,
+    source_dir: &Path,
+    timeout: Timeout,
+) -> std::result::Result<Output, sc_proc::ProcError> {
     match NpmScript::resolve(spec, source_dir) {
-        Some(script) => script.run(source_dir).await,
+        Some(script) => script.run(source_dir, root, timeout).await,
         None => {
-            Command::new(&spec.command)
-                .args(&spec.args)
-                .current_dir(source_dir)
-                .output()
-                .await
+            let mut bundler = HostCommand::new(
+                Program::configured(&spec.command),
+                &build_authority(),
+                timeout,
+            );
+            bundler.configured_args(&spec.args).cwd(source_dir);
+            bundler.output().await
         }
     }
 }
@@ -1479,11 +1551,23 @@ impl NpmScript {
         })
     }
 
-    /// Run the steps in `dir`, as one process's worth of output: both streams
-    /// concatenated, and the status of the last step that ran.
-    async fn run(&self, dir: &Path) -> std::io::Result<Output> {
-        let dir = std::path::absolute(dir)?;
-        let path = Self::search_path(&dir)?;
+    /// Run the steps in `dir` (inside the store at `root`), as one process's
+    /// worth of output: both streams concatenated, and the status of the last
+    /// step that ran. All of them within `timeout`.
+    async fn run(
+        &self,
+        dir: &Path,
+        root: &Path,
+        timeout: Timeout,
+    ) -> std::result::Result<Output, sc_proc::ProcError> {
+        let io = |source| sc_proc::ProcError::Io {
+            program: "sh".to_owned(),
+            source,
+        };
+        let dir = std::path::absolute(dir).map_err(io)?;
+        let root = std::path::absolute(root).map_err(io)?;
+        let path = Self::search_path(&dir, &root).map_err(io)?;
+        let deadline = timeout.duration().map(|d| Instant::now() + d);
         let mut all = Output {
             status: ExitStatus::default(),
             stdout: Vec::new(),
@@ -1493,19 +1577,22 @@ impl NpmScript {
             all.stdout.extend_from_slice(
                 format!("\n> {}@{} {event}\n> {line}\n\n", self.name, self.version).as_bytes(),
             );
-            let step = Command::new("sh")
-                .arg("-c")
-                .arg(line)
-                .current_dir(&dir)
-                .env("PATH", &path)
-                .env("npm_lifecycle_event", event)
-                .env("npm_lifecycle_script", line)
-                .env("npm_package_name", &self.name)
-                .env("npm_package_version", &self.version)
-                .env("npm_package_json", &self.manifest)
-                .env("INIT_CWD", &dir)
-                .output()
-                .await?;
+            // What is left of the build's time, for this step.
+            let left = match deadline {
+                Some(at) => Timeout::after(at.saturating_duration_since(Instant::now())),
+                None => timeout,
+            };
+            let mut step = HostCommand::new("sh", &build_authority(), left);
+            step.flag_value("-c", line)
+                .cwd(&dir)
+                .env(sc_proc::env_name!("PATH"), &path)
+                .env(sc_proc::env_name!("npm_lifecycle_event"), event)
+                .env(sc_proc::env_name!("npm_lifecycle_script"), line)
+                .env(sc_proc::env_name!("npm_package_name"), &self.name)
+                .env(sc_proc::env_name!("npm_package_version"), &self.version)
+                .env(sc_proc::env_name!("npm_package_json"), &self.manifest)
+                .env(sc_proc::env_name!("INIT_CWD"), &dir);
+            let step = step.output().await?;
             all.stdout.extend(step.stdout);
             all.stderr.extend(step.stderr);
             all.status = step.status;
@@ -1518,8 +1605,16 @@ impl NpmScript {
 
     /// `PATH` as npm sets it for a script in `dir`: the `node_modules/.bin` of
     /// `dir` and of each directory above it, nearest first, then the server's.
-    fn search_path(dir: &Path) -> std::io::Result<OsString> {
-        let bins = dir.ancestors().map(|d| d.join("node_modules").join(".bin"));
+    ///
+    /// Up to the store's `root` and no further, unlike npm: above the root is
+    /// not the store's, and a store under a shared directory (`/tmp/x/apps`)
+    /// would otherwise run another local user's `/tmp/node_modules/.bin/vite`
+    /// (security review 2026-11, C7).
+    fn search_path(dir: &Path, root: &Path) -> std::io::Result<OsString> {
+        let bins = dir
+            .ancestors()
+            .take_while(|d| d.starts_with(root))
+            .map(|d| d.join("node_modules").join(".bin"));
         let inherited = std::env::var_os("PATH").unwrap_or_default();
         std::env::join_paths(bins.chain(std::env::split_paths(&inherited)))
             .map_err(std::io::Error::other)
@@ -1550,6 +1645,79 @@ impl NpmScript {
 /// wait on the server's builds.
 static BUILD_LOCK: Mutex<()> = Mutex::const_new(());
 
+/// On whose authority a build's programs run (TODO-type-hardening H4.1): a
+/// build is started by an administrator — Build, an IDE save, an admin
+/// agent's build or check tool (`coding::is_admin`) — by the server's boot
+/// rebuild of what an administrator configured, or by the operator's CLI. The
+/// commands are the administrator's configuration. Listed in the
+/// system-authority inventory.
+pub const APP_BUILD: &str =
+    "an application build (admin Build, IDE save, admin agent tools, boot rebuild)";
+
+/// [`APP_BUILD`] as a spawn authority.
+pub(crate) fn build_authority() -> AdminProof {
+    AdminProof::vouched(None, APP_BUILD)
+}
+
+/// How long each step of a build may run before its process group is killed
+/// (and [`BUILD_LOCK`] released with the error).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Limits {
+    /// The dependency install.
+    pub(crate) install: Timeout,
+    /// The bundler, all of an npm script's steps together.
+    pub(crate) bundle: Timeout,
+}
+
+impl Limits {
+    /// A first `npm install` of a large project over a slow link takes minutes;
+    /// twenty is far past any build that is making progress.
+    pub(crate) const DEFAULT: Limits = Limits {
+        install: Timeout::minutes(20),
+        bundle: Timeout::minutes(20),
+    };
+}
+
+/// How long `tsc --noEmit` (or `npm run typecheck`) may run.
+const TYPECHECK_TIMEOUT: Timeout = Timeout::minutes(15);
+
+/// How long a native target build (Gradle, Xcode) may run.
+const TARGET_TIMEOUT: Timeout = Timeout::minutes(120);
+
+/// The toolchain variables a native target build is given from the server's
+/// environment, besides the ones its requirements name: what Gradle, the
+/// Android SDK and Xcode read to find themselves.
+const TOOLCHAIN_ENV: [&str; 7] = [
+    "JAVA_HOME",
+    "ANDROID_HOME",
+    "ANDROID_SDK_ROOT",
+    "ANDROID_NDK_HOME",
+    "GRADLE_USER_HOME",
+    "GRADLE_OPTS",
+    "DEVELOPER_DIR",
+];
+
+/// A target build's environment: the toolchain's and the requirements'
+/// variables from the server's environment, then the target's own `env`
+/// (which wins). Nothing else of the server's — not the build host's token,
+/// not the database URL.
+fn target_env(command: &mut HostCommand, spec: &TargetSpec) -> Result<()> {
+    let required = spec.requires.iter().filter_map(|r| match &r.kind {
+        TargetRequirementKind::Env { name, .. } => Some(name.as_str()),
+        TargetRequirementKind::Command { dir_env, .. } => dir_env.as_deref(),
+        TargetRequirementKind::Os { .. } => None,
+    });
+    for name in TOOLCHAIN_ENV.into_iter().chain(required) {
+        if !spec.env.contains_key(name) {
+            command.inherit(EnvName::new(name)?);
+        }
+    }
+    for (name, value) in &spec.env {
+        command.env(EnvName::new(name.as_str())?, value);
+    }
+    Ok(())
+}
+
 /// Install the app's dependencies when the [`BuildSpec`]'s install step says to
 /// and its marker directory is absent (TODO §2.3), or is present but was
 /// installed from different manifests than the project has now (TODO B1.1):
@@ -1573,19 +1741,31 @@ async fn run_install(
     install: Option<&InstallSpec>,
     source_dir: &Path,
     env: &BTreeMap<String, String>,
+    scripts: InstallScripts,
+    timeout: Timeout,
 ) -> Result<Option<String>> {
     let Some(install) = install else {
         return Ok(None);
     };
     let marker = source_dir.join(&install.marker);
     let stamp = marker.join(INSTALL_STAMP);
-    let wanted = manifest_hash(install, source_dir)?;
+    let wanted = manifest_hash(install, source_dir, scripts)?;
+    // An install with the scripts is also what one without them would have
+    // installed: a save after a Build has nothing to do.
+    let with_scripts = match scripts {
+        InstallScripts::Run => None,
+        InstallScripts::Skip => manifest_hash(install, source_dir, InstallScripts::Run)?,
+    };
     if marker.exists() {
         match (&wanted, std::fs::read_to_string(&stamp)) {
             // No manifest to compare against: the marker alone decides, as it
             // always has.
             (None, _) => return Ok(None),
-            (Some(wanted), Ok(seen)) if seen.trim() == wanted => return Ok(None),
+            (Some(wanted), Ok(seen))
+                if seen.trim() == wanted || with_scripts.as_deref() == Some(seen.trim()) =>
+            {
+                return Ok(None);
+            }
             // Installed before stamps existed (or by hand): adopt the tree
             // rather than reinstall every application on upgrade, unless a
             // declared dependency is plainly missing from it.
@@ -1599,20 +1779,37 @@ async fn run_install(
     // A stale stamp must not survive an install that fails half-way.
     let _ = std::fs::remove_file(&stamp);
 
-    let line = format!("{} {}", install.command, install.args.join(" "));
-    let output = Command::new(&install.command)
-        .args(&install.args)
-        .envs(env)
-        .env_remove(BUILD_TOKEN_ENV)
-        .current_dir(source_dir)
-        .output()
-        .await
-        .with_context(|| {
-            format!(
-                "launching install command `{line}` in {}",
-                source_dir.display()
-            )
-        })?;
+    let mut command = HostCommand::new(
+        Program::configured(&install.command),
+        &build_authority(),
+        timeout,
+    );
+    command.configured_args(&install.args).cwd(source_dir);
+    if scripts == InstallScripts::Skip {
+        match ignore_scripts_flag(&install.command) {
+            Some(flag) => {
+                command.arg(flag);
+            }
+            None => {
+                return Ok(Some(format!(
+                    "the dependencies changed, but `{}` has no known way to install without \
+                     running the packages' scripts, so nothing was installed on save; press \
+                     Build to install them\n",
+                    install.command
+                )));
+            }
+        }
+    }
+    for (name, value) in env {
+        command.env(EnvName::new(name.as_str())?, value);
+    }
+    let line = command.command_line();
+    let output = command.output().await.with_context(|| {
+        format!(
+            "launching install command `{line}` in {}",
+            source_dir.display()
+        )
+    })?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -1626,10 +1823,38 @@ async fn run_install(
     }
     // Hashed again, after the install: `npm install` rewrites the lockfile, and
     // a stamp of the files as they were before would never match again.
-    if let Some(after) = manifest_hash(install, source_dir)? {
+    if let Some(after) = manifest_hash(install, source_dir, scripts)? {
         write_install_stamp(&stamp, &after);
     }
-    Ok(Some(format!("{stdout}{stderr}")))
+    let note = match scripts {
+        InstallScripts::Run => "",
+        InstallScripts::Skip => {
+            "(installed with --ignore-scripts on save; the next Build installs again with the \
+             packages' install scripts)\n"
+        }
+    };
+    Ok(Some(format!("{note}{stdout}{stderr}")))
+}
+
+/// Whether an install runs the packages' own lifecycle scripts
+/// (`preinstall`, `install`, `postinstall` of every dependency).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallScripts {
+    /// As the package manager does by default: a Build, a check, a target
+    /// build, the boot rebuild.
+    Run,
+    /// `--ignore-scripts`: an IDE save, unless an administrator turned on
+    /// running them there (`install_scripts_on_save`).
+    Skip,
+}
+
+/// The flag that keeps `installer` from running install scripts, for the
+/// package managers that have one.
+fn ignore_scripts_flag(installer: &str) -> Option<&'static str> {
+    let name = Path::new(installer).file_stem()?.to_str()?;
+    ["npm", "pnpm", "yarn", "bun"]
+        .contains(&name)
+        .then_some("--ignore-scripts")
 }
 
 /// The file, inside the install marker, recording [`manifest_hash`] as of the
@@ -1653,13 +1878,24 @@ const INSTALL_MANIFESTS: &[&str] = &[
 ///
 /// Contents rather than modification times: a git checkout or a restored
 /// backup resets the times without changing what is declared.
-fn manifest_hash(install: &InstallSpec, source_dir: &Path) -> Result<Option<String>> {
+///
+/// An install without the scripts hashes differently (and one with them as it
+/// always has, so a tree installed before this existed is not reinstalled).
+fn manifest_hash(
+    install: &InstallSpec,
+    source_dir: &Path,
+    scripts: InstallScripts,
+) -> Result<Option<String>> {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(install.command.as_bytes());
     for arg in &install.args {
         hasher.update([0]);
         hasher.update(arg.as_bytes());
+    }
+    if scripts == InstallScripts::Skip {
+        hasher.update([0]);
+        hasher.update(b"--ignore-scripts");
     }
     let mut any = false;
     for name in INSTALL_MANIFESTS {
@@ -1775,8 +2011,13 @@ fn last_bytes(text: &str) -> &str {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 mod tests {
     use super::*;
+    use crate::build_hosts::BUILD_TOKEN_ENV;
     use crate::framework::{AppRequest, Framework, InstallSpec};
 
     /// A scratch directory removed when the guard drops, so a failing assertion
@@ -2532,6 +2773,10 @@ touch ran
     }
 
     #[tokio::test]
+    #[allow(
+        unsafe_code,
+        reason = "the test of a variable the build must not pass on sets it"
+    )]
     async fn the_build_hosts_token_never_reaches_the_build() {
         let tmp = TempDir::new("targettoken");
         let web = tmp.path().join("web");
@@ -2541,7 +2786,10 @@ touch ran
             "apk.sh",
             "#!/bin/sh\nset -e\nmkdir -p out\nprintf %s \"${FELDSPAR_BUILD_TOKEN-unset}\" > out/app.apk\n",
         );
-        // Only this test sets the variable, so no other test can see it change.
+        // SAFETY: test-only, and not airtight: only this test writes the
+        // environment and nothing else reads this variable, but a concurrent
+        // `getenv` elsewhere in the binary is the test-code race security review
+        // 2026-11 (F §1) records.
         unsafe { std::env::set_var(BUILD_TOKEN_ENV, "fsbh_secret") };
 
         run_target(&target_spec("apk.sh"), tmp.path(), LOG)
@@ -2971,6 +3219,173 @@ touch ran
         for build in builds {
             build.await.unwrap().unwrap();
         }
+    }
+
+    /// TODO-type-hardening H4.4: a bundler that never finishes (watch mode, a
+    /// hang) is stopped at its time limit, the build fails saying so, and the
+    /// build lock is released — the next build runs instead of waiting behind
+    /// it until a restart.
+    #[tokio::test]
+    async fn a_hung_bundler_is_stopped_and_the_build_lock_released() {
+        let tmp = TempDir::new("hung");
+        let hung = tmp.path().join("hung");
+        let web = hung.join("web");
+        std::fs::create_dir_all(&web).unwrap();
+        write_fake_bundler(
+            &web,
+            "#!/bin/sh
+echo watching
+sleep 60
+",
+        );
+        let limits = Limits {
+            bundle: Timeout::after(std::time::Duration::from_millis(300)),
+            ..Limits::DEFAULT
+        };
+        let started = Instant::now();
+        let err = run_build_with(&spec(&["build.sh"]), &hung, limits, InstallScripts::Run)
+            .await
+            .unwrap_err();
+        assert!(
+            sc_error::format_chain(&err).contains("was still running after 300 ms"),
+            "{}",
+            sc_error::format_chain(&err)
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+
+        let good = tmp.path().join("good");
+        good_source(&good);
+        let next = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            run_build(&spec(&["build.sh"]), &good),
+        )
+        .await
+        .expect("the lock was released");
+        assert!(next.is_ok(), "{next:?}");
+    }
+
+    /// Security review 2026-11 C3: a build's programs see a cleared
+    /// environment — the locale, the path, the home directory — and not the
+    /// server's own variables (here the ones `cargo test` set).
+    #[tokio::test]
+    async fn a_build_does_not_see_the_servers_environment() {
+        assert!(std::env::var_os("CARGO_PKG_NAME").is_some());
+        let tmp = TempDir::new("buildenv");
+        let web = tmp.path().join("web");
+        std::fs::create_dir_all(&web).unwrap();
+        write_fake_bundler(
+            &web,
+            "#!/bin/sh
+set -e
+mkdir -p dist
+             printf '%s|%s' \"${CARGO_PKG_NAME-unset}\" \"${PATH:+path}\" > dist/index.html
+",
+        );
+        let report = run_build(&spec(&["build.sh"]), tmp.path()).await.unwrap();
+        let page = std::fs::read_to_string(report.output_dir.join("index.html")).unwrap();
+        assert_eq!(page, "unset|path");
+    }
+
+    /// An installer named like a package manager: records its arguments, and
+    /// makes `node_modules` as `npm install` does.
+    fn npm_shaped_installer(web: &Path) -> InstallSpec {
+        write_script(
+            web,
+            "npm",
+            "#!/bin/sh
+set -e
+echo \"$*\" >> installs.log
+mkdir -p node_modules
+",
+        );
+        InstallSpec {
+            command: web.join("npm").display().to_string(),
+            args: vec!["install".to_owned()],
+            marker: "node_modules".to_owned(),
+        }
+    }
+
+    /// TODO-type-hardening H4.4: an IDE save's install runs without the
+    /// packages' install scripts, and is stamped so; the next Build installs
+    /// again with them, and a save after that has nothing to install.
+    #[tokio::test]
+    async fn a_save_installs_without_scripts_and_the_next_build_with_them() {
+        let tmp = TempDir::new("ignorescripts");
+        good_source(tmp.path());
+        let web = tmp.path().join("web");
+        write_manifest(&web, &["react"]);
+        let mut spec = spec(&["build.sh"]);
+        spec.install = Some(npm_shaped_installer(&web));
+        let log = || std::fs::read_to_string(web.join("installs.log")).unwrap_or_default();
+
+        let save = run_build_with(&spec, tmp.path(), Limits::DEFAULT, InstallScripts::Skip)
+            .await
+            .unwrap();
+        assert_eq!(log(), "install --ignore-scripts\n");
+        assert!(
+            save.install_log
+                .as_deref()
+                .unwrap_or_default()
+                .contains("the next Build installs again"),
+            "{save:?}"
+        );
+        // Another save: installed as a save installs, nothing to do.
+        run_build_with(&spec, tmp.path(), Limits::DEFAULT, InstallScripts::Skip)
+            .await
+            .unwrap();
+        assert_eq!(log().lines().count(), 1);
+
+        // A Build runs the scripts.
+        assert!(run_build(&spec, tmp.path()).await.unwrap().installed);
+        assert_eq!(log(), "install --ignore-scripts\ninstall\n");
+        // And a save after it has nothing to install.
+        run_build_with(&spec, tmp.path(), Limits::DEFAULT, InstallScripts::Skip)
+            .await
+            .unwrap();
+        assert_eq!(log().lines().count(), 2);
+    }
+
+    /// An installer with no `--ignore-scripts` is not run on a save at all.
+    #[tokio::test]
+    async fn a_save_does_not_run_an_installer_it_cannot_keep_from_running_scripts() {
+        let tmp = TempDir::new("noignore");
+        good_source(tmp.path());
+        let web = tmp.path().join("web");
+        write_script(
+            &web,
+            "install.sh",
+            "#!/bin/sh
+echo ran >> installs.log
+mkdir -p node_modules
+",
+        );
+        let mut spec = spec(&["build.sh"]);
+        spec.install = Some(install_step());
+        let report = run_build_with(&spec, tmp.path(), Limits::DEFAULT, InstallScripts::Skip)
+            .await
+            .unwrap();
+        assert!(!web.join("installs.log").exists());
+        assert!(
+            report
+                .install_log
+                .as_deref()
+                .unwrap_or_default()
+                .contains("press Build"),
+            "{report:?}"
+        );
+    }
+
+    /// Security review 2026-11 C7: an npm script's `PATH` has the
+    /// `node_modules/.bin` of the store's directories, not of those above it.
+    #[test]
+    fn an_npm_scripts_path_stops_at_the_store_root() {
+        let path =
+            NpmScript::search_path(Path::new("/srv/x/apps/web"), Path::new("/srv/x/apps")).unwrap();
+        let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        assert_eq!(dirs[0], Path::new("/srv/x/apps/web/node_modules/.bin"));
+        assert_eq!(dirs[1], Path::new("/srv/x/apps/node_modules/.bin"));
+        assert!(!dirs.contains(&PathBuf::from("/srv/x/node_modules/.bin")));
+        assert!(!dirs.contains(&PathBuf::from("/node_modules/.bin")));
     }
 
     #[tokio::test]

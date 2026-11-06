@@ -423,7 +423,7 @@ impl Writable<'_> {
     /// Record the caller as the owner, unless one is recorded already — the
     /// uploader owns their upload (§2.1). Nothing for a caller with no user.
     pub async fn claim(&self) {
-        if let Some(owner) = &self.store.caller.user_id {
+        if let Some(owner) = self.store.caller.user_id() {
             record_owner(self.store.store.as_ref(), &self.path, owner).await;
         }
     }

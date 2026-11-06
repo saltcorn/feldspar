@@ -55,7 +55,7 @@ pub const ADMIN_ONLY_WRITE: &str = "admin_only_write";
 const ADMIN_ONLY_SYSTEM_COLUMNS: [&str; 4] = [COL_ID, COL_EMAIL, COL_DISABLED, COL_EMAIL_VERIFIED];
 
 /// Whether `table` is the users table.
-pub fn is_users(table: &Table) -> bool {
+pub(crate) fn is_users(table: &Table) -> bool {
     table.name == USERS_TABLE
 }
 
@@ -105,35 +105,20 @@ pub fn projection(table: &Table) -> Vec<Projection> {
 /// calculated fields, and saying they are null would be saying something
 /// false. A secret reads as its sentinel.
 pub fn api_row(table: &Table, row: &Json) -> Json {
-    let Json::Object(obj) = row else {
-        return Json::Null;
-    };
-    let mut out = Map::with_capacity(obj.len());
-    for field in &table.fields {
-        let name = &field.base.name;
-        if visible_field(table, name).is_none() {
-            continue;
-        }
-        if let Some(value) = obj.get(name) {
-            out.insert(name.clone(), value.clone());
-        }
-    }
     // A secret is sent as its sentinel, like every other read a client makes
-    // (TODO-imap M2).
-    let mut out = Json::Object(out);
-    sc_catalog::secrets::redact_json(table, &mut out);
-    out
+    // (TODO-imap M2) — what an [`ApiRow`](crate::ApiRow) is.
+    crate::ApiRow::own_columns(table, row).map_or(Json::Null, crate::ApiRow::into_json)
 }
 
 /// The caller the role rule applies to, or `None` when it does not (not the
 /// users table, a system write, or an admin).
 fn restricted_caller<'a>(table: &Table, context: Option<&'a Principal>) -> Option<&'a Principal> {
-    context.filter(|c| is_users(table) && !c.role.is_admin())
+    context.filter(|c| is_users(table) && !c.role().is_admin())
 }
 
 /// The caller's own user id, as the context carries it.
 fn caller_id(context: &Principal) -> Option<&str> {
-    context.user.as_ref()?.get(COL_ID)?.as_str()
+    context.user()?.get(COL_ID)?.as_str()
 }
 
 /// Refuse a write body that names the password hash — on the users table,
@@ -216,8 +201,8 @@ pub(crate) fn check_insert(
     };
     reject_admin_only(table, obj, None)?;
     match written_role(table, obj)? {
-        Some(role) if caller.role.outranks(role) => Ok(()),
-        Some(role) => Err(too_powerful(role, caller.role)),
+        Some(role) if caller.role().outranks(role) => Ok(()),
+        Some(role) => Err(too_powerful(role, caller.role())),
         None => Err(Error::invalid(format!(
             "a new account needs a `{COL_ROLE}` less powerful than your own"
         ))),
@@ -245,11 +230,11 @@ pub(crate) fn update_guard(
         let own_row = caller_id(caller).is_some_and(|me| me.eq_ignore_ascii_case(id.trim()));
         // Keeping your own role is not handing anybody anything.
         let allowed = match own_row {
-            true => caller.role.meets(role),
-            false => caller.role.outranks(role),
+            true => caller.role().meets(role),
+            false => caller.role().outranks(role),
         };
         if !allowed {
-            return Err(too_powerful(role, caller.role));
+            return Err(too_powerful(role, caller.role()));
         }
     }
     reachable(table, caller).map(Some)
@@ -269,7 +254,7 @@ fn reachable(table: &Table, caller: &Principal) -> Result<Expr> {
     let weaker = Expr::binary(
         BinOp::Gt,
         Expr::col(COL_ROLE),
-        Expr::lit(i64::from(caller.role)),
+        Expr::lit(i64::from(caller.role())),
     );
     Ok(match caller_id(caller) {
         Some(me) => {
@@ -331,11 +316,50 @@ mod tests {
     const ME: &str = "6f1c1f0e-1d7b-4c47-9a35-7a3f3c1f2b10";
 
     fn therapist() -> Principal {
-        Principal::new(Role::of(40), Some(json!({ "id": ME, "role": 40 })))
+        Principal::recorded(Role::of(40), Some(json!({ "id": ME, "role": 40 })))
     }
 
     fn obj(v: Json) -> Map<String, Json> {
         v.as_object().cloned().unwrap_or_default()
+    }
+
+    /// TODO-type-hardening H3.5: every way to make an `ApiRow` drops the
+    /// password hash, from a read, a change-log image and a write's answer.
+    #[test]
+    fn an_api_row_never_carries_the_password_hash() {
+        let t = users();
+        let image = obj(json!({
+            "id": ME, "email": "a@b.c", "password_hash": "$argon2id$x", "gone": 1
+        }));
+        let from_image =
+            crate::ApiRow::of_image(&t, sc_catalog::history::RawRow::new(image.clone()));
+        assert!(!from_image.as_map().contains_key(COL_PASSWORD_HASH));
+        // A column dropped since is kept: history reports it as removed.
+        assert_eq!(from_image.as_map().get("gone"), Some(&json!(1)));
+        let serialized = serde_json::to_value(&from_image).unwrap();
+        assert_eq!(serialized["email"], json!("a@b.c"));
+        assert!(serialized.get(COL_PASSWORD_HASH).is_none());
+
+        let own = crate::ApiRow::own_columns(&t, &Json::Object(image)).unwrap();
+        assert!(!own.as_map().contains_key(COL_PASSWORD_HASH));
+        assert!(!own.as_map().contains_key("gone"));
+
+        let values = std::collections::BTreeMap::from([
+            ("email".to_owned(), Value::Text("a@b.c".into())),
+            (
+                COL_PASSWORD_HASH.to_owned(),
+                Value::Text("$argon2id$x".into()),
+            ),
+        ]);
+        let read = crate::ApiRow::of_values(&t, &values);
+        assert_eq!(read.as_map().get("email"), Some(&json!("a@b.c")));
+        assert!(!read.as_map().contains_key(COL_PASSWORD_HASH));
+        // A shape sees the values with the hash already gone.
+        let shaped = crate::ApiRow::shaped(&t, &values, |seen| {
+            assert!(!seen.contains_key(COL_PASSWORD_HASH));
+            seen.keys().map(|k| (k.clone(), json!(true))).collect()
+        });
+        assert_eq!(shaped.into_json(), json!({ "email": true }));
     }
 
     #[test]
@@ -384,7 +408,7 @@ mod tests {
         let hash = obj(json!({"email": "p@x", "role": 80, "password_hash": "x"}));
         assert!(check_insert(&t, &hash, Authority::Caller(&ctx)).is_err());
         // An admin is not held to the role rule, but still cannot write a hash.
-        let admin = Principal::new(Role::ADMIN, None);
+        let admin = Principal::recorded(Role::ADMIN, None);
         assert!(
             check_insert(
                 &t,
@@ -469,7 +493,7 @@ mod tests {
         let org = obj(json!({"email": "p@x", "role": 80, "org_id": 7}));
         assert!(check_insert(&t, &org, Authority::Caller(&ctx)).is_err());
         // An admin, and a system write, are not held to it.
-        let admin = Principal::new(Role::ADMIN, None);
+        let admin = Principal::recorded(Role::ADMIN, None);
         let all = obj(json!({"email": "e@x", "disabled": true, "org_id": 7}));
         assert!(update_guard(&t, other, &all, Authority::Caller(&admin)).is_ok());
         assert!(update_guard(&t, other, &all, Authority::system("test")).is_ok());

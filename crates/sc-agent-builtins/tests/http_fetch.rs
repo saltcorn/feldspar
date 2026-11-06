@@ -13,6 +13,10 @@
 //! redirect is followed and said, but not to a private address or off the
 //! allow-list; a 404 is an error quoting the server; `POST` is a checkbox;
 //! configured headers are sent; a real agent run offers the tool and gets text.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use std::sync::{Arc, Mutex};
 

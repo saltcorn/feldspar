@@ -41,7 +41,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -957,17 +956,21 @@ fn script(script: &Path, project: &Path, task: &str, run: Option<RunId>) -> Resu
     let script = script
         .canonicalize()
         .map_err(|e| Error::config(format!("resolving `{}`: {e}", script.display())))?;
-    let mut command = Command::new("sh");
+    // At the operator's terminal, with their environment: a suite's scripts
+    // are the operator's code, and may read what their shell set.
+    const EVAL: sc_proc::OperatorCli = sc_proc::OperatorCli::new("eval");
+    let mut command = sc_proc::HostCommand::new("sh", &EVAL, sc_proc::Timeout::minutes(30));
     command
-        .arg(&script)
-        .current_dir(project)
-        .env("FELDSPAR_EVAL_TASK", task)
-        .env("FELDSPAR_EVAL_PROJECT", project);
+        .operator_terminal(&EVAL)
+        .operand(sc_proc::Operand::path(&script))
+        .cwd(project)
+        .env(sc_proc::env_name!("FELDSPAR_EVAL_TASK"), task)
+        .env(sc_proc::env_name!("FELDSPAR_EVAL_PROJECT"), project);
     if let Some(run) = run {
-        command.env("FELDSPAR_EVAL_RUN", run.0.to_string());
+        command.env(sc_proc::env_name!("FELDSPAR_EVAL_RUN"), run.0.to_string());
     }
     let out = command
-        .output()
+        .output_blocking()
         .map_err(|e| Error::config(format!("running `{}`: {e}", script.display())))?;
     let mut output = String::from_utf8_lossy(&out.stdout).into_owned();
     output.push_str(&String::from_utf8_lossy(&out.stderr));

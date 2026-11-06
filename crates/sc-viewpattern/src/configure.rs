@@ -19,14 +19,13 @@
 //! builder's own calls — its options, and the previews and lookups its canvas
 //! makes (§10) — are made here too, as the admin, over the same snapshot.
 
-use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::TriggerDispatcher;
 use sc_api::code_host::{FileStoreHost, TableHost, schema_snapshot};
 use sc_app::Application;
 use sc_auth::User;
-use sc_catalog::Catalog;
+use sc_catalog::{AdminPrincipal, Catalog};
 use sc_error::{Error, Repr, Result};
 use sc_expr::CodeHosts;
 use sc_types::{Attrs, BasicType, FormField};
@@ -56,14 +55,14 @@ pub struct Configurer<'a> {
 }
 
 impl<'a> Configurer<'a> {
-    /// The configuration calls for `app`, made by `user` (the signed-in admin)
-    /// through `runtime`. `triggers` is the server's dispatcher, which the
+    /// The configuration calls for `app`, made by `admin` (the signed-in
+    /// admin's proof, or the server's own for a system job) through `runtime`. `triggers` is the server's dispatcher, which the
     /// snapshot reads what each of the application's triggers runs from.
     pub async fn new(
         runtime: Arc<dyn ViewRuntime>,
         catalog: &'a Catalog,
         app: &Application,
-        user: Option<&User>,
+        admin: &AdminPrincipal,
         triggers: Option<&TriggerDispatcher>,
     ) -> Result<Configurer<'a>> {
         let set = view_sets().get(catalog, app.id).await?;
@@ -71,7 +70,10 @@ impl<'a> Configurer<'a> {
         // links are relative to it, and a request's own base URL reaches
         // `req.get_base_url()` directly (see the framework's `snapshot`).
         let snapshot = application_snapshot(catalog, app, &set, "", triggers).await?;
-        let caller = sc_access::principal_at(Role::ADMIN, user);
+        // The admin's proof, not a user at an admin role written in here
+        // (TODO-type-hardening H3.1).
+        let caller = admin.principal();
+        let user = User::from_json(caller.role(), caller.user())?;
         Ok(Configurer {
             runtime,
             catalog,
@@ -79,11 +81,11 @@ impl<'a> Configurer<'a> {
             request: ViewRequest {
                 method: "GET".to_owned(),
                 path: "/".to_owned(),
-                user: user.map(view_user),
+                user: user.as_ref().map(view_user),
                 ..ViewRequest::default()
             },
-            table: TableHost::new(catalog).caused_by(caller.role, caller.user.clone()),
-            files: FileStoreHost::new(catalog).caused_by(caller.role, caller.user.as_ref()),
+            table: TableHost::new(catalog).caused_by(caller.role(), caller.user().cloned()),
+            files: FileStoreHost::new(catalog).caused_by(caller.role(), caller.user()),
         })
     }
 

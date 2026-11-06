@@ -27,6 +27,19 @@ const FLAG_SRID: u32 = 0x2000_0000;
 /// What went wrong reading or writing a geometry.
 pub type GeomError = String;
 
+/// How deep geometries may nest — a collection in a collection in a
+/// collection — read or written (TODO-type-hardening H5.3).
+///
+/// Both directions recurse once a level, and both take what they are given
+/// from somewhere else: the bytes of a database (an attached connection's, a
+/// GeoPackage's) and a client's GeoJSON. A GeometryCollection holding a
+/// MultiPolygon is three; a real one does not come near this.
+pub const MAX_GEOMETRY_DEPTH: usize = 32;
+
+fn too_deep() -> GeomError {
+    format!("the geometry nests more than {MAX_GEOMETRY_DEPTH} levels deep")
+}
+
 /// Whether a Postgres type name is one this module converts.
 pub fn is_geometry_type(name: &str) -> bool {
     matches!(name, "geometry" | "geography")
@@ -41,7 +54,7 @@ pub fn ewkb_to_geojson(bytes: &[u8]) -> Result<Json, GeomError> {
         pos: 0,
         little: true,
     };
-    let geometry = reader.geometry()?;
+    let geometry = reader.geometry(1)?;
     if reader.pos != bytes.len() {
         return Err(format!(
             "{} bytes left over after a geometry",
@@ -95,8 +108,11 @@ impl Reader<'_> {
         })
     }
 
-    /// One whole geometry, header included.
-    fn geometry(&mut self) -> Result<Json, GeomError> {
+    /// One whole geometry, header included, `depth` levels down.
+    fn geometry(&mut self, depth: usize) -> Result<Json, GeomError> {
+        if depth > MAX_GEOMETRY_DEPTH {
+            return Err(too_deep());
+        }
         let [order] = self.take::<1>()?;
         self.little = match order {
             0 => false,
@@ -142,7 +158,7 @@ impl Reader<'_> {
                 let mut parts = Vec::with_capacity(n.min(1 << 16) as usize);
                 for _ in 0..n {
                     let saved = self.little;
-                    parts.push(self.geometry()?);
+                    parts.push(self.geometry(depth + 1)?);
                     self.little = saved;
                 }
                 if base == 7 {
@@ -227,7 +243,7 @@ fn geojson(type_: &str, coordinates: Json) -> Json {
 /// Little-endian 2D EWKB with SRID 4326 for a GeoJSON geometry.
 pub fn geojson_to_ewkb(json: &Json) -> Result<Vec<u8>, GeomError> {
     let mut out = Vec::with_capacity(64);
-    write_geometry(json, true, &mut out)?;
+    write_geometry(json, true, 1, &mut out)?;
     Ok(out)
 }
 
@@ -241,7 +257,15 @@ fn write_header(base: u32, srid: bool, out: &mut Vec<u8>) {
     }
 }
 
-fn write_geometry(json: &Json, srid: bool, out: &mut Vec<u8>) -> Result<(), GeomError> {
+fn write_geometry(
+    json: &Json,
+    srid: bool,
+    depth: usize,
+    out: &mut Vec<u8>,
+) -> Result<(), GeomError> {
+    if depth > MAX_GEOMETRY_DEPTH {
+        return Err(too_deep());
+    }
     let type_ = json
         .get("type")
         .and_then(Json::as_str)
@@ -254,7 +278,7 @@ fn write_geometry(json: &Json, srid: bool, out: &mut Vec<u8>) -> Result<(), Geom
         write_header(7, srid, out);
         write_count(parts.len(), out)?;
         for part in parts {
-            write_geometry(part, false, out)?;
+            write_geometry(part, false, depth + 1, out)?;
         }
         return Ok(());
     }
@@ -410,6 +434,44 @@ mod tests {
             ewkb_to_geojson(&bytes).expect("decode"),
             json!({"type": "Point", "coordinates": [3.0, 4.0, 5.0]})
         );
+    }
+
+    /// `depth` GeometryCollections, one inside the next, around a point.
+    fn nested(depth: usize) -> Json {
+        let mut g = json!({"type": "Point", "coordinates": [1.0, 2.0]});
+        for _ in 0..depth {
+            g = json!({"type": "GeometryCollection", "geometries": [g]});
+        }
+        g
+    }
+
+    /// The EWKB of `depth` collections around a point, built by hand so it
+    /// can be deeper than the writer allows.
+    fn nested_ewkb(depth: usize) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for _ in 0..depth {
+            bytes.push(1);
+            bytes.extend_from_slice(&7u32.to_le_bytes());
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+        }
+        bytes.push(1);
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        for v in [1.0f64, 2.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn nesting_is_bounded_both_ways() {
+        // Up to the bound round-trips.
+        round_trip(nested(MAX_GEOMETRY_DEPTH - 1));
+        let deep = geojson_to_ewkb(&nested(MAX_GEOMETRY_DEPTH)).expect_err("too deep");
+        assert!(deep.contains("nests more than"), "{deep}");
+        // A hundred thousand levels of bytes are an error, not a stack overflow.
+        let err = ewkb_to_geojson(&nested_ewkb(100_000)).expect_err("too deep");
+        assert!(err.contains("nests more than"), "{err}");
+        assert!(ewkb_to_geojson(&nested_ewkb(MAX_GEOMETRY_DEPTH - 1)).is_ok());
     }
 
     #[test]

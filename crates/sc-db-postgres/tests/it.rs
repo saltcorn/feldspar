@@ -19,6 +19,8 @@ mod checkout_timeout;
 mod crud;
 #[path = "introspect.rs"]
 mod introspect;
+#[path = "pkey_names.rs"]
+mod pkey_names;
 #[path = "query.rs"]
 mod query;
 #[path = "transaction.rs"]

@@ -168,7 +168,7 @@ impl<'a> Scoped<'a> {
                 }
                 Some(user.clone())
             }
-            None => User::from_json(principal.role, principal.user.as_ref())?,
+            None => User::from_json(principal.role(), principal.user())?,
         };
         Ok(Decided::Checked(principal, user))
     }
@@ -238,10 +238,7 @@ impl<'a> Scoped<'a> {
         Ok(Json::Array(
             values
                 .into_iter()
-                .map(|mut values| {
-                    sc_catalog::secrets::redact_values(table, &mut values);
-                    ownership::table_row_json(table, &values)
-                })
+                .map(|values| crate::ApiRow::of_values(table, &values).into_json())
                 .collect(),
         ))
     }

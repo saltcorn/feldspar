@@ -253,7 +253,7 @@ async fn call_function(
     scope.insert("args".to_owned(), argument.clone());
     let caller = ctx.principal();
     // In an application's chat, its own libraries over the instance's.
-    let application = caller.app.as_ref().map(|app| app.id);
+    let application = caller.app().as_ref().map(|app| app.id);
     dispatcher
         .run_tool_code(
             ctx.catalog,

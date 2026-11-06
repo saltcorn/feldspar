@@ -24,6 +24,10 @@
 
 #![cfg(feature = "deno-host")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use crate::common;
 
 use common::temp_root;

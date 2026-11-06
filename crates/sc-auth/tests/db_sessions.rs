@@ -267,8 +267,18 @@ async fn expired_sessions_lapse_and_are_swept() -> Result<()> {
     // Straight to the table, with its lifetime already spent — the store's own
     // `login` cannot make one of these, which is why the free function takes a
     // TTL rather than assuming the default.
-    let stale = create_session(&f.catalog, user.id(), Duration::seconds(-1)).await?;
-    let also_stale = create_session(&f.catalog, user.id(), Duration::seconds(-1)).await?;
+    let stale = create_session(
+        &f.catalog,
+        sc_auth::FullyAuthenticated::waived(user.clone(), sc_auth::SecondFactorWaiver::Test),
+        Duration::seconds(-1),
+    )
+    .await?;
+    let also_stale = create_session(
+        &f.catalog,
+        sc_auth::FullyAuthenticated::waived(user.clone(), sc_auth::SecondFactorWaiver::Test),
+        Duration::seconds(-1),
+    )
+    .await?;
     assert_eq!(session_rows(&f.catalog).await?, 3);
 
     // Lazily: reading a lapsed session both refuses it and purges its row.
@@ -312,5 +322,186 @@ async fn a_role_change_reaches_a_live_session() -> Result<()> {
         Role::PUBLIC,
         "the session names the user; it does not carry a copy of them"
     );
+    Ok(())
+}
+
+/// A credential change ends what the old credentials handed out, whoever makes
+/// it (security review 2026-11, #11): a new password, disabling the account,
+/// and a role that now requires a second factor the account lacks — not the
+/// sessions of an account that has one on, nor the one named as making the
+/// change. And an account can end its other sessions and keep its own.
+#[tokio::test]
+async fn credential_changes_end_the_sessions_they_outdate() -> Result<()> {
+    let f = fixture().await?;
+    f.catalog.set_secret_key(sc_catalog::SecretKey::generate()?);
+    let store = uncached(&f.catalog);
+    let member = Role::new(80).unwrap();
+    sc_auth::save_role(&f.catalog, &sc_auth::RoleDef::new(member, "Member")).await?;
+    let ann = create_user(&f.catalog, "ann@example.com", "ann-pw", member).await?;
+    let bob = create_user(&f.catalog, "bob@example.com", "bob-pw", member).await?;
+    let cat = create_user(&f.catalog, "cat@example.com", "cat-pw", member).await?;
+    let dee = create_user(&f.catalog, "dee@example.com", "dee-pw", member).await?;
+    let live = |token: String| {
+        let store = &store;
+        async move { store.user_for(&token).await.map(|u| u.is_some()) }
+    };
+
+    // A new password.
+    let token = store.login(ann.clone()).await?;
+    let _changed = sc_auth::set_user_password(&f.catalog, ann.id(), "new-ann-pw").await?;
+    assert!(!live(token).await?, "a new password ends the session");
+    let token = store.login(ann.clone()).await?;
+    let _changed = sc_auth::update_user(
+        &f.catalog,
+        ann.id(),
+        sc_auth::UserUpdate {
+            password: Some(sc_error::Secret::new("newer-ann-pw".to_owned())),
+            ..Default::default()
+        },
+    )
+    .await?;
+    assert!(!live(token).await?, "so does an edit with one");
+
+    // Disabled.
+    let token = store.login(bob.clone()).await?;
+    let _changed = sc_auth::set_user_disabled(&f.catalog, bob.id(), true).await?;
+    assert_eq!(session_rows(&f.catalog).await?, 0);
+    assert!(!live(token).await?);
+
+    // The role now requires a second factor: Cat has none, Dee has one on,
+    // and Ann is the admin making the change.
+    let secret = sc_auth::begin_second_factor_setup(&f.catalog, dee.id()).await?;
+    let code = sc_auth::totp_at(&secret, chrono::Utc::now().timestamp());
+    let sc_auth::Attempt::Permitted(permit) =
+        sc_auth::reserve_attempt(&f.catalog, dee.id()).await?
+    else {
+        panic!("a first guess");
+    };
+    let enabled = sc_auth::finish_second_factor_setup(&f.catalog, permit, dee.id(), &code)
+        .await?
+        .expect("the app's code");
+    let _changed = enabled.changed;
+    let cats = store.login(cat.clone()).await?;
+    let dees = store.login(dee.clone()).await?;
+    let anns = store.login(ann.clone()).await?;
+    let ended =
+        sc_auth::delete_sessions_lacking_second_factor(&f.catalog, member, Some(ann.id())).await?;
+    assert_eq!(
+        ended
+            .iter()
+            .map(sc_auth::CredentialsChanged::user)
+            .collect::<Vec<_>>(),
+        vec![cat.id()]
+    );
+    assert!(!live(cats).await?);
+    assert!(live(dees).await?);
+    assert!(live(anns.clone()).await?);
+
+    // An account's other sessions, but not this one.
+    let other = store.login(ann.clone()).await?;
+    assert_eq!(store.end_other_sessions(ann.id(), &anns).await?, 1);
+    assert!(!live(other).await?);
+    assert!(live(anns).await?);
+    Ok(())
+}
+
+/// A session row from before the account's last credential change is nobody,
+/// on every node, even while the row is still there; the session that made a
+/// change keeps going at the new epoch (security review 2026-11, B4; H2.3).
+/// And a session row from before epochs existed (`auth_epoch` `NULL`) is still
+/// a session, so an upgrade signs nobody out.
+#[tokio::test]
+async fn a_session_from_an_earlier_epoch_is_nobody() -> Result<()> {
+    let f = fixture().await?;
+    f.catalog.set_secret_key(sc_catalog::SecretKey::generate()?);
+    let node_a = uncached(&f.catalog);
+    let node_b = uncached(&f.catalog);
+    let eve = create_user(&f.catalog, "eve@example.com", "eve-pw", Role::ADMIN).await?;
+
+    // From before epochs: the column is NULL.
+    let old = node_a.login(eve.clone()).await?;
+    f.catalog
+        .primary(sc_catalog::Unchecked::system("test: an old row"))
+        .query(&Statement::from(sc_query::Update::new(
+            SESSIONS_TABLE,
+            vec![sc_query::Assignment::new(
+                sc_auth::COL_SESSION_AUTH_EPOCH,
+                Expr::Lit(sc_query::Value::Null),
+            )],
+        )))
+        .await?
+        .try_collect()
+        .await?;
+    assert!(
+        node_b.user_for(&old).await?.is_some(),
+        "an upgrade signs nobody out"
+    );
+
+    let here = node_a.login(eve.clone()).await?;
+    let there = node_b.login(eve.clone()).await?;
+    let secret = sc_auth::begin_second_factor_setup(&f.catalog, eve.id()).await?;
+    let sc_auth::Attempt::Permitted(permit) =
+        sc_auth::reserve_attempt(&f.catalog, eve.id()).await?
+    else {
+        panic!("a first guess");
+    };
+    let code = sc_auth::totp_at(&secret, chrono::Utc::now().timestamp());
+    let enabled = sc_auth::finish_second_factor_setup(&f.catalog, permit, eve.id(), &code)
+        .await?
+        .expect("the app's code");
+    // Before any store hears of it, the raised epoch alone refuses every
+    // session from before — on both nodes, with their rows still there.
+    assert_eq!(session_rows(&f.catalog).await?, 3);
+    assert!(node_b.user_for(&there).await?.is_none());
+    assert!(node_a.user_for(&old).await?.is_none());
+    // The session that turned it on keeps going, restamped.
+    let here_again = node_a.login(eve.clone()).await?;
+    node_a
+        .bump_epoch(enabled.changed, Some(&here_again))
+        .await?;
+    assert!(node_b.user_for(&here_again).await?.is_some());
+    assert!(node_a.user_for(&here).await?.is_none());
+    assert_eq!(session_rows(&f.catalog).await?, 1, "the others' rows went");
+
+    // A sign-in checked before a change starts no session after it.
+    let signing_in = sc_auth::authenticate(&f.catalog, "eve@example.com", "eve-pw")
+        .await?
+        .expect("the password");
+    let removed = sc_auth::disable_second_factor(&f.catalog, eve.id()).await?;
+    node_a
+        .bump_epoch(removed.changed.expect("it was on"), None)
+        .await?;
+    let who = signing_in.clone().complete(
+        match sc_auth::second_factor_needed(&f.catalog, &eve).await? {
+            sc_auth::SecondFactorNeeded::No(none) => sc_auth::SecondFactor::NotNeeded(none),
+            other => panic!("{other:?}"),
+        },
+    )?;
+    assert!(
+        node_a
+            .start(
+                who,
+                chrono::Duration::hours(1),
+                sc_auth::SessionScope::Admin
+            )
+            .await
+            .is_err()
+    );
+    // …while one checked now does.
+    let now = sc_auth::authenticate(&f.catalog, "eve@example.com", "eve-pw")
+        .await?
+        .expect("the password");
+    let none = match sc_auth::second_factor_needed(&f.catalog, &eve).await? {
+        sc_auth::SecondFactorNeeded::No(none) => none,
+        other => panic!("{other:?}"),
+    };
+    let token = node_a
+        .start(
+            now.complete(sc_auth::SecondFactor::NotNeeded(none))?,
+            chrono::Duration::hours(1),
+            sc_auth::SessionScope::Admin,
+        )
+        .await?;
+    assert!(node_b.user_for(&token).await?.is_some());
     Ok(())
 }

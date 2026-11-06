@@ -111,6 +111,7 @@ use sc_agent::{
     AfterToolsContext, AgentTrait, Elidable, RunCaller, RunId, RunMode, SessionContext,
     ToolsContext, TraitCheck, TraitContext,
 };
+use sc_catalog::ConsoleAdmin;
 use sc_error::{Error, Result};
 use sc_files::DEFAULT_MAX_RESULTS;
 use sc_llm::{EditFormat, ToolSpec};
@@ -545,12 +546,12 @@ impl AgentTrait for Coding {
             // outside `act`.
             _ if tool == call_api::tool_name(&scope) => call_api::call(config, args, ctx).await,
             _ if tool == shell::tool_name(&scope) => {
-                permit_shell(config, ctx)?;
-                shell::call(&scope, config, args, ctx).await
+                let who = permit_shell(config, ctx)?;
+                shell::call(&scope, config, args, ctx, &who).await
             }
             _ if tool == process::tool_name(&scope) => {
-                permit_shell(config, ctx)?;
-                process::call(&scope, config, args, ctx).await
+                let who = permit_shell(config, ctx)?;
+                process::call(&scope, config, args, ctx, &who).await
             }
             // Listing changes nothing, so a planning run may look.
             _ if tool == modules::list_tool_name(&scope) => {
@@ -636,12 +637,14 @@ impl AgentTrait for Coding {
         cx: &mut AfterToolsContext<'_>,
     ) -> Result<Option<String>> {
         let scope = configured_scope(config)?;
+        let who = cx.caller.console_admin().map(ConsoleAdmin::spawn_proof);
         feedback::after_edits(
             &scope,
             &for_caller(config, Some(cx.caller)),
             cx.catalog,
             &crate::files::file_caller(cx.caller),
             cx.trait_state,
+            who.as_ref(),
         )
         .await
     }
@@ -761,9 +764,28 @@ pub(crate) fn may(config: &Attrs, key: &str) -> bool {
 /// what it is asked to do is only as trustworthy as whoever caused the event
 /// ([`RunCaller::triggered`]). Nor is an admin chatting with an agent an
 /// application exposes: any script on the application's origin can send that
-/// chat with the admin's cookie ([`RunCaller::exposed`]).
+/// chat with the admin's cookie ([`RunCaller::exposed`]). Nor is an admin's
+/// chat turn nobody vouched was at the console ([`RunCaller::user`]): the
+/// tools need the console's proof ([`RunCaller::console_admin`],
+/// TODO-type-hardening H3.3).
 pub(crate) fn is_admin(caller: &RunCaller) -> bool {
-    caller.role.is_admin() && !caller.untrusted_origin()
+    caller.console_admin().is_some()
+}
+
+/// The administrator's proof that runs the project's own code — its scripts,
+/// checks and formatter — for `caller`: the console's, or a refusal for a run
+/// that has none ([`HOST_CODE_GRANTS`] are off for it already, so reaching
+/// this without one is a grant read the wrong way, and fails closed).
+pub(crate) fn host_code_proof(caller: &RunCaller) -> Result<sc_proc::AdminProof> {
+    caller
+        .console_admin()
+        .map(ConsoleAdmin::spawn_proof)
+        .ok_or_else(|| {
+            Error::invalid(
+                "the project's scripts and checks run as the server's operating-system user, \
+                 so only a run whose caller is an administrator may run them",
+            )
+        })
 }
 
 /// The grants that run the project's own code — its `package.json` scripts,
@@ -795,10 +817,13 @@ fn for_caller<'c>(config: &'c Attrs, caller: Option<&RunCaller>) -> Cow<'c, Attr
 /// Refuse the shell to a run whose grant is off, whose mode is read-only, or
 /// whose caller is not an admin — the last because a shell runs as the
 /// server's OS user, which can read the server's own credentials (TODO §7a).
-fn permit_shell(config: &Attrs, ctx: &TraitContext<'_>) -> Result<()> {
+///
+/// What it returns is the administrator's proof the shell's commands run on
+/// (TODO-type-hardening H4.1): without it, nothing here can start one.
+fn permit_shell(config: &Attrs, ctx: &TraitContext<'_>) -> Result<sc_proc::AdminProof> {
     permit(config, CFG_MAY_USE_SHELL, "use the shell", ctx)?;
-    if is_admin(ctx.caller) {
-        return Ok(());
+    if let Some(admin) = ctx.caller.console_admin() {
+        return Ok(admin.spawn_proof());
     }
     Err(Error::invalid(format!(
         "agent `{}` may not use the shell for this user: the shell is only for runs whose \

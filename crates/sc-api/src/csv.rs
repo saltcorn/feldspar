@@ -169,10 +169,14 @@ pub async fn import_table(
     let principal = context
         .principal()
         .map(|c| c.clone().in_changeset(Some(changeset.clone())));
-    let context = match &principal {
-        Some(principal) => Unchecked::admin(principal)
-            .ok_or_else(|| Error::auth("only an administrator imports a CSV file"))?,
-        None => context,
+    // The same token, moved into the import's changeset: the check that made
+    // it (an admin session's proof) still stands behind it.
+    let context = match (&principal, context.vouched_by()) {
+        (Some(principal), Some(by)) if principal.role().is_admin() => {
+            Unchecked::vouched(principal, by)
+        }
+        (Some(_), _) => return Err(Error::auth("only an administrator imports a CSV file")),
+        (None, _) => context,
     };
     changeset::scope(
         changeset,
@@ -670,20 +674,27 @@ pub(crate) async fn advance_identity_sequence(
     {
         return Ok(());
     }
-    let table_lit = table.name.replace('\'', "''").replace('"', "\"\"");
-    let pk_lit = pk.replace('\'', "''");
+    let lit = |text: &str| format!("'{}'", text.replace('\'', "''"));
+    let quoted_table = catalog
+        .driver_info(&table.database)?
+        .dialect()
+        .quote_ident(&table.name);
     // The table name reaches `pg_get_serial_sequence` **quoted**: it parses its
     // argument as SQL would, so an unquoted `Invoice` would be folded to
-    // `invoice` and found to be no table at all. `format`'s `%I` below does the
-    // same job for the two names it interpolates.
-    let sql = format!(
-        "DO $sc$ DECLARE seq text; largest bigint; BEGIN \
-           seq := pg_get_serial_sequence('\"{table_lit}\"', '{pk_lit}'); \
+    // `invoice` and found to be no table at all. The `format` below takes the
+    // same quoted name as `%s`, and the key's own name as `%I` — not a name
+    // quoted twice, which was wrong for one with a `"` in it (D4). The block's
+    // tag is one the names cannot end (`TrustedSql::do_block`).
+    let sql = sc_query::TrustedSql::do_block(&format!(
+        "DECLARE seq text; largest bigint; BEGIN \
+           seq := pg_get_serial_sequence({table_lit}, {pk_lit}); \
            IF seq IS NULL THEN RETURN; END IF; \
-           EXECUTE format('SELECT max(%I) FROM %I', '{pk_lit}', '{table_lit}') INTO largest; \
+           EXECUTE format('SELECT max(%I) FROM %s', {pk_lit}, {table_lit}) INTO largest; \
            IF largest IS NOT NULL THEN PERFORM setval(seq, largest); END IF; \
-         END $sc$;"
-    );
+         END",
+        table_lit = lit(&quoted_table),
+        pk_lit = lit(pk),
+    ));
     catalog
         .apply_schema_batch_in(&table.database, &[sc_catalog::SchemaStep::Sql(sql)])
         .await

@@ -367,7 +367,7 @@ async fn a_personal_memory_is_only_read_back_for_its_own_user() -> Result<()> {
     let found = list_memories(&env.catalog, &filter).await?;
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].topic, "drinks");
-    assert_eq!(found[0].user, ada.user.as_ref().map(|u| u.id()));
+    assert_eq!(found[0].user, ada.user_ref().map(|u| u.id()));
     Ok(())
 }
 
@@ -376,7 +376,7 @@ async fn consolidated_preferences_reach_only_their_users_session() -> Result<()>
     let env = memory_env().await?;
     let ada = RunCaller::user(reader("ada@example.com"));
     let bob = RunCaller::user(reader("bob@example.com"));
-    let ada_id = ada.user.as_ref().unwrap().id();
+    let ada_id = ada.user_ref().unwrap().id();
     replace_preferences(
         &env.catalog,
         "librarian",
@@ -523,7 +523,7 @@ async fn a_personal_memory_never_reaches_another_users_run() -> Result<()> {
     replace_preferences(
         &env.catalog,
         "librarian",
-        ada.user.as_ref().unwrap().id(),
+        ada.user_ref().unwrap().id(),
         "Allergic to penicillin.",
     )
     .await?;

@@ -19,6 +19,8 @@ sc-db.workspace = true
 sc-types.workspace = true
 sc-catalog.workspace = true
 sc-files.workspace = true
+# Builds, installs, `git` and `tsc`, started the one way (H4).
+sc-proc.workspace = true
 sc-api.workspace = true
 sc-access.workspace = true
 # The roles a scaffolded project's documentation lists: `feldspar auth token

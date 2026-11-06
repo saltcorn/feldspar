@@ -285,7 +285,7 @@ async fn the_run_button_reaches_the_adapter_too() -> Result<()> {
     save_trigger(&world.catalog, &registry, &trigger).await?;
     dispatcher.reload(&world.catalog).await?;
 
-    let caller = Principal::new(Role::ADMIN, Some(json!({ "email": "ada@example.com" })));
+    let caller = Principal::recorded(Role::ADMIN, Some(json!({ "email": "ada@example.com" })));
     let out = dispatcher
         .run_trigger(
             &world.catalog,

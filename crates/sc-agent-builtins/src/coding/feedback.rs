@@ -22,6 +22,7 @@
 
 use sc_catalog::Catalog;
 use sc_error::Result;
+use sc_proc::{AdminProof, HostCommand, Operand, Program, Timeout};
 use sc_types::Attrs;
 use serde_json::Value as Json;
 
@@ -35,23 +36,28 @@ use crate::files::{FileScope, config_count};
 const PRETTIER_TIMEOUT_SECONDS: u64 = 60;
 
 /// Format and diagnose the files this turn edited, and say what happened. `None`
-/// when the turn edited nothing or the grant is off.
+/// when the turn edited nothing, the grant is off, or there is no
+/// administrator's proof `who` to run the project's code on.
 pub async fn after_edits(
     scope: &FileScope,
     config: &Attrs,
     catalog: &Catalog,
     caller: &sc_files::FileCaller,
     state_json: &mut Json,
+    who: Option<&AdminProof>,
 ) -> Result<Option<String>> {
     let mut state = CodingState::load(state_json);
     let edited = std::mem::take(&mut state.turn_edits);
     state.store(state_json);
+    let Some(who) = who else {
+        return Ok(None);
+    };
     if edited.is_empty() || !may(config, CFG_MAY_CHECK) {
         return Ok(None);
     }
 
     let mut report = Vec::new();
-    if let Some(formatted) = format(scope, catalog, &edited, &mut state).await? {
+    if let Some(formatted) = format(who, scope, catalog, &edited, &mut state).await? {
         report.push(formatted);
     }
     state.store(state_json);
@@ -63,7 +69,7 @@ pub async fn after_edits(
     // turn; `check` is where a missing script is a failure.
     if project.scripts.contains(&script) {
         let timeout = config_count(config, super::CFG_TIMEOUT, super::DEFAULT_TIMEOUT_SECONDS)?;
-        let run = run_script(&project, &script, timeout).await?;
+        let run = run_script(who, &project, &script, timeout).await?;
         report.push(describe(
             &script,
             &run.outcome,
@@ -78,6 +84,7 @@ pub async fn after_edits(
 /// Run the project's prettier over the edited files that still exist, and
 /// record the ones it changed as seen.
 async fn format(
+    who: &AdminProof,
     scope: &FileScope,
     catalog: &Catalog,
     edited: &[String],
@@ -107,10 +114,17 @@ async fn format(
     if files.is_empty() {
         return Ok(None);
     }
-    let program = prettier.to_string_lossy().into_owned();
-    let mut args = vec!["--write", "--ignore-unknown", "--log-level", "warn"];
-    args.extend(files.iter().map(|(_, rel, _)| rel.as_str()));
-    if let Ran::TimedOut = run_bounded(&root, &program, &args, PRETTIER_TIMEOUT_SECONDS).await? {
+    // The files after `--`: an edited file named `-x` is a file to prettier.
+    let mut command = HostCommand::new(
+        Program::path(prettier),
+        who,
+        Timeout::secs(PRETTIER_TIMEOUT_SECONDS),
+    );
+    command
+        .args(["--write", "--ignore-unknown"])
+        .flag_value("--log-level", "warn")
+        .operands(files.iter().map(|(_, rel, _)| Operand::path(rel)));
+    if let Ran::TimedOut = run_bounded(command, &root).await? {
         return Ok(Some(
             "prettier: still running after 60 seconds; stopped.".to_owned(),
         ));

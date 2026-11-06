@@ -1,6 +1,10 @@
 //! Plots over a fit's **output data** (analytics TODO A3.1): a frame stored
 //! beside the instance, read from it rather than through SQL, its stats
 //! computed in memory — whichever database the instance is stored in.
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 
 use std::collections::BTreeMap;
 
@@ -107,7 +111,7 @@ async fn a_plot_over_fit_output_data_is_computed_from_the_stored_frame() -> Resu
         let data = plot(
             render_plot(
                 cat,
-                &sc_dataset::Caller::admin(),
+                &sc_dataset::Caller::system("test"),
                 &spec(id, "rows", histogram),
             )
             .await?,
@@ -124,8 +128,14 @@ async fn a_plot_over_fit_output_data_is_computed_from_the_stored_frame() -> Resu
             .with(Channel::X, FieldDef::of("fitted"))
             .with(Channel::Y, FieldDef::of("residual"))
             .with(Channel::Color, FieldDef::of("split"));
-        let data =
-            plot(render_plot(cat, &sc_dataset::Caller::admin(), &spec(id, "rows", points)).await?);
+        let data = plot(
+            render_plot(
+                cat,
+                &sc_dataset::Caller::system("test"),
+                &spec(id, "rows", points),
+            )
+            .await?,
+        );
         assert_eq!(data.layers[0].rows.len(), 10, "{}", fx.backend);
         assert!(!data.layers[0].sampled);
         assert_eq!(
@@ -139,8 +149,14 @@ async fn a_plot_over_fit_output_data_is_computed_from_the_stored_frame() -> Resu
         let boxes = Layer::new(Mark::Box, Stat::boxplot())
             .with(Channel::X, FieldDef::of("split"))
             .with(Channel::Y, FieldDef::of("residual"));
-        let data =
-            plot(render_plot(cat, &sc_dataset::Caller::admin(), &spec(id, "rows", boxes)).await?);
+        let data = plot(
+            render_plot(
+                cat,
+                &sc_dataset::Caller::system("test"),
+                &spec(id, "rows", boxes),
+            )
+            .await?,
+        );
         let x = column(&data.layers[0], "x");
         let median = column(&data.layers[0], "y_median");
         let test = x.iter().position(|v| v == "test").unwrap();
@@ -151,20 +167,30 @@ async fn a_plot_over_fit_output_data_is_computed_from_the_stored_frame() -> Resu
             .with(Channel::X, FieldDef::of("area"))
             .with(Channel::Y, FieldDef::of("residual"));
         let error = refused(
-            render_plot(cat, &sc_dataset::Caller::admin(), &spec(id, "rows", wrong)).await?,
+            render_plot(
+                cat,
+                &sc_dataset::Caller::system("test"),
+                &spec(id, "rows", wrong),
+            )
+            .await?,
         );
         assert!(error.contains("`area`"), "{error}");
 
         // Output data the fit did not store, and a fit that is gone.
         let any = || Layer::new(Mark::Bar, Stat::Count).with(Channel::X, FieldDef::of("split"));
         let error = refused(
-            render_plot(cat, &sc_dataset::Caller::admin(), &spec(id, "draws", any())).await?,
+            render_plot(
+                cat,
+                &sc_dataset::Caller::system("test"),
+                &spec(id, "draws", any()),
+            )
+            .await?,
         );
         assert!(error.contains("no output data `draws`"), "{error}");
         let error = refused(
             render_plot(
                 cat,
-                &sc_dataset::Caller::admin(),
+                &sc_dataset::Caller::system("test"),
                 &spec(Uuid::new_v4(), "rows", any()),
             )
             .await?,
@@ -369,7 +395,7 @@ async fn a_posteriors_plots_render_over_its_draws() -> Result<()> {
                 panic!("a plot");
             };
             let spec = output_spec(instance.id, data, spec).unwrap();
-            let data = plot(render_plot(cat, &sc_dataset::Caller::admin(), &spec).await?);
+            let data = plot(render_plot(cat, &sc_dataset::Caller::system("test"), &spec).await?);
             assert!(
                 !data.layers[0].rows.is_empty(),
                 "{} {}",

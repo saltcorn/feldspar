@@ -29,6 +29,20 @@
 //! triggers, an application's custom queries — written once here and offered
 //! both to the built-in copilot agent and to the administration MCP server
 //! (§13.6), rather than implemented once per caller.
+//!
+//! Indexing, string slicing and unchecked arithmetic are warned about here
+//! (security review 2026-11, §6; TODO-type-hardening H1.7) when built with
+//! `--cfg feldspar_advisory_lints` (the CI `clippy-advisory` job): this crate
+//! handles request input, where each is a panic a request can cause. Advisory
+//! until the existing hits are fixed, so they do not fail `-D warnings`.
+#![cfg_attr(
+    feldspar_advisory_lints,
+    warn(
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::arithmetic_side_effects
+    )
+)]
 
 /// This crate's own tables' access to the primary database
 /// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
@@ -44,6 +58,7 @@ pub mod code_host;
 // the crate of the same name is reached as `::csv`.
 pub mod csv;
 pub mod geo_import;
+pub mod handler_ids;
 pub mod history;
 // The administrative tool surface (§13.6): one implementation of the tools that
 // build an application's configuration half, shared by the built-in copilot
@@ -73,8 +88,8 @@ mod typescript;
 
 pub use admin::{ADMIN_API_PREFIX, ROW_PAGE_CAP, admin_endpoints};
 pub use endpoint::{
-    AuthRequirement, Endpoint, EndpointSet, HandlerRef, McpTag, Method, PathSegment, PathSpec,
-    QueryParam,
+    AdminOnly, AnalyticsUi, Anyone, Auth, AuthRequirement, Endpoint, EndpointSet, HandlerId,
+    HandlerRef, McpTag, Method, PathSegment, PathSpec, QueryParam, SignedIn,
 };
 pub use graphql::{
     CFG_AGGREGATES as GRAPHQL_CFG_AGGREGATES, DEFAULT_FILE_MOUNT as GRAPHQL_DEFAULT_FILE_MOUNT,
@@ -139,23 +154,55 @@ mod tests {
 
     #[test]
     fn endpoint_defaults_and_builder() {
-        let ep = Endpoint::new("login", Method::Post, PathSpec::root().lit("api/login"));
-        // Defaults: empty i/o, logged-in auth, handler named after the endpoint.
+        let ep = Endpoint::new(
+            HandlerId::<Anyone>::new("login"),
+            Method::Post,
+            PathSpec::root().lit("api/login"),
+        );
+        // Defaults: empty i/o, the handler named after the endpoint, and the
+        // requirement the handler id's type states — there is no other.
         assert!(ep.input.is_empty());
         assert!(ep.output.is_empty());
-        assert_eq!(ep.auth, AuthRequirement::LoggedIn);
-        assert_eq!(ep.handler, HandlerRef::named("login"));
-
-        let ep = ep.auth(AuthRequirement::Public).output(TypeSchema::text());
         assert_eq!(ep.auth, AuthRequirement::Public);
+        assert_eq!(ep.handler, HandlerRef::named("login"));
+        let ep = Endpoint::new(
+            HandlerId::<AdminOnly>::new("x"),
+            Method::Get,
+            PathSpec::root(),
+        );
+        assert_eq!(ep.auth, AuthRequirement::admin());
+        let ep = Endpoint::new(
+            HandlerId::<SignedIn>::new("y"),
+            Method::Get,
+            PathSpec::root(),
+        );
+        assert_eq!(ep.auth, AuthRequirement::LoggedIn);
+
+        // A provider's endpoint states its requirement as data.
+        let ep = Endpoint::projected(
+            "listBooks",
+            Method::Get,
+            PathSpec::root().lit("api/books"),
+            AuthRequirement::MinRole(sc_types::Role::PUBLIC),
+        )
+        .output(TypeSchema::text());
+        assert_eq!(ep.auth, AuthRequirement::MinRole(sc_types::Role::PUBLIC));
         assert!(!ep.output.is_empty());
     }
 
     #[test]
     fn endpoint_set_is_a_runtime_registry() {
         let mut set = EndpointSet::new();
-        set.register(Endpoint::new("a", Method::Get, PathSpec::root().lit("a")));
-        set.register(Endpoint::new("b", Method::Get, PathSpec::root().lit("b")));
+        set.register(Endpoint::new(
+            crate::HandlerId::<crate::SignedIn>::new("a"),
+            Method::Get,
+            PathSpec::root().lit("a"),
+        ));
+        set.register(Endpoint::new(
+            crate::HandlerId::<crate::SignedIn>::new("b"),
+            Method::Get,
+            PathSpec::root().lit("b"),
+        ));
         assert_eq!(set.len(), 2);
         assert!(set.find("a").is_some());
         assert!(set.find("missing").is_none());
@@ -168,9 +215,13 @@ mod tests {
     #[should_panic(expected = "duplicate endpoint name")]
     fn duplicate_endpoint_names_panic() {
         let mut set = EndpointSet::new();
-        set.register(Endpoint::new("dup", Method::Get, PathSpec::root().lit("x")));
         set.register(Endpoint::new(
-            "dup",
+            crate::HandlerId::<crate::SignedIn>::new("dup"),
+            Method::Get,
+            PathSpec::root().lit("x"),
+        ));
+        set.register(Endpoint::new(
+            crate::HandlerId::<crate::SignedIn>::new("dup"),
             Method::Post,
             PathSpec::root().lit("y"),
         ));
@@ -202,9 +253,16 @@ mod tests {
             StructField::new("tags", TypeSchema::array(TypeSchema::text())),
             StructField::new("note", TypeSchema::optional(TypeSchema::text())),
         ]);
-        let client = generate_client(&EndpointSet::new().with(
-            Endpoint::new("thing", Method::Post, PathSpec::root().lit("thing")).input(schema),
-        ));
+        let client = generate_client(
+            &EndpointSet::new().with(
+                Endpoint::new(
+                    crate::HandlerId::<crate::SignedIn>::new("thing"),
+                    Method::Post,
+                    PathSpec::root().lit("thing"),
+                )
+                .input(schema),
+            ),
+        );
         assert!(client.contains("id: string"));
         assert!(client.contains("tags: Array<string>"));
         assert!(client.contains("note?: string | null"));

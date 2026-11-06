@@ -429,7 +429,7 @@ async fn a_python_modules_action_fires_from_a_trigger_and_writes_through_db() ->
     save_trigger(&catalog, &registry, &trigger).await?;
     dispatcher.reload(&catalog).await?;
 
-    let caller = Principal::new(
+    let caller = Principal::recorded(
         sc_types::Role::ADMIN,
         Some(json!({ "email": "ada@example.com" })),
     );

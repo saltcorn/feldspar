@@ -164,11 +164,11 @@ pub struct RouteRequest {
 
 /// `req.user` as v1 has it: the user's columns, with the role as `role_id`.
 fn v1_user(caller: &Principal) -> Json {
-    let Some(Json::Object(fields)) = &caller.user else {
+    let Some(Json::Object(fields)) = &caller.user() else {
         return Json::Null;
     };
     let mut user = fields.clone();
-    user.insert("role_id".to_owned(), json!(caller.role));
+    user.insert("role_id".to_owned(), json!(caller.role()));
     Json::Object(user)
 }
 
@@ -192,10 +192,10 @@ pub async fn run_route(
 ) -> Result<WebhookResponse> {
     let module = loaded.module.name.as_str();
     let table = TableHost::new(catalog)
-        .caused_by(caller.role, caller.user.clone())
+        .caused_by(caller.role(), caller.user().cloned())
         .viewer_only();
     let triggers = dispatcher
-        .map(|d| TriggerRunHost::new(d, catalog).caused_by(caller.role, caller.user.clone()));
+        .map(|d| TriggerRunHost::new(d, catalog).caused_by(caller.role(), caller.user().cloned()));
     let schema = schema_snapshot(catalog).ok();
     let call = CallHosts {
         hosts: CodeHosts {
@@ -278,13 +278,13 @@ mod tests {
 
     #[test]
     fn req_user_is_the_row_with_v1s_role_id() {
-        let caller = Principal::new(
+        let caller = Principal::recorded(
             Role::ADMIN,
             Some(json!({ "id": "u1", "email": "a@b.c", "role": 1 })),
         );
         assert_eq!(v1_user(&caller)["role_id"], json!(1));
         assert_eq!(v1_user(&caller)["email"], json!("a@b.c"));
-        let public = Principal::anonymous(Role::PUBLIC);
+        let public = Principal::anonymous();
         assert_eq!(v1_user(&public), Json::Null);
     }
 }

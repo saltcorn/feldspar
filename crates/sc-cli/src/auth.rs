@@ -558,7 +558,11 @@ pub async fn session_for(
     target: &Target,
     user: &User,
 ) -> Result<(Vec<Cookie>, Json)> {
-    let token = create_session(catalog, user.id(), Duration::hours(DEFAULT_TTL_HOURS)).await?;
+    // Past the second factor, named: whoever runs this holds the database's
+    // own credentials, which can rewrite any account's (security review
+    // 2026-11, §2).
+    let who = sc_auth::FullyAuthenticated::waived(user.clone(), sc_auth::SecondFactorWaiver::Cli);
+    let token = create_session(catalog, who, Duration::hours(DEFAULT_TTL_HOURS)).await?;
     Ok((cookies_for(target, token), user_summary(user)))
 }
 

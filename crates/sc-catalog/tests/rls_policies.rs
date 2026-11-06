@@ -127,7 +127,7 @@ async fn run_in_context_sets_the_caller_gucs_a_policy_reads() -> Result<()> {
     ));
 
     // Alice's context: only her row is visible through the SELECT policy.
-    let alice = Principal::new(
+    let alice = Principal::recorded(
         Role::of(80),
         Some(serde_json::json!({ "email": "alice@example.com" })),
     );
@@ -141,7 +141,7 @@ async fn run_in_context_sets_the_caller_gucs_a_policy_reads() -> Result<()> {
 
     // An admin context (role 1) clears the role floor and sees both rows even
     // though the table is FORCE'd.
-    let admin = Principal::anonymous(Role::ADMIN);
+    let admin = Principal::recorded(Role::ADMIN, None);
     let rows = run_in_context(
         &catalog,
         sc_catalog::Unchecked::vouched(&admin, "test"),
@@ -152,7 +152,7 @@ async fn run_in_context_sets_the_caller_gucs_a_policy_reads() -> Result<()> {
 
     // An anonymous context (role 100, no user) sees nothing — the policy fails
     // closed when the user GUC is unset.
-    let anon = Principal::anonymous(Role::PUBLIC);
+    let anon = Principal::anonymous();
     let rows = run_in_context(
         &catalog,
         sc_catalog::Unchecked::vouched(&anon, "test"),
@@ -181,8 +181,8 @@ async fn an_anonymous_context_does_not_own_the_null_owner_rows() -> Result<()> {
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     let catalog = catalog(&db).await?;
     catalog.reload().await?;
-    let anon = Principal::anonymous(Role::PUBLIC);
-    let alice = Principal::new(
+    let anon = Principal::anonymous();
+    let alice = Principal::recorded(
         Role::of(80),
         Some(serde_json::json!({ "email": "alice@example.com" })),
     );
@@ -369,7 +369,7 @@ async fn the_users_policies_carry_the_self_read() -> Result<()> {
         Select::from(Source::table("users")).columns(vec![Projection::all()]),
     ));
     let count = |id: &str, department: &str| {
-        let caller = Principal::new(
+        let caller = Principal::recorded(
             Role::of(80),
             Some(serde_json::json!({ "id": id, "department": department })),
         );
@@ -398,7 +398,7 @@ async fn the_users_policies_carry_the_self_read() -> Result<()> {
         1
     );
     // Nobody reads nothing.
-    let anon = Principal::anonymous(Role::PUBLIC);
+    let anon = Principal::anonymous();
     let rows = run_in_context(
         &catalog,
         sc_catalog::Unchecked::vouched(&anon, "test"),
@@ -412,5 +412,72 @@ async fn the_users_policies_carry_the_self_read() -> Result<()> {
     let delete_qual = policy_qual(&db, "users", "sc_owner_delete").await;
     assert!(select_qual.contains("'id'"), "{select_qual}");
     assert!(!delete_qual.contains("'id'"), "{delete_qual}");
+    Ok(())
+}
+
+/// TODO-type-hardening H7.5: a presented value reaches the policy as its
+/// `sc.request.<key>` GUC, and `set_caller_context` sets every key a formula
+/// reads every time — so on one shared transaction the second caller, who
+/// presented nothing, does not reach the row through the first one's token.
+/// And a stored formula that uses `_request` outside `column === _request.key`
+/// fails closed on load.
+#[tokio::test]
+async fn a_presented_value_reaches_the_policy_and_does_not_carry_over() -> Result<()> {
+    let db = TestDb::new().await?;
+    db.client()
+        .await?
+        .batch_execute(
+            "CREATE TABLE shares (id bigint primary key, token text UNIQUE, owner text); \
+             INSERT INTO shares VALUES (1, 'secret-1', 'a'), (2, 'secret-2', 'b'); \
+             CREATE TABLE notes (id bigint primary key, owner text)",
+        )
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    let catalog = catalog(&db).await?;
+    catalog.reload().await?;
+    configure_formula(&catalog, "shares", "_read && token === _request.token").await?;
+    catalog.reload().await?;
+    let table = catalog.require("shares")?;
+    assert!(table.ownership.is_some(), "{:?}", table.ownership_error);
+    enable_rls(&catalog, &table).await?;
+
+    let select = Statement::Select(Box::new(
+        Select::from(Source::table("shares")).columns(vec![Projection::all()]),
+    ));
+    let presenting = Principal::anonymous().from_origin(sc_catalog::Origin {
+        request: sc_expr::RequestValues::new([("token", "secret-1")])?,
+        ..sc_catalog::Origin::default()
+    });
+    let rows = run_in_context(
+        &catalog,
+        sc_catalog::Unchecked::vouched(&presenting, "test"),
+        &select,
+    )
+    .await?;
+    assert_eq!(rows.len(), 1, "the token's row, and only it");
+
+    let tx = sc_catalog::SharedTx::begin_primary(&catalog)?;
+    let first = tx
+        .run(sc_catalog::Unchecked::vouched(&presenting, "test"), &select)
+        .await?;
+    let anonymous = Principal::anonymous();
+    let second = tx
+        .run(sc_catalog::Unchecked::vouched(&anonymous, "test"), &select)
+        .await?;
+    tx.commit().await?;
+    assert_eq!(first.len(), 1);
+    assert!(
+        second.is_empty(),
+        "the first caller's token did not carry over"
+    );
+
+    // A rule on a column that is not unique could reach many rows: refused
+    // on load, so the table grants nothing.
+    configure_formula(&catalog, "notes", "_read && owner === _request.owner").await?;
+    catalog.reload().await?;
+    let table = catalog.require("notes")?;
+    assert!(table.ownership.is_none());
+    let error = table.ownership_error.unwrap_or_default();
+    assert!(error.contains("not unique"), "{error}");
     Ok(())
 }

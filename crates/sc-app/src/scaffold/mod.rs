@@ -26,7 +26,6 @@ use bytes::Bytes;
 use sc_api::EndpointSet;
 use sc_catalog::Catalog;
 use sc_error::{Context, Error, Result};
-use tokio::process::Command;
 
 use crate::api::{app_endpoints_with, app_graphql, app_schema_sql, app_tables};
 use crate::application::Application;
@@ -568,12 +567,13 @@ async fn init_git_repo(source: &AppSource, project_path: Option<&std::path::Path
         // build (§13.3), which the build step says better than this could.
         return Ok(false);
     };
-    let output = Command::new("git")
-        .arg("init")
-        .arg("--quiet")
-        .current_dir(path)
-        .output()
-        .await;
+    let mut init = sc_proc::Git::without_repository(
+        path,
+        &crate::build::build_authority(),
+        sc_proc::Timeout::secs(60),
+    );
+    init.args(["init", "--quiet"]);
+    let output = init.output().await;
     match output {
         Ok(out) if out.status.success() => Ok(true),
         Ok(out) => {

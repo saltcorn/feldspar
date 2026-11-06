@@ -562,10 +562,15 @@ async fn call_tool(
         );
     }
 
+    // An administrator's token is the console's authority, minted by an
+    // administrator for this client and checked on every request
+    // (`check_token`); any other user's is not (TODO-type-hardening H3.3).
     let ctx = ToolContext {
         catalog,
         user: Some(&caller.user),
-        role: caller.user.role(),
+        admin: caller.user.is_admin().then(|| {
+            sc_catalog::ConsoleAdmin::at_console(Some(caller.user.fields_json()), MCP_TOKEN)
+        }),
         triggers: state.apps.triggers(),
         actor: &caller.token.label,
     };
@@ -589,6 +594,12 @@ async fn call_tool(
 
     json_rpc_result(id, tool_result(outcome))
 }
+
+/// What stands behind an administrator's MCP token as console authority: the
+/// token was minted by an administrator, names its user, and is checked on
+/// every request with that user's current role. Listed in the system-authority
+/// inventory.
+const MCP_TOKEN: &str = "an administrator's MCP token (sc-server mcp.rs)";
 
 /// One tool's outcome as an MCP tool result.
 ///
@@ -852,7 +863,7 @@ impl AdminHandlers {
     /// the router would hand the handler after the admin check passed.
     async fn request(
         &self,
-        user: sc_catalog::AdminUser,
+        admin: &sc_catalog::ConsoleAdmin,
         params: &[(&str, String)],
     ) -> Result<(HandlerState, HandlerCtx<Admin>)> {
         let catalog = self
@@ -862,8 +873,22 @@ impl AdminHandlers {
         let apps = self.apps.upgrade().ok_or_else(|| {
             Error::config("the server that installed the admin handlers has stopped")
         })?;
-        let user = match user {
-            Some(id) => sc_auth::load_user(&catalog, id).await?,
+        // The proof says an administrator at the console asked; the user it
+        // names is checked again here, as the router's admin check would,
+        // before a handler runs as them (security review 2026-11 A4): a demoted
+        // or disabled account, or one that is gone, is refused.
+        let user = match admin.user_id() {
+            Some(id) => {
+                let user = sc_auth::load_user(&catalog, id).await?.ok_or_else(|| {
+                    Error::auth("the administrator this operation was asked for no longer exists")
+                })?;
+                if !user.is_admin() || user.is_disabled() {
+                    return Err(Error::auth(
+                        "the user this operation was asked for is not an enabled administrator",
+                    ));
+                }
+                Some(user)
+            }
             None => None,
         };
         let ctx = HandlerCtx {
@@ -873,9 +898,9 @@ impl AdminHandlers {
                 .collect(),
             query: Vec::new(),
             body: Json::Null,
-            // The admin tools behind `AdminHost` (`sc_app::mcp`) are reached
-            // only by a caller that passed their admin check.
-            who: Admin::delegated(user, "catalog admin host"),
+            // The admin tools behind `AdminHost` (`sc_app::mcp`) hand the
+            // console administrator's proof, re-checked above.
+            who: Admin::delegated(user, admin.vouched_by()),
             raw_body: None,
             raw_file: None,
             analytics_app: None,
@@ -895,12 +920,12 @@ fn answer(response: Result<crate::handler::HandlerResponse>) -> Result<Json> {
 impl sc_catalog::AdminHost for AdminHandlers {
     async fn backend_operation(
         &self,
-        user: sc_catalog::AdminUser,
+        admin: &sc_catalog::ConsoleAdmin,
         op: sc_catalog::BackendOperation,
     ) -> Result<Json> {
         let (state, ctx) = self
             .request(
-                user,
+                admin,
                 &[("backend", op.backend), ("operation", op.operation)],
             )
             .await?;
@@ -910,10 +935,10 @@ impl sc_catalog::AdminHost for AdminHandlers {
 
     async fn create_file_store(
         &self,
-        user: sc_catalog::AdminUser,
+        admin: &sc_catalog::ConsoleAdmin,
         store: sc_catalog::NewFileStore,
     ) -> Result<Json> {
-        let (state, ctx) = self.request(user, &[]).await?;
+        let (state, ctx) = self.request(admin, &[]).await?;
         let body = json!({
             "name": store.name,
             "backend": store.backend,
@@ -925,15 +950,15 @@ impl sc_catalog::AdminHost for AdminHandlers {
 
     async fn create_application(
         &self,
-        user: sc_catalog::AdminUser,
+        admin: &sc_catalog::ConsoleAdmin,
         application: Json,
     ) -> Result<Json> {
-        let (state, ctx) = self.request(user, &[]).await?;
+        let (state, ctx) = self.request(admin, &[]).await?;
         answer(handlers::applications::create_application(state, ctx, application).await)
     }
 
-    async fn list_applications(&self, user: sc_catalog::AdminUser) -> Result<Vec<Json>> {
-        let (state, ctx) = self.request(user, &[]).await?;
+    async fn list_applications(&self, admin: &sc_catalog::ConsoleAdmin) -> Result<Vec<Json>> {
+        let (state, ctx) = self.request(admin, &[]).await?;
         match answer(handlers::applications::list_all_applications(state, ctx, Json::Null).await)? {
             Json::Array(apps) => Ok(apps),
             other => Err(Error::msg(format!(
@@ -944,31 +969,35 @@ impl sc_catalog::AdminHost for AdminHandlers {
 
     async fn update_application(
         &self,
-        user: sc_catalog::AdminUser,
+        admin: &sc_catalog::ConsoleAdmin,
         id: uuid::Uuid,
         application: Json,
     ) -> Result<Json> {
-        let (state, ctx) = self.request(user, &[("id", id.to_string())]).await?;
+        let (state, ctx) = self.request(admin, &[("id", id.to_string())]).await?;
         answer(handlers::applications::update_application(state, ctx, application).await)
     }
 
-    async fn build_application(&self, user: sc_catalog::AdminUser, id: uuid::Uuid) -> Result<Json> {
-        let (state, ctx) = self.request(user, &[("id", id.to_string())]).await?;
+    async fn build_application(
+        &self,
+        admin: &sc_catalog::ConsoleAdmin,
+        id: uuid::Uuid,
+    ) -> Result<Json> {
+        let (state, ctx) = self.request(admin, &[("id", id.to_string())]).await?;
         answer(handlers::applications::build_application(state, ctx, Json::Null).await)
     }
 
     async fn translations(
         &self,
-        user: sc_catalog::AdminUser,
+        admin: &sc_catalog::ConsoleAdmin,
         of: sc_catalog::TranslationsOf,
     ) -> Result<Json> {
         match of {
             sc_catalog::TranslationsOf::Application(id) => {
-                let (state, ctx) = self.request(user, &[("id", id.to_string())]).await?;
+                let (state, ctx) = self.request(admin, &[("id", id.to_string())]).await?;
                 answer(handlers::translations::get_translations(state, ctx, Json::Null).await)
             }
             sc_catalog::TranslationsOf::Instance => {
-                let (state, ctx) = self.request(user, &[]).await?;
+                let (state, ctx) = self.request(admin, &[]).await?;
                 answer(
                     handlers::translations::get_instance_translations(state, ctx, Json::Null).await,
                 )
@@ -978,7 +1007,7 @@ impl sc_catalog::AdminHost for AdminHandlers {
 
     async fn save_translations(
         &self,
-        user: sc_catalog::AdminUser,
+        admin: &sc_catalog::ConsoleAdmin,
         of: sc_catalog::TranslationsOf,
         locale: String,
         messages: serde_json::Map<String, Json>,
@@ -987,24 +1016,28 @@ impl sc_catalog::AdminHost for AdminHandlers {
         match of {
             sc_catalog::TranslationsOf::Application(id) => {
                 let (state, ctx) = self
-                    .request(user, &[("id", id.to_string()), ("locale", locale)])
+                    .request(admin, &[("id", id.to_string()), ("locale", locale)])
                     .await?;
                 answer(handlers::translations::save_translations(state, ctx, body).await)
             }
             sc_catalog::TranslationsOf::Instance => {
-                let (state, ctx) = self.request(user, &[("locale", locale)]).await?;
+                let (state, ctx) = self.request(admin, &[("locale", locale)]).await?;
                 answer(handlers::translations::save_instance_translations(state, ctx, body).await)
             }
         }
     }
 
-    async fn save_stream(&self, user: sc_catalog::AdminUser, stream: Json) -> Result<Json> {
-        let (state, ctx) = self.request(user, &[]).await?;
+    async fn save_stream(&self, admin: &sc_catalog::ConsoleAdmin, stream: Json) -> Result<Json> {
+        let (state, ctx) = self.request(admin, &[]).await?;
         answer(handlers::streams::save_stream(state, ctx, stream).await)
     }
 
-    async fn delete_stream(&self, user: sc_catalog::AdminUser, id: uuid::Uuid) -> Result<Json> {
-        let (state, ctx) = self.request(user, &[("id", id.to_string())]).await?;
+    async fn delete_stream(
+        &self,
+        admin: &sc_catalog::ConsoleAdmin,
+        id: uuid::Uuid,
+    ) -> Result<Json> {
+        let (state, ctx) = self.request(admin, &[("id", id.to_string())]).await?;
         answer(handlers::streams::delete_stream(state, ctx, Json::Null).await)
     }
 }

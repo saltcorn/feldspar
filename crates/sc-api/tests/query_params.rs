@@ -15,17 +15,21 @@ use sc_api::{Endpoint, EndpointSet, Method, PathSpec, QueryParam, TypeSchema, Va
 fn sample_set() -> EndpointSet {
     EndpointSet::new()
         .with(
-            Endpoint::new("listBooks", Method::Get, PathSpec::root().lit("api/books"))
-                .query([
-                    QueryParam::new("select", ValueType::Text),
-                    QueryParam::new("limit", ValueType::Int),
-                    QueryParam::new("published", ValueType::Text).repeated(),
-                ])
-                .output(TypeSchema::array(TypeSchema::json())),
+            Endpoint::new(
+                sc_api::HandlerId::<sc_api::SignedIn>::new("listBooks"),
+                Method::Get,
+                PathSpec::root().lit("api/books"),
+            )
+            .query([
+                QueryParam::new("select", ValueType::Text),
+                QueryParam::new("limit", ValueType::Int),
+                QueryParam::new("published", ValueType::Text).repeated(),
+            ])
+            .output(TypeSchema::array(TypeSchema::json())),
         )
         .with(
             Endpoint::new(
-                "searchBooks",
+                sc_api::HandlerId::<sc_api::SignedIn>::new("searchBooks"),
                 Method::Get,
                 PathSpec::root().lit("api/search"),
             )
@@ -39,7 +43,12 @@ fn sample_set() -> EndpointSet {
 
 #[test]
 fn an_endpoint_with_query_parameters_round_trips_through_serde() {
-    let ep = Endpoint::new("listBooks", Method::Get, PathSpec::root().lit("api/books")).query([
+    let ep = Endpoint::new(
+        sc_api::HandlerId::<sc_api::SignedIn>::new("listBooks"),
+        Method::Get,
+        PathSpec::root().lit("api/books"),
+    )
+    .query([
         QueryParam::new("select", ValueType::Text),
         QueryParam::new("published", ValueType::Date).repeated(),
         QueryParam::new("q", ValueType::Text).required(),
@@ -60,7 +69,11 @@ fn an_endpoint_without_query_parameters_is_unchanged_by_the_field() {
     // The field is skipped when empty, so every endpoint that existed before
     // query parameters serializes exactly as it did — and still deserializes
     // from a document written without the key.
-    let ep = Endpoint::new("whoami", Method::Get, PathSpec::root().lit("api/whoami"));
+    let ep = Endpoint::new(
+        sc_api::HandlerId::<sc_api::SignedIn>::new("whoami"),
+        Method::Get,
+        PathSpec::root().lit("api/whoami"),
+    );
     let json = serde_json::to_string(&ep).expect("serialize");
     assert!(!json.contains("\"query\""), "{json}");
     let back: Endpoint = serde_json::from_str(&json).expect("deserialize");
@@ -134,8 +147,12 @@ fn an_endpoint_with_no_query_parameters_generates_exactly_what_it_did() {
     // endpoint that declares none must not gain an argument, a `URLSearchParams`
     // or a `?` in its URL.
     let set = EndpointSet::new().with(
-        Endpoint::new("whoami", Method::Get, PathSpec::root().lit("api/whoami"))
-            .output(TypeSchema::json()),
+        Endpoint::new(
+            sc_api::HandlerId::<sc_api::SignedIn>::new("whoami"),
+            Method::Get,
+            PathSpec::root().lit("api/whoami"),
+        )
+        .output(TypeSchema::json()),
     );
     let ts = sc_api::generate_client(&set);
     assert!(ts.contains("whoami(): Promise<WhoamiResponse>;"), "{ts}");

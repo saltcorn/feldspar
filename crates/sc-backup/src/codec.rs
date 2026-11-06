@@ -1405,6 +1405,15 @@ pub fn trigger_json_with(
         // The scheduler's record, RFC 3339 — what the list shows so an admin can
         // see that a nightly job is actually running.
         "last_run_at": trigger.last_run_at.map(|t| t.to_rfc3339()),
+        // Whether it asks to run as system, and a person's approval when it has
+        // one (TODO-type-hardening H8.10). Whether that approval is for the
+        // configuration it has now is `system_state`, which the list adds.
+        "runs_as_system": trigger.runs_as_system(),
+        "system_approval": trigger.system_approval.as_ref().map(|a| json!({
+            "hash": a.hash,
+            "by": a.by,
+            "at": a.at.to_rfc3339(),
+        })),
         // The workflow half, null on an action body and on a workflow whose
         // versions the caller did not read.
         "workflow_version": Json::Null,
@@ -1490,9 +1499,35 @@ pub fn trigger_from_body(id: TriggerId, body: &Json) -> Result<Trigger> {
             trigger.attributes.insert(key.to_owned(), json!(n));
         }
     }
+    // Asking to run as system is a setting anybody may make; it elevates
+    // nothing until a person approves (TODO-type-hardening H8.10).
+    if obj.get("runs_as_system").and_then(Json::as_bool) == Some(true) {
+        trigger.set_runs_as_system(true);
+    }
     // `last_run_at` is deliberately not read: it is the scheduler's record of
-    // what happened, and an edit must not be able to rewrite history.
+    // what happened, and an edit must not be able to rewrite history. Nor is
+    // `system_approval`: only a person's approval writes one
+    // (`system_approval_from_json` is for a person's restore).
     Ok(trigger)
+}
+
+/// The approval a backup's trigger carries (`trigger_json`'s
+/// `system_approval`), for a restore a person makes (TODO-type-hardening
+/// H8.10); `None` when it has none or it does not read.
+pub fn system_approval_from_json(body: &Json) -> Option<sc_action::SystemApproval> {
+    let approval = body.get("system_approval")?.as_object()?;
+    Some(sc_action::SystemApproval {
+        hash: approval.get("hash")?.as_str()?.to_owned(),
+        by: approval
+            .get("by")
+            .and_then(Json::as_str)
+            .and_then(|by| by.parse().ok()),
+        at: approval
+            .get("at")
+            .and_then(Json::as_str)
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .map_or_else(chrono::Utc::now, |at| at.with_timezone(&chrono::Utc)),
+    })
 }
 
 /// A [`Stream`](sc_stream::Stream) from a `saveStream` body.

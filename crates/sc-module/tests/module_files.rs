@@ -160,8 +160,11 @@ mod deno {
                 Some(sc_module::files::module_owner(&names[0]).as_str()),
                 "{path}"
             );
-            let user =
-                sc_files::FileCaller::new(Role::of(80), Some(uuid::Uuid::new_v4().to_string()));
+            let user = sc_catalog::Principal::recorded(
+                Role::of(80),
+                Some(serde_json::json!({ "id": uuid::Uuid::new_v4().to_string() })),
+            )
+            .file_caller();
             assert!(
                 sc_files::check_write(files.as_ref(), None, path, &user)
                     .await

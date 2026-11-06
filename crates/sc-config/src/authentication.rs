@@ -31,9 +31,10 @@ pub const SESSION_TTL_HOURS: &str = "session_ttl_hours";
 /// session's lifetime, so closing the browser does not sign anybody out. On
 /// unless stored as `false` (TODO A1.1).
 pub const PERSISTENT_SESSION_COOKIE: &str = "persistent_session_cookie";
-/// Whether a sign-in with an external identity provider is asked for a second
-/// factor too, as a password's is. Off by default: the provider has its own
-/// second factor, and asking for two is how people stop using either.
+/// Retired: whether a sign-in with an external identity provider was asked for
+/// a second factor. It is now always asked for when the account has one on or
+/// its role requires one, as a password sign-in is (security review 2026-11,
+/// #10), so a stored value is no longer read and the setting is not shown.
 pub const SECOND_FACTOR_FOR_IDENTITY_PROVIDERS: &str = "second_factor_for_identity_providers";
 /// The name an authenticator app lists this installation's accounts under.
 /// Blank: the base domain, or the host the setup was on.
@@ -110,16 +111,6 @@ pub fn authentication_section() -> ConfigSection {
                  people share a computer, such as a kiosk, so closing the browser signs them \
                  out. Applies to sign-ins after saving.",
             ),
-            // Read at every identity provider sign-in.
-            ConfigDef::help(
-                FormField::new(SECOND_FACTOR_FOR_IDENTITY_PROVIDERS, BasicType::Bool)
-                    .label("Ask for a two-factor code after an identity provider")
-                    .default_value(false),
-                "An account with two-factor authentication on, or whose role requires it, is \
-                 asked for a code from its authenticator app after its password. Tick this to \
-                 ask after a sign-in with an identity provider too. Left unticked, the \
-                 provider's own sign-in (and its own second factor) is trusted.",
-            ),
             ConfigDef::help(
                 FormField::new(SECOND_FACTOR_ISSUER, BasicType::Text)
                     .label("Name in authenticator apps")
@@ -192,22 +183,6 @@ pub fn session_ttl_hours_from(config: &Attrs) -> Result<i64> {
 /// Read the session lifetime, in hours, out of `_fd_config`.
 pub async fn session_ttl_hours(catalog: &Catalog) -> Result<i64> {
     session_ttl_hours_from(&crate::store::all_config(catalog).await?)
-}
-
-/// Read whether an identity provider's sign-in is asked for a second factor out
-/// of a settings bag: only when stored as `true`.
-pub fn second_factor_for_identity_providers_from(config: &Attrs) -> bool {
-    matches!(
-        config.get(SECOND_FACTOR_FOR_IDENTITY_PROVIDERS),
-        Some(Json::Bool(true))
-    )
-}
-
-/// [`second_factor_for_identity_providers_from`] `_fd_config`.
-pub async fn second_factor_for_identity_providers(catalog: &Catalog) -> Result<bool> {
-    Ok(second_factor_for_identity_providers_from(
-        &crate::store::all_config(catalog).await?,
-    ))
 }
 
 /// The issuer an authenticator app lists accounts under, when one is set.
@@ -671,23 +646,9 @@ mod tests {
                 SHARED_SESSION_COOKIE,
                 SESSION_TTL_HOURS,
                 PERSISTENT_SESSION_COOKIE,
-                SECOND_FACTOR_FOR_IDENTITY_PROVIDERS,
                 SECOND_FACTOR_ISSUER,
             ]
         );
-    }
-
-    /// An identity provider's sign-in is asked for a second factor only when
-    /// the setting is stored as `true`.
-    #[test]
-    fn identity_providers_skip_the_second_factor_unless_told_not_to() {
-        assert!(!second_factor_for_identity_providers_from(&Attrs::new()));
-        assert!(!second_factor_for_identity_providers_from(&attrs(
-            json!({ SECOND_FACTOR_FOR_IDENTITY_PROVIDERS: "yes" })
-        )));
-        assert!(second_factor_for_identity_providers_from(&attrs(
-            json!({ SECOND_FACTOR_FOR_IDENTITY_PROVIDERS: true })
-        )));
     }
 
     /// On when nothing is stored, and off only for a stored `false`.

@@ -18,7 +18,10 @@
 //! `PATH` is process-wide. A test that edits it edits it for every other test
 //! in the same binary, and `modules_api.rs`'s tests run `npm` — so this one
 //! test lives alone, where the only thing it can affect is itself.
-
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use sc_catalog::Authority;
@@ -52,6 +55,10 @@ fn have(program: &str) -> bool {
 }
 
 #[tokio::test]
+#[allow(
+    unsafe_code,
+    reason = "the test empties PATH to show modules need no Node on it"
+)]
 async fn the_server_serves_a_module_with_node_off_the_path() -> sc_error::Result<()> {
     if !have("npm") {
         eprintln!("skipping: npm is not on the PATH");
@@ -99,6 +106,7 @@ async fn the_server_serves_a_module_with_node_off_the_path() -> sc_error::Result
     // one is started by `ModuleServices::install` below.
     let empty = root.join("no-toolchain");
     std::fs::create_dir_all(&empty)?;
+    // SAFETY: as above — alone in its binary, before any other thread exists.
     unsafe { std::env::set_var("PATH", &empty) };
     assert!(
         !have("node"),

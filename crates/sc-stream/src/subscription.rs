@@ -92,6 +92,10 @@ impl Subscription {
     ///
     /// The one way to build one, so every subscription in the system is stopped
     /// by the same two steps in the same order.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "tokio::spawn: a background loop for the life of the process, at no caller's behalf, so it must not inherit the starting task's scope"
+    )]
     pub fn spawn<F, Fut>(f: F) -> Subscription
     where
         F: FnOnce(Stop) -> Fut,

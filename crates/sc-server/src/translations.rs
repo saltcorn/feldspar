@@ -182,7 +182,8 @@ async fn view_strings(cat: &Catalog, app: &Application) -> Result<AppStrings> {
     if views.is_empty() {
         return Ok(AppStrings::default());
     }
-    let configurer = sc_viewpattern::Configurer::new(runtime, cat, app, None, None).await?;
+    let admin = sc_catalog::AdminPrincipal::system("translations: extract a view's strings");
+    let configurer = sc_viewpattern::Configurer::new(runtime, cat, app, &admin, None).await?;
     let mut out = AppStrings::default();
     for view in &views {
         let strings = configurer.strings_for_i18n(view).await?;
@@ -272,7 +273,7 @@ impl Coverage {
         if self.total == 0 {
             return 100;
         }
-        ((self.translated * 100) / self.total) as u32
+        u32::try_from((self.translated * 100) / self.total).unwrap_or(100)
     }
 }
 

@@ -97,6 +97,10 @@ pub(crate) struct Changes {
 
 impl Changes {
     /// Watch `dir`, which is in the store whose root is `root`.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "unbounded: the file watcher's callback is synchronous and cannot await a bounded queue; the receiver drains it for the session"
+    )]
     pub(crate) fn watch(root: &Path, dir: &Path) -> notify::Result<Changes> {
         // The kernel reports the paths it was given; resolved, so a store
         // reached through a symlink still has its paths inside the root.

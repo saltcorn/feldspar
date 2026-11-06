@@ -363,7 +363,7 @@ async fn a_none_trigger_runs_by_name_with_its_payload() -> sc_error::Result<()> 
     assert_eq!(result, json!({ "doubled": 42, "who": Value::Null }));
 
     // The caller travels here too, when one is given.
-    let caller = sc_catalog::Principal::new(Role::ADMIN, Some(json!({ "email": ADMIN })));
+    let caller = sc_catalog::Principal::recorded(Role::ADMIN, Some(json!({ "email": ADMIN })));
     let result = server
         .dispatcher
         .run_trigger(

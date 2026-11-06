@@ -72,6 +72,10 @@ impl Arg {
     /// formats — "{count} rows", "{count} files selected" — do not have one. The
     /// alternative is a decimal type in a layer-0 crate, which is a real
     /// dependency bought for a case that does not arise.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the plural category of a float is chosen by its integral part; the cast saturates"
+    )]
     pub fn plural_count(&self) -> Option<i64> {
         match self {
             Arg::Text(_) => None,

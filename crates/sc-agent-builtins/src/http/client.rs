@@ -193,7 +193,7 @@ impl HttpClient {
 /// which would take the address check out of this process — and a user agent
 /// that says what it is.
 fn builder() -> reqwest::ClientBuilder {
-    reqwest::Client::builder()
+    sc_net::client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
         .connect_timeout(Duration::from_secs(10))

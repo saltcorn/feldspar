@@ -47,6 +47,20 @@
 //!   [`SessionListener`](sc_auth::SessionListener)).
 //! - **Nobody blocks the flow.** A connection's queue is bounded; what does
 //!   not fit is dropped, counted and reported as `lagged`.
+//!
+//! Indexing, string slicing and unchecked arithmetic are warned about here
+//! (security review 2026-11, §6; TODO-type-hardening H1.7) when built with
+//! `--cfg feldspar_advisory_lints` (the CI `clippy-advisory` job): this crate
+//! handles request input, where each is a panic a request can cause. Advisory
+//! until the existing hits are fixed, so they do not fail `-D warnings`.
+#![cfg_attr(
+    feldspar_advisory_lints,
+    warn(
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::arithmetic_side_effects
+    )
+)]
 
 pub mod access;
 pub mod changes;
@@ -60,6 +74,7 @@ pub mod protocol;
 pub mod rows;
 pub mod subscription;
 pub mod topic;
+mod yjs_scan;
 
 pub use access::{
     Caller, Denied, Grant, PublishFacts, Refusal, RowFact, StoredStream, StreamFacts, may_open,

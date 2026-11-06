@@ -1391,6 +1391,10 @@ fn number(value: Option<&Json>) -> Option<f64> {
 }
 
 /// A v1 number field read as a positive integer.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+)]
 fn positive(value: Option<&Json>) -> Option<i64> {
     let n = number(value)?;
     (n >= 1.0).then_some(n.floor() as i64)

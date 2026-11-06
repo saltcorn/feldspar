@@ -255,8 +255,11 @@ pub fn generate_skill(catalog: &Catalog, app: &Application, client_file: &str) -
          tool whose grant the token was not given is **still listed**: it refuses \
          the call naming the grant that would allow it, so an agent can report \
          what the administrator would have to tick rather than guess. The \
-         grants are `allow_create`, `allow_edit`, `allow_drop` and \
-         `allow_access_changes`; the composite tools check theirs per operation.\n\
+         grants are `allow_create`, `allow_edit` and `allow_drop`; the composite \
+         tools check theirs per operation. No grant is about access rules: a \
+         table without row-level security has access rules you may change, and a \
+         table with it has access rules only a person changes in the admin UI \
+         (tell them what change you need and why).\n\
          \n\
          ### Always offered\n\
          \n\

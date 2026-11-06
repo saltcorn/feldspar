@@ -122,6 +122,12 @@ const SHOWN: &[&str] = &[
     "focused",
 ];
 
+/// How deep the walk goes before what is below is left out (TODO-type-hardening
+/// H5.3): it recurses once a level, and a page's script can nest its elements
+/// as deep as it likes. A node's children that name it again (a malformed
+/// tree's cycle) stop here too.
+const MAX_TREE_DEPTH: usize = 256;
+
 /// Render `nodes` (the whole tree, in the protocol's order).
 pub fn render(nodes: &[AxNode]) -> Snapshot {
     let by_id: HashMap<&str, &AxNode> = nodes.iter().map(|n| (n.node_id.as_str(), n)).collect();
@@ -138,7 +144,7 @@ pub fn render(nodes: &[AxNode]) -> Snapshot {
         dropped: 0,
     };
     if let Some(root) = root {
-        out.node(root, 0);
+        out.node(root, 0, 0);
     }
     let mut text = out.lines.join("\n");
     if out.dropped > 0 {
@@ -162,7 +168,13 @@ struct Renderer<'a> {
 }
 
 impl Renderer<'_> {
-    fn node(&mut self, node: &AxNode, depth: usize) {
+    /// Render `node`, `depth` levels of indentation and `level` levels of
+    /// the tree down.
+    fn node(&mut self, node: &AxNode, depth: usize, level: usize) {
+        if level > MAX_TREE_DEPTH {
+            self.dropped += 1;
+            return;
+        }
         let role = text_of(node.role.as_ref());
         let name = clip(text_of(node.name.as_ref()).trim());
         let shown = !node.ignored && self.shows(node, &role, &name);
@@ -178,7 +190,7 @@ impl Renderer<'_> {
         }
         for child in &node.child_ids {
             if let Some(child) = self.by_id.get(child.as_str()) {
-                self.node(child, child_depth);
+                self.node(child, child_depth, level + 1);
             }
         }
     }
@@ -366,6 +378,36 @@ mod tests {
             Some("[601 more lines not shown: wait_for the part you need, or scroll to it]")
         );
         assert!(snapshot.text.len() <= MAX_SNAPSHOT_CHARS + 100);
+    }
+
+    #[test]
+    fn a_tree_nested_past_the_limit_or_cyclic_is_cut_not_overflowed() {
+        let depth = 50_000;
+        let mut nodes = Vec::with_capacity(depth);
+        for i in 0..depth {
+            let mut node = json!({"nodeId": format!("n{i}"), "role": {"value": "button"},
+                "name": {"value": format!("Button {i}")}, "childIds": [format!("n{}", i + 1)]});
+            if i > 0 {
+                node["parentId"] = json!(format!("n{}", i - 1));
+            }
+            nodes.push(node);
+        }
+        let nodes: Vec<AxNode> = serde_json::from_value(Json::Array(nodes)).unwrap();
+        let snapshot = render(&nodes);
+        assert!(snapshot.text.contains("Button 0"));
+        assert!(
+            snapshot.text.contains("more lines not shown"),
+            "{}",
+            snapshot.text
+        );
+
+        // A node that is its own child.
+        let cyclic: Vec<AxNode> = serde_json::from_value(json!([
+            {"nodeId": "1", "role": {"value": "button"}, "name": {"value": "Again"},
+             "childIds": ["1"]}
+        ]))
+        .unwrap();
+        assert!(render(&cyclic).text.starts_with("button \"Again\""));
     }
 
     #[test]

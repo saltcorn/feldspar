@@ -7,6 +7,10 @@
 //! an `embed_from` field computed on insert and update through an
 //! OpenAI-compatible stub, back-filled by `embed_rows`, and a nearest read
 //! given text rather than a vector — through the row API, REST and GraphQL.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use sc_types::Role;
 use std::sync::Arc;

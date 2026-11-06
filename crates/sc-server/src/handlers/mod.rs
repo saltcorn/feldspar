@@ -62,8 +62,8 @@ use sc_catalog::{
     check_db_connection_saveable, check_file_store_saveable, connect_db_connection,
     connect_file_store_def, delete_db_connection, delete_file_store, file_kind_config_spec,
     key_kind_config_spec, list_db_connections, list_field_meta_for_table, list_file_stores,
-    load_db_connection, load_db_connection_by_name, load_file_store, load_file_store_by_name,
-    orphan_table_meta, resolve_options, save_db_connection, save_file_store,
+    load_db_connection, load_db_connection_by_name, load_file_store, orphan_table_meta,
+    resolve_options, save_db_connection, save_file_store,
 };
 use sc_catalog::{
     NEW_LOCAL_FILE_STORE, choosable_file_stores, file_store_settings, unique_file_store_name,
@@ -1020,8 +1020,12 @@ fn say_unless_module(text: &str, module: Option<&String>, locale: &Locale) -> St
 /// decides from the table. The role is explicit rather than the user's own
 /// because this endpoint is admin-only, and the row editor must work on a
 /// FORCE'd table.
-fn admin_caller(user: Option<&sc_auth::User>) -> sc_catalog::Principal {
-    sc_access::principal_at(Role::ADMIN, user)
+///
+/// It takes the [`Admin`](crate::admin_session::Admin) proof the handler's gate
+/// handed it, not a user (TODO-type-hardening H3.1): moving one of these lines
+/// into a handler that is not an admin endpoint's no longer compiles.
+fn admin_caller(admin: &crate::admin_session::Admin) -> sc_catalog::AdminPrincipal {
+    admin.principal()
 }
 
 #[cfg(test)]

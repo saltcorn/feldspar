@@ -89,6 +89,11 @@ pub struct FormulaCall {
     /// *bare* scope: the fields of the row the formula ranges over, bound as
     /// top-level identifiers.
     pub ambient: AmbientValues,
+    /// The statement's instant: what `new Date()` and `Date.now()` evaluate
+    /// to (TODO-type-hardening H7.2). A caller that also translated the
+    /// formula for the same statement passes the [`Env`](crate::Env)'s
+    /// instant, so the two paths agree on what "now" is.
+    pub now: chrono::DateTime<chrono::Utc>,
 }
 
 /// The evaluator seam. `DenoEvaluator` is the implementation; the trait exists
@@ -398,6 +403,18 @@ pub(crate) const FREEZE_PRELUDE: &str = r#"
     return p;
   };
   Object.defineProperty(globalThis, "__scKey", { value: key, writable: false, enumerable: false, configurable: false });
+
+  // Time (TODO-type-hardening H7.2). A date column is bound as ISO text, so
+  // `__scT` reads a time from a `Date` or from that text, and `__scDate` is
+  // `new Date(v)` with null for null, as the SQL path reads both.
+  const time = (v) => v === null || v === undefined ? null
+    : v instanceof Date ? v.getTime()
+    : typeof v === "string" ? new Date(v).getTime()
+    : v;
+  const date = (v) => v === null || v === undefined ? null
+    : new Date(v instanceof Date ? v.getTime() : v);
+  Object.defineProperty(globalThis, "__scT", { value: time, writable: false, enumerable: false, configurable: false });
+  Object.defineProperty(globalThis, "__scDate", { value: date, writable: false, enumerable: false, configurable: false });
 
   const seen = new Set();
   const freeze = (v) => {
@@ -730,6 +747,11 @@ fn build_script(call: &FormulaCall, value_mode: bool) -> Result<String> {
         }
         hoisted.insert(key, binding);
     }
+    // The statement's instant, in milliseconds (`new Date()`, `Date.now()`).
+    consts.push_str(&format!(
+        "const __scNow = {};\n",
+        call.now.timestamp_millis()
+    ));
     let args = serde_json::to_string(&serde_json::Value::Object(bindings))
         .map_err(|e| Error::msg(format!("encode bindings: {e}")))?;
     let expr = render_js_hoisted(call.formula.ast(), &hoisted);
@@ -815,6 +837,17 @@ fn binding_for(call: &FormulaCall, ident: &str) -> Result<Option<serde_json::Val
     if let Some(v) = call.row.get(ident) {
         return Ok(Some(value_to_script_json(v)));
     }
+    // `old` with no row bound for it: an ownership formula outside the
+    // proposed-row check of an update, where it is null (TODO-type-hardening
+    // H7.3). Validation decides where `old` may be named at all.
+    if ident == Ambient::Old.as_str() {
+        return Ok(Some(serde_json::Value::Null));
+    }
+    // `_request` with nothing presented: an empty object, whose keys are
+    // `undefined` (TODO-type-hardening H7.5).
+    if ident == Ambient::Request.as_str() {
+        return Ok(Some(serde_json::Value::Object(serde_json::Map::new())));
+    }
     if crate::analyze::GLOBALS.contains(&ident) {
         return Ok(None);
     }
@@ -853,6 +886,10 @@ fn flag_value(op: Operation, flag: OpFlag) -> bool {
 
 #[cfg(feature = "eval")]
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 mod tests {
     use super::*;
 
@@ -863,6 +900,7 @@ mod tests {
             row: BTreeMap::new(),
             user: None,
             ambient: AmbientValues::new(),
+            now: chrono::Utc::now(),
         }
     }
 

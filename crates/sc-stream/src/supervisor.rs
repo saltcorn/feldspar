@@ -545,12 +545,18 @@ impl StreamSupervisor {
     /// **The one place the clock is read.** The interval is short because the
     /// thing it decides is "is a retry due", and the retries it is deciding
     /// about start at a second.
+    ///
+    /// Supervised ([`sc_catalog::supervise`]): a tick that panics is logged and
+    /// the loop starts again, so the streams keep being reconnected.
     pub fn start_task(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let supervisor = Arc::clone(self);
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                supervisor.tick(Utc::now()).await;
+        sc_catalog::supervise("the stream supervisor", move || {
+            let supervisor = Arc::clone(&supervisor);
+            async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    supervisor.tick(Utc::now()).await;
+                }
             }
         })
     }

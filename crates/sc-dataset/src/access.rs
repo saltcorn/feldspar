@@ -46,91 +46,169 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use sc_auth::{COL_ID, COL_PASSWORD_HASH, COL_ROLE, USERS_TABLE, User};
-use sc_catalog::{Catalog, Principal, Table};
+use sc_catalog::{AdminPrincipal, Catalog, Principal, Table};
 use sc_db::{DatabaseDriver, Row};
 use sc_error::{Error, Result};
 use sc_expr::{Env, Operation, SchemaShape, TranslateError, UserEnv, translate_rooted};
 use sc_query::{Expr, InSet, Join, OrderBy, Projection, Select, Source, Statement, Value};
 use serde_json::Value as Json;
 
-/// Who reads: a role, the user's fields an ownership formula reads, and — in
-/// an application — the tables it may read at all.
+/// Which tables a caller may name at all (TODO-type-hardening H3.4).
+///
+/// An enum rather than `Option`, where `None` meant "every table" and a
+/// caller somebody forgot to narrow failed open: every caller states its
+/// scope.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TableScope {
+    /// Every table — the floors and formulas still decide each read. The
+    /// unrestricted Analytics UI, a fixed-mode application, the server.
+    Every,
+    /// Only these: a self-serve Analytics application's tables.
+    Only(Arc<BTreeSet<String>>),
+}
+
+/// Who reads: a view over the caller's [`Principal`] — its role and user —
+/// with the user's fields as an ownership formula reads them and the tables it
+/// may name (security review 2026-11 E3, TODO-type-hardening H3.4).
+///
+/// The fields are private. Whether it reads with the **administrator's**
+/// authority — the users table's password hash, a relation that is not a
+/// catalog table, a model's fit outputs — is not its role number: only
+/// [`system`](Caller::system) and [`admin`](Caller::admin), made from an
+/// [`AdminPrincipal`], say so. An admin-role user reached any other way (an
+/// Analytics application's visitor) reads as the rule lets their role read.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Caller {
-    /// The role: the user's, or public for nobody.
-    pub role: Role,
+    /// The principal: the role, the user's fields as the `sc.user` GUC carries
+    /// them, the origin.
+    principal: Principal,
+    /// The admin's authority, from a proof.
+    admin: bool,
     /// The user, as the formula's `user` sees it: `id`, `role` and every other
-    /// column. `None` for nobody, and for the server reading on its own
+    /// column, typed. `None` for nobody, and for the server reading on its own
     /// authority.
-    pub user: Option<BTreeMap<String, Value>>,
-    /// The tables an application lets its users read; `None` is every
-    /// table, which is the unrestricted Analytics UI.
-    pub tables: Option<Arc<BTreeSet<String>>>,
+    user: Option<BTreeMap<String, Value>>,
+    /// The tables it may name.
+    tables: TableScope,
 }
 
 impl Caller {
-    /// The server itself, at the admin role and with no user: what a model fit
-    /// reads its training rows as (fits are the admin's to start), and what a
-    /// test reads as.
-    pub fn admin() -> Caller {
+    /// The server itself, at the admin role and with no user, for `reason`:
+    /// what a model fit reads its training rows as (fits are the admin's to
+    /// start), and what a test reads as.
+    pub fn system(reason: &'static str) -> Caller {
+        Caller::admin(&AdminPrincipal::system(reason))
+    }
+
+    /// An administrator's reads, from the proof: the unrestricted Analytics UI.
+    pub fn admin(admin: &AdminPrincipal) -> Caller {
         Caller {
-            role: Role::ADMIN,
-            user: None,
-            tables: None,
+            principal: admin.principal().clone(),
+            admin: true,
+            user: admin.principal().user().map(json_fields),
+            tables: TableScope::Every,
         }
     }
 
-    /// The caller a request's user is, or nobody's (the public role).
+    /// A view of `principal`, naming every table: never the administrator's
+    /// authority, whatever its role. The user's fields are read back from the
+    /// principal's JSON ([`of_user`](Caller::of_user) keeps them typed).
+    pub fn of(principal: &Principal) -> Caller {
+        Caller {
+            principal: principal.clone(),
+            admin: false,
+            user: principal.user().map(json_fields),
+            tables: TableScope::Every,
+        }
+    }
+
+    /// The caller a request's user is, or nobody's (the public role), naming
+    /// every table — their floors and formulas decide each read. Never the
+    /// administrator's authority, whatever the role.
     pub fn of_user(user: Option<&User>) -> Caller {
         Caller {
-            role: user.map_or(Role::PUBLIC, |u| u.role()),
+            principal: Principal::recorded(
+                user.map_or(Role::PUBLIC, |u| u.role()),
+                user.map(User::fields_json),
+            )
+            .in_current_origin(),
+            admin: false,
             user: user.map(|u| {
                 let mut fields = u.extra().clone();
                 fields.insert(COL_ID.to_owned(), Value::Uuid(u.id()));
                 fields.insert(COL_ROLE.to_owned(), Value::Int(i64::from(u.role())));
                 fields
             }),
-            tables: None,
+            tables: TableScope::Every,
         }
     }
 
     /// The same caller, reading only `tables`.
     #[must_use]
     pub fn within(mut self, tables: impl IntoIterator<Item = String>) -> Caller {
-        self.tables = Some(Arc::new(tables.into_iter().collect()));
+        self.tables = TableScope::Only(Arc::new(tables.into_iter().collect()));
         self
     }
 
-    /// Whether this is the admin role.
+    /// The principal this caller is a view of.
+    pub fn principal(&self) -> &Principal {
+        &self.principal
+    }
+
+    /// The role.
+    pub fn role(&self) -> Role {
+        self.principal.role()
+    }
+
+    /// The user's fields as an ownership formula reads them.
+    pub fn user_fields(&self) -> Option<&BTreeMap<String, Value>> {
+        self.user.as_ref()
+    }
+
+    /// The tables it may name.
+    pub fn tables(&self) -> &TableScope {
+        &self.tables
+    }
+
+    /// Whether this caller reads with the administrator's authority — from a
+    /// proof, never from the role number.
     pub fn is_admin(&self) -> bool {
-        self.role.is_admin()
+        self.admin
     }
 
     /// The user's id, if a user is reading.
     pub fn user_id(&self) -> Option<uuid::Uuid> {
         match self.user.as_ref()?.get(COL_ID)? {
             Value::Uuid(id) => Some(*id),
+            Value::Text(id) => id.parse().ok(),
             _ => None,
         }
     }
 
     /// Whether `table` is one this caller's application lets it read.
     pub fn may_name(&self, table: &str) -> bool {
-        self.tables.as_ref().is_none_or(|t| t.contains(table))
+        match &self.tables {
+            TableScope::Every => true,
+            TableScope::Only(tables) => tables.contains(table),
+        }
     }
 
     /// The context a row-level-security policy reads the caller from.
     pub fn context(&self) -> Principal {
-        let user = self.user.as_ref().map(|fields| {
-            Json::Object(
-                fields
-                    .iter()
-                    .map(|(k, v)| (k.clone(), sc_types::value_to_json(v)))
-                    .collect(),
-            )
-        });
-        Principal::new(self.role, user)
+        self.principal.clone()
     }
+}
+
+/// A principal's user fields as the formula environment's typed values.
+fn json_fields(user: &Json) -> BTreeMap<String, Value> {
+    user.as_object()
+        .map(|fields| {
+            fields
+                .iter()
+                .map(|(k, v)| (k.clone(), sc_types::value_from_json(v)))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Who owns a dataset or a workspace, and the roles it is shared with.
@@ -165,7 +243,7 @@ impl Sharing {
             || (self.owner.is_some() && self.owner == caller.user_id())
             || self
                 .share_role
-                .is_some_and(|floor| caller.role.meets(floor))
+                .is_some_and(|floor| caller.role().meets(floor))
     }
 
     /// Whether `caller` may change it: the admin, or its owner.
@@ -325,7 +403,7 @@ impl Reader {
                 in_context: true,
             });
         }
-        if caller.role.meets(table.access.min_role_read) {
+        if caller.role().meets(table.access.min_role_read) {
             return Ok(TableRead {
                 rows: only(None),
                 in_context: false,
@@ -335,7 +413,7 @@ impl Reader {
             return Err(Error::auth(format!("you may not read `{name}`")));
         };
         let formula = &*rule;
-        let user = UserEnv::Inline(caller.user.clone());
+        let user = UserEnv::Inline(caller.user_fields().cloned());
         let calc = table.calc_formulas();
         match translate_rooted(
             formula,
@@ -518,7 +596,9 @@ mod tests {
         let private = Sharing::owned_by(alice.user_id());
         assert!(private.admits(&alice) && private.may_change(&alice));
         assert!(!private.admits(&bob) && !private.may_change(&bob));
-        assert!(private.admits(&Caller::admin()) && private.may_change(&Caller::admin()));
+        assert!(
+            private.admits(&Caller::system("test")) && private.may_change(&Caller::system("test"))
+        );
         assert!(!private.admits(&Caller::of_user(None)));
         // Shared with role 80: bob sees it and still may not change it.
         let shared = Sharing {
@@ -541,22 +621,30 @@ mod tests {
     fn a_caller_knows_its_user_and_its_tables() {
         let user = User::new(uuid::Uuid::new_v4(), Role::of(40));
         let caller = Caller::of_user(Some(&user)).within(["houses".to_owned()]);
-        assert_eq!(caller.role, Role::of(40));
+        assert_eq!(caller.role(), Role::of(40));
         assert_eq!(caller.user_id(), Some(user.id()));
         assert!(caller.may_name("houses"));
         assert!(!caller.may_name("incidents"));
         assert!(!caller.is_admin());
         let nobody = Caller::of_user(None);
-        assert_eq!(nobody.role, Role::PUBLIC);
+        assert_eq!(nobody.role(), Role::PUBLIC);
         assert!(nobody.user.is_none());
         assert!(nobody.may_name("anything"));
-        assert!(Caller::admin().is_admin());
+        assert!(Caller::system("test").is_admin());
+        // An admin-role user is not the admin's authority without the proof
+        // (security review 2026-11 E3, TODO-type-hardening H3.4).
+        let admin_user = User::new(uuid::Uuid::new_v4(), Role::ADMIN);
+        assert!(!Caller::of_user(Some(&admin_user)).is_admin());
+        let proof = AdminPrincipal::vouched(Some(admin_user.fields_json()), "a test's session");
+        let admin = Caller::admin(&proof);
+        assert!(admin.is_admin());
+        assert_eq!(admin.user_id(), Some(admin_user.id()));
         // The policy context carries the user's fields as JSON.
         let context = caller.context();
-        assert_eq!(context.role, Role::of(40));
+        assert_eq!(context.role(), Role::of(40));
         assert_eq!(
             context
-                .user
+                .user()
                 .as_ref()
                 .and_then(|u| u.get("id"))
                 .and_then(Json::as_str),

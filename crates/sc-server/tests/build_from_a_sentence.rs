@@ -10,7 +10,10 @@
 //! Its own binary, because new local stores are made under the data directory,
 //! and the variable that moves it out of the developer's real one is
 //! process-wide.
-
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashMap;
@@ -33,6 +36,10 @@ use tower::ServiceExt;
 
 /// The data directory every new local store lands under, set once for the
 /// process (see the module docs).
+#[allow(
+    unsafe_code,
+    reason = "the binary's data directory is set once, through the environment the server reads"
+)]
 fn data_dir() -> &'static Path {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
@@ -41,6 +48,9 @@ fn data_dir() -> &'static Path {
         let dir = std::env::temp_dir().join(format!("sc-build-sentence-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: test-only: written once per binary, under the `OnceLock`,
+        // and never changed after. A concurrent `getenv` in another test is
+        // the test-code race security review 2026-11 (F §1) records.
         unsafe { std::env::set_var(sc_files::DATA_DIR_ENV, &dir) };
         dir
     })

@@ -360,6 +360,7 @@ async fn formula_text(
             row: bound,
             user: None,
             ambient: Default::default(),
+            now: chrono::Utc::now(),
         })
         .await?;
     Ok(match json {

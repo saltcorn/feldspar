@@ -22,6 +22,10 @@
 //! - **L3.9** the Streams list and `streamStatus` carry what the checks
 //!   decided.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use crate::support::{Socket, next_frame, send};
 use sc_types::Role;

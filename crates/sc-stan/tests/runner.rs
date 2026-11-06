@@ -7,7 +7,10 @@
 //! arguments, progress, the process budget, cancel, the timeout, the failure
 //! sentences, the raw run and its discard. The same fit against a real
 //! CmdStan is in `real_cmdstan.rs`.
-
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -312,17 +315,22 @@ async fn a_fit_compiles_once_runs_every_chain_with_cmdstans_arguments_and_reads_
         ]
     );
     assert!(fx.read("cwd-1.log").trim().contains("/scratch/stan-run-"));
-    // The environment is scrubbed: what the shell adds itself, and what we
-    // pass on, and nothing else.
-    let allowed = [
-        "PATH", "HOME", "TMPDIR", "CMDSTAN", "CXX", "PWD", "OLDPWD", "SHLVL", "_",
-    ];
+    // The environment is scrubbed: what the shell adds itself, the base every
+    // child gets (`sc_proc::BASE_ENV`: the path, the locale, the home and
+    // temporary directories), CmdStan's own, and nothing else.
+    let allowed = ["CMDSTAN", "CXX", "PWD", "OLDPWD", "SHLVL", "_"];
     for var in fx.read("env-1.log").split_whitespace() {
         assert!(
-            allowed.contains(&var) || var.starts_with("STAN_"),
+            allowed.contains(&var)
+                || sc_proc::BASE_ENV.contains(&var)
+                || sc_proc::BASE_ENV_PREFIXES.iter().any(|p| var.starts_with(p))
+                || var.starts_with("STAN_"),
             "the model saw `{var}`"
         );
     }
+    // `cargo test` set these for the test binary; the model sees none.
+    let env = fx.read("env-1.log");
+    assert!(!env.split_whitespace().any(|v| v.starts_with("CARGO")), "{env}");
 
     // The draws: every column of every chain, elements by name.
     assert_eq!(result.draws.len(), 2 * 5);

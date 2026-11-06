@@ -45,8 +45,8 @@
 use std::path::{Path, PathBuf};
 
 use sc_error::{Context, Error, Result};
+use sc_proc::{AdminProof, HostCommand, Operand, SystemTask, Timeout};
 use serde_json::{Map, Value as Json};
-use tokio::process::Command;
 
 use crate::module::ModuleSource;
 
@@ -64,14 +64,19 @@ pub async fn have_npm() -> bool {
     version_of("npm").await
 }
 
-async fn version_of(program: &str) -> bool {
-    Command::new(program)
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+/// The server asking which toolchain it has: `node --version`, `npm --version`.
+const TOOLCHAIN_PROBE: SystemTask = SystemTask::new("Node toolchain probe");
+
+/// How long a `--version` probe may take.
+const PROBE_TIMEOUT: Timeout = Timeout::secs(30);
+
+async fn version_of(program: &'static str) -> bool {
+    let mut probe = HostCommand::new(program, &TOOLCHAIN_PROBE, PROBE_TIMEOUT);
+    probe.arg("--version");
+    probe
+        .output()
         .await
-        .is_ok_and(|status| status.success())
+        .is_ok_and(|output| output.status.success())
 }
 
 /// The oldest npm that can install a module here, as an admin would write it.
@@ -86,7 +91,9 @@ const MIN_NPM: (u64, u64, u64) = (9, 3, 0);
 /// Asked by the Modules tab beside [`have_npm`], because "there is an npm" is
 /// no longer the whole question: see [`check_npm_version`].
 pub async fn npm_version() -> Option<String> {
-    let output = Command::new("npm").arg("--version").output().await.ok()?;
+    let mut probe = HostCommand::new("npm", &TOOLCHAIN_PROBE, PROBE_TIMEOUT);
+    probe.arg("--version");
+    let output = probe.output().await.ok()?;
     if !output.status.success() {
         return None;
     }
@@ -402,7 +409,7 @@ impl Installer {
         {
             return Ok(String::new());
         }
-        self.npm(&install_args("")).await
+        self.npm(&INSTALL_FLAGS, None).await
     }
 
     /// An installed package's declared dependencies.
@@ -526,7 +533,7 @@ impl Installer {
         };
 
         let before = self.dependencies().await?;
-        let installed = self.npm(&install_args(&spec)).await;
+        let installed = self.npm(&INSTALL_FLAGS, Some(&spec)).await;
         if let Some((copy, backup)) = set_aside {
             if installed.is_ok() {
                 let _ = tokio::fs::remove_dir_all(&backup).await;
@@ -566,7 +573,7 @@ impl Installer {
             // no npm project to run in.
             return Ok(String::new());
         }
-        self.npm(&["uninstall", "--no-audit", "--no-fund", name])
+        self.npm(&["uninstall", "--no-audit", "--no-fund"], Some(name))
             .await
     }
 
@@ -593,21 +600,25 @@ impl Installer {
         self.package_dir(name).join(PACKAGE_JSON).is_file()
     }
 
-    /// Run npm in the modules root, returning its combined output.
-    async fn npm(&self, args: &[&str]) -> Result<String> {
-        let line = format!("npm {}", args.join(" "));
-        let output = Command::new("npm")
-            .args(args)
-            .current_dir(&self.root)
-            .output()
-            .await
-            .map_err(|e| {
-                Error::config(format!(
-                    "could not run `{line}` in {}: {e}. Installing a module needs Node.js and \
-                     npm on this server's PATH",
-                    self.root.display()
-                ))
-            })?;
+    /// Run `npm <flags> [-- <spec>]` in the modules root, returning its
+    /// combined output. The spec — typed by an administrator, or chosen by a
+    /// model for `install_modules` — is an operand after `--`, so one that
+    /// starts with `-` (`--registry=http://…`) is refused rather than read as
+    /// an option (security review 2026-11, C5).
+    async fn npm(&self, flags: &[&'static str], spec: Option<&str>) -> Result<String> {
+        let mut npm = HostCommand::new("npm", &module_authority(), INSTALL_TIMEOUT);
+        npm.args(flags.iter().copied()).cwd(&self.root);
+        if let Some(spec) = spec.filter(|s| !s.is_empty()) {
+            npm.operand(Operand::new(spec)?);
+        }
+        let line = npm.command_line();
+        let output = npm.output().await.map_err(|e| {
+            Error::config(format!(
+                "{e} (`{line}` in {}). Installing a module needs Node.js and npm on this \
+                 server's PATH",
+                self.root.display()
+            ))
+        })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -692,24 +703,31 @@ impl Installer {
     }
 }
 
-/// The npm command every install runs, with `spec` appended when there is one
-/// (an empty `spec` reifies the tree as it stands).
+/// The npm command every install runs, with the spec after it when there is
+/// one (none reifies the tree as it stands).
 ///
 /// `--install-links` is the load-bearing one: it makes a local directory a
 /// **copy** in the tree rather than a symlink, which is what gets its
 /// dependencies installed and the project's `@saltcorn/*` overrides honoured.
-fn install_args(spec: &str) -> Vec<&str> {
-    let mut args = vec![
-        "install",
-        "--install-links",
-        "--omit=dev",
-        "--no-audit",
-        "--no-fund",
-    ];
-    if !spec.is_empty() {
-        args.push(spec);
-    }
-    args
+const INSTALL_FLAGS: [&str; 5] = [
+    "install",
+    "--install-links",
+    "--omit=dev",
+    "--no-audit",
+    "--no-fund",
+];
+
+/// How long an `npm install` or `uninstall` may run.
+const INSTALL_TIMEOUT: Timeout = Timeout::minutes(20);
+
+/// On whose authority a module is installed: the Modules tab and the admin
+/// agent's `install_modules` tool, both an administrator's (`permit_modules`).
+/// Listed in the system-authority inventory.
+pub(crate) const MODULE_INSTALL: &str =
+    "a module install (Modules tab, admin agent install_modules)";
+
+fn module_authority() -> AdminProof {
+    AdminProof::vouched(None, MODULE_INSTALL)
 }
 
 /// The stub package's `index.js`. Never loaded — see [`stub_json`].

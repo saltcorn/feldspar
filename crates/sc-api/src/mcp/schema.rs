@@ -38,6 +38,10 @@ pub const TOOL_DESCRIBE: &str = "describe_schema";
 /// The writing tool's name.
 pub const TOOL_EDIT: &str = "edit_schema";
 
+/// Who an `edit_schema` batch is made by: an agent, acting for an
+/// administrator but not one at the admin UI (TODO-type-hardening H8.5).
+const EDIT_SCHEMA_EDITOR: &str = "an agent's edit_schema tool";
+
 /// Describe every table, its access rules and its relationships.
 pub(super) struct DescribeSchema;
 
@@ -386,17 +390,18 @@ fn edit_description(grants: &Grants, rls_available: bool) -> String {
             .to_owned(),
         false => format!("You are permitted: {}.", allowed.join(", ")),
     };
-    let access = match grants.access_changes {
-        true => "You may also set a table's access rules (`min_role_read`, \
-                 `min_role_write`, `ownership_formula`, `rls_enabled`). These \
-                 change what every other user of this deployment can reach, so \
-                 say plainly what you are about to do before you do it."
-            .to_owned(),
-        false => "You may **not** set access rules; a batch naming \
-                  `min_role_read`, `min_role_write`, `ownership_formula` or \
-                  `rls_enabled` is refused whole."
-            .to_owned(),
-    };
+    // TODO-type-hardening H8.5, H8.9: no grant decides access rules; row-level
+    // security does. The reply an agent gets is `sc_query::rls_refusal`'s.
+    let access = "You may set a table's access rules (`min_role_read`, `min_role_write`, \
+                  `ownership_formula`) and turn row-level security on (`rls_enabled: true`). \
+                  These change what every other user of this deployment can reach, so say \
+                  plainly what you are about to do before you do it. **Once a table has \
+                  row-level security, its access rules are a person's**: changing its floors, \
+                  its formula or `rls_enabled`, or dropping it, is refused — tell the user what \
+                  change you need and why, and they make it in the admin UI. Do not ask for \
+                  row-level security to be turned off; the rules can be edited with it on. \
+                  Adding and changing its columns, its rows, and the queries and code over it \
+                  stay yours.";
     let rls = match rls_available {
         true => "",
         false => {
@@ -855,6 +860,10 @@ async fn edit(catalog: &Catalog, grants: &Grants, args: &Json) -> Result<Json> {
         &ApplyOptions {
             grants: *grants,
             dry_run,
+            // An agent (an MCP client, `admin_copilot`, a coding agent): never a
+            // person, so an RLS table's access rules are not its to change
+            // (TODO-type-hardening H8.5).
+            editor: sc_catalog::Editor::Delegated(EDIT_SCHEMA_EDITOR),
         },
     )
     .await?;
@@ -1940,7 +1949,15 @@ mod tests {
     fn the_description_says_what_the_grants_do_not_allow() {
         let text = edit_description(&Grants::none(), true);
         assert!(text.contains("no operations at all"), "{text}");
-        assert!(text.contains("may **not** set access rules"), "{text}");
+        // No grant decides access rules (TODO-type-hardening H8.9); row-level
+        // security does, and the description says so, and says not to ask for
+        // it to be turned off (H8.5).
+        assert!(!text.contains("allow_access_changes"), "{text}");
+        assert!(text.contains("access rules are a person's"), "{text}");
+        assert!(
+            text.contains("Do not ask for row-level security to be turned off"),
+            "{text}"
+        );
         let text = edit_description(&Grants::all(), false);
         assert!(text.contains("create_table"), "{text}");
         // A database that cannot enforce RLS says so once, in the description,

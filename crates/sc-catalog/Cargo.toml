@@ -13,6 +13,8 @@ rust-version.workspace = true
 autotests = false
 
 [dependencies]
+# `ConsoleAdmin::spawn_proof`: the console's proof as a spawn authority.
+sc-proc.workspace = true
 sc-error.workspace = true
 sc-log.workspace = true
 sc-query.workspace = true

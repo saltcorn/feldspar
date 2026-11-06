@@ -45,7 +45,7 @@ use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json};
 
 use super::json_schema::{json_schema, object_schema, scalar_schema};
-use super::{Area, Grant, ToolContext, require_admin, require_grant};
+use super::{Area, Grant, ToolContext, require_grant};
 use crate::endpoint::{AuthRequirement, Endpoint, PathSegment, QueryParam};
 use crate::provider::ApiRequest;
 use crate::schema::{TypeSchema, ValueType};
@@ -346,7 +346,7 @@ impl Projection {
 /// and could `deleteAgent`, which would make the six flags mean two different
 /// things depending on which tier a tool came from.
 pub fn check_caller(projection: &Projection, ctx: &ToolContext<'_>, grants: &Grants) -> Result<()> {
-    require_admin(ctx.role, projection.name())?;
+    ctx.require_admin(projection.name())?;
     if !projection.auth().admits(ctx.user) {
         return Err(Error::invalid(format!(
             "`{}` is not available to this caller",
@@ -470,7 +470,7 @@ mod tests {
     /// A GET with one path parameter and two optional query parameters.
     fn list_runs() -> Endpoint {
         Endpoint::new(
-            "listWorkflowRuns",
+            crate::HandlerId::<crate::AdminOnly>::new("listWorkflowRuns"),
             Method::Get,
             api()
                 .lit("workflows")
@@ -481,24 +481,30 @@ mod tests {
             QueryParam::new("state", ValueType::Text),
             QueryParam::new("limit", ValueType::Int),
         ])
-        .auth(AuthRequirement::admin())
         .mcp("List a workflow's runs.")
     }
 
     /// A POST whose body is a struct with one required and one optional field.
     fn save() -> Endpoint {
-        Endpoint::new("saveThing", Method::Post, api().lit("things"))
-            .input(TypeSchema::struct_of([
-                StructField::new("label", TypeSchema::text()),
-                StructField::new("note", TypeSchema::optional(TypeSchema::text())),
-            ]))
-            .auth(AuthRequirement::admin())
-            .mcp("Save a thing.")
+        Endpoint::new(
+            crate::HandlerId::<crate::AdminOnly>::new("saveThing"),
+            Method::Post,
+            api().lit("things"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("label", TypeSchema::text()),
+            StructField::new("note", TypeSchema::optional(TypeSchema::text())),
+        ]))
+        .mcp("Save a thing.")
     }
 
     #[test]
     fn an_untagged_endpoint_is_not_a_tool() {
-        let plain = Endpoint::new("secretThing", Method::Get, api().lit("secret"));
+        let plain = Endpoint::new(
+            crate::HandlerId::<crate::SignedIn>::new("secretThing"),
+            Method::Get,
+            api().lit("secret"),
+        );
         assert!(Projection::of(&plain).is_none());
         assert!(Projection::of(&list_runs()).is_some());
     }
@@ -590,9 +596,13 @@ mod tests {
     fn a_body_that_is_not_a_struct_arrives_under_one_key() {
         // A workflow document, a GraphQL variables object: a shape no struct
         // describes cannot be spread over an object's keys.
-        let endpoint = Endpoint::new("runThing", Method::Post, api().lit("run"))
-            .input(TypeSchema::json())
-            .mcp("Run a thing.");
+        let endpoint = Endpoint::new(
+            crate::HandlerId::<crate::SignedIn>::new("runThing"),
+            Method::Post,
+            api().lit("run"),
+        )
+        .input(TypeSchema::json())
+        .mcp("Run a thing.");
         let projection = Projection::of(&endpoint).unwrap();
         assert_eq!(projection.parameters()["required"], json!([BODY_KEY]));
         let call = projection.split(&json!({ "body": { "a": 1 } })).unwrap();
@@ -601,9 +611,13 @@ mod tests {
 
     #[test]
     fn a_repeated_query_parameter_becomes_one_pair_per_value() {
-        let endpoint = Endpoint::new("findThings", Method::Get, api().lit("things"))
-            .query([QueryParam::new("tag", ValueType::Text).repeated()])
-            .mcp("Find things.");
+        let endpoint = Endpoint::new(
+            crate::HandlerId::<crate::SignedIn>::new("findThings"),
+            Method::Get,
+            api().lit("things"),
+        )
+        .query([QueryParam::new("tag", ValueType::Text).repeated()])
+        .mcp("Find things.");
         let projection = Projection::of(&endpoint).unwrap();
         assert_eq!(
             projection.parameters()["properties"]["tag"],

@@ -10,3 +10,53 @@ allow-expect-in-tests = true
 # `too_many_lines` (warned in the root Cargo.toml): the length past which a
 # function asks to be split. Comments and blank lines are not counted.
 too-many-lines-threshold = 150
+
+# Methods that have a sanctioned replacement (security review 2026-11, §6;
+# TODO-type-hardening H1.3). `disallowed_methods` is denied in the root
+# Cargo.toml. The replacement is where the call is allowed, once, with an
+# `#[allow(clippy::disallowed_methods, reason = "…")]` saying why it is the
+# exception; any other site that needs one carries the same attribute and a
+# reason a reviewer can check.
+disallowed-methods = [
+    # The environment is process-global and read by C code (glibc `getenv` in
+    # the resolver, TLS, CPython, V8) on other threads without a lock: writing
+    # it in a threaded process is a data race. Pass the value explicitly — a
+    # parameter, a `Config` field, `Command::env` for a child.
+    { path = "std::env::set_var", reason = "the environment is shared with C code on other threads; pass the value explicitly (Command::env for a child)" },
+    { path = "std::env::remove_var", reason = "the environment is shared with C code on other threads; pass the value explicitly (Command::env_remove for a child)" },
+    # Outbound HTTP goes through `sc-net`: `sc_net::PublicClient` for a host
+    # that comes from data (it pins the connection to a public address), and
+    # `sc_net::client_builder` for one an administrator configured (it sets the
+    # timeouts). A bare client has neither.
+    { path = "reqwest::Client::new", reason = "no timeouts and no SSRF guard; use sc_net::PublicClient, or sc_net::client_builder for a configured host" },
+    { path = "reqwest::Client::builder", reason = "no timeouts and no SSRF guard; use sc_net::PublicClient, or sc_net::client_builder for a configured host" },
+    { path = "reqwest::get", reason = "no timeouts and no SSRF guard; use sc_net::PublicClient" },
+    # A task spawned with bare `tokio::spawn` loses the spawning task's scope —
+    # its origin, changeset and outbox — so a write it makes is attributed to
+    # nobody and lands outside the request's changeset.
+    { path = "tokio::spawn", reason = "use sc_catalog::spawn_scoped, which carries the task scope (origin, changeset, outbox) into the task" },
+    { path = "tokio::task::spawn", reason = "use sc_catalog::spawn_scoped, which carries the task scope (origin, changeset, outbox) into the task" },
+    # A process is started through `sc-proc` (security review 2026-11 §4;
+    # TODO-type-hardening H4): `sc_proc::HostCommand` clears the environment,
+    # takes a timeout, keeps data out of the option position, gives the child
+    # its own process group and names the authority it runs on; `sc_proc::Git`
+    # names the repository instead of letting git discover one. A test fixture
+    # that starts a program carries an `#[allow]` saying it is one.
+    { path = "std::process::Command::new", reason = "start a process with sc_proc::HostCommand (sc_proc::Git for git): cleared environment, timeout, operands, process group, authority" },
+    { path = "tokio::process::Command::new", reason = "start a process with sc_proc::HostCommand (sc_proc::Git for git): cleared environment, timeout, operands, process group, authority" },
+    { path = "pty_process::Command::new", reason = "start the terminal's program with sc_proc::spawn_on_pty" },
+    { path = "chromiumoxide::Browser::launch", reason = "the browser inherits the server's environment; it is launched in one place (sc-server's browser driver)" },
+    # A WebSocket is accepted with the largest message its endpoint takes
+    # (TODO-type-hardening H5.1); left alone, axum buffers 64 MiB a message.
+    { path = "axum::extract::ws::WebSocketUpgrade::on_upgrade", reason = "upgrade through sc-server's ws::upgrade, which sets the endpoint's message and frame limit" },
+    # A queue a peer can fill faster than it is drained grows without limit.
+    { path = "tokio::sync::mpsc::unbounded_channel", reason = "bound the queue (tokio::sync::mpsc::channel); a producer can outpace the consumer" },
+]
+
+# Types with a sanctioned replacement (TODO-type-hardening H3.7).
+# `disallowed_types` is denied in the root Cargo.toml.
+disallowed-types = [
+    # A page this server builds goes out as `SafeHtml`, through
+    # `sc-server`'s `html_page::html`: `Html` takes any string.
+    { path = "axum::response::Html", reason = "build the page as sc_expr::html::SafeHtml (safe_html!) and answer it with html_page::html" },
+]

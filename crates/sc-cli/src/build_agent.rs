@@ -179,7 +179,7 @@ pub struct Agent {
 impl Agent {
     /// An agent for `server` with `token`, which has not heard its targets yet.
     pub fn new(server: &str, token: String) -> Result<Agent> {
-        let client = reqwest::Client::builder()
+        let client = sc_net::client_builder()
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| Error::msg(format!("making the HTTP client: {e}")))?;
@@ -258,6 +258,10 @@ impl Agent {
 /// A refused token or version stops the agent with the server's reason. An
 /// unreachable server is retried at every interval, and said once, not at
 /// every attempt.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: the CLI build agent's heartbeat loop; a separate process with no catalog and no task scope"
+)]
 pub async fn run(args: &AgentArgs) -> Result<()> {
     let token = read_token(args, std::env::var(TOKEN_ENV).ok())?;
     if args.server.starts_with("http://") && !is_this_machine(&args.server) {
@@ -422,7 +426,7 @@ impl Worker {
     pub fn new(server: &str, token: String, workspace: PathBuf) -> Result<Worker> {
         // No overall timeout: a claim waits, and an artifact takes as long as
         // it takes. Each request sets its own.
-        let client = reqwest::Client::builder()
+        let client = sc_net::client_builder()
             .connect_timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| Error::msg(format!("making the HTTP client: {e}")))?;

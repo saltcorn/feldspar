@@ -48,6 +48,51 @@ pub struct ChangesetRecord {
     pub mutation: Option<i64>,
 }
 
+/// A row image as the change log recorded it: every column, the users table's
+/// password hash and each secret's sealed value included
+/// (TODO-type-hardening H3.5, security review 2026-11 #6).
+///
+/// It has **no `Serialize`**: a response carries a row only as an
+/// `sc_access::ApiRow`, which is made from this by hiding the columns no API
+/// reads and redacting the secrets. Read it as the map it is ([`Deref`]); take
+/// the map out ([`into_map`](RawRow::into_map)) only to write it back.
+///
+/// ```compile_fail
+/// let image = sc_catalog::history::RawRow::default();
+/// let _ = serde_json::to_value(&image);
+/// ```
+///
+/// [`Deref`]: std::ops::Deref
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RawRow(Map<String, Json>);
+
+impl RawRow {
+    /// A row image.
+    pub fn new(values: Map<String, Json>) -> RawRow {
+        RawRow(values)
+    }
+
+    /// The map, to be written back to the table (a restore, an undo) — never
+    /// into a response.
+    pub fn into_map(self) -> Map<String, Json> {
+        self.0
+    }
+}
+
+impl std::ops::Deref for RawRow {
+    type Target = Map<String, Json>;
+
+    fn deref(&self) -> &Map<String, Json> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for RawRow {
+    fn deref_mut(&mut self) -> &mut Map<String, Json> {
+        &mut self.0
+    }
+}
+
 /// One entry: what one changeset did to one row.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HistoryEntry {
@@ -63,9 +108,9 @@ pub struct HistoryEntry {
     /// The net operation: `i`, `u` or `d`.
     pub op: String,
     /// An update's changed columns before, or a deleted row whole.
-    pub old_values: Option<Map<String, Json>>,
+    pub old_values: Option<RawRow>,
     /// An update's changed columns after, or an inserted row whole.
-    pub new_values: Option<Map<String, Json>>,
+    pub new_values: Option<RawRow>,
     /// When the entry was last written.
     pub at: DateTime<Utc>,
     /// The changeset it belongs to.
@@ -136,9 +181,9 @@ impl AsOf {
 pub struct RowAsOf {
     /// The row's columns that the table still has; `None` when the row did not
     /// exist then.
-    pub row: Option<Map<String, Json>>,
+    pub row: Option<RawRow>,
     /// Its values of columns that have been dropped since.
-    pub removed: Map<String, Json>,
+    pub removed: RawRow,
 }
 
 /// The role a table's history is open to (`attributes.history.min_role`): the
@@ -230,11 +275,11 @@ fn time_of(row: &sc_db::Row, column: &str) -> DateTime<Utc> {
     }
 }
 
-fn object_of(row: &sc_db::Row, column: &str) -> Option<Map<String, Json>> {
+fn object_of(row: &sc_db::Row, column: &str) -> Option<RawRow> {
     match row.get(column) {
-        Some(Value::Json(Json::Object(map))) => Some(map.clone()),
+        Some(Value::Json(Json::Object(map))) => Some(RawRow(map.clone())),
         Some(Value::Text(text)) => match serde_json::from_str(text) {
-            Ok(Json::Object(map)) => Some(map),
+            Ok(Json::Object(map)) => Some(RawRow(map)),
             _ => None,
         },
         _ => None,
@@ -356,11 +401,7 @@ pub async fn deleted_rows(
 
 /// The row `key` of `table` as it is now, every stored column, or `None` when
 /// there is no such row. The same JSON the log records rows in.
-async fn current_row(
-    catalog: &Catalog,
-    table: &Table,
-    key: &str,
-) -> Result<Option<Map<String, Json>>> {
+async fn current_row(catalog: &Catalog, table: &Table, key: &str) -> Result<Option<RawRow>> {
     let dialect = catalog.primary_driver().dialect();
     let sql = format!(
         "SELECT {row} AS row FROM {table} t WHERE {key} = {p1}",
@@ -375,11 +416,7 @@ async fn current_row(
 
 /// The last image of a row that is gone: its newest entry, when that is a
 /// delete and there is no row with the key now. `None` otherwise.
-pub async fn deleted_image(
-    catalog: &Catalog,
-    table: &Table,
-    key: &str,
-) -> Result<Option<Map<String, Json>>> {
+pub async fn deleted_image(catalog: &Catalog, table: &Table, key: &str) -> Result<Option<RawRow>> {
     if current_row(catalog, table, key).await?.is_some() {
         return Ok(None);
     }
@@ -428,7 +465,7 @@ pub async fn row_as_of(
         match text_of(entry, "op").as_deref() {
             Some("u") => {
                 if let (Some(row), Some(old)) = (state.as_mut(), old) {
-                    row.extend(old);
+                    row.extend(old.into_map());
                 }
             }
             Some("d") => state = old,
@@ -440,7 +477,7 @@ pub async fn row_as_of(
         return Ok(RowAsOf::default());
     };
     let (mut row, mut removed) = (Map::new(), Map::new());
-    for (column, value) in values {
+    for (column, value) in values.into_map() {
         if table.field(&column).is_some() {
             row.insert(column, value);
         } else {
@@ -448,8 +485,8 @@ pub async fn row_as_of(
         }
     }
     Ok(RowAsOf {
-        row: Some(row),
-        removed,
+        row: Some(RawRow(row)),
+        removed: RawRow(removed),
     })
 }
 

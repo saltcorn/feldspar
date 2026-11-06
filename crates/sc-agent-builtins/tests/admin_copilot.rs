@@ -473,27 +473,14 @@ async fn altering_a_table_leaves_the_settings_it_does_not_name() -> Result<()> {
     };
     sc_catalog::save_table_meta(&env.catalog, &meta).await?;
 
-    // Without the grant, naming an access setting refuses the whole batch.
-    let err = edit(
-        &env,
-        &default_grants(),
-        json!({"operations": [{"op": "alter_table", "table": "books", "min_role_read": 40}]}),
-    )
-    .await
-    .unwrap_err()
-    .to_string();
-    assert!(err.contains("allow_access_changes"), "{err}");
-    assert_eq!(
-        env.catalog.require("books")?.access.min_role_read,
-        Role::of(20)
-    );
-
-    // With it, only what was named moves. This is the omitted-means-leave rule,
+    // No grant decides an access setting any more (TODO-type-hardening H8.9):
+    // on a table without row-level security the default grants may change it.
+    // Only what was named moves. This is the omitted-means-leave rule,
     // and the test that would have caught `updateTable`'s whole-object contract
     // arriving here by accident.
     edit(
         &env,
-        &all_grants(),
+        &default_grants(),
         json!({"operations": [{"op": "alter_table", "table": "books", "min_role_read": 40}]}),
     )
     .await?;
@@ -628,15 +615,40 @@ async fn enabling_row_level_security_makes_two_callers_read_differently() -> Res
     assert_eq!(common::titles(&ada), vec!["Dune", "Ilium"]);
     assert_eq!(common::titles(&bob), vec!["Emma", "Ubik"]);
 
-    // Turning it off is the one operation whose damage is invisible in the
-    // schema afterwards, so the result says so in words.
-    let result = edit(
+    // Once it is on, the agent may not turn it off (TODO-type-hardening H8.5):
+    // only a person changes an RLS table's access rules, and the reply says so
+    // without suggesting that RLS be disabled.
+    let refused = edit(
         &env,
         &all_grants(),
         json!({"operations": [{"op": "alter_table", "table": "books", "rls_enabled": false}]}),
     )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        refused.contains(&sc_query::rls_refusal("books").to_string()),
+        "{refused}"
+    );
+    assert_eq!(policy_count(&env, "books").await?, 4, "still enforced");
+
+    // A person may. Turning it off is the one operation whose damage is
+    // invisible in the schema afterwards, so the result says so in words.
+    let result = sc_api::schema_edit::apply(
+        &env.catalog,
+        &[sc_api::schema_edit::Operation::AlterTable {
+            table: "books".into(),
+            settings: sc_api::schema_edit::TableSettings {
+                rls_enabled: Some(false),
+                ..Default::default()
+            },
+        }],
+        &sc_api::schema_edit::ApplyOptions::by(sc_catalog::Editor::Operator(
+            sc_catalog::Operator::at_cli("a test's operator"),
+        )),
+    )
     .await?;
-    let notes = result["notes"].to_string();
+    let notes = result.notes.join(" ");
     assert!(notes.contains("no longer enforced"), "{notes}");
     assert_eq!(
         policy_count(&env, "books").await?,
@@ -734,10 +746,6 @@ async fn the_two_callers_of_one_tool_set_are_offered_identical_tools() -> Result
                 .unwrap_or(true),
             drop: agent_config
                 .get("allow_drop")
-                .and_then(Json::as_bool)
-                .unwrap_or(false),
-            access_changes: agent_config
-                .get("allow_access_changes")
                 .and_then(Json::as_bool)
                 .unwrap_or(false),
         };
@@ -940,5 +948,30 @@ async fn a_file_fields_delete_and_conflict_options_are_set_through_edit_schema()
     .unwrap_err()
     .to_string();
     assert!(not_file.contains("`file_store`"), "{not_file}");
+    Ok(())
+}
+
+/// TODO-type-hardening H8.9: a configuration saved while the
+/// `allow_access_changes` checkbox existed still validates — the key is retired
+/// and ignored, not refused as an unknown setting — and gives the agent nothing
+/// a configuration without it lacks.
+#[tokio::test]
+async fn a_configuration_with_the_retired_access_grant_still_loads() -> Result<()> {
+    let env = Env::new().await?;
+    let stored = sc_agent::EnabledTrait {
+        trait_: TRAIT.to_owned(),
+        config: all_grants(),
+    };
+    sc_agent::validate_trait(&env.catalog, &env.registry, "librarian", &stored).await?;
+    // A key nobody ever declared is still refused, so the exemption is the
+    // retired key's alone.
+    let mut typo = stored.clone();
+    typo.config
+        .insert("allow_acess_changes".to_owned(), json!(true));
+    let refused = sc_agent::validate_trait(&env.catalog, &env.registry, "librarian", &typo)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("allow_acess_changes"), "{refused}");
     Ok(())
 }

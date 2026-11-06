@@ -62,7 +62,7 @@ use sc_auth::{User, authenticate};
 use sc_catalog::{Authority, Catalog, DataFieldKind, FileOnConflict, Principal, Table, Unchecked};
 use sc_error::{Error, Repr, Result};
 use sc_expr::{JsEvaluator, Operation};
-use sc_files::{FileCaller, validate_file_path};
+use sc_files::validate_file_path;
 use sc_query::Value;
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Value as Json, json};
@@ -476,44 +476,54 @@ impl RestProvider {
         // have some way to stop being anonymous. Public-role browsing still works
         // without ever calling these.
         endpoints.register(
-            Endpoint::new(LOGIN, Method::Post, path_at(&mount).lit("login"))
-                .input(credentials_schema())
-                .output(user_summary_schema())
-                // The only public endpoint: it is what turns an anonymous caller
-                // into an authenticated one.
-                .auth(AuthRequirement::Public),
+            // The only public endpoint: it is what turns an anonymous caller
+            // into an authenticated one.
+            Endpoint::projected(
+                LOGIN,
+                Method::Post,
+                path_at(&mount).lit("login"),
+                AuthRequirement::Public,
+            )
+            .input(credentials_schema())
+            .output(user_summary_schema()),
         );
+        endpoints.register(Endpoint::projected(
+            LOGOUT,
+            Method::Post,
+            path_at(&mount).lit("logout"),
+            AuthRequirement::LoggedIn,
+        ));
         endpoints.register(
-            Endpoint::new(LOGOUT, Method::Post, path_at(&mount).lit("logout"))
-                .auth(AuthRequirement::LoggedIn),
-        );
-        endpoints.register(
-            Endpoint::new(WHOAMI, Method::Get, path_at(&mount).lit("whoami"))
-                .output(user_summary_schema())
-                .auth(AuthRequirement::LoggedIn),
+            Endpoint::projected(
+                WHOAMI,
+                Method::Get,
+                path_at(&mount).lit("whoami"),
+                AuthRequirement::LoggedIn,
+            )
+            .output(user_summary_schema()),
         );
         // A forgotten password, and the link that sets one (`password`). Public
         // for `login`'s reason: they are how somebody who cannot sign in gets
         // back to being able to.
         endpoints.register(
-            Endpoint::new(
+            Endpoint::projected(
                 FORGOT_PASSWORD,
                 Method::Post,
                 path_at(&mount).lit("forgot-password"),
+                AuthRequirement::Public,
             )
             .input(password::forgot_password_schema())
-            .output(password::ok_schema())
-            .auth(AuthRequirement::Public),
+            .output(password::ok_schema()),
         );
         endpoints.register(
-            Endpoint::new(
+            Endpoint::projected(
                 SET_PASSWORD,
                 Method::Post,
                 path_at(&mount).lit("set-password"),
+                AuthRequirement::Public,
             )
             .input(password::set_password_schema())
-            .output(user_summary_schema())
-            .auth(AuthRequirement::Public),
+            .output(user_summary_schema()),
         );
 
         // The tables as a *generated consumer* sees them (§13.1): the row shapes
@@ -571,24 +581,32 @@ impl RestProvider {
             resource.ops.create = Some(op_name("create", name));
             add(
                 RestOp::List,
-                Endpoint::new(op_name("list", name), Method::Get, collection())
-                    // What a read may say about itself, typed into the client so
-                    // nobody has to write a `fetch` beside it (§13.1). The
-                    // filters are the honest exception: `?published=gte.2020` is
-                    // a *string vocabulary* keyed by column, so it is typed as
-                    // one rather than as a shape it does not have.
-                    .query(list_query_params(table))
-                    .output(TypeSchema::array(TypeSchema::json()))
-                    .auth(read.clone())
-                    .handler(HandlerRef::named(op_name("list", name))),
+                Endpoint::projected(
+                    op_name("list", name),
+                    Method::Get,
+                    collection(),
+                    read.clone(),
+                )
+                // What a read may say about itself, typed into the client so
+                // nobody has to write a `fetch` beside it (§13.1). The
+                // filters are the honest exception: `?published=gte.2020` is
+                // a *string vocabulary* keyed by column, so it is typed as
+                // one rather than as a shape it does not have.
+                .query(list_query_params(table))
+                .output(TypeSchema::array(TypeSchema::json()))
+                .handler(HandlerRef::named(op_name("list", name))),
             );
             add(
                 RestOp::Create,
-                Endpoint::new(op_name("create", name), Method::Post, collection())
-                    .input(TypeSchema::json())
-                    .output(TypeSchema::json())
-                    .auth(write.clone())
-                    .handler(HandlerRef::named(op_name("create", name))),
+                Endpoint::projected(
+                    op_name("create", name),
+                    Method::Post,
+                    collection(),
+                    write.clone(),
+                )
+                .input(TypeSchema::json())
+                .output(TypeSchema::json())
+                .handler(HandlerRef::named(op_name("create", name))),
             );
 
             // Row-addressing endpoints need exactly one primary-key column to
@@ -608,18 +626,21 @@ impl RestProvider {
 
             add(
                 RestOp::Update,
-                Endpoint::new(op_name("update", name), Method::Put, item())
+                Endpoint::projected(op_name("update", name), Method::Put, item(), write.clone())
                     .input(TypeSchema::json())
                     .output(TypeSchema::json())
-                    .auth(write.clone())
                     .handler(HandlerRef::named(op_name("update", name))),
             );
             add(
                 RestOp::Delete,
-                Endpoint::new(op_name("delete", name), Method::Delete, item())
-                    .output(TypeSchema::json())
-                    .auth(write.clone())
-                    .handler(HandlerRef::named(op_name("delete", name))),
+                Endpoint::projected(
+                    op_name("delete", name),
+                    Method::Delete,
+                    item(),
+                    write.clone(),
+                )
+                .output(TypeSchema::json())
+                .handler(HandlerRef::named(op_name("delete", name))),
             );
 
             // A `File` field's bytes (§4), addressed **by table, row id and
@@ -645,26 +666,30 @@ impl RestProvider {
                     RestOp::Download {
                         field: field.clone(),
                     },
-                    Endpoint::new(op_name("download", &scoped), Method::Get, file_item())
-                        .binary_output()
-                        .auth(read.clone())
-                        .handler(HandlerRef::named(op_name("download", &scoped))),
+                    Endpoint::projected(
+                        op_name("download", &scoped),
+                        Method::Get,
+                        file_item(),
+                        read.clone(),
+                    )
+                    .binary_output()
+                    .handler(HandlerRef::named(op_name("download", &scoped))),
                 );
                 add(
                     RestOp::Upload {
                         field: field.clone(),
                     },
-                    Endpoint::new(
+                    Endpoint::projected(
                         op_name("upload", &scoped),
                         Method::Post,
                         // The filename is a path parameter, so it is one
                         // segment by construction — a nested or traversing
                         // destination cannot even be expressed in the URL.
                         file_item().param("filename", ValueType::Text),
+                        write.clone(),
                     )
                     .binary_input()
                     .output(TypeSchema::json())
-                    .auth(write.clone())
                     .handler(HandlerRef::named(op_name("upload", &scoped))),
                 );
             }
@@ -680,22 +705,34 @@ impl RestProvider {
         if tables.iter().any(Table::sync_enabled) {
             let sync_path = || path_at(&mount).lit(SYNC_SEGMENT);
             endpoints.register(
-                Endpoint::new(SYNC_REGISTER, Method::Post, sync_path().lit("register"))
-                    .input(crate::sync::register_input_schema())
-                    .output(crate::sync::register_output_schema())
-                    .auth(AuthRequirement::LoggedIn),
+                Endpoint::projected(
+                    SYNC_REGISTER,
+                    Method::Post,
+                    sync_path().lit("register"),
+                    AuthRequirement::LoggedIn,
+                )
+                .input(crate::sync::register_input_schema())
+                .output(crate::sync::register_output_schema()),
             );
             endpoints.register(
-                Endpoint::new(SYNC_PULL, Method::Post, sync_path().lit("pull"))
-                    .input(crate::sync::pull_input_schema())
-                    .output(crate::sync::pull_output_schema())
-                    .auth(AuthRequirement::LoggedIn),
+                Endpoint::projected(
+                    SYNC_PULL,
+                    Method::Post,
+                    sync_path().lit("pull"),
+                    AuthRequirement::LoggedIn,
+                )
+                .input(crate::sync::pull_input_schema())
+                .output(crate::sync::pull_output_schema()),
             );
             endpoints.register(
-                Endpoint::new(SYNC_PUSH, Method::Post, sync_path().lit("push"))
-                    .input(crate::sync::push_input_schema())
-                    .output(crate::sync::push_output_schema())
-                    .auth(AuthRequirement::LoggedIn),
+                Endpoint::projected(
+                    SYNC_PUSH,
+                    Method::Post,
+                    sync_path().lit("push"),
+                    AuthRequirement::LoggedIn,
+                )
+                .input(crate::sync::push_input_schema())
+                .output(crate::sync::push_output_schema()),
             );
         }
 
@@ -708,19 +745,17 @@ impl RestProvider {
             let name = op_name("run", &trigger.name);
             trigger_routes.insert(name.clone(), trigger.name.clone());
             endpoints.register(
-                Endpoint::new(
+                Endpoint::projected(
                     name.clone(),
                     Method::Post,
                     path_at(&mount).lit(ACTIONS_SEGMENT).lit(&trigger.name),
+                    AuthRequirement::MinRole(trigger.min_role.unwrap_or(Role::ADMIN)),
                 )
                 // The posted body *is* the event's payload, whatever shape the
                 // action's configuration reads out of it, so it is typed as
                 // json rather than as a struct nobody could derive.
                 .input(TypeSchema::json())
                 .output(TypeSchema::json())
-                .auth(AuthRequirement::MinRole(
-                    trigger.min_role.unwrap_or(Role::ADMIN),
-                ))
                 .handler(HandlerRef::named(name)),
             );
         }
@@ -780,12 +815,16 @@ impl RestProvider {
             self.signup_role = Some(role);
             return self;
         }
-        let signup = Endpoint::new(SIGNUP, Method::Post, path_at(&self.mount).lit(SIGNUP))
-            .input(credentials_schema())
-            .output(user_summary_schema())
-            // Public for the reason `login` is: it is how a caller who has no
-            // account stops being anonymous.
-            .auth(AuthRequirement::Public);
+        // Public for the reason `login` is: it is how a caller who has no
+        // account stops being anonymous.
+        let signup = Endpoint::projected(
+            SIGNUP,
+            Method::Post,
+            path_at(&self.mount).lit(SIGNUP),
+            AuthRequirement::Public,
+        )
+        .input(credentials_schema())
+        .output(user_summary_schema());
         self.register_auth_endpoint(signup);
         self.signup_role = Some(role);
         self
@@ -806,16 +845,16 @@ impl RestProvider {
         if self.guest_session_days.is_none() || self.endpoints.find(GUEST_SESSION).is_some() {
             return self;
         }
-        let start = Endpoint::new(
+        let start = Endpoint::projected(
             GUEST_SESSION,
             Method::Post,
             path_at(&self.mount).lit(GUEST_SESSION_SEGMENT),
+            AuthRequirement::Public,
         )
         .output(TypeSchema::struct_of([StructField::new(
             "id",
             TypeSchema::text(),
-        )]))
-        .auth(AuthRequirement::Public);
+        )]));
         self.register_auth_endpoint(start);
         self
     }
@@ -829,10 +868,14 @@ impl RestProvider {
             return self;
         };
         if self.endpoints.find(INVITE).is_none() {
-            let invite = Endpoint::new(INVITE, Method::Post, path_at(&self.mount).lit(INVITE))
-                .input(password::invite_schema())
-                .output(password::invite_output_schema())
-                .auth(AuthRequirement::MinRole(min_role));
+            let invite = Endpoint::projected(
+                INVITE,
+                Method::Post,
+                path_at(&self.mount).lit(INVITE),
+                AuthRequirement::MinRole(min_role),
+            )
+            .input(password::invite_schema())
+            .output(password::invite_output_schema());
             self.register_auth_endpoint(invite);
         }
         self
@@ -851,25 +894,25 @@ impl RestProvider {
             return self;
         }
         if self.endpoints.find(VERIFY_EMAIL).is_none() {
-            let verify_email = Endpoint::new(
+            let verify_email = Endpoint::projected(
                 VERIFY_EMAIL,
                 Method::Post,
                 path_at(&self.mount).lit("verify-email"),
+                AuthRequirement::Public,
             )
-            .input(verify::verify_email_schema())
-            .output(verify::verify_output_schema())
             // Public for `set-password`'s reason: the token is the credential.
-            .auth(AuthRequirement::Public);
+            .input(verify::verify_email_schema())
+            .output(verify::verify_output_schema());
             self.register_auth_endpoint(verify_email);
         }
         if self.endpoints.find(RESEND_VERIFICATION).is_none() {
-            let resend = Endpoint::new(
+            let resend = Endpoint::projected(
                 RESEND_VERIFICATION,
                 Method::Post,
                 path_at(&self.mount).lit("resend-verification"),
+                AuthRequirement::LoggedIn,
             )
-            .output(verify::resend_output_schema())
-            .auth(AuthRequirement::LoggedIn);
+            .output(verify::resend_output_schema());
             self.register_auth_endpoint(resend);
         }
         self
@@ -1313,8 +1356,13 @@ impl RestProvider {
             // link is followed, which is what `whoami` will say too.
             summary["role"] = json!(i64::from(verification.serve_as(&user)));
         }
-        let mut out =
-            ApiResponse::start_session_remembering(user, summary, crate::auth::remember(body));
+        let signing_in =
+            sc_auth::PasswordVerified::by(cat, user, sc_auth::FirstFactor::SignUp).await?;
+        let mut out = ApiResponse::start_session_remembering(
+            signing_in,
+            summary,
+            crate::auth::remember(body),
+        );
         out.status = 201;
         Ok(out)
     }
@@ -1460,14 +1508,8 @@ impl RestProvider {
                         let mut changes = std::collections::BTreeMap::new();
                         changes.insert(field.clone(), Value::Text(path));
                         let merged = ownership::merged_row(&table, &existing, &changes);
-                        if !ownership::row_allowed(
-                            cat,
-                            &table,
-                            f,
-                            Operation::Update,
-                            user,
-                            evaluator,
-                            &merged,
+                        if !ownership::update_allowed(
+                            cat, &table, f, user, evaluator, &existing, &merged,
                         )
                         .await?
                         {
@@ -1843,11 +1885,17 @@ async fn code_response(
         // The body's `asAdmin()` file is served as the administrator's, who
         // clears every rule (and whose floor is not read); any other as the
         // request's user, through the store's rules.
-        let caller = match file.authority == "admin" {
-            true => FileCaller::new(Role::ADMIN, None),
-            false => file_caller(user),
+        let opened = match file.authority == "admin" {
+            true => {
+                let admin = sc_catalog::Principal::elevated(
+                    &file_caller(user),
+                    crate::code_host::CODE_ADMIN_RULE,
+                );
+                sc_catalog::open_checked_store(cat, &file.store, &admin).await
+            }
+            false => sc_catalog::open_checked_store(cat, &file.store, &file_caller(user)).await,
         };
-        let Ok(store) = sc_catalog::open_checked_store(cat, &file.store, caller).await else {
+        let Ok(store) = opened else {
             return not_found();
         };
         let Ok(serve) = store.serve(&file.path).await else {
@@ -1886,13 +1934,11 @@ async fn code_response(
     }
 }
 
-/// The caller as a file rule sees them: the role (public when anonymous) and the
-/// user id the owner rule (§2.1) compares with.
-fn file_caller(user: Option<&User>) -> FileCaller {
-    FileCaller::new(
-        user.map_or(Role::PUBLIC, |u| u.role()),
-        user.map(|u| u.id().to_string()),
-    )
+/// The caller a file rule is decided for: the role (public when anonymous) and
+/// the user whose id the owner rule (§2.1) compares with. The store binds it
+/// and reads its own floor (TODO-type-hardening H3.2).
+fn file_caller(user: Option<&User>) -> Principal {
+    ownership::principal_of(user)
 }
 
 /// A short id a failure is logged under and its caller is given, so the two
@@ -1952,7 +1998,7 @@ async fn download_ctx(
     table: &Table,
     field: &str,
     id: &str,
-    caller: &FileCaller,
+    caller: &Principal,
     context: &Principal,
 ) -> Result<ApiResponse> {
     download_inner(
@@ -1971,7 +2017,7 @@ async fn download_inner(
     table: &Table,
     field: &str,
     id: &str,
-    caller: &FileCaller,
+    caller: &Principal,
     context: Unchecked<'_>,
 ) -> Result<ApiResponse> {
     let (store_name, ..) = file_field(table, field)?;
@@ -2022,7 +2068,7 @@ async fn upload_ctx(
     id: &str,
     filename: &str,
     data: Option<bytes::Bytes>,
-    caller: &FileCaller,
+    caller: &Principal,
     context: &Principal,
 ) -> Result<ApiResponse> {
     upload_inner(
@@ -2046,7 +2092,7 @@ async fn upload_inner(
     id: &str,
     filename: &str,
     data: Option<bytes::Bytes>,
-    caller: &FileCaller,
+    caller: &Principal,
     context: Unchecked<'_>,
 ) -> Result<ApiResponse> {
     let (store_name, folder, mime_allow, on_conflict) = file_field(table, field)?;
@@ -2126,9 +2172,9 @@ fn file_field<'t>(
 async fn checked_store(
     cat: &Catalog,
     store: &str,
-    caller: &FileCaller,
+    caller: &Principal,
 ) -> Result<sc_files::CheckedStore> {
-    sc_catalog::open_checked_store(cat, store, caller.clone()).await
+    sc_catalog::open_checked_store(cat, store, caller).await
 }
 
 /// Captured path parameters.
@@ -2912,10 +2958,14 @@ mod tests {
     fn custom_routes_are_projected_and_typed() {
         let p = RestProvider::project("/api", &[table("posts", AccessRules::default())])
             .with_custom_route(
-                Endpoint::new("search", Method::Post, PathSpec::root().lit("api/search"))
-                    .input(TypeSchema::json())
-                    .output(TypeSchema::json())
-                    .handler(HandlerRef::Custom("select 1".to_owned())),
+                Endpoint::new(
+                    crate::HandlerId::<crate::SignedIn>::new("search"),
+                    Method::Post,
+                    PathSpec::root().lit("api/search"),
+                )
+                .input(TypeSchema::json())
+                .output(TypeSchema::json())
+                .handler(HandlerRef::Custom("select 1".to_owned())),
             );
         // The custom route is part of the contract even though it is stubbed.
         assert_eq!(p.endpoints().len(), AUTH_ENDPOINT_COUNT + 4 + 1);

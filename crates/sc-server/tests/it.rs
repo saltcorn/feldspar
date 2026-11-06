@@ -206,6 +206,8 @@ mod public_datasets_api;
 mod python_trigger;
 #[path = "query_contracts.rs"]
 mod query_contracts;
+#[path = "raw_routes.rs"]
+mod raw_routes;
 #[path = "rls_enforcement.rs"]
 mod rls_enforcement;
 #[path = "role_grants.rs"]

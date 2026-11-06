@@ -138,6 +138,12 @@ pub struct Plan {
     /// An insert's row(s), or an update's assignments (phase 3).
     #[serde(default)]
     pub values: Option<Json>,
+    /// The values this terminal presents to the table's ownership formula as
+    /// `_request` — `.withRequest({ token })` (TODO-type-hardening H7.6). Only
+    /// these: a body never presents what the request that started it did,
+    /// unless it passes the value on.
+    #[serde(default)]
+    pub request: Option<BTreeMap<String, String>>,
 }
 
 /// The **other** thing a terminal may send: SQL the code body wrote itself
@@ -1146,6 +1152,10 @@ pub(crate) fn statement(cat: &Catalog, plan: &SqlPlan) -> Result<Statement> {
             named.statements
         )));
     }
+    // Nothing that forges the caller context or reshapes row-level security
+    // (TODO-type-hardening H8.3, H8.5). The text exists only now, so this is
+    // where it is read.
+    sc_query::check_admin_sql(&plan.sql, "this `db.sql()` statement")?;
     if let Some(name) = named.params.first() {
         return Err(Error::invalid(format!(
             "`db.sql()` binds its parameters by position, so `:{name}` is not one of them; \

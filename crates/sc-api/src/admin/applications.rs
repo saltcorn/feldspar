@@ -15,41 +15,46 @@ pub(super) fn register(set: &mut EndpointSet) {
     // diagnostics on failure — comes back as an Application error (§16).
 
     set.register(
-        Endpoint::new("listApplications", Method::Get, api().lit("applications"))
-            .output(TypeSchema::array(listed_application_schema()))
-            .mcp(
-                McpTag::new(
-                    "List the applications: what each is called, the subdomain it \
+        Endpoint::new(
+            ids::LIST_APPLICATIONS,
+            Method::Get,
+            api().lit("applications"),
+        )
+        .output(TypeSchema::array(listed_application_schema()))
+        .mcp(
+            McpTag::new(
+                "List the applications: what each is called, the subdomain it \
                  serves on, its framework and project directory, the API \
                  providers it exposes and the tables and triggers behind them. \
                  The `id` here is what `buildApplication` names.",
-                )
-                .in_area(Area::Applications),
             )
-            .auth(AuthRequirement::admin()),
-    );
-
-    set.register(
-        Endpoint::new("createApplication", Method::Post, api().lit("applications"))
-            .input(application_input_schema())
-            .output(created_application_schema())
-            .auth(AuthRequirement::admin()),
+            .in_area(Area::Applications),
+        ),
     );
 
     set.register(
         Endpoint::new(
-            "updateApplication",
+            ids::CREATE_APPLICATION,
+            Method::Post,
+            api().lit("applications"),
+        )
+        .input(application_input_schema())
+        .output(created_application_schema()),
+    );
+
+    set.register(
+        Endpoint::new(
+            ids::UPDATE_APPLICATION,
             Method::Put,
             api().lit("applications").param("id", ValueType::Uuid),
         )
         .input(application_input_schema())
-        .output(application_schema())
-        .auth(AuthRequirement::admin()),
+        .output(application_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "deleteApplication",
+            ids::DELETE_APPLICATION,
             Method::Delete,
             api().lit("applications").param("id", ValueType::Uuid),
         )
@@ -60,8 +65,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([
             StructField::new("deleted", TypeSchema::bool()),
             StructField::new("agent", TypeSchema::optional(TypeSchema::text())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // Build (and mount) an application. On success the app is serving on its
@@ -70,7 +74,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // message carries the bundler's own diagnostics (§16).
     set.register(
         Endpoint::new(
-            "buildApplication",
+            ids::BUILD_APPLICATION,
             Method::Post,
             api()
                 .lit("applications")
@@ -105,8 +109,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             // output with its diagnostics parsed out, which is what an agent
             // that just changed a schema has to read to fix what it broke.
             .is_a_build(),
-        )
-        .auth(AuthRequirement::admin()),
+        ),
     );
 
     // **Deep clean**: delete an application's installed dependencies (a `react`
@@ -118,15 +121,14 @@ pub(super) fn register(set: &mut EndpointSet) {
     // broken machine rather than a step in building an application.
     set.register(
         Endpoint::new(
-            "deepCleanApplication",
+            ids::DEEP_CLEAN_APPLICATION,
             Method::Post,
             api()
                 .lit("applications")
                 .param("id", ValueType::Uuid)
                 .lit("deep-clean"),
         )
-        .output(build_result_schema())
-        .auth(AuthRequirement::admin()),
+        .output(build_result_schema()),
     );
 
     // Build one of the targets an application's framework offers beside its web
@@ -138,7 +140,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // offered over MCP: nothing an agent changing a schema needs to do.
     set.register(
         Endpoint::new(
-            "buildApplicationTarget",
+            ids::BUILD_APPLICATION_TARGET,
             Method::Post,
             api()
                 .lit("applications")
@@ -147,8 +149,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .param("target", ValueType::Text)
                 .lit("build"),
         )
-        .output(target_build_schema())
-        .auth(AuthRequirement::admin()),
+        .output(target_build_schema()),
     );
 
     // Run an operation a target declares — what a button under the target's
@@ -159,7 +160,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // module sees what the admin sees.
     set.register(
         Endpoint::new(
-            "runApplicationTargetOperation",
+            ids::RUN_APPLICATION_TARGET_OPERATION,
             Method::Post,
             api()
                 .lit("applications")
@@ -182,8 +183,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("git_repo", TypeSchema::bool()),
             // The settings it set, as now stored, secrets masked.
             StructField::new("settings", TypeSchema::json()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // The latest build of a target, running or finished — what the UI polls, and
@@ -191,7 +191,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // process has not built that target since it started.
     set.register(
         Endpoint::new(
-            "getApplicationTargetBuild",
+            ids::GET_APPLICATION_TARGET_BUILD,
             Method::Get,
             api()
                 .lit("applications")
@@ -200,8 +200,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .param("target", ValueType::Text)
                 .lit("build"),
         )
-        .output(target_build_schema())
-        .auth(AuthRequirement::admin()),
+        .output(target_build_schema()),
     );
 
     // Rewrite an application's **generated** code from its current definition —
@@ -218,7 +217,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // writing a whole project is not the same news as rewriting four files.
     set.register(
         Endpoint::new(
-            "updateApplicationClient",
+            ids::UPDATE_APPLICATION_CLIENT,
             Method::Post,
             api()
                 .lit("applications")
@@ -229,8 +228,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("scaffolded", TypeSchema::bool()),
             StructField::new("files", TypeSchema::array(TypeSchema::text())),
             StructField::new("log", TypeSchema::text()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // Run one GraphQL operation against a **mounted** application's own GraphQL
@@ -255,7 +253,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // provider's own `graphqlQuery` endpoint declares it.
     set.register(
         Endpoint::new(
-            "runApplicationGraphql",
+            ids::RUN_APPLICATION_GRAPHQL,
             Method::Post,
             api()
                 .lit("applications")
@@ -267,16 +265,14 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("variables", TypeSchema::optional(TypeSchema::json())),
             StructField::new("operationName", TypeSchema::optional(TypeSchema::text())),
         ]))
-        .output(TypeSchema::json())
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::json()),
     );
 
     // The registered frameworks with their settings spec, so the create/edit
     // form can render controls for a framework it knows nothing about (§13.3).
     set.register(
-        Endpoint::new("listFrameworks", Method::Get, api().lit("frameworks"))
-            .output(TypeSchema::array(framework_info_schema()))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(ids::LIST_FRAMEWORKS, Method::Get, api().lit("frameworks"))
+            .output(TypeSchema::array(framework_info_schema())),
     );
 
     // The registered API providers, so the application form offers them as a
@@ -285,9 +281,12 @@ pub(super) fn register(set: &mut EndpointSet) {
     // where it becomes "unknown API provider" on a save that appeared to work.
     // The same move `listFrameworks` makes, for the same reason.
     set.register(
-        Endpoint::new("listApiProviders", Method::Get, api().lit("api-providers"))
-            .output(TypeSchema::array(api_provider_info_schema()))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::LIST_API_PROVIDERS,
+            Method::Get,
+            api().lit("api-providers"),
+        )
+        .output(TypeSchema::array(api_provider_info_schema())),
     );
 
     // Prepare one custom SQL query and report the columns the **database** says
@@ -302,7 +301,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // differs.
     set.register(
         Endpoint::new(
-            "describeCustomQuery",
+            ids::DESCRIBE_CUSTOM_QUERY,
             Method::Post,
             api().lit("custom-queries").lit("describe"),
         )
@@ -310,8 +309,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "columns",
             TypeSchema::array(query_column_schema()),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // The machines that build an application's targets for this server: a Mac
@@ -320,44 +318,44 @@ pub(super) fn register(set: &mut EndpointSet) {
     // else. Deleting a host is how its token is revoked.
 
     set.register(
-        Endpoint::new("listBuildHosts", Method::Get, api().lit("build-hosts"))
-            .output(TypeSchema::array(build_host_schema()))
-            .auth(AuthRequirement::admin()),
-    );
-
-    set.register(
-        Endpoint::new("createBuildHost", Method::Post, api().lit("build-hosts"))
-            .input(build_host_input_schema())
-            .output(TypeSchema::struct_of([
-                StructField::new("host", build_host_schema()),
-                // Shown once: the table keeps only its hash.
-                StructField::new("token", TypeSchema::text()),
-            ]))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(ids::LIST_BUILD_HOSTS, Method::Get, api().lit("build-hosts"))
+            .output(TypeSchema::array(build_host_schema())),
     );
 
     set.register(
         Endpoint::new(
-            "updateBuildHost",
+            ids::CREATE_BUILD_HOST,
+            Method::Post,
+            api().lit("build-hosts"),
+        )
+        .input(build_host_input_schema())
+        .output(TypeSchema::struct_of([
+            StructField::new("host", build_host_schema()),
+            // Shown once: the table keeps only its hash.
+            StructField::new("token", TypeSchema::text()),
+        ])),
+    );
+
+    set.register(
+        Endpoint::new(
+            ids::UPDATE_BUILD_HOST,
             Method::Put,
             api().lit("build-hosts").param("id", ValueType::Uuid),
         )
         .input(build_host_input_schema())
-        .output(build_host_schema())
-        .auth(AuthRequirement::admin()),
+        .output(build_host_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "deleteBuildHost",
+            ids::DELETE_BUILD_HOST,
             Method::Delete,
             api().lit("build-hosts").param("id", ValueType::Uuid),
         )
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 }
 

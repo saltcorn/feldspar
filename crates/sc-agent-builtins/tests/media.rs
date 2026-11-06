@@ -14,7 +14,10 @@
 //!   a triggered run says nothing;
 //! - the configuration is checked on save: a store that does not exist, an
 //!   Anthropic provider, a model of the wrong kind.
-
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::common;

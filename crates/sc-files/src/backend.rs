@@ -60,7 +60,7 @@ use crate::store::FileStore;
 /// need a backend's settings *before* there is an instance to ask, and a
 /// `LocalFileStore` cannot exist until its directory does — which is precisely
 /// the thing being configured.
-pub fn local_config_spec() -> Vec<FormField> {
+pub(crate) fn local_config_spec() -> Vec<FormField> {
     vec![
         FormField::new(CFG_PATH, BasicType::Text)
             .label("Directory")
@@ -96,7 +96,7 @@ pub fn local_config_spec() -> Vec<FormField> {
 /// button usually fills them in, because an admin pointing a store at a key that
 /// already exists on the machine is a configuration Saltcorn has no business
 /// refusing.
-pub fn git_config_spec() -> Vec<FormField> {
+pub(crate) fn git_config_spec() -> Vec<FormField> {
     vec![
         FormField::new(CFG_URL, BasicType::Text).label("Repository URL"),
         FormField::new(CFG_DIR, BasicType::Text)
@@ -159,7 +159,7 @@ impl OperationOutcome {
     }
 
     /// Carry structured data alongside the prose.
-    pub fn with_data(self, data: serde_json::Value) -> OperationOutcome {
+    pub(crate) fn with_data(self, data: serde_json::Value) -> OperationOutcome {
         OperationOutcome {
             data: Some(data),
             ..self
@@ -501,7 +501,7 @@ mod tests {
     #[test]
     fn a_restored_store_is_relocated_only_when_its_directory_is_missing() {
         crate::paths::testing::temp_env(|| {
-            unsafe { std::env::set_var(crate::DATA_DIR_ENV, "/tmp/sc-relocate") };
+            crate::paths::testing::set_data_dir("/tmp/sc-relocate");
             let missing = temp_path("missing").to_string_lossy().into_owned();
             let here = std::env::temp_dir().to_string_lossy().into_owned();
 

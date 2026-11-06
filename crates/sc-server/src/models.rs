@@ -238,6 +238,10 @@ impl ModelServices {
     /// [`start_fit`](Self::start_fit), making the instance the model's active
     /// one when it finishes and `activation` says it should — what `fit_model`
     /// does when it does not wait.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "tokio::spawn: detached on purpose; the work outlives the request that started it and must not run in that request's changeset"
+    )]
     pub async fn start_fit_activating(
         &self,
         model: &Model,

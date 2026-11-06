@@ -497,6 +497,33 @@ impl TriggerDispatcher {
         }
     }
 
+    /// Where `trigger` stands with running as system (TODO-type-hardening
+    /// H8.10): off, a pending request, or approved by a person for its current
+    /// configuration — which for a workflow includes the current definition's
+    /// fingerprint, asked of the engine.
+    pub async fn system_state(
+        &self,
+        catalog: &Catalog,
+        trigger: &Trigger,
+    ) -> Result<crate::SystemState> {
+        if !trigger.runs_as_system() {
+            return Ok(crate::SystemState::Off);
+        }
+        Ok(trigger.system_state(&self.configuration_hash(catalog, trigger).await?))
+    }
+
+    /// [`Trigger::configuration_hash`], with the workflow fingerprint the
+    /// engine gives for a workflow body.
+    pub async fn configuration_hash(&self, catalog: &Catalog, trigger: &Trigger) -> Result<String> {
+        let fingerprint = match (&trigger.body, self.workflow_engine()) {
+            (crate::TriggerBody::Workflow, Some(engine)) => {
+                engine.fingerprint(catalog, trigger).await?
+            }
+            _ => None,
+        };
+        Ok(trigger.configuration_hash(fingerprint.as_deref()))
+    }
+
     /// Run **one trigger by name**, with `payload` as the event's payload, and
     /// return what its action returned.
     ///
@@ -550,9 +577,11 @@ impl TriggerDispatcher {
         if let Some(channel) = &trigger.channel {
             event = event.on(channel.clone());
         }
-        if let Some(caller) = caller.principal() {
-            event = event.caused_by(caller);
-        }
+        event = match caller.principal() {
+            Some(caller) => event.caused_by(caller),
+            // The server's own authority: an event with no human cause.
+            None => event.by_system(),
+        };
         // Somebody is waiting, so a trigger the cascade bound refused anywhere
         // under this one fails the call rather than only being reported.
         let result = sc_catalog::cascade::surfacing_refusals(fire_trigger_in(
@@ -726,9 +755,11 @@ impl TriggerDispatcher {
         counted: bool,
     ) -> Result<Json> {
         let mut event = Event::new(EventKind::None);
-        if let Some(caller) = caller.principal() {
-            event = event.caused_by(caller);
-        }
+        event = match caller.principal() {
+            Some(caller) => event.caused_by(caller),
+            // The server's own authority: an event with no human cause.
+            None => event.by_system(),
+        };
         let chain = if counted {
             event.firing(name)?
         } else {
@@ -834,9 +865,11 @@ impl TriggerDispatcher {
             }
             event = event.row(row);
         }
-        if let Some(caller) = caller.principal() {
-            event = event.caused_by(caller);
-        }
+        event = match caller.principal() {
+            Some(caller) => event.caused_by(caller),
+            // The server's own authority: an event with no human cause.
+            None => event.by_system(),
+        };
         let result = fire_trigger_with(self, catalog, trigger, &event, None, Some(console)).await?;
         Ok(result.unwrap_or(Json::Null))
     }
@@ -917,9 +950,12 @@ fn table_event(write: &TableWrite<'_>) -> Event {
     }
     match write.caller {
         Some(caller) => event.caused_by(caller),
+        // A write at the server's own authority (an import, a restore, a
+        // system job): its triggers have no human cause either.
         None => event
             .caller(Role::PUBLIC, None)
-            .in_changeset(sc_catalog::changeset::current()),
+            .in_changeset(sc_catalog::changeset::current())
+            .by_system(),
     }
 }
 
@@ -1058,11 +1094,19 @@ pub async fn fire_trigger_with(
     };
     let registry = dispatcher.registry();
     let action = registry.require(action.trim())?;
+    // Approved by a person to run as system, for this configuration
+    // (TODO-type-hardening H8.10)? Then its own statements are the system's.
+    let approved = dispatcher
+        .system_state(catalog, trigger)
+        .await?
+        .approved()
+        .cloned();
     let mut ctx = with_services(
         ActionContext::new(catalog, event, configuration, &trigger.name),
         dispatcher,
     )
-    .with_chain(chain);
+    .with_chain(chain)
+    .with_system_approval(approved);
     if let Some(tx) = tx {
         ctx = ctx.with_transaction(tx.clone());
     }
@@ -1157,9 +1201,11 @@ async fn only_if_selects(
             // Neither the caller nor the payload is typed here: neither ever
             // correlates a prefetch (and the payload has no columns to be typed
             // against at all).
-            Ambient::User | Ambient::Payload | Ambient::Context | Ambient::Session => {
-                value_from_json(json)
-            }
+            Ambient::User
+            | Ambient::Payload
+            | Ambient::Context
+            | Ambient::Session
+            | Ambient::Request => value_from_json(json),
             Ambient::Row | Ambient::Old => typed_value(table.as_ref(), field, json),
         }
     });
@@ -1233,7 +1279,7 @@ mod tests {
     #[test]
     fn a_write_becomes_the_event_its_caller_describes() {
         let books = table("books");
-        let caller = Principal::new(Role::ADMIN, Some(json!({ "email": "a@b.c" })))
+        let caller = Principal::recorded(Role::ADMIN, Some(json!({ "email": "a@b.c" })))
             .chained(vec!["audit".into()]);
         let event = table_event(&TableWrite {
             table: &books,

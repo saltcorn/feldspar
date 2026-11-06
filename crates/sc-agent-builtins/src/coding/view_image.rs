@@ -184,8 +184,7 @@ async fn open_url(
         return Err(not_served());
     }
     let store_path = dir.resolve(rest).ok_or_else(not_served)?;
-    let (store, floor) = assets::dir_scope(dir).connect(ctx.catalog).await?;
-    let store = sc_files::CheckedStore::new(store, floor, crate::files::file_caller(ctx.caller));
+    let store = assets::dir_scope(dir).bind(ctx.catalog, ctx.caller).await?;
     store.check_read(&store_path).await?;
     Ok((store, store_path, dir.store.0.clone()))
 }
@@ -330,8 +329,11 @@ fn on_white(image: &DynamicImage) -> RgbImage {
     let rgba = image.to_rgba8();
     RgbImage::from_fn(rgba.width(), rgba.height(), |x, y| {
         let [r, g, b, a] = rgba.get_pixel(x, y).0;
-        let blend =
-            |c: u8| ((u16::from(c) * u16::from(a) + 255 * (255 - u16::from(a))) / 255) as u8;
+        let blend = |c: u8| {
+            // A weighted mean of two bytes, so at most 255.
+            u8::try_from((u16::from(c) * u16::from(a) + 255 * (255 - u16::from(a))) / 255)
+                .unwrap_or(u8::MAX)
+        };
         image::Rgb([blend(r), blend(g), blend(b)])
     })
 }

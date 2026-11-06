@@ -104,7 +104,7 @@ async fn changesets(db: &TestDb) -> Result<Vec<(String, String, Option<String>, 
 
 /// Ann, a signed-in user of role 80, in the ambient changeset.
 fn ann() -> Principal {
-    Principal::new(Role::of(80), Some(json!({ "id": ANN, "role": 80 })))
+    Principal::recorded(Role::of(80), Some(json!({ "id": ANN, "role": 80 })))
 }
 
 fn request() -> Arc<Changeset> {
@@ -133,7 +133,8 @@ impl Action for FollowUp {
         let row = ctx.event.row.clone().unwrap_or_default();
         let id = row["id"].to_string();
         // Admin authority, the event's user: what an action's writes carry.
-        let admin = Principal::new(Role::ADMIN, ctx.event.user.clone()).chained(ctx.chain.clone());
+        let admin =
+            Principal::recorded(Role::ADMIN, ctx.event.user.clone()).chained(ctx.chain.clone());
         let todo = self.0.require("todo")?;
         rows::update_row(
             &self.0,

@@ -6,6 +6,10 @@
 //! and creates accounts — so it is checked through its [`plan`], which is the
 //! same list of steps `--dry-run` prints and `execute` carries out.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};

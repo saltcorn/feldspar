@@ -46,6 +46,9 @@ const SCHEMA: &str = "
 ";
 
 /// Everything granted — what an admin who ticked all four boxes has.
+/// Everything ticked — including the retired `allow_access_changes`, which a
+/// configuration saved before TODO-type-hardening H8.9 still carries and which
+/// loads and is ignored.
 fn all_grants() -> Attrs {
     config(&[
         ("allow_create", json!(true)),
@@ -55,7 +58,7 @@ fn all_grants() -> Attrs {
     ])
 }
 
-/// The default configuration: build and edit, never delete, never widen access.
+/// The default configuration: build and edit, never delete.
 fn default_grants() -> Attrs {
     config(&[])
 }
@@ -253,20 +256,16 @@ async fn an_edit_merges_into_what_is_stored_and_is_its_own_grant() -> Result<()>
 }
 
 #[tokio::test]
-async fn who_may_call_a_query_is_the_access_grant_and_admin_only_without_it() -> Result<()> {
+async fn who_may_call_a_query_needs_no_grant_and_is_admin_only_without_it() -> Result<()> {
     let env = Env::with_schema(SCHEMA).await?;
     app_with_api(&env).await?;
 
+    // The default configuration may set it (TODO-type-hardening H8.9: no
+    // grant decides who may call a query).
     let mut public = top_authors();
     public["min_role"] = json!(100);
-    let err = call(&env, &default_grants(), TOOL_SAVE_QUERY, public.clone())
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("allow_access_changes"), "{err}");
-    // Refused before anything was written, which is the difference between a
-    // grant and a warning.
-    assert!(stored(&env).await?.is_empty());
+    let saved = call(&env, &default_grants(), TOOL_SAVE_QUERY, public.clone()).await?;
+    assert_eq!(saved["query"]["min_role"], json!(100), "{saved}");
 
     let result = call(&env, &all_grants(), TOOL_SAVE_QUERY, public).await?;
     assert_eq!(result["query"]["min_role"], json!(100));
@@ -345,7 +344,7 @@ async fn deleting_a_query_needs_the_drop_grant_and_says_what_it_was() -> Result<
 }
 
 /// TODO F1.6: `public: true` is `min_role: 100`, on the way in and on the way
-/// out, under the same grant.
+/// out.
 #[tokio::test]
 async fn public_is_a_synonym_for_role_100_both_ways() -> Result<()> {
     let env = Env::with_schema(SCHEMA).await?;
@@ -353,13 +352,7 @@ async fn public_is_a_synonym_for_role_100_both_ways() -> Result<()> {
 
     let mut public = top_authors();
     public["public"] = json!(true);
-    let err = call(&env, &default_grants(), TOOL_SAVE_QUERY, public.clone())
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("allow_access_changes"), "{err}");
-
-    let result = call(&env, &all_grants(), TOOL_SAVE_QUERY, public).await?;
+    let result = call(&env, &default_grants(), TOOL_SAVE_QUERY, public).await?;
     assert_eq!(result["query"]["min_role"], json!(100));
     assert_eq!(result["query"]["public"], json!(true));
     assert_eq!(stored(&env).await?[0].min_role, Role::PUBLIC);
@@ -587,9 +580,10 @@ async fn a_non_admin_caller_is_refused_by_every_application_tool() -> Result<()>
 }
 
 /// `update_application` checks a grant per section before it changes anything.
-/// The CSP is a security boundary, so its section needs the access-rules grant,
-/// and a call that names it without that grant is refused **whole** — the
-/// tables named beside it are not touched either. A static directory is not a
+/// Each section needs its grant — the CSP's is `allow_edit` since
+/// TODO-type-hardening H8.9 retired the access grant — and a call that names
+/// one without it is refused **whole**: the tables named beside it are not
+/// touched either. A static directory is not a
 /// grant, so the default configuration may add one; with no server to refresh
 /// the mount, the record is saved and the answer says the change is served from
 /// the next start rather than now.
@@ -607,18 +601,19 @@ async fn update_application_checks_each_section_s_grant_before_changing_anything
         "tables": { "remove": ["books"] },
         "csp": { "frame-ancestors": ["https://admin.example.com"] },
     });
-    let refused = call(&env, &default_grants(), "update_application", both.clone())
+    let no_edit = config(&[("allow_edit", json!(false))]);
+    let refused = call(&env, &no_edit, "update_application", both.clone())
         .await
         .unwrap_err()
         .to_string();
-    assert!(refused.contains("allow_access_changes"), "{refused}");
+    assert!(refused.contains("allow_edit"), "{refused}");
     let unchanged = load_application_by_subdomain(&env.catalog, "blog")
         .await?
         .unwrap();
     assert_eq!(unchanged.csp, before.csp);
     assert_eq!(unchanged.tables, before.tables);
 
-    let changed = call(&env, &all_grants(), "update_application", both).await?;
+    let changed = call(&env, &default_grants(), "update_application", both).await?;
     assert_eq!(
         changed["csp"]["frame-ancestors"],
         json!(["https://admin.example.com"]),
@@ -701,12 +696,12 @@ async fn update_application_checks_each_section_s_grant_before_changing_anything
     Ok(())
 }
 
-/// `update_application`'s `api_tables` section: closing a table's row API is
-/// an edit, opening one widens what the application exposes and so also needs
-/// `allow_access_changes` — refused whole, with nothing stored — and a table
-/// the application is not connected to cannot be opened at all.
+/// `update_application`'s `api_tables` section: closing a table's row API and
+/// opening one are edits (opening one needed `allow_access_changes` until
+/// TODO-type-hardening H8.9), and a table the application is not connected to
+/// cannot be opened at all.
 #[tokio::test]
-async fn opening_a_tables_row_api_needs_the_access_changes_grant() -> Result<()> {
+async fn opening_a_tables_row_api_is_an_edit() -> Result<()> {
     let env = Env::with_schema(SCHEMA).await?;
     app_with_api(&env).await?;
     let api_tables = |app: &Application| -> Vec<String> { app.api_tables.to_vec() };
@@ -732,14 +727,7 @@ async fn opening_a_tables_row_api_needs_the_access_changes_grant() -> Result<()>
     assert!(stored().await.api_tables.is_empty());
 
     let open = json!({ "application": "blog", "api_tables": { "add": ["books"] } });
-    let refused = call(&env, &default_grants(), "update_application", open.clone())
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(refused.contains("allow_access_changes"), "{refused}");
-    assert!(stored().await.api_tables.is_empty(), "nothing was stored");
-
-    let opened = call(&env, &all_grants(), "update_application", open).await?;
+    let opened = call(&env, &default_grants(), "update_application", open).await?;
     assert_eq!(opened["api_tables"], json!(["books"]), "{opened}");
 
     let unconnected = call(

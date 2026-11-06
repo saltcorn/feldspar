@@ -47,7 +47,6 @@ use futures::{SinkExt, StreamExt};
 use sc_catalog::Catalog;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// The route the IDE opens its language-server socket on. `{store}` is the store
@@ -71,6 +70,11 @@ pub(crate) const SERVER_BIN: &str = "typescript-language-server";
 /// truncated rather than dropped if one ever does not.
 const MAX_CLOSE_REASON: usize = 120;
 
+/// The largest message the IDE may send (TODO-type-hardening H5.1): a
+/// `didOpen` or `didChange` carries a whole file. 16 MiB is tungstenite's own
+/// frame limit, which a browser's message could already not exceed.
+const MESSAGE_LIMIT: crate::ws::MessageLimit = crate::ws::MessageLimit::mib(16);
+
 /// The bound on concurrent language servers, as the router holds it.
 pub(crate) type ServerSlots = Arc<Semaphore>;
 
@@ -78,6 +82,11 @@ pub(crate) type ServerSlots = Arc<Semaphore>;
 pub(crate) fn server_slots() -> ServerSlots {
     Arc::new(Semaphore::new(MAX_LANGUAGE_SERVERS))
 }
+
+/// The system reason the language server's store is opened under: a process
+/// over the whole tree, started for the admin session the route admits.
+/// Listed in the system-authority inventory.
+const LSP_ROOT: &str = "IDE language server: the store's directory, for an admin session";
 
 /// Why this store cannot have a language server, or the directory to run one in.
 ///
@@ -102,11 +111,7 @@ pub(crate) fn language_server_root(
     // opened for (the route admits an admin session only, and the bridge lives
     // as long as it does), and only an administrator's binding answers a root.
     let handle = catalog
-        .checked_file_store(
-            store,
-            None,
-            sc_files::FileCaller::new(sc_types::Role::ADMIN, None),
-        )
+        .admin_file_store(store, &sc_catalog::AdminPrincipal::system(LSP_ROOT))
         .map_err(|e| format!("file store {store}: {e}"))?;
     let root = handle
         .local_root()
@@ -176,6 +181,7 @@ pub(crate) async fn language_server_upgrade(
     program: Arc<PathBuf>,
     store: String,
     session: crate::admin_session::AdminWatch,
+    who: sc_proc::AdminProof,
 ) -> axum::response::Response {
     // Both questions are answered before the upgrade, so a refusal costs no
     // process and no socket beyond the one it is reported on.
@@ -185,8 +191,8 @@ pub(crate) async fn language_server_upgrade(
             Ok(permit) => {
                 // Held open only while the admin session lasts (#42's class):
                 // its end drops the bridge, which kills the process.
-                return ws.on_upgrade(move |socket| {
-                    session.guard(bridge(socket, program, root, store, permit))
+                return crate::ws::upgrade(ws, MESSAGE_LIMIT, move |socket| {
+                    session.guard(bridge(socket, program, root, store, permit, who))
                 });
             }
             Err(_) => format!(
@@ -194,7 +200,9 @@ pub(crate) async fn language_server_upgrade(
             ),
         },
     };
-    ws.on_upgrade(move |socket| refuse(socket, refusal))
+    crate::ws::upgrade(ws, crate::ws::REFUSAL, move |socket| {
+        refuse(socket, refusal)
+    })
 }
 
 /// Close a socket, saying why. The IDE turns this into one notification.
@@ -232,14 +240,19 @@ pub(crate) fn fit_close_reason(reason: String) -> String {
 /// end of this function is what returns the slot, so a socket that closes (a
 /// reload, a closed tab, a lost network) frees the server it was using without
 /// anything having to notice separately.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: an I/O pump for a child process or connection; it writes no rows, so there is no task scope to carry"
+)]
 async fn bridge(
     socket: WebSocket,
     program: Arc<PathBuf>,
     root: PathBuf,
     store: String,
     permit: OwnedSemaphorePermit,
+    who: sc_proc::AdminProof,
 ) {
-    let mut child = match spawn_language_server(&program, &root) {
+    let mut child = match spawn_language_server(&program, &root, &who) {
         Ok(child) => child,
         Err(e) => {
             eprintln!("feldspar: language server for {store}: {e}");
@@ -254,7 +267,7 @@ async fn bridge(
     let server_root = format!("file://{}", root.display());
 
     let (mut stdin, stdout, stderr) =
-        match (child.stdin.take(), child.stdout.take(), child.stderr.take()) {
+        match (child.take_stdin(), child.take_stdout(), child.take_stderr()) {
             (Some(i), Some(o), Some(e)) => (i, o, e),
             _ => {
                 eprintln!("feldspar: language server for {store}: no pipes on the child process");
@@ -332,17 +345,25 @@ async fn bridge(
 /// project's TypeScript more closely: whoever may edit the store may write that
 /// file, and it would run as the server's operating-system user the next time
 /// an admin opened the IDE (security review #16).
-fn spawn_language_server(program: &Path, root: &Path) -> std::io::Result<Child> {
-    let mut command = Command::new(program);
+fn spawn_language_server(
+    program: &Path,
+    root: &Path,
+    who: &sc_proc::AdminProof,
+) -> Result<sc_proc::Child, sc_proc::ProcError> {
+    let mut command = sc_proc::HostCommand::new(
+        sc_proc::Program::path(program),
+        who,
+        sc_proc::Timeout::unbounded("a language server lives as long as its socket"),
+    );
+    // A belt to the braces of the explicit kill above: if this task is
+    // cancelled rather than run to its end, the child (its process group)
+    // still goes when it is dropped.
     command
         .arg("--stdio")
-        .current_dir(root)
-        .stdin(Stdio::piped())
+        .cwd(root)
+        .stdin_piped()
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // A belt to the braces of the explicit kill above: if this task is
-        // cancelled rather than run to its end, the child still goes.
-        .kill_on_drop(true);
+        .stderr(Stdio::piped());
     command.spawn()
 }
 

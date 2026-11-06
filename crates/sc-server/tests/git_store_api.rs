@@ -10,6 +10,10 @@
 //! registry ends up holding a usable store, and that a clone that fails leaves a
 //! saved, editable definition rather than an error.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -97,6 +101,10 @@ impl Client {
 /// these tests run in parallel: a per-test `set_var` would have tests reading
 /// each other's value. One directory is enough because a clone lands under the
 /// store's *name*, and every test below names its store differently.
+#[allow(
+    unsafe_code,
+    reason = "the binary's data directory is set once, through the environment the server reads"
+)]
 fn data_dir() -> &'static Path {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
@@ -106,6 +114,9 @@ fn data_dir() -> &'static Path {
         std::fs::create_dir_all(&dir).unwrap();
         // Never the developer's real data directory: a test that cloned there
         // would leave repositories behind and collide with the next run.
+        // SAFETY: test-only: written once per binary, under the `OnceLock`,
+        // and never changed after. A concurrent `getenv` in another test is
+        // the test-code race security review 2026-11 (F §1) records.
         unsafe { std::env::set_var(sc_files::DATA_DIR_ENV, &dir) };
         dir
     })

@@ -72,7 +72,10 @@ pub mod versions;
 pub mod workflow;
 
 pub use driver::{Advanced, Driver, node_id, start_run};
-pub use engine::{DEFAULT_LEASE_SECONDS, DEFAULT_POLL_SECONDS, WorkflowEngineTask};
+pub use engine::{
+    DEFAULT_LEASE_SECONDS, DEFAULT_POLL_SECONDS, WorkflowEngineTask, approval_hash,
+    workflow_fingerprint,
+};
 pub use machine::{Conclusion, Decision, PendingForm, WorkflowRun};
 pub use ops::{
     INLINE_LEASE_SECONDS, cancel_run, check_may_resume, list_workflow_runs, may_resume, resume_run,

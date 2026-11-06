@@ -15,9 +15,8 @@ pub(super) fn register(set: &mut EndpointSet) {
     // SQL prompt.
 
     set.register(
-        Endpoint::new("listRoles", Method::Get, api().lit("roles"))
+        Endpoint::new(ids::LIST_ROLES, Method::Get, api().lit("roles"))
             .output(TypeSchema::array(role_schema()))
-            .auth(AuthRequirement::admin())
             .mcp(
                 "List the roles: each one's number (1 is admin, 100 is public — \
                  anyone, signed in or not; a lower number is more privileged), name \
@@ -27,14 +26,13 @@ pub(super) fn register(set: &mut EndpointSet) {
     );
 
     set.register(
-        Endpoint::new("createRole", Method::Post, api().lit("roles"))
+        Endpoint::new(ids::CREATE_ROLE, Method::Post, api().lit("roles"))
             .input(TypeSchema::struct_of([
                 StructField::new("role", TypeSchema::int()),
                 StructField::new("name", TypeSchema::text()),
                 StructField::new("description", TypeSchema::text()),
             ]))
             .output(role_schema())
-            .auth(AuthRequirement::admin())
             .mcp(
                 McpTag::new(
                     "Create a role: `role` is its number, 2 to 99 (1 and 100 are built \
@@ -42,7 +40,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                      decides what its users may reach, so say plainly what you are \
                      creating it for.",
                 )
-                .needs(Grant::AccessChanges),
+                .needs(Grant::Create),
             ),
     );
 
@@ -52,7 +50,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // nothing else about a role is edited after it is made.
     set.register(
         Endpoint::new(
-            "setRoleSecondFactor",
+            ids::SET_ROLE_SECOND_FACTOR,
             Method::Post,
             api()
                 .lit("roles")
@@ -63,8 +61,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             "required",
             TypeSchema::bool(),
         )]))
-        .output(role_schema())
-        .auth(AuthRequirement::admin()),
+        .output(role_schema()),
     );
 
     // Addressed by the role *number*, not the row id: the number is what
@@ -72,7 +69,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // already has in front of them.
     set.register(
         Endpoint::new(
-            "deleteRole",
+            ids::DELETE_ROLE,
             Method::Delete,
             api().lit("roles").param("role", ValueType::Int),
         )
@@ -80,14 +77,12 @@ pub(super) fn register(set: &mut EndpointSet) {
             "deleted",
             TypeSchema::bool(),
         )]))
-        .auth(AuthRequirement::admin())
         .mcp(
             McpTag::new(
                 "Delete a role by its number. Refused for a built-in role and for one \
                  a user still holds — move those users first.",
             )
-            .needs(Grant::AccessChanges)
-            .and_needs(Grant::Drop),
+            .needs(Grant::Drop),
         ),
     );
 
@@ -102,9 +97,8 @@ pub(super) fn register(set: &mut EndpointSet) {
     // update body would hide that.
 
     set.register(
-        Endpoint::new("listUsers", Method::Get, api().lit("users"))
+        Endpoint::new(ids::LIST_USERS, Method::Get, api().lit("users"))
             .output(TypeSchema::array(user_row_schema()))
-            .auth(AuthRequirement::admin())
             .mcp(
                 "List the user accounts: id, email, role and whether each is disabled, \
                  with any columns the admin added. Never the password hashes.",
@@ -112,7 +106,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     );
 
     set.register(
-        Endpoint::new("createUser", Method::Post, api().lit("users"))
+        Endpoint::new(ids::CREATE_USER, Method::Post, api().lit("users"))
             .input(user_input_schema())
             // The row, plus the password if one was generated because the admin
             // left it blank — the only moment it is readable (§7.1).
@@ -122,24 +116,22 @@ pub(super) fn register(set: &mut EndpointSet) {
                     "generated_password",
                     TypeSchema::optional(TypeSchema::text()),
                 ),
-            ]))
-            .auth(AuthRequirement::admin()),
+            ])),
     );
 
     set.register(
         Endpoint::new(
-            "updateUser",
+            ids::UPDATE_USER,
             Method::Put,
             api().lit("users").param("id", ValueType::Uuid),
         )
         .input(user_input_schema())
-        .output(user_row_schema())
-        .auth(AuthRequirement::admin()),
+        .output(user_row_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "deleteUser",
+            ids::DELETE_USER,
             Method::Delete,
             api().lit("users").param("id", ValueType::Uuid),
         )
@@ -147,21 +139,19 @@ pub(super) fn register(set: &mut EndpointSet) {
             "deleted",
             TypeSchema::bool(),
         )]))
-        .auth(AuthRequirement::admin())
         .mcp(
             McpTag::new(
                 "Delete a user account by id (from `listUsers`). Prefer \
                  `setUserDisabled`, which keeps the row and everything that names it. \
                  Refused for your own account and for the last enabled admin.",
             )
-            .needs(Grant::AccessChanges)
-            .and_needs(Grant::Drop),
+            .needs(Grant::Drop),
         ),
     );
 
     set.register(
         Endpoint::new(
-            "setUserDisabled",
+            ids::SET_USER_DISABLED,
             Method::Post,
             api()
                 .lit("users")
@@ -173,7 +163,6 @@ pub(super) fn register(set: &mut EndpointSet) {
             TypeSchema::bool(),
         )]))
         .output(user_row_schema())
-        .auth(AuthRequirement::admin())
         .mcp(
             McpTag::new(
                 "Disable (`disabled: true`) or re-enable a user account by id. A \
@@ -181,13 +170,13 @@ pub(super) fn register(set: &mut EndpointSet) {
                  its row stays. Refused for your own account and for the last \
                  enabled admin.",
             )
-            .needs(Grant::AccessChanges),
+            .needs(Grant::Edit),
         ),
     );
 
     set.register(
         Endpoint::new(
-            "forceLogoutUser",
+            ids::FORCE_LOGOUT_USER,
             Method::Post,
             api()
                 .lit("users")
@@ -200,8 +189,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "ok",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // Swap the caller's own session for one belonging to this user, with no
@@ -210,15 +198,14 @@ pub(super) fn register(set: &mut EndpointSet) {
     // admin their admin session, which is the honest price of the swap.
     set.register(
         Endpoint::new(
-            "becomeUser",
+            ids::BECOME_USER,
             Method::Post,
             api()
                 .lit("users")
                 .param("id", ValueType::Uuid)
                 .lit("become"),
         )
-        .output(user_summary_schema())
-        .auth(AuthRequirement::admin()),
+        .output(user_summary_schema()),
     );
 
     // Turn off an account's two-factor authentication, for somebody who lost
@@ -226,7 +213,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // signed in now may be the reason it is being reset.
     set.register(
         Endpoint::new(
-            "resetUserSecondFactor",
+            ids::RESET_USER_SECOND_FACTOR,
             Method::Post,
             api()
                 .lit("users")
@@ -237,13 +224,12 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "reset",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     set.register(
         Endpoint::new(
-            "setRandomPassword",
+            ids::SET_RANDOM_PASSWORD,
             Method::Post,
             api()
                 .lit("users")
@@ -253,8 +239,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([
             StructField::new("email", TypeSchema::text()),
             StructField::new("password", TypeSchema::text()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // Role grants (TODO-payments P3.2): roles a user holds for a while beside
@@ -262,20 +247,19 @@ pub(super) fn register(set: &mut EndpointSet) {
     // admin gives by hand. The effective role is the most privileged of the two.
     set.register(
         Endpoint::new(
-            "listUserRoleGrants",
+            ids::LIST_USER_ROLE_GRANTS,
             Method::Get,
             api()
                 .lit("users")
                 .param("id", ValueType::Uuid)
                 .lit("role-grants"),
         )
-        .output(crate::auth::user_role_grants_schema())
-        .auth(AuthRequirement::admin()),
+        .output(crate::auth::user_role_grants_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "grantUserRole",
+            ids::GRANT_USER_ROLE,
             Method::Post,
             api()
                 .lit("users")
@@ -288,13 +272,12 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("expires_in_days", TypeSchema::optional(TypeSchema::int())),
             StructField::new("note", TypeSchema::optional(TypeSchema::text())),
         ]))
-        .output(crate::auth::role_grant_schema())
-        .auth(AuthRequirement::admin()),
+        .output(crate::auth::role_grant_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "revokeUserRoleGrant",
+            ids::REVOKE_USER_ROLE_GRANT,
             Method::Post,
             api()
                 .lit("users")
@@ -303,8 +286,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .param("grant", ValueType::Uuid)
                 .lit("revoke"),
         )
-        .output(crate::auth::role_grant_schema())
-        .auth(AuthRequirement::admin()),
+        .output(crate::auth::role_grant_schema()),
     );
 
     // LLM credits (TODO-payments P6.2): the balance an agent run's model calls
@@ -313,20 +295,19 @@ pub(super) fn register(set: &mut EndpointSet) {
     // Amounts are exact decimal strings.
     set.register(
         Endpoint::new(
-            "getUserCredits",
+            ids::GET_USER_CREDITS,
             Method::Get,
             api()
                 .lit("users")
                 .param("id", ValueType::Uuid)
                 .lit("credits"),
         )
-        .output(crate::auth::user_credits_schema())
-        .auth(AuthRequirement::admin()),
+        .output(crate::auth::user_credits_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "grantUserCredits",
+            ids::GRANT_USER_CREDITS,
             Method::Post,
             api()
                 .lit("users")
@@ -339,13 +320,12 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("expires_in_days", TypeSchema::optional(TypeSchema::int())),
             StructField::new("note", TypeSchema::optional(TypeSchema::text())),
         ]))
-        .output(crate::auth::user_credits_schema())
-        .auth(AuthRequirement::admin()),
+        .output(crate::auth::user_credits_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "setUserCreditThreshold",
+            ids::SET_USER_CREDIT_THRESHOLD,
             Method::Post,
             api()
                 .lit("users")
@@ -357,8 +337,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             // Left out or null: no low-balance notices.
             StructField::new("threshold", TypeSchema::optional(TypeSchema::text())),
         ]))
-        .output(crate::auth::user_credits_schema())
-        .auth(AuthRequirement::admin()),
+        .output(crate::auth::user_credits_schema()),
     );
 
     //
@@ -382,13 +361,12 @@ pub(super) fn register(set: &mut EndpointSet) {
     // knowledge, and the person who wants a token is standing at the screen.
 
     set.register(
-        Endpoint::new("listApiTokens", Method::Get, api().lit("api-tokens"))
-            .output(TypeSchema::array(api_token_schema()))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(ids::LIST_API_TOKENS, Method::Get, api().lit("api-tokens"))
+            .output(TypeSchema::array(api_token_schema())),
     );
 
     set.register(
-        Endpoint::new("createApiToken", Method::Post, api().lit("api-tokens"))
+        Endpoint::new(ids::CREATE_API_TOKEN, Method::Post, api().lit("api-tokens"))
             .input(TypeSchema::struct_of([
                 StructField::new("label", TypeSchema::text()),
                 // The six flags of §13.6, each optional so a client that sends
@@ -405,8 +383,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 // Shown once. The response is the only place this value ever
                 // exists outside the client that receives it.
                 StructField::new("secret", TypeSchema::text()),
-            ]))
-            .auth(AuthRequirement::admin()),
+            ])),
     );
 
     // Revocation rather than deletion, and a `POST` rather than a `DELETE`: the
@@ -414,7 +391,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // list is where an admin sees that it did.
     set.register(
         Endpoint::new(
-            "revokeApiToken",
+            ids::REVOKE_API_TOKEN,
             Method::Post,
             api()
                 .lit("api-tokens")
@@ -424,8 +401,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "revoked",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 }
 

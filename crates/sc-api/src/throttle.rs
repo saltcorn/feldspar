@@ -47,13 +47,6 @@ pub const RESET_PER_EMAIL: Rate = Rate {
     window: Duration::from_secs(3600),
 };
 
-/// Wrong second-factor codes per account. A code is six digits, so this is
-/// what makes guessing one take longer than the code lasts — by a long way.
-pub const SECOND_FACTOR_FAILURES_PER_USER: Rate = Rate {
-    max: 5,
-    window: Duration::from_secs(15 * 60),
-};
-
 fn email_key(prefix: &str, email: &str) -> String {
     format!("{prefix}:email:{}", email.trim().to_lowercase())
 }
@@ -87,28 +80,15 @@ pub fn reset_attempt(ip: Option<IpAddr>, email: &str) -> Result<(), Limited> {
     by_ip.and(limiter.hit(&email_key("reset", email), RESET_PER_EMAIL))
 }
 
-/// Whether a second-factor code for `user_id` from `ip` may be checked. Counts
-/// the attempt against the IP (the login budget, since it is the rest of a
-/// sign-in); looks at, but does not count against, the account —
-/// [`second_factor_failed`] does that once the code was wrong.
-pub fn second_factor_attempt(ip: Option<IpAddr>, user_id: &str) -> Result<(), Limited> {
-    let limiter = global();
-    let by_ip = match ip {
-        Some(ip) => limiter.hit(&format!("login:ip:{ip}"), LOGIN_PER_IP),
+/// Whether a second-factor code from `ip` may be checked, counting it against
+/// the IP (the login budget, since it is the rest of a sign-in). The account's
+/// own budget is kept in the database, shared by every node and counted before
+/// the code is checked: [`sc_auth::reserve_guess`].
+pub fn second_factor_attempt(ip: Option<IpAddr>) -> Result<(), Limited> {
+    match ip {
+        Some(ip) => global().hit(&format!("login:ip:{ip}"), LOGIN_PER_IP),
         None => Ok(()),
-    };
-    by_ip.and(limiter.peek(
-        &format!("second-factor:user:{user_id}"),
-        SECOND_FACTOR_FAILURES_PER_USER,
-    ))
-}
-
-/// Count a wrong second-factor code for `user_id`.
-pub fn second_factor_failed(user_id: &str) {
-    let _ = global().hit(
-        &format!("second-factor:user:{user_id}"),
-        SECOND_FACTOR_FAILURES_PER_USER,
-    );
+    }
 }
 
 #[cfg(test)]

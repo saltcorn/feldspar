@@ -269,6 +269,27 @@ fn row_field_resolver(field: &DataField, names: &SchemaNames) -> resolve::Resolv
     }
 }
 
+/// `request: JSON` on a root field: values presented to ownership formulas as
+/// `_request` for that field, `{ token: "…" }` (TODO-type-hardening H7.6).
+fn request_argument() -> InputValue {
+    InputValue::new(resolve::ARG_REQUEST, TypeRef::named(names::JSON))
+}
+
+/// [`request_argument`] on a field whose primary-key argument is `pk`: a key
+/// called `request` keeps its name, and the values are `_request` there.
+fn request_argument_beside(pk: &str) -> InputValue {
+    InputValue::new(request_arg(pk), TypeRef::named(names::JSON))
+}
+
+/// The name of the presented-values argument beside a primary key `pk`.
+fn request_arg(pk: &str) -> &'static str {
+    if pk == resolve::ARG_REQUEST {
+        "_request"
+    } else {
+        resolve::ARG_REQUEST
+    }
+}
+
 /// `where` / `search` / `order_by` / `limit` / `offset` on a collection field,
 /// and `nearest` on one whose table has a vector field.
 fn list_arguments(field: Field, t: &TableNames) -> Field {
@@ -468,10 +489,11 @@ fn add_root_fields(query: Object, table: &Table, t: &TableNames, aggregates: boo
             Field::new(
                 &t.list_field,
                 TypeRef::named_nn_list_nn(&t.object),
-                resolve::list_field(&t.table),
+                resolve::presenting(resolve::list_field(&t.table)),
             ),
             t,
         )
+        .argument(request_argument())
         .description(format!("Rows of `{}`.", t.table)),
     );
     // `_by_pk` needs one column to address a row by — the same rule the row
@@ -486,9 +508,10 @@ fn add_root_fields(query: Object, table: &Table, t: &TableNames, aggregates: boo
             Field::new(
                 &t.by_pk_field,
                 TypeRef::named(&t.object),
-                resolve::by_pk_field(&t.table, &pk),
+                resolve::presenting_by(request_arg(&pk), resolve::by_pk_field(&t.table, &pk)),
             )
             .argument(InputValue::new(&pk, TypeRef::named_nn(scalar)))
+            .argument(request_argument_beside(&pk))
             .description(format!("The row of `{}` with this primary key.", t.table)),
         ),
         None => query,
@@ -500,9 +523,10 @@ fn add_root_fields(query: Object, table: &Table, t: &TableNames, aggregates: boo
         Field::new(
             &t.aggregate_field,
             TypeRef::named_nn(&t.aggregate_object),
-            resolve::aggregate_field(&t.table),
+            resolve::presenting(resolve::aggregate_field(&t.table)),
         )
         .argument(InputValue::new(ARG_WHERE, TypeRef::named(&t.bool_exp)))
+        .argument(request_argument())
         .description(format!("Aggregates over the rows of `{}`.", t.table)),
     )
 }
@@ -532,12 +556,13 @@ fn mutation_types(tables: &[Table], names: &SchemaNames) -> (Option<Object>, Vec
                 Field::new(
                     &t.insert_field,
                     TypeRef::named(&t.object),
-                    mutate::insert_field(&t.table),
+                    resolve::presenting(mutate::insert_field(&t.table)),
                 )
                 .argument(InputValue::new(
                     ARG_OBJECT,
                     TypeRef::named_nn(&t.insert_input),
                 ))
+                .argument(request_argument())
                 .description(format!("Insert one row of `{}`.", t.table)),
             );
             any = true;
@@ -560,13 +585,14 @@ fn mutation_types(tables: &[Table], names: &SchemaNames) -> (Option<Object>, Vec
                 Field::new(
                     &t.update_by_pk_field,
                     TypeRef::named(&t.object),
-                    mutate::update_by_pk_field(&t.table, &pk),
+                    resolve::presenting(mutate::update_by_pk_field(&t.table, &pk)),
                 )
                 .argument(InputValue::new(
                     ARG_PK_COLUMNS,
                     TypeRef::named_nn(&t.pk_columns),
                 ))
                 .argument(InputValue::new(ARG_SET, TypeRef::named_nn(&t.set_input)))
+                .argument(request_argument())
                 .description(format!(
                     "Update the row of `{}` with this primary key.",
                     t.table
@@ -577,9 +603,10 @@ fn mutation_types(tables: &[Table], names: &SchemaNames) -> (Option<Object>, Vec
             Field::new(
                 &t.delete_by_pk_field,
                 TypeRef::named(&t.object),
-                mutate::delete_by_pk_field(&t.table, &pk),
+                resolve::presenting_by(request_arg(&pk), mutate::delete_by_pk_field(&t.table, &pk)),
             )
             .argument(InputValue::new(&pk, TypeRef::named_nn(scalar)))
+            .argument(request_argument_beside(&pk))
             .description(format!(
                 "Delete the row of `{}` with this primary key, returning the columns it had.",
                 t.table
@@ -710,16 +737,16 @@ mod tests {
         assert!(
             sdl.contains(
                 "departments(where: DepartmentsBoolExp, search: String, order_by: [DepartmentsOrderBy!], \
-                 limit: Int, offset: Int): [Departments!]!"
+                 limit: Int, offset: Int, request: JSON): [Departments!]!"
             ),
             "{sdl}"
         );
         assert!(
-            sdl.contains("departments_by_pk(id: BigInt!): Departments"),
+            sdl.contains("departments_by_pk(id: BigInt!, request: JSON): Departments"),
             "{sdl}"
         );
         assert!(
-            sdl.contains("departments_aggregate(where: DepartmentsBoolExp): DepartmentsAggregate!"),
+            sdl.contains("departments_aggregate(where: DepartmentsBoolExp, request: JSON): DepartmentsAggregate!"),
             "{sdl}"
         );
     }
@@ -746,7 +773,7 @@ mod tests {
         assert!(
             sdl.contains(
                 "employees(where: EmployeesBoolExp, search: String, order_by: [EmployeesOrderBy!], \
-                 limit: Int, offset: Int): [Employees!]!"
+                 limit: Int, offset: Int, request: JSON): [Employees!]!"
             ),
             "{sdl}"
         );
@@ -905,18 +932,20 @@ mod tests {
             vec![id_field(), plain_field("name")],
         )]);
         assert!(
-            sdl.contains("insert_departments(object: DepartmentsInsertInput!): Departments"),
+            sdl.contains(
+                "insert_departments(object: DepartmentsInsertInput!, request: JSON): Departments"
+            ),
             "{sdl}"
         );
         assert!(
             sdl.contains(
                 "update_departments_by_pk(pk_columns: DepartmentsPkColumns!, \
-                 set: DepartmentsSetInput!): Departments"
+                 set: DepartmentsSetInput!, request: JSON): Departments"
             ),
             "{sdl}"
         );
         assert!(
-            sdl.contains("delete_departments_by_pk(id: BigInt!): Departments"),
+            sdl.contains("delete_departments_by_pk(id: BigInt!, request: JSON): Departments"),
             "{sdl}"
         );
         assert!(sdl.contains("mutation: Mutation"), "{sdl}");
@@ -955,7 +984,7 @@ mod tests {
         // update and a delete would be promises the row layer cannot keep.
         let sdl = sdl_of(&[table_of("notes", vec![plain_field("body")])]);
         assert!(
-            sdl.contains("insert_notes(object: NotesInsertInput!)"),
+            sdl.contains("insert_notes(object: NotesInsertInput!, request: JSON)"),
             "{sdl}"
         );
         assert!(!sdl.contains("update_notes_by_pk"), "{sdl}");

@@ -856,7 +856,7 @@ impl StepType for ExpectSent {
         let outcome = match params.get("count").and_then(Json::as_u64) {
             Some(count) if n as u64 != count => StepOutcome::fail(format!(
                 "expected {count} {}, found {n}{matching}",
-                what(count as usize)
+                what(usize::try_from(count).unwrap_or(usize::MAX))
             )),
             None if n == 0 => StepOutcome::fail(format!(
                 "expected at least one {} to have been sent, found none{matching}",
