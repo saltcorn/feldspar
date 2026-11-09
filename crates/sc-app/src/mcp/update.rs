@@ -176,7 +176,8 @@ fn update_description(grants: &Grants) -> String {
          mime_allow, hook }}` (a name in use is replaced; a store the app was not \
          connected to is connected); `{ARG_REMOVE}` lists names. `min_role` is who \
          may upload (1 admin … 100 public; default 1), `max_bytes` 0 is the \
-         server's limit, `mime_allow` is matched on the file name's type, and \
+         server's limit (`--max-upload-bytes`), which also caps a larger value — \
+         the result's `effective_max_bytes` says what applies, `mime_allow` is matched on the file name's type, and \
          `hook` names one of the app's JavaScript or Python queries, called with \
          `body = {{ filename, size, mime, slot }}` before an upload is accepted: \
          it may `throw httpError(403, …)` to refuse, or return `{{ path, meta }}` \
@@ -675,7 +676,14 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
         out[ARG_STATIC_DIRS] = static_dirs_json(&saved.static_dirs);
     }
     if uploads.is_some() {
-        out[ARG_UPLOADS] = crate::upload_slots_json(&saved.uploads);
+        let ceiling = crate::upload_ceiling(ctx.catalog);
+        out[ARG_UPLOADS] = crate::upload_slots_report(&saved.uploads, ceiling);
+        // Saved as asked, but a limit over the server's is not in effect:
+        // said, so the change does not look like it worked when it did not.
+        let warnings = crate::upload_ceiling_warnings(&saved.uploads, ceiling);
+        if !warnings.is_empty() {
+            out["warnings"] = json!(warnings);
+        }
     }
     if csp.is_some() {
         out[ARG_CSP] = csp_json(&saved.csp);

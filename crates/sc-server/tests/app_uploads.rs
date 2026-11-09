@@ -714,6 +714,37 @@ async fn a_slots_limit_is_enforced_up_front_and_mid_stream() -> sc_error::Result
     alice.login("alice@example.com").await;
     let over = alice.create("drop", "film.mp4", 20 * MB).await;
     assert_eq!(over.status, StatusCode::PAYLOAD_TOO_LARGE);
+    // Named as the server's limit, since raising the slot's would change nothing.
+    let error = over.json()["error"].as_str().unwrap().to_owned();
+    assert!(error.contains("--max-upload-bytes"), "{error}");
+    assert_eq!(
+        over.header("tus-max-size"),
+        Some((10 * MB).to_string().as_str())
+    );
+    // A slot under the ceiling is refused in its own name.
+    let small = alice.create("small", "film.mp4", 2 * MB).await;
+    let error = small.json()["error"].as_str().unwrap().to_owned();
+    assert!(!error.contains("--max-upload-bytes"), "{error}");
+
+    // The router recorded the ceiling, so the administrative tools say what
+    // each slot really takes and warn about the one that asks for more.
+    let ceiling = sc_app::upload_ceiling(&capped.catalog);
+    assert_eq!(ceiling, Some(10 * MB as u64));
+    let slots = [
+        UploadSlot::new("drop", "files", "drops").max_bytes(40 * MB as u64),
+        UploadSlot::new("small", "files", "small").max_bytes(MB as u64),
+        UploadSlot::new("any", "files", "any"),
+    ];
+    let report = sc_app::upload_slots_report(&slots, ceiling);
+    assert_eq!(report[0]["max_bytes"], json!(40 * MB));
+    assert_eq!(report[0]["effective_max_bytes"], json!(10 * MB));
+    assert_eq!(report[0]["capped_by_server"], json!(true));
+    assert_eq!(report[1]["effective_max_bytes"], json!(MB));
+    assert_eq!(report[1]["capped_by_server"], json!(false));
+    assert_eq!(report[2]["effective_max_bytes"], json!(10 * MB));
+    let warnings = sc_app::upload_ceiling_warnings(&slots, ceiling);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("`drop`") && warnings[0].contains("max_upload_bytes"));
     Ok(())
 }
 

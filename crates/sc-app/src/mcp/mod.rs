@@ -267,7 +267,9 @@ fn describe_apps_description() -> String {
          this disk — its `builder_agent`, the coding agent created to build \
          it, the file stores it is connected to, the store folders it serves \
          (`static_dirs`), its upload slots (`uploads`, each with the `route` a \
-         client uploads to), its Content-Security-Policy (`csp`) and who may use \
+         client uploads to and its `effective_max_bytes`: its own `max_bytes` \
+         capped by the server's `max_upload_bytes`, which only the server's \
+         operator can raise), its Content-Security-Policy (`csp`) and who may use \
          it at all (`access`: `min_role`, `max_role`, `access_if`).\n\n\
          Call this before `{TOOL_SAVE_QUERY}`: it tells you the application's \
          subdomain, which API a query goes on, and whether the name you have in \
@@ -306,11 +308,12 @@ async fn describe_apps(ctx: &ToolContext<'_>, args: &Json) -> Result<Json> {
     {
         return Err(unknown_application(subdomain, &stored));
     }
+    let ceiling = crate::upload_ceiling(ctx.catalog);
     let described: Result<Vec<Json>> = stored
         .iter()
         .filter(|a| only.is_none_or(|subdomain| a.subdomain == subdomain))
         .map(|app| {
-            let mut out = application_json(app)?;
+            let mut out = application_json(app, ceiling)?;
             // Where its code is, so an external agent can go on building
             // there, and which agent builds it, so the copilot can delegate.
             out["project_dir"] = match crate::app_project_dir(ctx.catalog, app) {
@@ -324,8 +327,9 @@ async fn describe_apps(ctx: &ToolContext<'_>, args: &Json) -> Result<Json> {
     Ok(json!({ "applications": described? }))
 }
 
-/// One stored application as the model reads it.
-fn application_json(app: &Application) -> Result<Json> {
+/// One stored application as the model reads it. `ceiling` is the server's
+/// `--max-upload-bytes`, so each upload slot says what it really takes.
+fn application_json(app: &Application, ceiling: Option<u64>) -> Result<Json> {
     let apis: Result<Vec<Json>> = app.apis.iter().map(api_json).collect();
     Ok(json!({
         "id": app.id.0,
@@ -340,11 +344,14 @@ fn application_json(app: &Application) -> Result<Json> {
         "streams": app.streams.iter().map(|s| s.0.clone()).collect::<Vec<_>>(),
         "file_stores": app.file_stores.iter().map(|s| s.0.clone()).collect::<Vec<_>>(),
         "static_dirs": update::static_dirs_json(&app.static_dirs),
-        "uploads": app.uploads.iter().map(|s| {
-            let mut slot = s.to_json();
+        "uploads": app.uploads.iter().zip(
+            crate::upload_slots_report(&app.uploads, ceiling).as_array().cloned().unwrap_or_default()
+        ).map(|(s, mut slot)| {
             slot["route"] = json!(crate::upload_path(app, &s.name));
             slot
         }).collect::<Vec<_>>(),
+        // The server's ceiling on every slot (`--max-upload-bytes`), when known.
+        "max_upload_bytes": ceiling,
         // The agents its pages may talk to (§11.7), each with its route.
         "agents": update::agents_json(app),
         "csp": update::csp_json(&app.csp),

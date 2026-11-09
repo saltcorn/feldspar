@@ -7009,7 +7009,9 @@ rows; `NULL` reads back as those defaults.
 is bounded by `--max-request-body` (default 2 MiB, an explicit `DefaultBodyLimit` plus the
 dispatcher's own bounded read), and a body over it is a JSON `413 {error}` — axum's plain-text
 one is rewritten. The admin file manager's `/upload` and the backup upload are bounded by
-`--max-upload-bytes` (default 256 MiB). A large file from an application's client does not go
+`--max-upload-bytes` (default 256 MiB; `max_upload_bytes` in an environment's `feldspar.toml`
+section, as a number or with a `K`/`M`/`G` suffix, with a flag on the command line winning). A
+large file from an application's client does not go
 through either: it goes to an **upload slot**, `Application::uploads` (`sc_app::UploadSlot`:
 `name`, `store`, `folder`, `min_role` (default admin), `max_bytes` (0 = the server's limit, which
 also caps a larger value), `mime_allow` (matched on the name's type, as a `File` field's is) and
@@ -7017,7 +7019,12 @@ an optional `hook`). `save_application` validates slots beside the static direct
 (`validate_upload_slots`: an identifier name, unique; a store in the subset; a folder inside the
 store; a hook that is one of the app's JavaScript or Python queries). They are stored in the
 nullable `_fd_applications.uploads` column, travel with the application in the admin API and in
-backups, and are edited on the application form and by `update_application`'s `uploads` section.
+backups, and are edited on the application form and by `update_application`'s `uploads` section. Because a slot's own `max_bytes` cannot raise the server's ceiling, the router records the
+ceiling on the catalog (`sc_app::set_upload_ceiling`): `describe_applications` reports it as
+`max_upload_bytes` and gives each slot its `effective_max_bytes` and `capped_by_server`;
+`update_application` reports the same and adds a `warnings` entry for a slot whose `max_bytes`
+exceeds the ceiling; and a creation refused by the ceiling rather than the slot says so in its
+413 (`… takes at most N, the server's --max-upload-bytes`).
 
 A slot is served at `{mount}/_upload/{name}` (the app's first API mount, like `/live`), matched
 by the dispatcher **before the body is read** (`sc_server::uploads`). It speaks core tus 1.0

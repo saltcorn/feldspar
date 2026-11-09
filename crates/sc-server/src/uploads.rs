@@ -279,10 +279,20 @@ async fn create(
     if length > limit {
         let mut response = json_error(
             StatusCode::PAYLOAD_TOO_LARGE,
-            format!(
-                "the file is {length} bytes; upload slot `{}` takes at most {limit}",
-                slot.name
-            ),
+            match slot.max_bytes == 0 || slot.max_bytes > limit {
+                // The slot would take it; the server's ceiling is what refuses,
+                // and only the operator can raise that — said, because raising
+                // the slot's own limit would change nothing.
+                true => format!(
+                    "the file is {length} bytes; upload slot `{}` takes at most {limit}, \
+                     the server's --max-upload-bytes (the slot's own max_bytes is {})",
+                    slot.name, slot.max_bytes
+                ),
+                false => format!(
+                    "the file is {length} bytes; upload slot `{}` takes at most {limit}",
+                    slot.name
+                ),
+            },
         );
         if let Ok(max) = HeaderValue::from_str(&limit.to_string()) {
             response.headers_mut().insert("tus-max-size", max);
