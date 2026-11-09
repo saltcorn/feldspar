@@ -175,6 +175,13 @@ impl Serving<'_> {
         self.section.and_then(|s| s.browser_sandbox)
     }
 
+    /// The file's upload ceiling, as `--max-upload-bytes`' value.
+    pub fn max_upload_bytes(&self) -> Option<String> {
+        self.section
+            .and_then(|s| s.max_upload_bytes.as_ref())
+            .map(sc_config_file::ByteSize::as_flag_value)
+    }
+
     /// The file's CmdStan and Stan ceilings, as the `serve` flags they mirror
     /// (Stan TODO §20).
     pub fn stan_flags(&self) -> Vec<(&'static str, String)> {
@@ -626,6 +633,34 @@ mod tests {
                 .all(|key| sc_config::HOST_KEYS.contains(&key.as_str()))
         );
         assert!(Serving { section: None }.host_config().is_empty());
+    }
+
+    /// The file's `max_upload_bytes` reaches the server as `--max-upload-bytes`,
+    /// suffix and all, and a flag on the command line still wins.
+    #[test]
+    fn the_file_s_upload_ceiling_becomes_the_flag() {
+        let section = Environment {
+            max_upload_bytes: Some(sc_config_file::ByteSize::Text("50G".to_owned())),
+            ..Environment::default()
+        };
+        let serving = Serving {
+            section: Some(&section),
+        };
+        assert_eq!(serving.max_upload_bytes().as_deref(), Some("50G"));
+        let flags = [
+            "--max-upload-bytes".to_owned(),
+            serving.max_upload_bytes().unwrap(),
+        ];
+        let cfg = sc_server::ServerConfig::from_args(flags.iter()).expect("parse");
+        assert_eq!(cfg.max_upload_bytes, 50 * 1024 * 1024 * 1024);
+        let cfg = sc_server::ServerConfig::from_args(
+            flags
+                .iter()
+                .chain(&["--max-upload-bytes".to_owned(), "1G".to_owned()]),
+        )
+        .expect("parse");
+        assert_eq!(cfg.max_upload_bytes, 1024 * 1024 * 1024);
+        assert!(Serving { section: None }.max_upload_bytes().is_none());
     }
 
     /// `FELDSPAR_SSL_MODE` replaces the file's mode and keeps the rest of its

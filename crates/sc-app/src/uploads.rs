@@ -232,6 +232,66 @@ pub fn upload_slots_json(slots: &[UploadSlot]) -> Json {
     Json::Array(slots.iter().map(UploadSlot::to_json).collect())
 }
 
+/// The server's upload ceiling (`--max-upload-bytes`), recorded on the catalog
+/// by the process that serves the uploads, so the administrative tools can say
+/// what a slot really takes rather than only what it asks for.
+struct UploadCeiling(u64);
+
+/// Record the server's upload ceiling on `catalog`. Called once by the router.
+pub fn set_upload_ceiling(catalog: &Catalog, max_upload_bytes: u64) {
+    catalog.set_extension(Some(std::sync::Arc::new(UploadCeiling(max_upload_bytes))));
+}
+
+/// The server's upload ceiling, if a server recorded one — `None` in a
+/// process that serves no uploads (a command-line build).
+pub fn upload_ceiling(catalog: &Catalog) -> Option<u64> {
+    catalog.extension::<UploadCeiling>().map(|c| c.0)
+}
+
+/// The slots as the administrative tools report them: each as
+/// [`UploadSlot::to_json`] spells it, plus — when the ceiling is known — the
+/// limit an upload is really held to (`effective_max_bytes`) and whether the
+/// server's `--max-upload-bytes` is what sets it (`capped_by_server`). Not for
+/// storing: [`UploadSlot::from_json`] refuses those keys.
+pub fn upload_slots_report(slots: &[UploadSlot], ceiling: Option<u64>) -> Json {
+    Json::Array(
+        slots
+            .iter()
+            .map(|slot| {
+                let mut out = slot.to_json();
+                if let Some(ceiling) = ceiling {
+                    out["effective_max_bytes"] = json!(slot.limit(ceiling));
+                    out["capped_by_server"] =
+                        json!(slot.max_bytes == 0 || slot.max_bytes > ceiling);
+                }
+                out
+            })
+            .collect(),
+    )
+}
+
+/// A warning for each slot whose own `max_bytes` is more than the server's
+/// ceiling allows: the setting is saved, but an upload above the ceiling is
+/// still refused until the server runs with a higher `--max-upload-bytes`.
+pub fn upload_ceiling_warnings(slots: &[UploadSlot], ceiling: Option<u64>) -> Vec<String> {
+    let Some(ceiling) = ceiling else {
+        return Vec::new();
+    };
+    slots
+        .iter()
+        .filter(|slot| slot.max_bytes > ceiling)
+        .map(|slot| {
+            format!(
+                "upload slot `{}` asks for max_bytes {} but this server's --max-upload-bytes is \
+                 {ceiling}, so an upload above {ceiling} bytes is still refused. The server's \
+                 operator raises it with `feldspar serve --max-upload-bytes <size>` or \
+                 `max_upload_bytes` in the environment's feldspar.toml section, then restarts.",
+                slot.name, slot.max_bytes
+            )
+        })
+        .collect()
+}
+
 /// The application's mount: its first API's, as the live socket's and the
 /// catalogues' are. Empty for an application with no API provider.
 fn mount(app: &Application) -> &str {

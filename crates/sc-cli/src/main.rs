@@ -456,7 +456,7 @@ fn print_usage() {
     eprintln!();
     eprintln!(
         "  a feldspar.toml environment may also carry `base_domain`, `extra_base_domains`, `bind`,
-  `secure_cookies`, `https_port`, `browser`, `browser_sandbox`, `cmdstan` and the `stan_*` keys, so `serve --environment NAME` needs none of those flags —
+  `secure_cookies`, `https_port`, `browser`, `browser_sandbox`, `max_upload_bytes`, `cmdstan` and the `stan_*` keys, so `serve --environment NAME` needs none of those flags —
   and so a build from the command line writes the same application URL into the
   generated documentation that the server would."
     );

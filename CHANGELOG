@@ -22,6 +22,30 @@ straight away.
 
 Tests: `ui/admin/src/screens/CustomQueries.test.tsx`, `ui/admin/src/customQueries.test.ts`.
 
+## Upload ceiling: settable in feldspar.toml, and visible to the app tools
+
+From user feedback: an app's upload slot was given `max_bytes` 10 GiB through `update_application`,
+which saved and showed it, but a ~954 MB upload was still refused with 413, because the
+server's `--max-upload-bytes` (default 256 MiB) caps every slot and nothing said so.
+
+- **`max_upload_bytes` in an environment's `feldspar.toml` section** mirrors `--max-upload-bytes`:
+  a number of bytes or text with a `K`/`M`/`G` suffix (`max_upload_bytes = "50G"`), passed through
+  the flag's own parser; a flag on the command line still wins (`sc_config_file::ByteSize`,
+  `Serving::max_upload_bytes`, `serving_defaults`).
+- **The tools say what applies.** The router records the ceiling on the catalog
+  (`sc_app::set_upload_ceiling` / `upload_ceiling`, a catalog extension). `describe_applications`
+  now has `max_upload_bytes` per application and `effective_max_bytes` and `capped_by_server` per
+  slot; `update_application`'s `uploads` result has the same, plus `warnings` naming each slot
+  whose `max_bytes` is above the ceiling and how the operator raises it. The stored slot format is
+  unchanged (`sc_app::upload_slots_report` is for output only).
+- **The 413 names the real limit**: a tus creation refused by the server's ceiling rather than
+  the slot's own limit now says `… takes at most N, the server's --max-upload-bytes (the slot's
+  own max_bytes is M)`.
+- Tests: `an_environment_may_carry_the_upload_ceiling` (sc-config-file),
+  `the_file_s_upload_ceiling_becomes_the_flag` (sc-cli), and additions to
+  `app_uploads::a_slots_limit_is_enforced_up_front_and_mid_stream` and
+  `mcp_server::a_trigger_is_exposed_on_an_app_and_removed_over_mcp`.
+
 ## Security hardening H8: RLS as a hard boundary
 
 The eighth part of `docs/SECURITY_REVIEW_2026-11.md` (TECHNICAL_DESIGN §7.3a;

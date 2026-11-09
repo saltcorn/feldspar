@@ -546,6 +546,10 @@ pub(crate) fn serving_defaults(db: &DbConfig) -> Vec<String> {
         flags.push(flag.to_owned());
         flags.push(value);
     }
+    if let Some(size) = serving.max_upload_bytes() {
+        flags.push("--max-upload-bytes".to_owned());
+        flags.push(size);
+    }
     flags
 }
 

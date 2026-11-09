@@ -300,6 +300,9 @@ pub fn build_router_with_apps(
     // these same handlers (§13.6), so the router that serves them installs them.
     if let Some(catalog) = apps.catalog() {
         crate::mcp::AdminHandlers::install(catalog, &apps)?;
+        // So `describe_applications` and `update_application` can say what an
+        // upload slot really takes.
+        sc_app::set_upload_ceiling(catalog, config.max_upload_bytes);
     }
     let state = AppState {
         routes,

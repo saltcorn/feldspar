@@ -205,8 +205,8 @@ pub use build_agent::{
 pub use build_archive::{pack_project, remove_signing_keys, unpack_project};
 pub use builder::{BUILDER_BOOT_ID, BUILDER_PAGE_MODE, BUILDER_PREFIX, BUILDER_VIEW_MODES};
 pub use config::{
-    DEFAULT_BIND, DEFAULT_HTTPS_PORT, LOOPBACK_BASE_DOMAIN, PythonMode, ServerConfig,
-    implied_base_domain,
+    DEFAULT_BIND, DEFAULT_HTTPS_PORT, DEFAULT_MAX_UPLOAD_BYTES, LOOPBACK_BASE_DOMAIN, PythonMode,
+    ServerConfig, implied_base_domain,
 };
 pub use handler::{
     Admin, AdminSession, AnalyticsCaller, BoxFuture, Caller, Gate, HandlerCtx, HandlerFn,

@@ -214,7 +214,8 @@ pub use streams::{
 pub use target_ops::{OperationOutcome, run_target_operation};
 pub use uploads::{
     DEFAULT_SLOT_MIN_ROLE, UPLOAD_SEGMENT, UPLOADS_TABLE, UploadRecord, UploadRoute, UploadSlot,
-    bootstrap_uploads, delete_upload, insert_upload, load_upload, set_upload_progress,
-    upload_exports, upload_path, upload_route, upload_slots_from_json, upload_slots_json,
+    bootstrap_uploads, delete_upload, insert_upload, load_upload, set_upload_ceiling,
+    set_upload_progress, upload_ceiling, upload_ceiling_warnings, upload_exports, upload_path,
+    upload_route, upload_slots_from_json, upload_slots_json, upload_slots_report,
     uploads_begun_before, validate_upload_slots,
 };

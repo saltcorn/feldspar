@@ -1956,6 +1956,53 @@ async fn a_trigger_is_exposed_on_an_app_and_removed_over_mcp() -> sc_error::Resu
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     assert!(gone, "the client still has runLogVisit");
+
+    // An upload slot over the server's ceiling is saved, but the result says
+    // what it really takes and warns that the server's limit is what applies.
+    let big = 10u64 * 1024 * 1024 * 1024;
+    let ceiling = sc_server::DEFAULT_MAX_UPLOAD_BYTES;
+    let slot = json!({ "name": "box", "store": "apps", "folder": "box", "max_bytes": big });
+    let (error, saved) = call_tool(
+        &router,
+        &builder,
+        "update_application",
+        json!({ "application": "shop", "uploads": { "add": [slot] } }),
+    )
+    .await;
+    assert!(!error, "{saved}");
+    assert_eq!(saved["uploads"][0]["max_bytes"], json!(big), "{saved}");
+    assert_eq!(
+        saved["uploads"][0]["effective_max_bytes"],
+        json!(ceiling),
+        "{saved}"
+    );
+    assert!(
+        saved["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("--max-upload-bytes"),
+        "{saved}"
+    );
+    let (error, described) = call_tool(
+        &router,
+        &builder,
+        "describe_applications",
+        json!({ "application": "shop" }),
+    )
+    .await;
+    assert!(!error, "{described}");
+    let shop = &described["applications"][0];
+    assert_eq!(shop["max_upload_bytes"], json!(ceiling), "{described}");
+    assert_eq!(
+        shop["uploads"][0]["effective_max_bytes"],
+        json!(ceiling),
+        "{described}"
+    );
+    assert_eq!(
+        shop["uploads"][0]["capped_by_server"],
+        json!(true),
+        "{described}"
+    );
     Ok(())
 }
 
