@@ -70,6 +70,8 @@ pub fn email_section() -> ConfigSection {
         name: "email",
         label: "Email",
         description: "The SMTP server used by this instance to send mail.",
+        // This instance's own: never in the installation's structure (§3.4).
+        portable: false,
         fields: vec![
             ConfigDef::help(
                 FormField::new(SMTP_HOST, BasicType::Text).label("SMTP host"),

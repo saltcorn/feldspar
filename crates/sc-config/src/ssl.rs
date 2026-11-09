@@ -131,6 +131,8 @@ pub fn ssl_section() -> ConfigSection {
         description: "How this server obtains the certificates it serves HTTPS with — for the \
                       admin UI and for every application. Changes take effect when the server \
                       restarts.",
+        // This instance's own: never in the installation's structure (§3.4).
+        portable: false,
         fields: vec![
             ConfigDef::help(
                 FormField::new(SSL_MODE, BasicType::Text)

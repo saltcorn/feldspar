@@ -63,15 +63,16 @@ pub use backend::{
 };
 pub use checked::{CheckedStore, Readable, Writable};
 pub use def::{
-    ATTR_CLONE_PATH, CFG_BRANCH, CFG_CREATE, CFG_DIR, CFG_KEY_PATH, CFG_PATH, CFG_PUBLIC_KEY,
-    CFG_URL, FileStoreDef, FileStoreDefId, GIT_BACKEND, LOCAL_BACKEND,
+    ATTR_CLONE_PATH, ATTR_SYNC_CONTENTS, CFG_BRANCH, CFG_CREATE, CFG_DIR, CFG_KEY_PATH, CFG_PATH,
+    CFG_PUBLIC_KEY, CFG_PUBLIC_URL, CFG_URL, FileStoreDef, FileStoreDefId, GIT_BACKEND,
+    LOCAL_BACKEND, SyncContents,
 };
 pub use disk::{remove_store_from_disk, store_directory};
 pub use git::{
     ARG_BRANCH, ARG_CREATE, ARG_MESSAGE, ARG_PATHS, ARG_STAGED_ONLY, CommitOutcome, DeployKey,
     GitChange, GitFileStore, GitOutput, GitRepo, GitStatus, OP_CHECKOUT, OP_CLONE, OP_COMMIT,
     OP_DISCARD, OP_GENERATE_KEY, OP_PULL, OP_PUSH, OP_STAGE, OP_STATUS, OP_UNSTAGE, clone_path,
-    generate_deploy_key, parse_change, record_clone_path,
+    derive_https_url, generate_deploy_key, parse_change, record_clone_path,
 };
 pub use local::{LocalFileStore, OP_SUGGEST_DIR};
 pub use paths::{DATA_DIR_ENV, data_dir, suggest_local_dir};

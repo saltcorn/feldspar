@@ -2,6 +2,81 @@
 
 Changes in reverse chronological order.
 
+## Source control S1: the structure tree and its export
+
+Milestone S1 of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` §3): an installation's structure
+written as a tree of files, one canonical JSON file per entity, which the diff, planner and
+executor of S2 and S3 will build on. Nothing reads or writes git yet, and no endpoint, screen or
+command uses it yet (S5).
+
+- **New crate `sc-sync`** (layer 9, above `sc-backup`, below the server).
+  - `StructureTree` (S1.1): an ordered map from repository path to a canonical JSON value, or to
+    bytes for a store's synced files. `to_files` renders keys sorted at every depth, two-space
+    indentation and a trailing newline; `from_files` parses back, refusing a broken `.json` file
+    or a path that would escape the tree; `digest` is SHA-256 over every path and its bytes.
+    `path_segment` turns an entity's name into a safe file name (`a/b` → `a%2Fb`).
+  - `feldspar-structure.json` (S1.6): `{ format, writer }`, format 1. `from_files` refuses a tree
+    in a newer format with a sentence naming both Feldspar versions and both formats and telling
+    the operator to upgrade; a tree with no format file (an empty repository) is accepted.
+  - `export(catalog, registries)` (S1.2) writes every §3.1 kind through `sc_backup::codec`'s
+    `*_json` (roles, modules, portable settings, the users table's added fields, tables with
+    fields in column order and constraints, database connections, file stores, code libraries,
+    triggers with their current workflow inline, streams, agents, LLM providers with their
+    models, MCP servers, datasets, models, workspaces, checklists with their current steps,
+    applications with their views, pages, library and row translations). Stripped:
+    `updated_at`; a table's screen-only keys (`configured`, `rls_available`, `module_fields`, …);
+    an application's derived `source`, `builds`, `installs`, `has_views` and `targets`; a
+    trigger's `last_run_at`, `error`, `system_approval` and workflow version; an agent's `error`;
+    a module's row id; a checklist's `run_as` and `mutates`; a workspace's `created_by`. Settings
+    are the **stored** values of the portable sections only — not host pins from `feldspar.toml`,
+    not defaults. Two entities that would export to the same path are refused rather than one
+    being lost.
+  - Secrets (S1.4, `sc_sync::secrets`): every declared secret is `SECRET_SENTINEL` — database
+    connection passwords, stream, LLM provider, framework and file store settings by their specs,
+    MCP header values, trigger and workflow-step action settings, agent trait settings and module
+    settings. **Where no spec is known** (an uninstalled provider, action, trait or module), every
+    text value of that configuration is redacted, unlike the admin API, which passes it through.
+    `Registries` carries the action, stream-provider, agent-trait and module specs;
+    `Registries::builtin()` is the built-in set for callers with no server.
+  - Identity (S1.3, `ensure_overlays`): before exporting, every table and field without an overlay
+    row is given one (default access, the column's introspected kind, so a foreign-key column stays
+    a key), so a column added by raw DDL gets an id on its first export and keeps it. The users
+    table's own columns and provided tables' fields are left alone.
+  - Local store contents (S1.7, `sc_sync::stores`): `resolve` decides a store's synced directories
+    from its `sync_contents` and the structure's references — applications' framework sources
+    (code), static directories (assets), upload slots and `File` fields (content) — and
+    `walk_synced` reads them under `file-stores/<name>/files/`, leaving out `.git`,
+    `node_modules`, build output directories, content folders and what `.gitignore` ignores (with
+    the `ignore` crate, already in the lock file). Status warnings: an unclassified store, a
+    content claim covering a code or asset directory, a folderless `File` field or upload slot on
+    an `include` store, a file over 10 MB, an unreadable file.
+  - Git stores (S1.8): exported as `url`, `public_url`, `branch` and `commit` (the checked-out
+    `HEAD`), never their files, `key_path`, `public_key` or `directory`.
+- **`sc-files`**: `ATTR_SYNC_CONTENTS` and `SyncContents` (`auto` / `include` / `exclude`; a
+  missing attribute is `auto`, so stored stores need no migration), checked on save by
+  `validate_file_store_config`, which refuses `include` on a git store. A new optional git setting
+  `public_url` (`CFG_PUBLIC_URL`; additive, in the config JSON, so the form shows it with no UI
+  change). `derive_https_url` gives the anonymous HTTPS URL of a GitHub, GitLab, Bitbucket or
+  Codeberg SSH URL. `GitRepo::head_commit`.
+- **`sc-config`**: `ConfigSection::portable`, true for `localisation` only, and
+  `portable_sections()`, which adds a `maps` section over the Maps settings' internal keys
+  (`MAPS_SECTION`).
+- **`schema_edit`**: `ApplyOptions::ids` (`GivenIds`), the overlay ids a batch's created tables and
+  fields are given. A created table or field with a given id always gets its overlay row. Callers
+  that build `ApplyOptions` with `..Default::default()` are unaffected.
+- **`createApplication`** (S1.9): a local store it creates for an application's code is saved with
+  `sync_contents: include`.
+- Not exported yet, and why: an application's custom domains (no such field exists yet); the
+  `api` providers' configurations are exported as they are (none declares a secret today).
+- Tests: `sc-sync` unit tests for rendering, round trips, the digest, path segments, the format
+  check, the redaction rules, every store role and warning and the walk; integration tests
+  (`crates/sc-sync/tests/`) for a deterministic export with every kind present, nothing of §3.4
+  in it, no secret in it, only portable settings, ids for raw-DDL columns, given ids kept for
+  tables, fields, applications, views and triggers, the code/asset/upload stores, and a git
+  store's pin following `HEAD`; `sc-files` tests for the `sync_contents` check and the HTTPS
+  derivation table; `sc-config`'s `only_localisation_and_maps_are_portable`; and an assertion in
+  `git_store_api::a_new_application_can_ask_for_a_new_local_store`.
+
 ## Upload ceiling: settable in feldspar.toml, and visible to the app tools
 
 From user feedback: an app's upload slot was given `max_bytes` 10 GiB through `update_application`,

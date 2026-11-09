@@ -981,7 +981,11 @@ async fn create_local_file_store(
     name: &str,
     app_name: &str,
 ) -> Result<FileStoreDef> {
-    let mut def = FileStoreDef::new(name, sc_files::LOCAL_BACKEND);
+    // Made for the application's code, so the whole store is the application's
+    // and travels with the installation's structure (APP_SYNC_PROPOSAL §3.5):
+    // this is the one place that intent is known for certain.
+    let mut def = FileStoreDef::new(name, sc_files::LOCAL_BACKEND)
+        .with_sync_contents(sc_files::SyncContents::Include);
     def.description = format!("Created for the application {app_name}");
     run_backend_operation(&mut def, sc_files::OP_SUGGEST_DIR, &sc_types::Attrs::new()).await?;
     check_file_store_saveable(catalog, &def).await?;

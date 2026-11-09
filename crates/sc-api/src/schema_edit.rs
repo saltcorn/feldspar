@@ -57,6 +57,7 @@
 use sc_types::Attrs;
 use sc_types::Role;
 use std::collections::{BTreeMap, BTreeSet};
+use uuid::Uuid;
 
 use sc_catalog::{
     ATTR_OWNERSHIP_FORMULA, Catalog, ChangeLogFeature, ConstraintKind, DataField, DataFieldKind,
@@ -267,6 +268,9 @@ pub struct ApplyOptions {
     /// access settings, disables RLS or drops it. Delegated by default, so a
     /// path that names nobody cannot.
     pub editor: Editor,
+    /// The ids the tables and fields this batch creates are given, rather than
+    /// fresh ones.
+    pub ids: GivenIds,
 }
 
 impl Default for ApplyOptions {
@@ -275,7 +279,41 @@ impl Default for ApplyOptions {
             grants: Grants::all(),
             dry_run: false,
             editor: Editor::default(),
+            ids: GivenIds::default(),
         }
+    }
+}
+
+/// The overlay ids the tables and fields a batch creates are to have, by name.
+///
+/// A table or field is created with a fresh overlay id unless one is given
+/// here, and then it gets exactly that one — the same id on every instance the
+/// installation's structure is deployed to, which is what lets a later deploy
+/// tell a rename from a drop and a create (APP_SYNC_PROPOSAL §3.2). A created
+/// table or field that is given an id always gets its overlay row, even with
+/// nothing else to record in it; one that is not keeps today's rule, a row
+/// only when there is something to put in it.
+///
+/// Only creates read it: an existing table or field keeps the id it has.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GivenIds {
+    /// A created table's `_fd_tables` id, by table name.
+    pub tables: BTreeMap<String, Uuid>,
+    /// A created field's `_fd_fields` id, by `(table, field)`.
+    pub fields: BTreeMap<(String, String), Uuid>,
+}
+
+impl GivenIds {
+    /// The id given to table `table`, if any.
+    fn table(&self, table: &str) -> Option<Uuid> {
+        self.tables.get(table).copied()
+    }
+
+    /// The id given to field `table.field`, if any.
+    fn field(&self, table: &str, field: &str) -> Option<Uuid> {
+        self.fields
+            .get(&(table.to_owned(), field.to_owned()))
+            .copied()
     }
 }
 
@@ -669,6 +707,7 @@ pub async fn apply(
         ));
     }
     let mut plan = Plan::new(catalog).await?;
+    plan.ids = options.ids.clone();
     for (index, op) in operations.iter().enumerate() {
         refuse_on_provided(catalog, op).map_err(|e| at(index, op, e))?;
         refuse_on_module_table(catalog, op).map_err(|e| at(index, op, e))?;
@@ -1055,6 +1094,8 @@ struct Plan {
     /// batch that reaches into two databases is refused rather than silently
     /// split into two that can half-fail (see [`Plan::target`]).
     database: Option<DbId>,
+    /// The ids the tables and fields this batch creates are given.
+    ids: GivenIds,
     applied: Applied,
 }
 
@@ -1089,6 +1130,7 @@ impl Plan {
             constraints: Vec::new(),
             changes: Vec::new(),
             database: None,
+            ids: GivenIds::default(),
             applied: Applied::default(),
         })
     }
@@ -1300,10 +1342,15 @@ impl Plan {
             });
         }
         // A brand-new table has no stored overlay to read, so the settings start
-        // from a fresh row rather than being loaded.
-        if !settings.is_empty() {
-            self.table_metas
-                .insert(name.to_owned(), TableMeta::new(name));
+        // from a fresh row rather than being loaded. A given id is a row to
+        // write even with no settings in it: the id is what is being recorded.
+        let given = self.ids.table(name);
+        if !settings.is_empty() || given.is_some() {
+            let mut meta = TableMeta::new(name);
+            if let Some(id) = given {
+                meta = meta.id(sc_catalog::TableMetaId(id));
+            }
+            self.table_metas.insert(name.to_owned(), meta);
             self.write_settings(catalog, index, op, name, settings)
                 .await?;
         } else {
@@ -2753,7 +2800,9 @@ impl Plan {
 
         let label = spec.label.trim().to_owned();
         let description = spec.description.trim().to_owned();
-        let needs_overlay = rich_name.is_some()
+        let given = self.ids.field(table, name);
+        let needs_overlay = given.is_some()
+            || rich_name.is_some()
             || !matches!(kind, DataFieldKind::Plain)
             || !label.is_empty()
             || !description.is_empty()
@@ -2768,6 +2817,9 @@ impl Plan {
             meta.attributes = spec.attributes.clone();
             meta.default_expression
                 .clone_from(&field.default_expression);
+            if let Some(id) = given {
+                meta = meta.id(sc_catalog::FieldMetaId(id));
+            }
             meta
         });
         Ok(ResolvedField { field, meta })

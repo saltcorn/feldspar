@@ -418,6 +418,23 @@ impl GitRepo {
         self.root.join(".git").exists()
     }
 
+    /// The full hash of the checked-out commit, or `None` when there is none to
+    /// name: no clone yet, or a repository with no commits.
+    ///
+    /// What the installation's structure **pins** a git store at
+    /// (APP_SYNC_PROPOSAL §3.5): read from the working tree each time, never
+    /// stored, so it is whatever the store actually serves.
+    pub async fn head_commit(&self) -> Result<Option<String>> {
+        if !self.is_cloned() {
+            return Ok(None);
+        }
+        let out = self
+            .run_args(&["rev-parse", "--verify", "-q", "HEAD"])
+            .await?;
+        let hash = out.output.trim();
+        Ok((out.success && !hash.is_empty()).then(|| hash.to_owned()))
+    }
+
     /// Clone the remote into the working-tree directory, unless the directory
     /// **already holds a checkout** — in which case that checkout is adopted as
     /// it stands and this only says so.
@@ -915,6 +932,58 @@ impl GitRepo {
             output: combined(&output.stdout, &output.stderr),
         })
     }
+}
+
+/// The anonymous HTTPS URL of a repository given by an SSH URL on a well-known
+/// host — GitHub, GitLab, Bitbucket or Codeberg — or `None` when there is no
+/// such derivation.
+///
+/// What another instance clones a git store from when the structure that
+/// creates the store names no [`public_url`](crate::CFG_PUBLIC_URL)
+/// (APP_SYNC_PROPOSAL §3.5): it has none of this instance's keys, and these
+/// hosts serve a public repository over HTTPS at the same owner and name. Both
+/// SSH spellings are understood, `git@github.com:o/r.git` and
+/// `ssh://git@github.com/o/r.git`; an `https://` URL is already what is wanted
+/// and comes back as it is. Any other host gets `None`, because guessing at a
+/// self-hosted server's HTTPS layout would hand a deploy a URL that is wrong in
+/// a way nobody chose.
+pub fn derive_https_url(url: &str) -> Option<String> {
+    const HOSTS: [&str; 4] = ["github.com", "gitlab.com", "bitbucket.org", "codeberg.org"];
+    let url = url.trim();
+    if let Some(rest) = url.strip_prefix("https://") {
+        return (!rest.is_empty()).then(|| url.to_owned());
+    }
+    // `ssh://[user@]host[:port]/path` or the scp-like `[user@]host:path`.
+    let (host, path) = if let Some(rest) = url.strip_prefix("ssh://") {
+        let (authority, path) = rest.split_once('/')?;
+        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+        // A port belongs to the SSH server, not to the HTTPS one.
+        (host.split_once(':').map_or(host, |(h, _)| h), path)
+    } else {
+        if url.contains("://") {
+            return None;
+        }
+        let (authority, path) = url.split_once(':')?;
+        (
+            authority.rsplit_once('@').map_or(authority, |(_, h)| h),
+            path,
+        )
+    };
+    let host = host.to_ascii_lowercase();
+    if !HOSTS.contains(&host.as_str()) {
+        return None;
+    }
+    let path = path.trim_matches('/');
+    // `owner/repo` at least, and nothing that would climb out of it.
+    if path.split('/').count() < 2 || path.split('/').any(|s| s.is_empty() || s == "..") {
+        return None;
+    }
+    let path = if path.ends_with(".git") {
+        path.to_owned()
+    } else {
+        format!("{path}.git")
+    };
+    Some(format!("https://{host}/{path}"))
 }
 
 /// Checked pathspecs as operands (each already refuses a leading `-`).
@@ -1632,6 +1701,48 @@ mod tests {
             assert_eq!(repo.key_path, Some(PathBuf::from("/keys/app.key")));
             assert!(!repo.is_cloned());
         });
+    }
+
+    #[test]
+    fn an_https_url_is_derived_for_the_well_known_hosts_only() {
+        let cases = [
+            // The scp-like SSH spelling, on each of the four hosts.
+            ("git@github.com:o/r.git", Some("https://github.com/o/r.git")),
+            (
+                "git@gitlab.com:group/sub/r.git",
+                Some("https://gitlab.com/group/sub/r.git"),
+            ),
+            (
+                "git@bitbucket.org:o/r.git",
+                Some("https://bitbucket.org/o/r.git"),
+            ),
+            ("git@codeberg.org:o/r", Some("https://codeberg.org/o/r.git")),
+            // The URL spelling, a port and a host in capitals.
+            (
+                "ssh://git@github.com/o/r.git",
+                Some("https://github.com/o/r.git"),
+            ),
+            (
+                "ssh://git@GitHub.com:22/o/r",
+                Some("https://github.com/o/r.git"),
+            ),
+            // Already HTTPS: nothing to derive.
+            (
+                "https://example.com/o/r.git",
+                Some("https://example.com/o/r.git"),
+            ),
+            // Not one of the four, or not a repository path: no guess.
+            ("git@git.example.com:o/r.git", None),
+            ("ssh://git@example.com/o/r.git", None),
+            ("http://github.com/o/r.git", None),
+            ("git@github.com:r.git", None),
+            ("git@github.com:o/../r.git", None),
+            ("/srv/repos/r.git", None),
+            ("", None),
+        ];
+        for (url, want) in cases {
+            assert_eq!(derive_https_url(url).as_deref(), want, "{url}");
+        }
     }
 
     #[test]

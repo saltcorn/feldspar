@@ -60,6 +60,8 @@ pub fn development_section() -> ConfigSection {
         label: "Development",
         description: "Settings for logging, MCP server availability, the IDE's Claude Code \
                       terminal and where the admin UI is served",
+        // This instance's own: never in the installation's structure (§3.4).
+        portable: false,
         fields: vec![
             // First: it decides where this very screen is served.
             // Live, like the rest of this section: saving it moves the admin UI

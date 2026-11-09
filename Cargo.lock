@@ -10001,6 +10001,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-sync"
+version = "0.1.0"
+dependencies = [
+ "ignore",
+ "sc-action",
+ "sc-action-builtins",
+ "sc-agent",
+ "sc-agent-builtins",
+ "sc-analytics",
+ "sc-api",
+ "sc-app",
+ "sc-auth",
+ "sc-backup",
+ "sc-catalog",
+ "sc-check",
+ "sc-config",
+ "sc-dataset",
+ "sc-error",
+ "sc-files",
+ "sc-i18n",
+ "sc-llm",
+ "sc-mcp",
+ "sc-model",
+ "sc-module",
+ "sc-stream",
+ "sc-test-harness",
+ "sc-types",
+ "sc-viewpattern",
+ "sc-workflow",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "sc-test-harness"
 version = "0.1.0"
 dependencies = [

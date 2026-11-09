@@ -40,6 +40,8 @@ pub fn localisation_section() -> ConfigSection {
         name: "localisation",
         label: "Localisation",
         description: "The languages this installation serves, and the one it falls back to",
+        // Travels with the installation's structure (APP_SYNC_PROPOSAL §3.4).
+        portable: true,
         fields: vec![
             ConfigDef::help(
                 FormField::new(DEFAULT_LOCALE, BasicType::Text)

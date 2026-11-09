@@ -48,25 +48,25 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## S1 — The structure tree (§3)
 
-- [ ] **S1.1** The `StructureTree` type: an ordered map from repository path to canonical JSON
+- [x] **S1.1** The `StructureTree` type: an ordered map from repository path to canonical JSON
   value. It has `to_files` and `from_files`, with sorted keys, two-space indentation and a trailing
   newline, plus a digest. Unit tests: rendering is stable, and parsing then rendering round-trips
   byte for byte.
-- [ ] **S1.2** Export of the live installation to a tree for every kind in §3.1. Each kind is
+- [x] **S1.2** Export of the live installation to a tree for every kind in §3.1. Each kind is
   exported through the admin API's `*_json` functions, then the §3.1 bookkeeping and §3.4 fields are
   stripped. Integration test: exporting a fixture installation twice gives identical trees, and
   nothing in §3.4 appears.
-- [ ] **S1.3** Identity (§3.2). Check that every table and field has an overlay row with an id, and
+- [x] **S1.3** Identity (§3.2). Check that every table and field has an overlay row with an id, and
   have export create a missing row. Make every create path accept a given id. Tests: a column added
   by raw DDL gets an id on first export and keeps it; creating an entity with a given id keeps it.
-- [ ] **S1.4** Secrets (§3.3). Every `secret` value in definitions is exported as
+- [x] **S1.4** Secrets (§3.3). Every `secret` value in definitions is exported as
   `SECRET_SENTINEL`. Test: a fixture with a database connection password, a stream secret, an LLM
   key and an MCP header exports none of them.
-- [ ] **S1.5** A `portable` flag on settings sections in `sc-config`. `localisation` and `maps` are
+- [x] **S1.5** A `portable` flag on settings sections in `sc-config`. `localisation` and `maps` are
   portable; everything else is not. Test: export contains only portable sections.
-- [ ] **S1.6** `feldspar-structure.json`: format version and writer version. Reading a tree with a
+- [x] **S1.6** `feldspar-structure.json`: format version and writer version. Reading a tree with a
   newer format fails with a sentence naming both versions. Test.
-- [ ] **S1.7** Local store contents (§3.5). The `sync_contents` attribute (`auto` / `include` /
+- [x] **S1.7** Local store contents (§3.5). The `sync_contents` attribute (`auto` / `include` /
   `exclude`, missing = `auto`; `include` refused on a git store). Resolve each local store's synced
   directories from its code, asset and content references, and export their files under
   `file-stores/<name>/files/`, leaving out `node_modules`, build output directories and what
@@ -75,12 +75,12 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
   over 10 MB. Unit tests for each role and each warning, and for an upload folder nested in a static
   directory. Integration test: a fixture with a code store, an asset store and an upload store
   exports only the first two's files.
-- [ ] **S1.8** Git stores in the tree (§3.5). A new optional `public_url` setting on the git backend
+- [x] **S1.8** Git stores in the tree (§3.5). A new optional `public_url` setting on the git backend
   (additive, in the config JSON). Export writes `url`, `public_url`, `branch` and `commit` (the
   checked-out `HEAD`) and none of the instance-bound settings. The HTTPS derivation for GitHub,
   GitLab, Bitbucket and Codeberg SSH URLs. Tests: no store file is exported; the commit follows
   `HEAD`; the derivation table.
-- [ ] **S1.9** `create_application` sets `sync_contents: include` on the local store it creates.
+- [x] **S1.9** `create_application` sets `sync_contents: include` on the local store it creates.
   Test.
 
 ## S2 — Status and the planner (§4, §5)
