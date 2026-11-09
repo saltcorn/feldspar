@@ -2,6 +2,26 @@
 
 Changes in reverse chronological order.
 
+## Admin UI: custom queries as a list with an editor per query
+
+An application's custom queries (Application settings → APIs) are now a table, with the number
+of queries in the card's header. Each row shows the query's name with its description cut to
+two lines (the whole of it on hover), its method as a coloured badge (reads green, writes blue,
+changes yellow, deletes red) beside its path, its language and minimum role as badges (Public
+in yellow), and a chip per parameter, an optional one marked `?`. A failed Check shows on its
+row.
+
+Clicking a row opens that query's editor in the card, with "All queries" to go back, so one
+query is inspected at a time instead of every field of every query stacked on the page. The
+editor has two columns. On the left: a request line (the method, coloured, joined to the path),
+the name and description, and framed panels for the code (with its language), the parameters
+(a table with a Required switch per row) and the declared answer. On the right, a settings
+panel that stays in view while scrolling: language, minimum role, body and response formats,
+rate limit. Check and Remove query sit in a footer. "Add query" opens the new query's editor
+straight away.
+
+Tests: `ui/admin/src/screens/CustomQueries.test.tsx`, `ui/admin/src/customQueries.test.ts`.
+
 ## Security hardening H8: RLS as a hard boundary
 
 The eighth part of `docs/SECURITY_REVIEW_2026-11.md` (TECHNICAL_DESIGN §7.3a;

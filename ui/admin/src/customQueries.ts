@@ -379,6 +379,36 @@ export function columnsSummary(columns: QueryColumn[]): string {
   return columns.map((c) => `${c.name}: ${c.type}`).join(", ");
 }
 
+/** The colour of a method's badge: reads green, writes blue, changes yellow,
+ * deletes red, so the dangerous ones stand out in a list. */
+export function methodTone(method: string): "green" | "blue" | "yellow" | "red" | "secondary" {
+  switch (method.toUpperCase()) {
+    case "GET":
+      return "green";
+    case "POST":
+      return "blue";
+    case "PUT":
+    case "PATCH":
+      return "yellow";
+    case "DELETE":
+      return "red";
+    default:
+      return "secondary";
+  }
+}
+
+/** The soft badge class a query language is shown in. */
+export function languageBadgeClass(language: QueryLanguage): string {
+  switch (language) {
+    case "sql":
+      return "bg-azure-lt";
+    case "javascript":
+      return "bg-purple-lt";
+    case "python":
+      return "bg-teal-lt";
+  }
+}
+
 /** The one-line status a check leaves behind. */
 export function statusSummary(status: CheckStatus): string {
   switch (status.kind) {
