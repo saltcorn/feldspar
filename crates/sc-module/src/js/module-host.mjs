@@ -2346,6 +2346,7 @@ async function evalFrameworks(plugin, configuration) {
       checks: Array.isArray(impl.checks) ? impl.checks.filter((c) => typeof c === "string") : [],
       scaffolds: typeof impl.scaffold === "function",
       targets: impl.targets && typeof impl.targets === "object" ? impl.targets : {},
+      settings_tabs: Array.isArray(impl.settings_tabs) ? impl.settings_tabs : null,
     });
   }
   return { frameworks, set, issues };

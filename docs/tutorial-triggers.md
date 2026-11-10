@@ -134,8 +134,9 @@ Two settings there decide who may call it:
 ### Expose it on the app
 
 A trigger is not reachable from outside until an application says so. Go to **Applications →
-Todo → Edit**. The **Triggers** card lists every trigger on the server with a checkbox; tick
-`archive_done` and **Save changes**, then press **Build** on the app's row.
+Todo → Edit → Triggers & Streams**. The **Triggers** card lists every trigger on the server with
+a checkbox; tick `archive_done` (it is saved as you tick it), then press **Build** on the app's
+row.
 
 The app now serves `POST /api/actions/archive_done`, and its generated TypeScript client has a
 typed `runArchiveDone(body)` beside `listTasks()` and friends — so from the app's own code it is

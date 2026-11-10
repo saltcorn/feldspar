@@ -40,13 +40,21 @@ pub struct SpecIssue(pub String);
 /// A `section_header` is not a setting, but its label heads the settings after
 /// it: it becomes the [`section`](FormField::section) of the next field that is
 /// one. A heading with no setting after it heads nothing and is dropped.
+///
+/// A field's `tab` names the settings tab it is shown on (an application form's,
+/// `sc_app::SettingsTab`). A `section_header` with a `tab` puts every setting of
+/// its section there, until the next `section_header`; a field's own `tab` wins.
 pub fn config_fields_to_form_fields(fields: &[Json], owner: &str) -> (Vec<FormField>, Vec<String>) {
     let mut out = Vec::new();
     let mut issues = Vec::new();
     let mut heading: Option<String> = None;
+    let mut section_tab: Option<String> = None;
     for field in fields {
-        if let Some(label) = section_header(field) {
-            heading = Some(label);
+        if field.get("input_type").and_then(Json::as_str) == Some("section_header") {
+            if let Some(label) = section_header(field) {
+                heading = Some(label);
+            }
+            section_tab = tab_of(field);
             continue;
         }
         match config_field(field, owner) {
@@ -57,6 +65,7 @@ pub fn config_fields_to_form_fields(fields: &[Json], owner: &str) -> (Vec<FormFi
                 if let Some(label) = heading.take() {
                     form_field.section = Some(label);
                 }
+                form_field.tab = tab_of(field).or_else(|| section_tab.clone());
                 out.push(form_field);
             }
             Ok(None) => {}
@@ -70,6 +79,16 @@ pub fn config_fields_to_form_fields(fields: &[Json], owner: &str) -> (Vec<FormFi
 /// a heading between groups of fields, and a hidden field the workflow itself
 /// fills in. Neither is a setting, so neither is translated — or reported.
 const NOT_SETTINGS: [&str; 2] = ["section_header", "hidden"];
+
+/// The settings tab a field or `section_header` names, if any.
+fn tab_of(field: &Json) -> Option<String> {
+    field
+        .get("tab")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_owned)
+}
 
 /// A v1 `section_header`'s heading: its label, else its `sublabel`. One with
 /// neither heads nothing, and reads as no heading at all.
@@ -469,6 +488,33 @@ mod tests {
         assert!(issues.is_empty(), "{issues:?}");
         assert_eq!(fields[0].env_fallback.as_deref(), Some("ANDROID_HOME"));
         assert_eq!(fields[1].env_fallback, None);
+    }
+
+    #[test]
+    fn a_tab_on_a_section_header_places_its_section() {
+        let (fields, issues) = translate(json!([
+            { "name": "store", "type": "String" },
+            { "input_type": "section_header", "label": "Native apps", "tab": " mobile " },
+            { "name": "mobile_url", "type": "String" },
+            { "name": "debug", "type": "Bool", "tab": "development" },
+            { "name": "app_version", "type": "String" },
+            { "input_type": "section_header", "label": "Other" },
+            { "name": "later", "type": "String" }
+        ]));
+        assert!(issues.is_empty(), "{issues:?}");
+        let tabs: Vec<Option<&str>> = fields.iter().map(|f| f.tab.as_deref()).collect();
+        // Before any header: no tab. The header's tab covers its section, a
+        // field's own wins, and the next header without one ends it.
+        assert_eq!(
+            tabs,
+            [
+                None,
+                Some("mobile"),
+                Some("development"),
+                Some("mobile"),
+                None
+            ]
+        );
     }
 
     #[test]

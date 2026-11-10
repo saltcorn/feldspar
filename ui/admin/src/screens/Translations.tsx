@@ -23,7 +23,7 @@
 //   translates (Settings → Translations (shared), TODO F6) and this
 //   application does not is shown greyed, with **override**.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Alert from "react-bootstrap/Alert";
 import Button from "react-bootstrap/Button";
 import Form from "react-bootstrap/Form";
@@ -45,7 +45,15 @@ import { ApplicationTabs } from "./ApplicationViews";
 import { TranslationGrid } from "./TranslationGrid";
 import { T, useT } from "../i18n";
 
-export function ApplicationTranslations({ appId }: { appId: string }) {
+export function ApplicationTranslations({
+  appId,
+  embedded = false,
+}: {
+  appId: string;
+  /** Shown inside another tab of the application (Saltcorn UI's Advanced),
+   * which has the page header and the tabs already. */
+  embedded?: boolean;
+}) {
   const { t } = useT();
   const [app, setApp] = useState<AppItem | null>(null);
   const [data, setData] = useState<Payload | null>(null);
@@ -165,23 +173,27 @@ export function ApplicationTranslations({ appId }: { appId: string }) {
     />
   );
 
+  // Inside another tab: the same content, under that tab's header and tabs.
+  const Body = embedded ? EmbeddedBody : PageBody;
+  const pageHeader = embedded ? null : header;
+
   if (loadError) {
     return (
       <>
-        {header}
-        <PageBody>
+        {pageHeader}
+        <Body>
           <Alert variant="danger">{loadError}</Alert>
-        </PageBody>
+        </Body>
       </>
     );
   }
   if (!app || !data) {
     return (
       <>
-        {header}
-        <PageBody>
+        {pageHeader}
+        <Body>
           <Spinner animation="border" role="status" />
-        </PageBody>
+        </Body>
       </>
     );
   }
@@ -190,9 +202,9 @@ export function ApplicationTranslations({ appId }: { appId: string }) {
 
   return (
     <>
-      {header}
-      <PageBody>
-        <ApplicationTabs app={app} active="translations" />
+      {pageHeader}
+      <Body>
+        {!embedded && <ApplicationTabs app={app} active="translations" />}
 
         {error && (
           <Alert variant="danger" dismissible onClose={() => setError(null)}>
@@ -385,7 +397,12 @@ export function ApplicationTranslations({ appId }: { appId: string }) {
             </div>
           </div>
         )}
-      </PageBody>
+      </Body>
     </>
   );
+}
+
+/** The editor's content with no page around it, inside another tab. */
+function EmbeddedBody({ children }: { children: ReactNode }) {
+  return <section className="mt-4">{children}</section>;
 }

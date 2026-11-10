@@ -299,6 +299,10 @@ pub fn application_json(app: &Application) -> Json {
         "installs": sc_app::framework_factory(&app.framework.name).is_none()
             && app_source_from_config(&app.framework).is_ok_and(|s| s.build.install.is_some()),
         "has_views": app.framework.name == sc_viewpattern::SALTCORN_UI_FRAMEWORK,
+        "settings_tabs": sc_app::framework_settings_tabs(
+            &app.framework.name,
+            app.framework.name == sc_viewpattern::SALTCORN_UI_FRAMEWORK,
+        ),
         "targets": sc_app::framework_build_targets(&app.framework.name)
             .into_iter()
             .map(|t| {
@@ -1695,6 +1699,7 @@ pub fn form_field_json(field: &FormField) -> Json {
         "create_only": field.create_only,
         "code_language": field.code_language,
         "section": field.section,
+        "tab": field.tab,
         "sublabel": field.sublabel,
         "help_topic": field.help_topic,
         "pattern": field.pattern,

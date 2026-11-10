@@ -419,6 +419,10 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                         "description": say(&info.description, &ctx.locale),
                         "config_spec": spec_json(&spec, &ctx.locale),
                         "has_views": info.name == sc_viewpattern::SALTCORN_UI_FRAMEWORK,
+                        "settings_tabs": sc_app::resolve_settings_tabs(
+                            info.settings_tabs.as_deref(),
+                            info.name == sc_viewpattern::SALTCORN_UI_FRAMEWORK,
+                        ),
                         "file_store_settings": store_settings,
                         "file_settings": file_settings,
                         "targets": targets,

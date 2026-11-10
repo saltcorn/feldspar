@@ -81,6 +81,7 @@ fn shell_framework() -> FrameworkDecl {
         builder_prompt: None,
         checks: Vec::new(),
         scaffolds: true,
+        settings_tabs: None,
         // A target whose operation makes a key, as the Android one makes a
         // keystore — and one that misbehaves.
         targets: vec![TargetTemplate {

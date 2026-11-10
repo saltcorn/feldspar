@@ -90,8 +90,9 @@ const config_fields = [
     default: "",
   },
   // Everything from here on is for the native apps only; the web bundle
-  // reads none of it. v1's heading, which the form draws above the group.
-  { input_type: "section_header", label: "Native apps (Android and iOS)" },
+  // reads none of it. v1's heading, which the form draws above the group,
+  // and the application's Mobile settings tab it is shown on.
+  { input_type: "section_header", label: "Native apps (Android and iOS)", tab: "mobile" },
   {
     name: "mobile_url",
     label: "Server URL for the mobile app (blank: the application's URL)",
@@ -120,6 +121,24 @@ const config_fields = [
     type: "String",
     server_query: "store_files:png",
   },
+];
+
+/** How an application's settings are laid out: the default tabs (TODO UX2.1),
+ * with the native apps' settings and each platform's build on a Mobile tab of
+ * their own rather than under the file store on the first. */
+const settings_tabs = [
+  { id: "framework", label: "Framework", groups: ["identity", "framework", "settings"] },
+  { id: "mobile", label: "Mobile", groups: ["settings", "targets"] },
+  { id: "data", label: "Data", groups: ["tables", "file_stores"] },
+  { id: "triggers", label: "Triggers & Streams", groups: ["triggers", "streams"] },
+  {
+    id: "api",
+    label: "API",
+    groups: ["apis", "row_api", "agents", "uploads", "static_dirs"],
+  },
+  { id: "security", label: "Security", groups: ["access", "guest_sessions", "csp"] },
+  { id: "development", label: "Development", groups: ["coding_agent", "checklists"] },
+  { id: "translations", label: "Translations", groups: ["translations"] },
 ];
 
 /** Where the source is and how the web bundle builds — Vue's layout: the same
@@ -2095,6 +2114,7 @@ module.exports = {
       // What the builder agent's `check` runs before the application build.
       checks: ["typecheck"],
       targets: targets(configuration || {}),
+      settings_tabs,
       scaffold,
       runtime,
     },

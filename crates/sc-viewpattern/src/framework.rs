@@ -56,7 +56,11 @@ use sc_api::SessionAction;
 use sc_api::code_host::{FileStoreHost, TableHost, TriggerRunHost, schema_snapshot};
 use sc_app::{
     AppRequest, AppResponse, Application, BuildSpec, CspPolicy, Framework, FrameworkFactory,
-    FrameworkInfo, MountContext, RequestBody, TriggerRef,
+    FrameworkInfo, GROUP_ACCESS, GROUP_AGENTS, GROUP_APIS, GROUP_CHECKLISTS, GROUP_CODING_AGENT,
+    GROUP_CSP, GROUP_FILE_STORES, GROUP_FRAMEWORK, GROUP_GUEST_SESSIONS, GROUP_IDENTITY,
+    GROUP_LIBRARY, GROUP_PAGES, GROUP_ROW_API, GROUP_SETTINGS, GROUP_STATIC_DIRS, GROUP_STREAMS,
+    GROUP_TABLES, GROUP_TARGETS, GROUP_TRANSLATIONS, GROUP_TRIGGERS, GROUP_UPLOADS, GROUP_VIEWS,
+    MountContext, RequestBody, SettingsTab, TriggerRef,
 };
 use sc_auth::User;
 use sc_catalog::Catalog;
@@ -123,6 +127,73 @@ pub fn install_saltcorn_ui() -> Result<()> {
     sc_app::install_framework_factory(Arc::new(SaltcornUiFactory))
 }
 
+/// The Site tab of a Saltcorn UI application's settings: what it is called,
+/// its menu, home pages, layouts and languages.
+pub const TAB_SITE: &str = "site";
+/// The Data tab: its tables, file stores, search and triggers.
+pub const TAB_DATA: &str = "data";
+/// The Users & Security tab: signing in and up, and who may use it.
+pub const TAB_USERS: &str = "users";
+/// The Advanced tab: APIs, files, agents, development and translations.
+pub const TAB_ADVANCED: &str = "advanced";
+
+/// How a Saltcorn UI application's settings are laid out (TODO UX2.1): seven
+/// tabs, the site's own settings first and its views, pages and library next,
+/// rather than the default layout plus three screens.
+pub fn saltcorn_ui_settings_tabs() -> Vec<SettingsTab> {
+    vec![
+        SettingsTab::new(
+            TAB_SITE,
+            "Site",
+            // It has no build targets; named so the layout is complete.
+            &[
+                GROUP_IDENTITY,
+                GROUP_FRAMEWORK,
+                GROUP_SETTINGS,
+                GROUP_TARGETS,
+            ],
+        ),
+        SettingsTab::new(GROUP_VIEWS, "Views", &[GROUP_VIEWS]),
+        SettingsTab::new(GROUP_PAGES, "Pages", &[GROUP_PAGES]),
+        SettingsTab::new(GROUP_LIBRARY, "Library", &[GROUP_LIBRARY]),
+        SettingsTab::new(
+            TAB_DATA,
+            "Data",
+            &[
+                GROUP_TABLES,
+                GROUP_FILE_STORES,
+                GROUP_SETTINGS,
+                GROUP_TRIGGERS,
+                GROUP_STREAMS,
+            ],
+        ),
+        SettingsTab::new(
+            TAB_USERS,
+            "Users & Security",
+            &[
+                GROUP_SETTINGS,
+                GROUP_ACCESS,
+                GROUP_GUEST_SESSIONS,
+                GROUP_CSP,
+            ],
+        ),
+        SettingsTab::new(
+            TAB_ADVANCED,
+            "Advanced",
+            &[
+                GROUP_APIS,
+                GROUP_ROW_API,
+                GROUP_STATIC_DIRS,
+                GROUP_UPLOADS,
+                GROUP_AGENTS,
+                GROUP_CODING_AGENT,
+                GROUP_CHECKLISTS,
+                GROUP_TRANSLATIONS,
+            ],
+        ),
+    ]
+}
+
 /// The settings a Saltcorn UI application has (5.4): the brand, the menu, the
 /// home page per role, and every `getConfig` key the view runtime declares that
 /// the application does not already know.
@@ -130,42 +201,55 @@ pub fn saltcorn_ui_config_spec() -> Vec<FormField> {
     vec![
         FormField::new(CFG_SITE_NAME, BasicType::Text)
             .label("Site name")
+            .tab(TAB_SITE)
             .default_value(""),
         FormField::new(MENU_CONFIG_KEY, BasicType::Json)
             .label("Menu")
+            .tab(TAB_SITE)
             .default_value(Json::Array(Vec::new())),
         FormField::new(CFG_ROOT_PAGES, BasicType::Json)
             .label("Home page per role")
+            .tab(TAB_SITE)
             .default_value(Json::Object(Map::new())),
         FormField::new("default_locale", BasicType::Text)
             .label("Default locale")
+            .tab(TAB_SITE)
             .default_value("en"),
         FormField::new("login_form", BasicType::Text)
             .label("Login form view")
+            .tab(TAB_USERS)
             .default_value(""),
         FormField::new("exttables_min_role_read", BasicType::Json)
             .label("External tables: read role per table")
+            .tab(TAB_DATA)
             .default_value(Json::Object(Map::new())),
         FormField::new("layout_by_role", BasicType::Json)
             .label("Layout per role")
+            .tab(TAB_SITE)
             .default_value(Json::Object(Map::new())),
         FormField::new("push_policy_by_role", BasicType::Json)
             .label("Push policy per role")
+            .tab(TAB_USERS)
             .default_value(Json::Object(Map::new())),
         FormField::new("localizer_languages", BasicType::Json)
             .label("Languages")
+            .tab(TAB_SITE)
             .default_value(Json::Object(Map::new())),
         FormField::new("search_disable_fts", BasicType::Bool)
             .label("Search: no full-text search")
+            .tab(TAB_DATA)
             .default_value(false),
         FormField::new("search_use_websearch", BasicType::Bool)
             .label("Search: web-style queries")
+            .tab(TAB_DATA)
             .default_value(false),
         FormField::new(CFG_ALLOW_SIGNUP, BasicType::Bool)
             .label("Offer sign-up")
+            .tab(TAB_USERS)
             .default_value(false),
         FormField::new(CFG_NEW_USER_ROLE, BasicType::Int)
             .label("Role of a new account")
+            .tab(TAB_USERS)
             .default_value(i64::from(DEFAULT_NEW_USER_ROLE)),
     ]
 }
@@ -250,6 +334,7 @@ impl FrameworkFactory for SaltcornUiFactory {
                           and nothing to build: pick the tables it shows."
                 .to_owned(),
             serves_ui: true,
+            settings_tabs: Some(saltcorn_ui_settings_tabs()),
         }
     }
 
@@ -1863,6 +1948,52 @@ mod tests {
     use super::*;
     use sc_app::FrameworkRef;
     use serde_json::json;
+
+    #[test]
+    fn the_settings_are_seven_tabs_and_every_setting_names_one() {
+        let tabs = saltcorn_ui_settings_tabs();
+        assert!(sc_app::settings_tabs_problems(&tabs, true).is_empty());
+        let labels: Vec<&str> = tabs.iter().map(|t| t.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Site",
+                "Views",
+                "Pages",
+                "Library",
+                "Data",
+                "Users & Security",
+                "Advanced"
+            ]
+        );
+        // Declared complete: resolving adds nothing, so the admin sees exactly
+        // these tabs, with Translations inside Advanced.
+        assert_eq!(sc_app::resolve_settings_tabs(Some(&tabs), true), tabs);
+        let advanced = tabs.iter().find(|t| t.id == TAB_ADVANCED).unwrap();
+        assert!(advanced.groups.iter().any(|g| g == GROUP_TRANSLATIONS));
+        // The factory is what the registry is asked.
+        assert_eq!(SaltcornUiFactory.info().settings_tabs, Some(tabs.clone()));
+
+        // Every setting is placed on a tab that shows the framework's settings.
+        for field in saltcorn_ui_config_spec() {
+            let tab = field
+                .tab
+                .as_deref()
+                .unwrap_or_else(|| panic!("{}", field.name()));
+            let on = tabs.iter().find(|t| t.id == tab).unwrap();
+            assert!(on.groups.iter().any(|g| g == GROUP_SETTINGS), "{tab}");
+        }
+        let on = |tab: &str| -> Vec<String> {
+            saltcorn_ui_config_spec()
+                .into_iter()
+                .filter(|f| f.tab.as_deref() == Some(tab))
+                .map(|f| f.name().to_owned())
+                .collect()
+        };
+        assert!(on(TAB_USERS).contains(&"login_form".to_owned()));
+        assert!(on(TAB_DATA).contains(&"search_disable_fts".to_owned()));
+        assert!(on(TAB_SITE).contains(&CFG_SITE_NAME.to_owned()));
+    }
 
     #[test]
     fn the_csp_widens_script_src_and_nothing_else() {

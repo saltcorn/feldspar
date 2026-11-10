@@ -356,6 +356,31 @@ async fn the_bundled_react_native_module_declares_a_web_framework() {
             ("app_icon", None)
         ]
     );
+    // ...shown on a Mobile tab of their own (UX2.1), with each platform's
+    // build: the file store and project stay on the first tab.
+    let tabs: Vec<(&str, Option<&str>)> = rn
+        .config_spec
+        .iter()
+        .take(6)
+        .map(|f| (f.name(), f.tab.as_deref()))
+        .collect();
+    assert_eq!(
+        tabs,
+        [
+            ("store", None),
+            ("project", None),
+            ("mobile_url", Some("mobile")),
+            ("app_id", Some("mobile")),
+            ("app_version", Some("mobile")),
+            ("app_icon", Some("mobile"))
+        ]
+    );
+    let layout = rn.settings_tabs.clone().expect("it declares its tabs");
+    assert!(sc_app::settings_tabs_problems(&layout, false).is_empty());
+    let mobile = layout.iter().find(|t| t.id == "mobile").unwrap();
+    assert_eq!(mobile.groups, ["settings", "targets"]);
+    // Declared complete: the admin sees exactly these tabs.
+    assert_eq!(sc_app::resolve_settings_tabs(Some(&layout), false), layout);
     // Picked from the application's store, and a PNG: iOS takes nothing else.
     assert_eq!(icon.query(), Some("store_files:png"));
     for shared in ["app_id", "app_version", "app_icon"] {

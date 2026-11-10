@@ -503,6 +503,12 @@ fn application_schema() -> TypeSchema {
     // Whether the application's source is views and pages (Saltcorn UI), so
     // the screen offers the Views and Pages tabs.
     fields.push(StructField::new("has_views", TypeSchema::bool()));
+    // Its framework's settings tabs, as the framework list has them, so every
+    // screen of the application shows the same tabs across its top.
+    fields.push(StructField::new(
+        "settings_tabs",
+        super::settings_tabs_schema(),
+    ));
     // The builds its framework offers beside the web bundle — an Android APK —
     // each a button beside Build. Derived from the framework, like `builds`.
     fields.push(StructField::new(

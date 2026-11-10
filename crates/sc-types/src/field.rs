@@ -218,6 +218,14 @@ pub struct FormField {
     /// settings — something every consumer can validate, store and look up by
     /// name without stepping over entries that are not settings.
     pub section: Option<String>,
+    /// The id of the **settings tab** this field is shown on, or `None` for the
+    /// tab that holds the framework choice — where every setting was shown
+    /// before tabs could be named. Only a framework's settings are laid out in
+    /// tabs (an application's form, `sc_app::SettingsTab`); everywhere else
+    /// the value is ignored.
+    ///
+    /// Presentation only, like [`section`](FormField::section).
+    pub tab: Option<String>,
     /// A sentence or two shown **under the control**, explaining the setting
     /// beyond its label: what to enter, where to find it. v1's `sublabel`.
     ///
@@ -274,6 +282,7 @@ impl FormField {
             code_language: None,
             show_if: Vec::new(),
             section: None,
+            tab: None,
             sublabel: None,
             help_topic: None,
             pattern: None,
@@ -316,6 +325,12 @@ impl FormField {
     /// [`section`](FormField::section)).
     pub fn section(mut self, heading: impl Into<String>) -> FormField {
         self.section = Some(heading.into());
+        self
+    }
+
+    /// Show this field on settings tab `id` (see [`tab`](FormField::tab)).
+    pub fn tab(mut self, id: impl Into<String>) -> FormField {
+        self.tab = Some(id.into());
         self
     }
 

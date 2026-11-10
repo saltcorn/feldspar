@@ -58,11 +58,15 @@ worth seeing.
 | File store | `apps` |
 | Project directory | `staff` |
 | Tables | `departments`, `employees` |
-| APIs (Provider / Mount) | `REST` / `/api` **and** `GraphQL` / `/graphql` |
+
+Press **Create application**. A new application serves REST at `/api`; GraphQL is added on its
+**API** tab. Open the application (**Applications → Staff**), go to **API**, and add a row with
+provider `GraphQL` and mount `/graphql`. The form saves each change as you make it, so there is
+no Save button: the header says **Saved** once it is stored.
 
 **Provider is a list, not a text box.** The server serves the providers it actually registers, so
 a name you can pick is a name that mounts; picking one fills an empty mount with its usual
-sub-path. Two providers on **one** mount is refused when you save: a request resolves to the
+sub-path. Two providers on **one** mount is refused when it is saved: a request resolves to the
 longest matching mount, so the loser of that tie would be a whole API that is mounted, generated
 a client for, and unreachable.
 
@@ -79,7 +83,7 @@ The two providers share the application's declared table set. There is no separa
 table over GraphQL" switch, and there is deliberately no per-role schema: the schema describes
 what the *application* exposes, and who may see which rows is decided when the query resolves.
 
-Press **Create application**, then **Build** on its row.
+Then press **Build** on its row in the applications list.
 
 ## Step 3 — Run the motivating query
 
