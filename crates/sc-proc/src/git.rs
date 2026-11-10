@@ -78,6 +78,10 @@ const GIT_WORK_TREE: EnvName = EnvName::git("GIT_WORK_TREE");
 const GIT_INDEX_FILE: EnvName = EnvName::git("GIT_INDEX_FILE");
 const GIT_SSH_COMMAND: EnvName = EnvName::git("GIT_SSH_COMMAND");
 const GIT_TERMINAL_PROMPT: EnvName = EnvName::git("GIT_TERMINAL_PROMPT");
+/// The variable [`Git::https_token`]'s credential helper reads the token from.
+const GIT_SYNC_TOKEN: EnvName = EnvName::git("FELDSPAR_GIT_TOKEN");
+/// The variable it reads the username from.
+const GIT_SYNC_USERNAME: EnvName = EnvName::git("FELDSPAR_GIT_USERNAME");
 
 impl Git {
     /// `git` against `repo`, started in its root (set [`cwd`](HostCommand::cwd)
@@ -125,6 +129,32 @@ impl Git {
                  -o StrictHostKeyChecking=accept-new"
             ),
         );
+        self
+    }
+
+    /// Reach an HTTPS remote as `username` with `token`, asking nothing.
+    ///
+    /// The token is in this process's environment only: a credential helper
+    /// given through `GIT_CONFIG_COUNT` (not `-c`, which is argv) prints it
+    /// from `FELDSPAR_GIT_TOKEN` when git asks. So it is in no argument list a
+    /// `ps` shows, in no `.git/config`, in no remote URL, and in nothing
+    /// [`HostCommand`] logs. The helper list is emptied first, so a helper the
+    /// machine's own configuration names (a keychain) is neither asked nor
+    /// given the token to store.
+    pub fn https_token(&mut self, username: &str, token: &str) -> &mut Self {
+        self.0
+            .env(EnvName::git("GIT_CONFIG_COUNT"), "2")
+            .env(EnvName::git("GIT_CONFIG_KEY_0"), "credential.helper")
+            .env(EnvName::git("GIT_CONFIG_VALUE_0"), "")
+            .env(EnvName::git("GIT_CONFIG_KEY_1"), "credential.helper")
+            .env(
+                EnvName::git("GIT_CONFIG_VALUE_1"),
+                "!f() { test \"$1\" = get || exit 0; \
+                 printf 'username=%s\\npassword=%s\\n' \
+                 \"$FELDSPAR_GIT_USERNAME\" \"$FELDSPAR_GIT_TOKEN\"; }; f",
+            )
+            .env(GIT_SYNC_USERNAME, username)
+            .secret_env(GIT_SYNC_TOKEN, token);
         self
     }
 
@@ -249,6 +279,39 @@ mod tests {
         assert!(cmd.contains("IdentitiesOnly=yes"), "{cmd}");
         assert!(cmd.contains("BatchMode=yes"), "{cmd}");
         assert!(cmd.contains("StrictHostKeyChecking=accept-new"), "{cmd}");
+    }
+
+    /// The token is in the child's environment and nowhere a person or a log
+    /// sees the command: not its arguments, not its `Debug`.
+    #[test]
+    fn an_https_token_is_given_by_the_environment_and_never_shown() {
+        let mut git = Git::without_repository(Path::new("/"), &TEST, Timeout::secs(1));
+        git.https_token("x-access-token", "ghp_s3cr3t");
+        assert!(!git.command_line().contains("ghp_s3cr3t"));
+        let debug = format!("{git:?}");
+        assert!(!debug.contains("ghp_s3cr3t"), "{debug}");
+        assert!(debug.contains("FELDSPAR_GIT_TOKEN"), "{debug}");
+        assert!(debug.contains("<redacted>"), "{debug}");
+        assert!(debug.contains("x-access-token"), "{debug}");
+    }
+
+    /// git asks the helper, and the helper answers from the environment.
+    #[test]
+    fn the_credential_helper_answers_with_the_token() {
+        if !git_available() {
+            eprintln!("skipping: git is not on the PATH");
+            return;
+        }
+        let dir = temp("credential");
+        let mut fill = Git::without_repository(&dir, &TEST, Timeout::secs(30));
+        fill.https_token("deployer", "tok-123")
+            .args(["config", "--get-all", "credential.helper"]);
+        let out = fill.output_blocking().unwrap();
+        let helpers = String::from_utf8_lossy(&out.stdout).into_owned();
+        // The machine's own helpers are cleared, and ours is the one left.
+        assert!(helpers.contains("FELDSPAR_GIT_TOKEN"), "{helpers}");
+        assert!(!helpers.contains("tok-123"), "{helpers}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

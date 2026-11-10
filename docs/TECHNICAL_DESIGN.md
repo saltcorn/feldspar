@@ -3142,6 +3142,20 @@ erDiagram
     timestamp started_at
     timestamp finished_at
   }
+  SYNC["_fd_sync"] {
+    text id PK "one row: link"
+    text url "the linked repository; null when not linked"
+    text branch
+    text subdirectory "where in the repository the structure is"
+    text credential_kind "none, deploy_key or https_token"
+    text credential_ref "the key's path, or the token's username"
+    text credential_public "the deploy key's public half"
+    text credential_secret "the token, sealed with the instance key"
+    json policy "destructive, full_backup"
+    bytes base_tree "the base, gzipped; store files as blob hashes"
+    text base_commit "the commit the base was last taken from"
+    timestamp updated_at
+  }
   SYNCLOCK["_fd_sync_lock"] {
     text name PK "one row: one deploy, discard or registry save at a time"
     uuid holder

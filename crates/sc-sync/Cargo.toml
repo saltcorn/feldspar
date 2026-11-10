@@ -60,6 +60,10 @@ sha2.workspace = true
 sha1.workspace = true
 # A text store file's line diff.
 similar.workspace = true
+# The base is kept in `_fd_sync` gzipped, with any non-JSON file it holds as
+# base64.
+flate2.workspace = true
+base64.workspace = true
 # A local store's synced directories are walked with git's own ignore rules.
 ignore = "0.4"
 

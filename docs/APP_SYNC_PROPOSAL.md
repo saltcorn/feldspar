@@ -298,8 +298,9 @@ branches belong to git, where one file per entity keeps conflicts small.
     side. Saving puts the merged version into live, and Commit then commits it over the incoming
     one.
 
-**Linking.** When an installation is linked, the base is set to the tree at the branch tip. One
-rule covers every starting point:
+**Linking.** When an installation is linked, the base is set to the tree at the branch tip, less
+each entity live does not have (which against the full tip would be a "local delete", and a
+Commit would delete it from the repository). One rule covers every starting point:
 
 | Starting point | What Status shows |
 |---|---|

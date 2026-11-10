@@ -90,6 +90,11 @@ impl StructureTree {
             .insert(path.into(), TreeEntry::Json(canonical(value)));
     }
 
+    /// Put `entry` at `path` as it is, replacing whatever was there.
+    pub fn insert_entry(&mut self, path: impl Into<String>, entry: TreeEntry) {
+        self.entries.insert(path.into(), entry);
+    }
+
     /// Put a file's bytes at `path`, replacing whatever was there.
     pub fn insert_file(&mut self, path: impl Into<String>, bytes: Vec<u8>) {
         self.entries.insert(path.into(), TreeEntry::File(bytes));

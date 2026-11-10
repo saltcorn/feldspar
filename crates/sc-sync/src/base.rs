@@ -23,14 +23,31 @@ pub const BASE_REF: &str = "refs/feldspar/base";
 /// Keep `tree`'s store files reachable in `mirror` under [`BASE_REF`], and
 /// return the base to store for it: `tree` with each file's bytes replaced by
 /// its blob hash.
+///
+/// A file `tree` holds only as a hash (it came from the base before) stays
+/// reachable too, when the mirror still has it: a base that advanced for some
+/// entities keeps the old version of the rest.
 pub async fn keep_base_files(mirror: &GitRepo, tree: &StructureTree) -> Result<StructureTree> {
-    let files: Vec<(String, Vec<u8>)> = tree
+    let mut files: Vec<(String, Vec<u8>)> = tree
         .iter()
         .filter_map(|(path, entry)| match entry {
             TreeEntry::File(bytes) if is_store_file(path) => Some((path.to_owned(), bytes.clone())),
             _ => None,
         })
         .collect();
+    let hashed: Vec<(&str, &str)> = tree
+        .iter()
+        .filter_map(|(path, entry)| match entry {
+            TreeEntry::Blob { hash, .. } => Some((path, hash.as_str())),
+            _ => None,
+        })
+        .collect();
+    let hashes: Vec<&str> = hashed.iter().map(|(_, h)| *h).collect();
+    for ((path, _), bytes) in hashed.iter().zip(mirror.read_blobs(&hashes).await?) {
+        if let Some(bytes) = bytes {
+            files.push(((*path).to_owned(), bytes));
+        }
+    }
     mirror.record_blobs(BASE_REF, &files).await?;
     Ok(tree.with_blob_hashes())
 }

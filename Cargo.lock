@@ -9588,6 +9588,7 @@ name = "sc-files"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "fsquirrel",
@@ -10007,7 +10008,9 @@ name = "sc-sync"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
+ "flate2",
  "ignore",
  "sc-action",
  "sc-action-builtins",

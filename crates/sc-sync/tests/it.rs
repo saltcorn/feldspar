@@ -26,3 +26,6 @@ mod registry;
 
 #[path = "stores.rs"]
 mod stores;
+
+#[path = "source.rs"]
+mod source;

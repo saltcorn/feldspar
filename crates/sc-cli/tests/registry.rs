@@ -194,3 +194,23 @@ async fn the_registry_from_the_cli_plans_and_applies_only_when_told() -> sc_erro
     );
     Ok(())
 }
+
+/// The bootstrap gives a database source control's tables (TODO-app-sync
+/// S4.1), and connecting again — every later start — finds them and keeps
+/// what they hold.
+#[tokio::test]
+async fn the_bootstrap_creates_the_sync_tables_and_keeps_them() -> sc_error::Result<()> {
+    let db = TestDb::new().await?;
+    let url = db.url().to_owned();
+    let catalog = connect_catalog(&DbConfig::from_url(&url)).await?;
+    db.on_teardown(catalog.teardown_hook());
+    assert!(catalog.get(sc_sync::SYNC_TABLE)?.is_some());
+    assert!(catalog.get(sc_sync::DEPLOYMENTS_TABLE)?.is_some());
+    let link = sc_sync::SyncLink::new("file:///structure.git", "main");
+    sc_sync::link::save_link(&catalog, &link).await?;
+
+    let again = connect_catalog(&DbConfig::from_url(&url)).await?;
+    db.on_teardown(again.teardown_hook());
+    assert_eq!(sc_sync::load_link(&again).await?, Some(link));
+    Ok(())
+}

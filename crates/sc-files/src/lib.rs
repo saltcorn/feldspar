@@ -70,9 +70,10 @@ pub use def::{
 pub use disk::{remove_store_from_disk, store_directory};
 pub use git::{
     ARG_BRANCH, ARG_CREATE, ARG_MESSAGE, ARG_PATHS, ARG_STAGED_ONLY, CommitOutcome, DeployKey,
-    GitChange, GitFileStore, GitOutput, GitRepo, GitStatus, OP_CHECKOUT, OP_CLONE, OP_COMMIT,
-    OP_DISCARD, OP_GENERATE_KEY, OP_PULL, OP_PUSH, OP_STAGE, OP_STATUS, OP_UNSTAGE, clone_path,
-    derive_https_url, generate_deploy_key, parse_change, record_clone_path,
+    GitChange, GitFileStore, GitOutput, GitRepo, GitStatus, HttpsToken, OP_CHECKOUT, OP_CLONE,
+    OP_COMMIT, OP_DISCARD, OP_GENERATE_KEY, OP_PULL, OP_PUSH, OP_STAGE, OP_STATUS, OP_UNSTAGE,
+    TreeFile, clone_path, derive_https_url, generate_deploy_key, generate_deploy_key_in,
+    parse_change, record_clone_path,
 };
 pub use local::{LocalFileStore, OP_SUGGEST_DIR};
 pub use paths::{DATA_DIR_ENV, data_dir, path_safe, suggest_local_dir};

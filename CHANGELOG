@@ -2,6 +2,66 @@
 
 Changes in reverse chronological order.
 
+## Source control S4: the link and the repository
+
+Milestone S4 of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` §2, §4, §7.1): an installation can
+be linked to a branch of a git repository. Commit pushes its local changes there, Pull brings down
+other instances' commits, and Deploy and Discard run S3's executor with the base read from, and
+stored back into, the link. All of it is in `sc_sync::SourceControl`, which the admin API, the UI
+and `feldspar sync` (S5) will call. The new table is additive and created by the bootstrap, so there
+is no migration.
+
+- **`_fd_sync`** (S4.1, `sc_sync::link`). One row holds:
+  - the URL, branch and subdirectory;
+  - the credential: none, a deploy key, or an HTTPS token sealed with the instance key;
+  - the policy;
+  - the base, as gzipped JSON with store files as blob hashes, and the commit it was taken from.
+
+  `sc_sync::bootstrap` creates it and the ledger's two tables. `connect_catalog` (the CLI's and
+  the server's bootstrap) now calls it, so an existing database gains all three on its next start.
+  The new `Unchecked::system` is in `docs/SECURITY_REVIEW_2026-10.md`'s inventory, and the table
+  is in `docs/TECHNICAL_DESIGN.md`'s schema diagram.
+- **A repository with no file store** (S4.2). `GitRepo::new` already took a directory, URL, branch
+  and key. It now also takes an HTTPS token (`with_https_token`, `sc_files::HttpsToken`). The token
+  goes to git through a credential helper given in the environment (`GIT_CONFIG_COUNT`, new
+  `sc_proc::Git::https_token`), so it is in no argv, no `.git/config`, no URL and no log. The
+  machine's own helpers are cleared first. `HostCommand` gained `secret_env`, whose value its
+  `Debug` redacts. `generate_deploy_key_in` makes the link's key in `<data dir>/keys`.
+- **The mirror** (S4.3, `sc_sync::mirror`), at `<data dir>/sync-repo`. It never checks anything
+  out. Trees are read from commit objects (`GitRepo::read_files_at`, one `cat-file --batch`), and
+  a commit is written from an index of its own on top of the tip (`commit_files`, replacing only
+  the link's subdirectory). Pull is a fast-forward, or a reset when the remote was force-pushed
+  (`Pulled::forced`). Only a push that succeeded moves the branch. A refused push resets the branch
+  to the remote's tip and fails with a sentence: the branch moved, so commit again; or the key is
+  read-only. The base advances only after a successful push.
+- **Commit of a selection** (S4.4). The committed tree is the tip plus the chosen entities' live
+  versions (all local changes by default), and only those entities' bases advance. A conflict is
+  committed only with *keep mine*. Otherwise the commit is refused, naming the conflicts and the
+  three choices. *Discard mine* is a Discard of the entity, which then shows as incoming. *Merge in
+  editor* is a registry save, then keep mine. A file with no entity in it (`modules.json` = `[]`, a
+  settings section left at its defaults) is written as live has it, so committing everything is the
+  export byte for byte. Each commit is a ledger row of kind `commit`.
+- **Branches** (S4.5). Branches are listed with `ls-remote`. Switching changes only the tip; live
+  and the base stay. Creating a branch pushes the current tip to it, then switches.
+- **Linking** (S4.6). The base is the tip's tree **less each entity live does not have**. Against
+  the full tip, everything an empty instance lacks would be a "local delete", and a Commit would
+  delete it from the repository. §4 is amended to say so. The result: an empty repository makes
+  everything local new, an empty instance makes everything incoming, and where both have content,
+  identical entities are in sync. Re-linking takes a new base only for a new URL or subdirectory.
+  `test_link` checks a link without storing it.
+- **A git store's pin on Commit** (S4.7). A pin that moved is checked before the commit. The store
+  is fetched, and a commit its remote does not have is refused with a sentence naming the store.
+  Uncommitted work in the store is a warning on the receipt.
+- `keep_base_files` also keeps the base's hash-only files reachable, so an advanced base does not
+  lose the older files' blobs. New `StructureTree::insert_entry`.
+
+Tests: `crates/sc-sync/tests/source.rs` (13: bootstrap, sealed token, key before linking, the
+three starting points, the lost push race and its retry, force-push reset, subdirectory, a
+selection, a conflict kept, discarded and merged, branches, the pin), unit tests in `link.rs`,
+`crates/sc-files/tests/git_mirror.rs` (6, including the token arriving at an HTTP remote and
+nowhere on disk), two in `sc-proc`, and `the_bootstrap_creates_the_sync_tables_and_keeps_them` in
+sc-cli.
+
 ## Source control R: the registry editor
 
 Milestone R of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` D7, §7.6): every configuration

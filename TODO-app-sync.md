@@ -166,23 +166,23 @@ Needs S1–S3 and nothing from git, so it comes before the link.
 
 ## S4 — The link and the repository (§2, §7.1)
 
-- [ ] **S4.1** `_fd_sync` and `_fd_deployments` in the bootstrap. Test: the bootstrap is
+- [x] **S4.1** `_fd_sync` and `_fd_deployments` in the bootstrap. Test: the bootstrap is
   idempotent, and an existing database gains both tables.
-- [ ] **S4.2** A `GitRepo` constructor that takes a URL, a branch, a key path and a directory, so
+- [x] **S4.2** A `GitRepo` constructor that takes a URL, a branch, a key path and a directory, so
   it can be built without a `FileStoreDef`. HTTPS token credentials, passed to git without
   appearing in argv, logs or `.git/config`. Key generation through `generate_deploy_key`. Tests
   against a local bare repository and the `file://` transport.
-- [ ] **S4.3** The mirror rules (§2): fetch with fast-forward or reset after a force-push; Commit
+- [x] **S4.3** The mirror rules (§2): fetch with fast-forward or reset after a force-push; Commit
   as fetch, fast-forward, write the tree into the subdirectory, commit, push; a failed push resets
   to the remote tip. The base advances only after a successful push. Tests: a concurrent push from
   another clone makes Commit fail cleanly with the base unchanged, and a retry succeeds.
-- [ ] **S4.4** Committing a selection: the committed tree is the tip plus the ticked entities'
+- [x] **S4.4** Committing a selection: the committed tree is the tip plus the ticked entities'
   live versions. Conflict resolution with keep mine / discard mine / merge in editor (§4, §7.6).
   Tests.
-- [ ] **S4.5** Branches: list remote branches, switch, and create from the current tip (pushed on
+- [x] **S4.5** Branches: list remote branches, switch, and create from the current tip (pushed on
   creation). Test: switching branch changes Status and leaves live alone.
-- [ ] **S4.6** Linking sets the base to the tip's tree. Tests for the three starting points in §4.
-- [ ] **S4.7** Commit refuses to pin a git store commit that is not on the store's remote, with a
+- [x] **S4.6** Linking sets the base to the tip's tree. Tests for the three starting points in §4.
+- [x] **S4.7** Commit refuses to pin a git store commit that is not on the store's remote, with a
   sentence naming the store, and warns about uncommitted work in it. Test.
 
 ## S5 — Admin API, UI and CLI (§7.2, §7.3, §7.5)

@@ -43,6 +43,14 @@
 //!   backup, `reload_all`, the convergence re-diff and the next base.
 //! - [`ledger`]: `_fd_deployments` and the sync lock.
 //!
+//! Milestone S4, the link and the repository:
+//!
+//! - [`link`]: `_fd_sync` — the link, its credential, the policy and the base.
+//! - [`mirror`]: the linked repository's clone, which is a mirror and never a
+//!   workspace.
+//! - [`source`]: [`SourceControl`] — link, Status, Pull, Commit, branches, and
+//!   Deploy and Discard with the base kept.
+//!
 //! Milestone R, the registry editor:
 //!
 //! - [`registry`]: the instance tree one file at a time, and a save as a
@@ -58,9 +66,12 @@ pub mod export;
 pub mod format;
 pub mod identity;
 pub mod ledger;
+pub mod link;
+pub mod mirror;
 pub mod plan;
 pub mod registry;
 pub mod secrets;
+pub mod source;
 pub mod stores;
 pub mod tree;
 pub mod validate;
@@ -78,9 +89,15 @@ pub use ledger::{
     DEPLOYMENTS_TABLE, Deployment, LedgerKind, Outcome, SYNC_LOCK_TABLE, Source, SyncLock,
     bootstrap_ledger, list_deployments, take_lock,
 };
+pub use link::{Base, Credential, SYNC_TABLE, SyncLink, bootstrap, load_base, load_link};
+pub use mirror::{Mirror, Pulled, mirror_dir};
 pub use plan::{Blocker, OpBody, OpClass, Plan, PlannedOp, Step, plan, plan_digest, plan_instance};
 pub use registry::{Edit, EditBy, EditPlan, EditReceipt, RegistryEntity, RegistryEntry};
 pub use secrets::Registries;
+pub use source::{
+    CommitReceipt, CommitRequest, DeployPlan, Linked, LinkedStatus, SYNC_KEY_NAME, SourceControl,
+    link_base,
+};
 pub use stores::{
     ContentClaim, ContentClaimer, LARGE_FILE_BYTES, StoreUses, StoreWarning, SyncedDirs, resolve,
     store_uses, walk_synced,
