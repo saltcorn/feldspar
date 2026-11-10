@@ -28,6 +28,7 @@ use commands::mcp_token::mcp_token_command;
 use commands::migrate::migrate_command;
 use commands::module::module_command;
 use commands::python::python_command;
+use commands::registry::registry_command;
 use commands::serve::serve_command;
 use commands::trigger::trigger_command;
 use commands::users::{add_user_command, delete_user_command, modify_user_command, role_command};
@@ -96,6 +97,7 @@ async fn run(args: &[String]) -> Result<()> {
         Some("role") => role_command(&args[1..]).await,
         Some("backup") => backup_command(&args[1..]).await,
         Some("restore") => restore_command(&args[1..]).await,
+        Some("registry") => registry_command(&args[1..]).await,
         Some("app") => app_command(&args[1..]).await,
         Some("check") => check_command(&args[1..]).await,
         Some("module") => module_command(&args[1..]).await,
@@ -236,6 +238,14 @@ fn print_usage() {
     eprintln!("  feldspar send-email --to ADDR --subject TEXT [database flags] < body");
     eprintln!("  feldspar backup FILE|- [--password [P]] [database flags]");
     eprintln!("  feldspar restore FILE [--password [P]] [database flags] [server flags]");
+    eprintln!("  feldspar registry list [KIND] | get ENTRY [database flags]");
+    eprintln!(
+        "  feldspar registry put ENTRY [--plan] [--yes] [--allow-destructive] [database flags] \
+         < value.json"
+    );
+    eprintln!(
+        "  feldspar registry delete ENTRY… [--plan] [--yes] [--allow-destructive] [database flags]"
+    );
     eprintln!("  feldspar demo analytics [--replace] [database flags]");
     eprintln!("  feldspar cmdstan status [--cmdstan DIR]");
     eprintln!("  feldspar cmdstan install [--version V] [--dir D] [--jobs J]");
@@ -366,6 +376,17 @@ fn print_usage() {
        result when it is restarted. A password-protected backup is opened
        with --password P, or FELDSPAR_BACKUP_PASSWORD, or the password asked
        for at the terminal.
+
+  registry: every configuration value of this installation, one JSON file
+       at a time — what Source control → Registry edits. An ENTRY is its path
+       (tables/tickets.json) or a kind and a name (table/tickets,
+       setting/email, view/APP/NAME); `list` shows them, marking what is this
+       instance's alone. `get` prints the JSON with secrets as the mask; `put`
+       reads it from stdin, where the mask keeps the stored secret. A put or
+       delete is planned and classified as a deploy is, and printed; it is
+       applied only with --yes, which refuses a plan with blockers, and one
+       that loses data unless --allow-destructive is given (a safety backup
+       is written first).
 
   app list: every application with its framework and the project directory
        its source is in on this machine; --json prints an array of

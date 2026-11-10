@@ -2,6 +2,84 @@
 
 Changes in reverse chronological order.
 
+## Source control R: the registry editor
+
+Milestone R of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` D7, §7.6): every configuration
+value of the installation, one JSON file at a time, in the browser (Source control → Registry),
+through the admin API, and at the CLI (`feldspar registry`). A save is a one-entity deploy against
+live, through S2's planner and S3's executor. It needs no sync link, and none exists yet (S4).
+Nothing is stored in a new place, so there is no migration.
+
+- **The instance export** (R1, `sc_sync::export_mode`, `Mode::Instance`): the portable tree plus
+  what is this instance's alone (§3.4, except `feldspar.toml` and the link):
+  - every settings section, the non-portable ones marked whole, and an `internal` section for the
+    keys no settings form shows (the backup schedules and include-selection, the identity
+    providers, the default LLM provider, onboarding, the first-user token). The keys only the
+    server writes (backup status, startup history, admin notices, the RLS report flag) are left
+    out as bookkeeping;
+  - the build hosts (`build-hosts/<name>.json`: id, name, targets, never the token's hash), a new
+    `Kind::BuildHost` that only an instance tree has;
+  - a local store's `path`, and a git store's key path, public key, directory and clone path,
+    each marked by its JSON pointer (`InstanceOnly::Keys`).
+
+  Secrets are still the sentinel: a secret setting, and an identity provider's client secret
+  inside `oauth_providers`. The portable export is unchanged, byte for byte. Feldspar
+  applications have no custom-domain field, so "an application's custom domains" in the TODO is
+  the TLS section's `ssl_extra_domains`, which the instance tree carries and the portable one does
+  not.
+- **The registry save** (R2, `sc_sync::registry`): `list`, `get` and `resolve` over the instance
+  export; `Deployer::plan_edit` and `Deployer::edit`. The target is live with one file replaced,
+  added (an id is generated for a kind that has one) or removed (`edit_target`), planned by the new
+  `plan_instance`, which also plans what only this instance has a say in (a git store's URL), and
+  applied by `Executor::apply_instance`, which applies a store's own directory, key and clone path
+  as typed rather than keeping them. Two staleness checks: the file's **version** (a digest of its
+  canonical JSON) must still be what the editor opened, and the plan's digest, under the sync
+  lock, as for a deploy. Classification, dry runs, the `destructive` policy and the safety backup
+  are the deploy's. After the run the file is exported again; the receipt has what is stored, its
+  new path (a rename moves the file), and where it differs from what was submitted (a secret that
+  reads back as the sentinel is not a difference). The ledger row is of kind `edit`, with the
+  file's JSON before and after. A setting with a nested secret is now unmasked against the stored
+  value on any deploy too, and a build host is updated or deleted by id (a new one still has to be
+  added on the Build hosts screen, which shows its token once).
+- **Admin API** (R3): `listRegistry`, `getRegistryEntity` (with a JSON Schema for the editor: a
+  settings section's declared keys exactly, and for a view, page, trigger, application, agent,
+  stream or file store its admin endpoint's input types, opened so that the codec's extra keys
+  are not flagged), `planRegistrySave` and `registrySave`. Admin only, not tagged for MCP. The
+  four TypeScript clients are regenerated. sc-server now implements `sc_sync::DeployHost` on
+  `AppMounts`: `reload_all` reloads the catalog, the triggers and the streams and re-projects the
+  applications, and the registries fall back to the built-in ones for a service the server does
+  not run, so the registry reads on an admin-only server too.
+- **The Source control screen** (R4, `screens/SourceControlPage.tsx`, `registry.ts`): a new
+  sidebar entry under Administration, before Settings, with a Registry tab. The tree lists the
+  files by kind with a filter box and "this instance only" marks; the editor is Monaco, which now
+  has a JSON mode that checks the document against the schema as it is typed (`CodeEditor`'s
+  `language="json"` and `jsonSchema`). Save opens the review: operations under their class,
+  data-destructive ones unticked, a typed confirmation (the entry's name) once one is ticked,
+  blockers that disable Save. Afterwards the editor shows what is stored, with a notice listing
+  any differences, the safety backup and anything deferred. New (kind, application, name) and
+  Delete go through the same review. 43 new strings, translated in the five admin locales.
+- **`feldspar registry list [KIND] | get ENTRY | put ENTRY | delete ENTRY…`** (R5). An ENTRY is a
+  tree path or `KIND/NAME` (`table/tickets`, `setting/email`, `view/APP/NAME`). `put` reads the
+  JSON from stdin. `put` and `delete` print the plan and apply it only with `--yes`, which refuses
+  a plan with blockers, and one that loses data unless `--allow-destructive` is given (that flag
+  also lifts a `destructive: never` policy, as `sync deploy`'s will).
+- Tests: `crates/sc-sync/tests/registry.rs` (the instance tree holds `email`, the extra domains,
+  the identity providers, the build hosts and a store's path, marked, and no secret; a view edit
+  applies and is "Local" in Status; an email edit applies and is not a local change; a sentinel
+  keeps a secret and a typed value replaces it; removing a field is an unticked data-destructive
+  drop, deferred, then dropped after a safety backup; a stale version and a stale digest are
+  refused; New and Delete; a store directory and a build host saved as typed) and unit tests in
+  `sc_sync::registry`; `admin_api::the_registry_lists_opens_plans_and_saves` (anonymous and
+  non-admin refused, list, get with schema, plan, save, stale) and the MCP listing test;
+  `sc-cli`'s `registry` test against the real binary (`get` then `put` plans nothing, `--plan`
+  and a put without `--yes` write nothing, `--yes` refuses a blocker and an unflagged drop,
+  `--allow-destructive` drops after a safety backup); `registry.test.ts` and the sidebar test.
+  A puppeteer walk of the definition of done's step 9 against a scratch database: a list view
+  created with New and edited, the email section edited (marked "this instance only"), and
+  `title` removed from `tables/tickets.json` offered as an unticked data-destructive drop whose
+  Save waits for the typed name; the editor's schema marks a string in `smtp_port` and an unknown
+  key. Step 9's Status and Commit halves wait for S4/S5.
+
 ## Source control S3: the executor
 
 Milestone S3 of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` §5, §6): a plan is applied, as a

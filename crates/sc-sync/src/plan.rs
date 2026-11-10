@@ -90,7 +90,7 @@ pub fn step_of(kind: Kind) -> Step {
         | Kind::Translation
         | Kind::Checklist
         | Kind::Other => Step::Applications,
-        Kind::Setting => Step::Settings,
+        Kind::Setting | Kind::BuildHost => Step::Settings,
     }
 }
 
@@ -251,7 +251,27 @@ pub fn plan_digest(
 /// same on the target as in the base keeps live's pin, because a pin that
 /// moved here is not something a deploy undoes (§3.5).
 pub fn plan(live: &StructureTree, target: &StructureTree, base: Option<&StructureTree>) -> Plan {
-    let mut planner = Planner::default();
+    plan_with(live, target, base, false)
+}
+
+/// Plan turning the instance tree `live` into `target`, for a registry save
+/// (§7.6): as [`plan`], with no base, and with what only this instance has a
+/// say in (a git store's URL) planned too, since the registry applies
+/// instance-bound values and a deploy never does.
+pub fn plan_instance(live: &StructureTree, target: &StructureTree) -> Plan {
+    plan_with(live, target, None, true)
+}
+
+fn plan_with(
+    live: &StructureTree,
+    target: &StructureTree,
+    base: Option<&StructureTree>,
+    instance: bool,
+) -> Plan {
+    let mut planner = Planner {
+        instance,
+        ..Planner::default()
+    };
     if let Err(e) = check_format(target) {
         planner.block(None, None, e.to_string());
     }
@@ -329,6 +349,8 @@ struct Planner {
     blockers: Vec<Blocker>,
     needs_secrets: Vec<String>,
     needs_credentials: Vec<String>,
+    /// Planning an instance tree (a registry save).
+    instance: bool,
 }
 
 /// The words for a kind in a summary.
@@ -357,6 +379,7 @@ fn noun(kind: Kind) -> &'static str {
         Kind::LibraryItem => "library item",
         Kind::Translation => "translation",
         Kind::Checklist => "checklist",
+        Kind::BuildHost => "build host",
         Kind::Other => "file",
     }
 }
@@ -460,7 +483,12 @@ impl Planner {
                 keep_live_pin(l, &mut target, base);
                 // The same — or differing only by an id, and the instance's is
                 // kept (§3.2).
-                if l.same_as(&target) {
+                let same = if self.instance {
+                    l.same_in_instance(&target)
+                } else {
+                    l.same_as(&target)
+                };
+                if same {
                     return;
                 }
                 let summary = if l.name != t.name && t.kind.has_id() {

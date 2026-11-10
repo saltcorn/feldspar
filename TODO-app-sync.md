@@ -139,12 +139,12 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 Needs S1–S3 and nothing from git, so it comes before the link.
 
-- [ ] **R1** The instance export mode: the portable tree plus every instance-bound item of §3.4
+- [x] **R1** The instance export mode: the portable tree plus every instance-bound item of §3.4
   except `feldspar.toml` and the sync link (all settings sections, build hosts, instance-bound
   entity fields), each marked instance-only. Secrets still exported as `SECRET_SENTINEL`. Tests:
   instance mode contains `email` and an application's custom domains and portable mode does not;
   neither contains a secret value.
-- [ ] **R2** Registry save: plan a target that is the instance tree with one entity replaced,
+- [x] **R2** Registry save: plan a target that is the instance tree with one entity replaced,
   added or removed, through the S2 planner, with instance-bound values applied; apply through the
   S3 executor with the sync lock, stale-plan check and safety backup; re-export and report any
   difference from what was submitted; record a ledger row of kind `edit` with before and after
@@ -152,16 +152,16 @@ Needs S1–S3 and nothing from git, so it comes before the link.
   change; removing a field from a table's JSON is an unticked data-destructive drop; a save of an
   entity changed since it was read is stale; a sentinel keeps the stored secret and a new value
   replaces it.
-- [ ] **R3** `listRegistry`, `getRegistryEntity`, `planRegistrySave`, `registrySave` in
+- [x] **R3** `listRegistry`, `getRegistryEntity`, `planRegistrySave`, `registrySave` in
   `sc_api::admin`, handlers, regenerated clients, excluded from the MCP projection. Tests in
   `crates/sc-server/tests/admin_api.rs`, including that a non-admin is refused and that MCP does not
   list them.
-- [ ] **R4** The Source control screen with its Registry tab, in the sidebar without a link: the
+- [x] **R4** The Source control screen with its Registry tab, in the sidebar without a link: the
   kind / name tree with filter and instance-only marks, the Monaco editor with schema validation
   where the API types provide one, the review on save (classes, ticks, typed confirmation,
   blockers), the stored-version notice, New and Delete. Add locale strings. Puppeteer check of the
   definition of done's step 9.
-- [ ] **R5** `feldspar registry list | get | put | delete` (§7.3). Tests: `get` then `put` of the
+- [x] **R5** `feldspar registry list | get | put | delete` (§7.3). Tests: `get` then `put` of the
   same JSON is a no-op plan; `put --plan` writes nothing; `--yes` refuses a plan with blockers.
 
 ## S4 — The link and the repository (§2, §7.1)

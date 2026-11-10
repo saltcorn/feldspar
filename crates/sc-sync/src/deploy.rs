@@ -28,7 +28,8 @@
 //!
 //! A discard is the same run over a different target: live with the chosen
 //! entities back at their base version (`base::discard_target`). The base does
-//! not move, since live is moving to it.
+//! not move, since live is moving to it. So is a registry save
+//! ([`crate::registry`]), over instance trees.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -45,11 +46,11 @@ use crate::apply::{Applied, Executor};
 use crate::base::{base_file_bytes, discard_target};
 use crate::diff::{Status, match_sides};
 use crate::entity::{Entities, put_entity, remove_entity};
-use crate::export::export;
+use crate::export::{Mode, export_mode};
 use crate::ledger::{
     Deployment, LedgerKind, Outcome, Source, SyncLock, bootstrap_ledger, record, take_lock,
 };
-use crate::plan::{Blocker, OpClass, Plan, plan};
+use crate::plan::{Blocker, OpClass, Plan, plan, plan_instance};
 use crate::tree::StructureTree;
 use crate::validate::validate;
 
@@ -194,8 +195,15 @@ impl<'a> Deployer<'a> {
 
     /// Live, exported.
     async fn live(&self) -> Result<StructureTree> {
+        self.live_in(Mode::Portable).await
+    }
+
+    /// Live, exported in `mode`.
+    pub(crate) async fn live_in(&self, mode: Mode) -> Result<StructureTree> {
         let registries = self.executor.host.registries()?;
-        Ok(export(self.executor.catalog, &registries).await?.tree)
+        Ok(export_mode(self.executor.catalog, &registries, mode)
+            .await?
+            .tree)
     }
 
     /// The plan the review screen shows: live → `request.target`, classified
@@ -245,8 +253,11 @@ impl<'a> Deployer<'a> {
                 request,
                 live: &live,
                 target: request.target,
+                edit: None,
             };
-            self.run(run, plan, confirm).await
+            self.run(run, plan, confirm)
+                .await
+                .map(|(receipt, _)| receipt)
         }
         .await;
         release(catalog, lock, result).await
@@ -305,16 +316,30 @@ impl<'a> Deployer<'a> {
                 request,
                 live: &live,
                 target: &target,
+                edit: None,
             };
-            self.run(run, plan, confirm).await
+            self.run(run, plan, confirm)
+                .await
+                .map(|(receipt, _)| receipt)
         }
         .await;
         release(catalog, lock, result).await
     }
 
     /// Steps 6 to 10 of a confirmed plan, made a moment ago under the lock.
-    async fn run(&self, run: Run<'_>, mut plan: Plan, confirm: &Confirm) -> Result<Receipt> {
+    /// Answers the receipt and live as exported after it.
+    pub(crate) async fn run(
+        &self,
+        run: Run<'_>,
+        mut plan: Plan,
+        confirm: &Confirm,
+    ) -> Result<(Receipt, StructureTree)> {
         let started_at = Utc::now();
+        let mode = if run.edit.is_some() {
+            Mode::Instance
+        } else {
+            Mode::Portable
+        };
         let catalog = self.executor.catalog;
         let request = run.request;
         if plan.digest != confirm.plan_digest {
@@ -367,15 +392,22 @@ impl<'a> Deployer<'a> {
             backups.extend(full_backup(catalog).await?);
         }
 
-        let applied = self.executor.apply(&plan, run.live, run.target).await;
-        let mut applied = applied;
+        let mut applied = match mode {
+            Mode::Portable => self.executor.apply(&plan, run.live, run.target).await,
+            Mode::Instance => {
+                self.executor
+                    .apply_instance(&plan, run.live, run.target)
+                    .await
+            }
+        };
         applied
             .notes
             .extend(self.executor.host.reload_all(catalog).await);
 
-        let after = self.live().await?;
+        let after = self.live_in(mode).await?;
         let held = applied.held();
-        let drift = drift(&after, run.target, request.base, &plan, &held);
+        let base = (mode == Mode::Portable).then_some(request.base);
+        let drift = drift(&after, run.target, base, &plan, &held);
         let result = if applied.failed.is_some() {
             Outcome::Failed
         } else if drift.is_empty() {
@@ -398,6 +430,16 @@ impl<'a> Deployer<'a> {
             needs_credentials: plan.needs_credentials.clone(),
             base,
         };
+        let (before, saved) = match &run.edit {
+            Some(edit) => (
+                Some(edit.before.clone().unwrap_or(Json::Null)),
+                Some(
+                    crate::registry::saved(&after, run.target, &edit.path)
+                        .map_or(Json::Null, |(_, value)| value),
+                ),
+            ),
+            None => (None, None),
+        };
         let counts: serde_json::Map<String, Json> = plan
             .counts()
             .into_iter()
@@ -414,6 +456,7 @@ impl<'a> Deployer<'a> {
                 actor: request.actor.clone(),
                 source: request.source,
                 summary: json!({
+                    "path": run.edit.as_ref().map(|e| e.path.clone()),
                     "plan_digest": plan.digest,
                     "counts": counts,
                     "applied": receipt.applied.applied,
@@ -426,14 +469,14 @@ impl<'a> Deployer<'a> {
                 }),
                 deferred,
                 backups: receipt.backups.clone(),
-                before: None,
-                after: None,
+                before,
+                after: saved,
                 started_at,
                 finished_at: Utc::now(),
             },
         )
         .await?;
-        Ok(receipt)
+        Ok((receipt, after))
     }
 
     /// The safety backup (§5): every table's structure, and the rows of each
@@ -487,19 +530,30 @@ impl<'a> Deployer<'a> {
 }
 
 /// What one run is of.
-struct Run<'r> {
-    kind: LedgerKind,
-    request: &'r Request<'r>,
-    live: &'r StructureTree,
-    target: &'r StructureTree,
+pub(crate) struct Run<'r> {
+    pub(crate) kind: LedgerKind,
+    pub(crate) request: &'r Request<'r>,
+    pub(crate) live: &'r StructureTree,
+    pub(crate) target: &'r StructureTree,
+    /// For a registry save, which runs over instance trees: the file saved and
+    /// what it was before, for the ledger.
+    pub(crate) edit: Option<EditRun>,
+}
+
+/// The registry save a run is.
+pub(crate) struct EditRun {
+    /// The file saved.
+    pub(crate) path: String,
+    /// Its JSON before, if it was there.
+    pub(crate) before: Option<Json>,
 }
 
 /// Give the lock back whatever happened, keeping the run's own error first.
-async fn release(
+pub(crate) async fn release<T>(
     catalog: &sc_catalog::Catalog,
     lock: SyncLock,
-    result: Result<Receipt>,
-) -> Result<Receipt> {
+    result: Result<T>,
+) -> Result<T> {
     let released = lock.release(catalog).await;
     let receipt = result?;
     released?;
@@ -525,11 +579,12 @@ async fn full_backup(catalog: &sc_catalog::Catalog) -> Result<Vec<String>> {
 
 /// Where live still differs from `target` after a run, leaving out the
 /// entities whose operations were not applied (§6 step 9): the operations of
-/// a fresh plan, which normalises exactly as the first one did.
+/// a fresh plan, which normalises exactly as the first one did. With no base,
+/// the trees are instance trees (a registry save).
 fn drift(
     after: &StructureTree,
     target: &StructureTree,
-    base: &StructureTree,
+    base: Option<&StructureTree>,
     plan: &Plan,
     held: &BTreeSet<String>,
 ) -> Vec<String> {
@@ -539,7 +594,11 @@ fn drift(
         .filter(|op| held.contains(&op.id))
         .map(|op| op.entity.as_str())
         .collect();
-    crate::plan::plan(after, target, Some(base))
+    let again = match base {
+        Some(base) => crate::plan::plan(after, target, Some(base)),
+        None => plan_instance(after, target),
+    };
+    again
         .operations
         .iter()
         .filter(|op| !held_entities.contains(op.entity.as_str()))

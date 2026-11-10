@@ -75,13 +75,15 @@ pub enum Kind {
     Translation,
     /// A checklist.
     Checklist,
+    /// A build host: in an instance tree only, never in git (§7.6).
+    BuildHost,
     /// A JSON file this build does not know the meaning of.
     Other,
 }
 
 impl Kind {
     /// Every kind, parents first.
-    pub const ALL: [Kind; 24] = [
+    pub const ALL: [Kind; 25] = [
         Kind::Module,
         Kind::Role,
         Kind::Setting,
@@ -105,6 +107,7 @@ impl Kind {
         Kind::LibraryItem,
         Kind::Translation,
         Kind::Checklist,
+        Kind::BuildHost,
         Kind::Other,
     ];
 
@@ -134,6 +137,7 @@ impl Kind {
             Kind::LibraryItem => "library_item",
             Kind::Translation => "translation",
             Kind::Checklist => "checklist",
+            Kind::BuildHost => "build_host",
             Kind::Other => "other",
         }
     }
@@ -277,6 +281,31 @@ impl Entity {
     pub fn same_as(&self, other: &Entity) -> bool {
         self.comparable() == other.comparable()
     }
+
+    /// Whether two matched entities of an instance tree are the same: as
+    /// [`same_as`](Self::same_as), except that what only this instance has a
+    /// say in — a git store's URL — is a difference too, since the registry
+    /// editor saves it (§7.6).
+    pub fn same_in_instance(&self, other: &Entity) -> bool {
+        match (&self.content, &other.content) {
+            (Content::Json { value: a }, Content::Json { value: b }) => {
+                instance_comparable(self.kind, a) == instance_comparable(other.kind, b)
+            }
+            _ => self.same_as(other),
+        }
+    }
+}
+
+/// [`comparable_json`] with a git store's URL kept.
+fn instance_comparable(kind: Kind, value: &Json) -> Json {
+    let mut out = comparable_json(kind, value);
+    if kind == Kind::FileStore
+        && let Some(url) = value.get("config").and_then(|c| c.get(sc_files::CFG_URL))
+        && let Some(Json::Object(config)) = out.get_mut("config")
+    {
+        config.insert(sc_files::CFG_URL.to_owned(), url.clone());
+    }
+    out
 }
 
 /// What an entity is compared by.
@@ -474,6 +503,7 @@ fn json_entities(path: &str, value: &Json, out: &mut Vec<Entity>) {
         ["analytics", "models", _] => Some(Kind::Model),
         ["analytics", "workspaces", _] => Some(Kind::Workspace),
         ["checklists", _] => Some(Kind::Checklist),
+        ["build-hosts", _] => Some(Kind::BuildHost),
         _ => None,
     };
     if let Some(kind) = kind {

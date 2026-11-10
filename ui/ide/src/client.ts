@@ -423,6 +423,13 @@ export type DeleteBackupScheduleResponse = { deleted: boolean };
 export type GetClearAllPreviewResponse = { file_stores: Array<{ name: string; backend: string; directory?: string | null }> };
 export type ClearAllRequest = { delete_from_disk: Array<string> };
 export type ClearAllResponse = { cleared: Array<string>; warnings: Array<string> };
+export type ListRegistryResponse = { entries: Array<{ path: string; kind: string; name: string; application?: string | null; instance_only?: { scope: string; keys?: Array<string> | null } | null; version: string }> };
+export type GetRegistryEntityQuery = { path: string };
+export type GetRegistryEntityResponse = { path: string; kind: string; name: string; application?: string | null; instance_only?: { scope: string; keys?: Array<string> | null } | null; version: string; value: unknown; schema?: unknown | null };
+export type PlanRegistrySaveRequest = { path: string; value?: unknown | null; version?: string | null };
+export type PlanRegistrySaveResponse = { operations: Array<{ id: string; step: string; class: string; ticked: boolean; kind: string; entity: string; action: string; summary: string }>; blockers: Array<{ op?: string | null; entity?: string | null; message: string }>; needs_secrets: Array<string>; needs_credentials: Array<string>; digest: string; before?: unknown | null; value?: unknown | null };
+export type RegistrySaveRequest = { path: string; value?: unknown | null; version?: string | null; plan_digest: string; ticked: Array<string> };
+export type RegistrySaveResponse = { id: string; result: string; applied: Array<string>; deferred: Array<string>; not_reached: Array<string>; failed?: { op: string; summary: string; message: string } | null; needs_secret: Array<{ op: string; summary: string; message: string }>; notes: Array<string>; drift: Array<string>; backups: Array<string>; needs_secrets: Array<string>; needs_credentials: Array<string>; path?: string | null; stored?: unknown | null; stored_version?: string | null; changes: Array<{ path: string; before?: unknown | null; after?: unknown | null }> };
 export type ListDatasetsResponse = Array<{ id: string; name: string; description: string; base: unknown; table: string; operations: number; columns: Array<unknown>; error?: string | null; grain?: unknown | null; share_role?: number | null; may_change: boolean }>;
 export type GetDatasetResponse = { dataset: unknown; report: { base: unknown; operations: Array<unknown>; tables: unknown; children: unknown } };
 export type CreateDatasetRequest = { name: string; description?: string | null; base: unknown; operations?: unknown | null };
@@ -815,6 +822,10 @@ export interface ApiClient {
   deleteBackupSchedule(id: string): Promise<DeleteBackupScheduleResponse>;
   getClearAllPreview(): Promise<GetClearAllPreviewResponse>;
   clearAll(body: ClearAllRequest): Promise<ClearAllResponse>;
+  listRegistry(): Promise<ListRegistryResponse>;
+  getRegistryEntity(query: GetRegistryEntityQuery): Promise<GetRegistryEntityResponse>;
+  planRegistrySave(body: PlanRegistrySaveRequest): Promise<PlanRegistrySaveResponse>;
+  registrySave(body: RegistrySaveRequest): Promise<RegistrySaveResponse>;
   listDatasets(): Promise<ListDatasetsResponse>;
   getDataset(id: string): Promise<GetDatasetResponse>;
   createDataset(body: CreateDatasetRequest): Promise<CreateDatasetResponse>;
@@ -3360,6 +3371,43 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("clearAll", res);
       return (await res.json()) as ClearAllResponse;
+    },
+    async listRegistry() {
+      const res = await doFetch(`${baseUrl}/api/registry`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listRegistry", res);
+      return (await res.json()) as ListRegistryResponse;
+    },
+    async getRegistryEntity(query) {
+      const search = new URLSearchParams();
+      search.append("path", String(query.path));
+      const qs = search.toString();
+      const res = await doFetch(`${baseUrl}/api/registry/entity${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getRegistryEntity", res);
+      return (await res.json()) as GetRegistryEntityResponse;
+    },
+    async planRegistrySave(body) {
+      const res = await doFetch(`${baseUrl}/api/registry/plan`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("planRegistrySave", res);
+      return (await res.json()) as PlanRegistrySaveResponse;
+    },
+    async registrySave(body) {
+      const res = await doFetch(`${baseUrl}/api/registry/save`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("registrySave", res);
+      return (await res.json()) as RegistrySaveResponse;
     },
     async listDatasets() {
       const res = await doFetch(`${baseUrl}/api/datasets`, {

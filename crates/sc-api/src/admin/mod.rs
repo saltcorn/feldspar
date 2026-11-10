@@ -64,6 +64,7 @@ mod llm;
 mod mcp_servers;
 mod models;
 mod modules;
+mod registry;
 mod rows;
 mod settings;
 mod streams;
@@ -107,6 +108,7 @@ pub fn admin_endpoints() -> EndpointSet {
     models::register(&mut set);
     streams::register(&mut set);
     backup::register(&mut set);
+    registry::register(&mut set);
 
     // The Analytics UI's datasets and workspaces (analytics TODO A1.13).
     crate::analytics::register(&mut set);

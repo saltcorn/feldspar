@@ -21,5 +21,8 @@ mod identity;
 #[path = "plan.rs"]
 mod plan;
 
+#[path = "registry.rs"]
+mod registry;
+
 #[path = "stores.rs"]
 mod stores;

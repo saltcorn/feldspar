@@ -20,6 +20,13 @@
 //! at all, except a local store's synced code and asset directories (§3.5,
 //! [`crate::stores`]).
 //!
+//! **Two modes** (§7.6). [`Mode::Portable`] is the tree above, for git and
+//! zips. [`Mode::Instance`] is what the registry editor shows: the portable
+//! tree plus what is this instance's own (§3.4) except `feldspar.toml` and the
+//! sync link — every settings section, the build hosts, a store's directory
+//! and keys — each marked in [`Export::instance_only`]. Secrets are the
+//! sentinel in both.
+//!
 //! **Export is deterministic**: the same installation exports to the same
 //! bytes. Lists that have an order of their own (a table's fields, a
 //! workflow's steps) keep it; files are one per entity, named by the entity;
@@ -29,6 +36,7 @@
 
 use std::collections::BTreeMap;
 
+use serde::Serialize;
 use serde_json::{Map, Value as Json, json};
 
 use sc_backup::codec::{
@@ -40,8 +48,8 @@ use sc_backup::codec::{
 use sc_catalog::{Catalog, FIELD_META_TABLE, Table, list_field_meta_for_table, list_file_stores};
 use sc_error::{Error, Result};
 use sc_files::{
-    CFG_DIR, CFG_KEY_PATH, CFG_PATH, CFG_PUBLIC_KEY, FileStoreDef, GIT_BACKEND, GitRepo,
-    LOCAL_BACKEND, backend_config_spec,
+    ATTR_CLONE_PATH, CFG_DIR, CFG_KEY_PATH, CFG_PATH, CFG_PUBLIC_KEY, FileStoreDef, GIT_BACKEND,
+    GitRepo, LOCAL_BACKEND, backend_config_spec,
 };
 use sc_types::{Attrs, SECRET_SENTINEL};
 
@@ -50,6 +58,30 @@ use crate::identity::{ensure_overlays, is_structure_table};
 use crate::secrets::{Registries, redact_by};
 use crate::stores::{StoreWarning, resolve, store_uses, walk_synced};
 use crate::tree::{STORE_FILES_DIR, StructureTree, path_segment};
+
+/// Which tree an export writes (§7.6).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Mode {
+    /// The §3 tree: what goes into git and a structure zip.
+    #[default]
+    Portable,
+    /// The portable tree plus this instance's own values (§3.4), which the
+    /// registry editor shows and edits and which are never written to git.
+    Instance,
+}
+
+/// What of a file in an instance tree is this instance's alone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "scope", rename_all = "snake_case")]
+pub enum InstanceOnly {
+    /// All of it: a settings section that is not portable, a build host.
+    Whole,
+    /// These values in it, as JSON pointers (`/config/path`).
+    Keys {
+        /// The pointers.
+        keys: Vec<String>,
+    },
+}
 
 /// What an export produced: the tree, and what Status should say about it.
 #[derive(Debug, Clone, Default)]
@@ -60,7 +92,25 @@ pub struct Export {
     pub warnings: Vec<StoreWarning>,
     /// How many overlay rows were created to give a table or field its id.
     pub overlays_created: usize,
+    /// In an instance export, the files (by path) that are, or hold values
+    /// that are, this instance's alone. Empty in a portable export.
+    pub instance_only: BTreeMap<String, InstanceOnly>,
 }
+
+/// The settings section an instance export puts the keys no settings form
+/// shows under (`sc_config::internal_defs`): the backup schedules, the
+/// identity providers, onboarding.
+pub const INTERNAL_SECTION: &str = "internal";
+
+/// Internal keys only the server writes — what a backup or a boot last did, a
+/// notice — which are bookkeeping and not configuration, and are not in the
+/// registry.
+const SERVER_WRITTEN: [&str; 4] = [
+    sc_config::BACKUP_SCHEDULE_STATUS,
+    sc_config::STARTUP_HISTORY,
+    sc_config::ADMIN_NOTICES,
+    sc_config::RLS_BOUNDARY_REPORTED,
+];
 
 /// Keys of a table's JSON that are read off this server rather than stored: what
 /// the screen needs to draw a switch, not what the table is.
@@ -99,15 +149,26 @@ pub(crate) fn instance_settings(backend: &str) -> &'static [&'static str] {
     }
 }
 
-/// Export the installation's structure.
+/// Export the installation's structure: the portable tree.
 pub async fn export(catalog: &Catalog, registries: &Registries) -> Result<Export> {
+    export_mode(catalog, registries, Mode::Portable).await
+}
+
+/// Export the installation's structure in `mode`.
+pub async fn export_mode(catalog: &Catalog, registries: &Registries, mode: Mode) -> Result<Export> {
     let overlays_created = ensure_overlays(catalog).await?;
-    let mut out = Writer::default();
+    let mut out = Writer {
+        mode,
+        ..Writer::default()
+    };
     out.put(FORMAT_FILE, StructureFormat::current().to_json())?;
 
     roles(catalog, &mut out).await?;
     modules(catalog, registries, &mut out).await?;
     settings(catalog, &mut out).await?;
+    if mode == Mode::Instance {
+        build_hosts(catalog, &mut out).await?;
+    }
     users(catalog, &mut out).await?;
     tables(catalog, &mut out).await?;
     db_connections(catalog, &mut out).await?;
@@ -126,6 +187,7 @@ pub async fn export(catalog: &Catalog, registries: &Registries) -> Result<Export
         tree: out.tree,
         warnings,
         overlays_created,
+        instance_only: out.instance_only,
     })
 }
 
@@ -135,9 +197,23 @@ pub async fn export(catalog: &Catalog, registries: &Registries) -> Result<Export
 #[derive(Default)]
 struct Writer {
     tree: StructureTree,
+    mode: Mode,
+    instance_only: BTreeMap<String, InstanceOnly>,
 }
 
 impl Writer {
+    fn instance(&self) -> bool {
+        self.mode == Mode::Instance
+    }
+
+    /// Mark what of `path` is this instance's alone.
+    fn mark(&mut self, path: &str, only: InstanceOnly) {
+        if matches!(&only, InstanceOnly::Keys { keys } if keys.is_empty()) {
+            return;
+        }
+        self.instance_only.insert(path.to_owned(), only);
+    }
+
     fn put(&mut self, path: impl Into<String>, mut value: Json) -> Result<()> {
         let path = path.into();
         if let Json::Object(map) = &mut value {
@@ -216,22 +292,113 @@ async fn modules(catalog: &Catalog, registries: &Registries, out: &mut Writer) -
     out.put("modules.json", Json::Array(list))
 }
 
-/// The portable settings sections, each as the values **stored** in it.
+/// The settings sections, each as the values **stored** in it: the portable
+/// ones, and in an instance export every other one too, marked.
 ///
 /// Not the values the server acts on (`all_config`): those include what this
 /// host pins from its `feldspar.toml`, which is never in the repository
 /// (§3.4), and declared defaults, which are the receiving build's to supply.
+/// A secret is the sentinel.
 async fn settings(catalog: &Catalog, out: &mut Writer) -> Result<()> {
-    for section in sc_config::portable_sections() {
+    for (name, fields, portable) in sections(out.mode) {
         let mut values = Map::new();
-        for field in &section.fields {
-            if let Some(value) = sc_config::stored_config(catalog, field.key()).await? {
-                values.insert(field.key().to_owned(), value);
+        for field in fields {
+            if let Some(value) = sc_config::stored_config(catalog, field.name()).await? {
+                values.insert(field.name().to_owned(), redact_setting(field, value));
             }
         }
+        let path = format!("settings/{name}.json");
+        if !portable {
+            out.mark(&path, InstanceOnly::Whole);
+        }
+        out.put(path, Json::Object(values))?;
+    }
+    Ok(())
+}
+
+/// The sections `mode` exports, each with its keys and whether it is
+/// portable, in screen order.
+pub(crate) fn sections(mode: Mode) -> Vec<(&'static str, Vec<&'static sc_types::FormField>, bool)> {
+    let fields = |s: &'static sc_config::ConfigSection| s.fields.iter().map(|d| &d.field).collect();
+    match mode {
+        Mode::Portable => sc_config::portable_sections()
+            .iter()
+            .map(|s| (s.name, fields(s), true))
+            .collect(),
+        Mode::Instance => {
+            let mut out: Vec<_> = sc_config::config_sections()
+                .iter()
+                .map(|s| (s.name, fields(s), s.portable))
+                .collect();
+            // The sections only `portable_sections` names (the maps).
+            for section in sc_config::portable_sections() {
+                if !out.iter().any(|(name, _, _)| *name == section.name) {
+                    out.push((section.name, fields(section), true));
+                }
+            }
+            let claimed: Vec<&str> = out
+                .iter()
+                .flat_map(|(_, fields, _)| fields.iter().map(|f| f.name()))
+                .collect();
+            let internal = sc_config::internal_defs()
+                .iter()
+                .map(|d| &d.field)
+                .filter(|f| !claimed.contains(&f.name()) && !SERVER_WRITTEN.contains(&f.name()))
+                .collect();
+            out.push((INTERNAL_SECTION, internal, false));
+            out
+        }
+    }
+}
+
+/// The keys of the settings section `name` of an instance tree, for an
+/// editor's schema: `None` for a section there is not.
+pub fn settings_section_fields(name: &str) -> Option<Vec<&'static sc_types::FormField>> {
+    sections(Mode::Instance)
+        .into_iter()
+        .find(|(section, _, _)| *section == name)
+        .map(|(_, fields, _)| fields)
+}
+
+/// A stored setting as an export writes it: a secret as the sentinel, and the
+/// identity providers' client secrets each as the sentinel.
+fn redact_setting(field: &sc_types::FormField, value: Json) -> Json {
+    if field.secret {
+        let unset = value.is_null() || value.as_str() == Some("");
+        return if unset {
+            value
+        } else {
+            Json::String(SECRET_SENTINEL.to_owned())
+        };
+    }
+    if field.name() == sc_config::OAUTH_PROVIDERS
+        && let Json::Array(list) = &value
+    {
+        let spec = sc_config::authentication::oauth_provider_spec();
+        return Json::Array(
+            list.iter()
+                .map(|item| match item {
+                    Json::Object(attrs) => Json::Object(redact_by(Some(&spec), attrs)),
+                    other => other.clone(),
+                })
+                .collect(),
+        );
+    }
+    value
+}
+
+/// The build hosts (instance export only): each one's name and targets, never
+/// its token.
+async fn build_hosts(catalog: &Catalog, out: &mut Writer) -> Result<()> {
+    if !has_table(catalog, sc_app::BUILD_HOSTS_TABLE)? {
+        return Ok(());
+    }
+    for host in sc_app::list_build_hosts(catalog).await? {
+        let path = format!("build-hosts/{}.json", path_segment(&host.name));
+        out.mark(&path, InstanceOnly::Whole);
         out.put(
-            format!("settings/{}.json", section.name),
-            Json::Object(values),
+            path,
+            json!({ "id": host.id, "name": host.name, "targets": host.targets }),
         )?;
     }
     Ok(())
@@ -347,7 +514,21 @@ async fn file_stores(catalog: &Catalog, out: &mut Writer) -> Result<Vec<StoreWar
     let uses = store_uses(catalog).await?;
     for def in list_file_stores(catalog).await? {
         let segment = path_segment(&def.name);
-        let mut value = store_json(&def)?;
+        let mut value = store_json(&def, out.mode)?;
+        if out.instance() {
+            let mut keys: Vec<String> = instance_settings(&def.backend)
+                .iter()
+                .filter(|k| value["config"].get(**k).is_some())
+                .map(|k| format!("/config/{k}"))
+                .collect();
+            if value.get(ATTR_CLONE_PATH).is_some() {
+                keys.push(format!("/{ATTR_CLONE_PATH}"));
+            }
+            out.mark(
+                &format!("file-stores/{segment}.json"),
+                InstanceOnly::Keys { keys },
+            );
+        }
         if def.backend == GIT_BACKEND {
             // The pinned commit: what the working tree has checked out now.
             value["commit"] = match GitRepo::from_def(&def)?.head_commit().await? {
@@ -386,14 +567,18 @@ async fn file_stores(catalog: &Catalog, out: &mut Writer) -> Result<Vec<StoreWar
     Ok(warnings)
 }
 
-/// A store's definition, without what is this instance's own.
-fn store_json(def: &FileStoreDef) -> Result<Json> {
+/// A store's definition: without what is this instance's own in a portable
+/// export, and with it — the directory, the key, a git store's clone — in an
+/// instance export.
+fn store_json(def: &FileStoreDef, mode: Mode) -> Result<Json> {
     let mut config: Attrs = def.config.clone();
-    for key in instance_settings(&def.backend) {
-        config.remove(*key);
+    if mode == Mode::Portable {
+        for key in instance_settings(&def.backend) {
+            config.remove(*key);
+        }
     }
     let spec = backend_config_spec(&def.backend).ok();
-    Ok(json!({
+    let mut value = json!({
         "id": def.id.0,
         "name": def.name,
         "description": def.description,
@@ -401,7 +586,13 @@ fn store_json(def: &FileStoreDef) -> Result<Json> {
         "config": Json::Object(redact_by(spec.as_deref(), &config)),
         "min_role": def.min_role,
         "sync_contents": def.sync_contents()?.as_str(),
-    }))
+    });
+    if mode == Mode::Instance
+        && let Some(clone) = def.attributes.get(ATTR_CLONE_PATH)
+    {
+        value[ATTR_CLONE_PATH] = clone.clone();
+    }
+    Ok(value)
 }
 
 // --- code libraries, triggers, streams, agents ---------------------------------

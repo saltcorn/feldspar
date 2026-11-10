@@ -109,6 +109,7 @@ mod files;
 mod llm;
 mod models;
 mod modules;
+mod registry;
 mod settings;
 pub(crate) mod streams;
 mod table_rows;
@@ -202,6 +203,7 @@ pub fn admin_handlers_with(
     streams::register(&mut reg, &state);
     settings::register(&mut reg, &state);
     backup::register(&mut reg, &state);
+    registry::register(&mut reg, &state);
     applications::register(&mut reg, &state);
     views::register(&mut reg, &state);
     translations::register(&mut reg, &state);

@@ -42,6 +42,11 @@
 //!   receipt — the sync lock, the stale-plan check, the policy, the safety
 //!   backup, `reload_all`, the convergence re-diff and the next base.
 //! - [`ledger`]: `_fd_deployments` and the sync lock.
+//!
+//! Milestone R, the registry editor:
+//!
+//! - [`registry`]: the instance tree one file at a time, and a save as a
+//!   one-entity deploy against live.
 
 pub mod apply;
 pub mod base;
@@ -54,6 +59,7 @@ pub mod format;
 pub mod identity;
 pub mod ledger;
 pub mod plan;
+pub mod registry;
 pub mod secrets;
 pub mod stores;
 pub mod tree;
@@ -65,14 +71,15 @@ pub use deploy::{Confirm, Deployer, Destructive, FullBackup, Policy, Receipt, Re
 pub use diff::{Class, Status, StatusEntry};
 pub use entity::{Content, Entities, Entity, Kind, blob_hash};
 pub use entity_diff::{EntityDiff, JsonChange, entity_diff};
-pub use export::{Export, export};
+pub use export::{Export, INTERNAL_SECTION, InstanceOnly, Mode, export, export_mode};
 pub use format::{FORMAT_FILE, FORMAT_VERSION, StructureFormat, check_format, read_format};
 pub use identity::{ensure_overlays, is_structure_table};
 pub use ledger::{
     DEPLOYMENTS_TABLE, Deployment, LedgerKind, Outcome, SYNC_LOCK_TABLE, Source, SyncLock,
     bootstrap_ledger, list_deployments, take_lock,
 };
-pub use plan::{Blocker, OpBody, OpClass, Plan, PlannedOp, Step, plan, plan_digest};
+pub use plan::{Blocker, OpBody, OpClass, Plan, PlannedOp, Step, plan, plan_digest, plan_instance};
+pub use registry::{Edit, EditBy, EditPlan, EditReceipt, RegistryEntity, RegistryEntry};
 pub use secrets::Registries;
 pub use stores::{
     ContentClaim, ContentClaimer, LARGE_FILE_BYTES, StoreUses, StoreWarning, SyncedDirs, resolve,

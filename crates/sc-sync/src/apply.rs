@@ -22,6 +22,10 @@
 //! its public URL (or the HTTPS URL its SSH one implies) and then checked out
 //! at the pinned commit.
 //!
+//! A registry save (§7.6) is the exception: it plans an instance tree, and
+//! [`Executor::apply_instance`] applies what is in it — a store's directory,
+//! key and URL, a non-portable setting, a build host — as typed.
+//!
 //! **Operations run in the plan's order and stop at the first failure.** What
 //! was applied up to it stays applied, and [`Applied`] says exactly what that
 //! was. Unticked operations are skipped (deferred, §5).
@@ -164,9 +168,32 @@ impl Executor<'_> {
         live: &StructureTree,
         target: &StructureTree,
     ) -> Applied {
+        self.apply_in(plan, live, target, false).await
+    }
+
+    /// Apply a plan of instance trees (a registry save, §7.6): as
+    /// [`apply`](Self::apply), with the instance-bound values in `target`
+    /// applied rather than kept.
+    pub async fn apply_instance(
+        &self,
+        plan: &Plan,
+        live: &StructureTree,
+        target: &StructureTree,
+    ) -> Applied {
+        self.apply_in(plan, live, target, true).await
+    }
+
+    async fn apply_in(
+        &self,
+        plan: &Plan,
+        live: &StructureTree,
+        target: &StructureTree,
+        instance: bool,
+    ) -> Applied {
         let trees = Trees {
             live: Entities::of(live),
             target: Entities::of(target),
+            instance,
         };
         let mut out = Applied::default();
         let mut touched = Touched::default();
@@ -355,7 +382,10 @@ impl Executor<'_> {
                 }
                 catalog.reload().await
             }
-            Kind::FileStore => self.put_file_store(target, value, touched, notes).await,
+            Kind::FileStore => {
+                self.put_file_store(target, value, trees.instance, touched, notes)
+                    .await
+            }
             Kind::CodeLibrary => {
                 let library = sc_app::code_library_from_json(entity_id(target)?, &value)?;
                 sc_app::save_code_library_checked(catalog, &library).await
@@ -427,6 +457,7 @@ impl Executor<'_> {
                 put_in_application(catalog, &app, target, &value).await
             }
             Kind::Checklist => self.put_checklist(target, &value).await,
+            Kind::BuildHost => put_build_host(catalog, target, &value).await,
             Kind::Table => self.put_provided_table(target, value).await,
             Kind::Users | Kind::StoreFile | Kind::Other => Err(Error::invalid(format!(
                 "`{}` cannot be deployed as a whole entity",
@@ -563,6 +594,7 @@ impl Executor<'_> {
         &self,
         target: &Entity,
         mut value: Json,
+        instance: bool,
         touched: &mut Touched,
         notes: &mut Vec<String>,
     ) -> Result<()> {
@@ -575,6 +607,12 @@ impl Executor<'_> {
         }
         let mut def = file_store_from_body(id, &value)?;
         match &existing {
+            // A registry save: this instance's own settings are as typed.
+            Some(existing) if instance => {
+                def.attributes = existing.attributes.clone();
+                set_clone_path(&mut def, &value);
+            }
+            None if instance && has_own_place(&def) => set_clone_path(&mut def, &value),
             Some(existing) => {
                 // This instance's own: its directory, key and — for a git
                 // store — the URL it reaches the remote by (§3.5).
@@ -938,6 +976,9 @@ impl Executor<'_> {
                 sc_check::edit::delete_checklist(catalog, &self.check_editor(), entity_id(live)?)
                     .await?;
             }
+            Kind::BuildHost => {
+                gone(sc_app::delete_build_host(catalog, entity_id(live)?).await?);
+            }
             Kind::Table => {
                 // A provided table's rows are its provider's: deleting it is
                 // forgetting its definition, which is all there is of it here.
@@ -959,6 +1000,8 @@ impl Executor<'_> {
 struct Trees {
     live: Entities,
     target: Entities,
+    /// The trees are instance trees (a registry save).
+    instance: bool,
 }
 
 impl Trees {
@@ -1051,6 +1094,13 @@ async fn put_setting(
     if is_sentinel(value) {
         return Ok(());
     }
+    // A secret inside a setting (an identity provider's client secret) is
+    // the sentinel too.
+    let mut value = value.clone();
+    unmask(
+        &mut value,
+        sc_config::stored_config(catalog, key).await?.as_ref(),
+    );
     if sc_config::host_config_keys(catalog)
         .iter()
         .any(|k| k == key)
@@ -1060,7 +1110,55 @@ async fn put_setting(
         ));
         return Ok(());
     }
-    sc_config::set_config(catalog, key, value.clone()).await
+    sc_config::set_config(catalog, key, value).await
+}
+
+/// A build host, by id (a registry save; build hosts are never in git). Only
+/// its name and targets: a new one is added on the Build hosts screen, which
+/// shows its token the once it exists.
+async fn put_build_host(catalog: &Catalog, target: &Entity, value: &Json) -> Result<()> {
+    let targets: Vec<String> = value
+        .get("targets")
+        .and_then(Json::as_array)
+        .into_iter()
+        .flatten()
+        .map(|t| {
+            t.as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| Error::invalid("a build host's `targets` must be names"))
+        })
+        .collect::<Result<_>>()?;
+    let updated =
+        sc_app::update_build_host(catalog, entity_id(target)?, &text(value, "name"), &targets)
+            .await?;
+    match updated {
+        Some(_) => Ok(()),
+        None => Err(Error::invalid(
+            "a build host is added on the Build hosts screen, which shows its token once; \
+             the registry edits one that is there",
+        )),
+    }
+}
+
+/// A git store's clone path, from an instance tree's `clone_path`.
+fn set_clone_path(def: &mut FileStoreDef, value: &Json) {
+    match value.get(sc_files::ATTR_CLONE_PATH).and_then(Json::as_str) {
+        Some(path) if !path.trim().is_empty() => {
+            sc_files::record_clone_path(def, Path::new(path.trim()));
+        }
+        _ => {
+            def.attributes.remove(sc_files::ATTR_CLONE_PATH);
+        }
+    }
+}
+
+/// Whether a new store in an instance tree says where it goes: a local
+/// store's directory, a git store's clone path.
+fn has_own_place(def: &FileStoreDef) -> bool {
+    match def.backend.as_str() {
+        LOCAL_BACKEND => def.setting(CFG_PATH).is_some_and(|p| !p.trim().is_empty()),
+        _ => false,
+    }
 }
 
 async fn put_llm_provider(

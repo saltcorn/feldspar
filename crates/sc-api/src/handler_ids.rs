@@ -79,6 +79,13 @@ pub const DELETE_BACKUP_SCHEDULE: HandlerId<AdminOnly> = HandlerId::new("deleteB
 pub const GET_CLEAR_ALL_PREVIEW: HandlerId<AdminOnly> = HandlerId::new("getClearAllPreview");
 pub const CLEAR_ALL: HandlerId<AdminOnly> = HandlerId::new("clearAll");
 
+// --- `admin::registry` ---
+
+pub const LIST_REGISTRY: HandlerId<AdminOnly> = HandlerId::new("listRegistry");
+pub const GET_REGISTRY_ENTITY: HandlerId<AdminOnly> = HandlerId::new("getRegistryEntity");
+pub const PLAN_REGISTRY_SAVE: HandlerId<AdminOnly> = HandlerId::new("planRegistrySave");
+pub const REGISTRY_SAVE: HandlerId<AdminOnly> = HandlerId::new("registrySave");
+
 // --- `admin::checklists` ---
 
 pub const LIST_CHECKLISTS: HandlerId<AdminOnly> = HandlerId::new("listChecklists");

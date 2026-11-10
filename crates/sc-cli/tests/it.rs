@@ -51,6 +51,8 @@ mod install_script;
 mod install_tree;
 #[path = "mcp_token.rs"]
 mod mcp_token;
+#[path = "registry.rs"]
+mod registry;
 #[path = "repo_hygiene.rs"]
 mod repo_hygiene;
 #[path = "serve.rs"]

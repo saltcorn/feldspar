@@ -20,6 +20,7 @@ use sc_auth::SessionStore;
 use sc_catalog::Catalog;
 use sc_server::{AppMounts, SESSION_COOKIE, ServerConfig, admin_handlers, build_router_with_apps};
 use sc_test_harness::{TestDb, TestServer};
+use sc_types::{Role, SECRET_SENTINEL};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -604,5 +605,147 @@ async fn rows_are_paged_ordered_and_filtered_by_the_query_string() -> sc_error::
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
+    Ok(())
+}
+
+/// The registry editor (APP_SYNC_PROPOSAL §7.6) over the admin API: admin
+/// only, the instance tree listed with its marks, a settings section opened,
+/// planned and saved, a save over a change made since it was opened refused
+/// as stale, and none of it offered to the MCP projection.
+#[tokio::test]
+async fn the_registry_lists_opens_plans_and_saves() -> sc_error::Result<()> {
+    let (mut client, _db, catalog) = setup_with_catalog().await?;
+    sc_config::set_config(
+        &catalog,
+        sc_config::email::SMTP_HOST,
+        json!("mail.example.org"),
+    )
+    .await?;
+    sc_config::set_config(
+        &catalog,
+        sc_config::email::SMTP_PASSWORD,
+        json!("SMTP-SECRET-3"),
+    )
+    .await?;
+    // What the SPA asks first, which hands it the CSRF cookie.
+    client.send("GET", "/api/auth/status", None).await;
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/first-user",
+            Some(json!({ "email": "admin@example.com", "password": "hunter2pass" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    sc_auth::bootstrap_roles(&catalog).await?;
+    sc_auth::create_user(&catalog, "staff@example.com", "staffpass1", Role::PUBLIC).await?;
+    client.send("POST", "/api/logout", None).await;
+
+    // Nobody signed in, and a non-admin, are refused.
+    let (status, _) = client.send("GET", "/api/registry", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = client
+        .send(
+            "POST",
+            "/api/login",
+            Some(json!({ "email": "staff@example.com", "password": "staffpass1" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = client
+        .send("GET", "/api/registry/entity?path=settings/email.json", None)
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/login",
+            Some(json!({ "email": "admin@example.com", "password": "hunter2pass" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = client.send("GET", "/api/registry", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let email = body["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["path"] == "settings/email.json")
+        .cloned()
+        .unwrap_or_else(|| panic!("{body}"));
+    assert_eq!(email["kind"], "setting");
+    assert_eq!(email["instance_only"]["scope"], "whole");
+
+    let (status, opened) = client
+        .send("GET", "/api/registry/entity?path=settings/email.json", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    assert_eq!(opened["value"]["smtp_host"], "mail.example.org");
+    assert_eq!(opened["value"]["smtp_password"], SECRET_SENTINEL);
+    assert!(!opened.to_string().contains("SMTP-SECRET-3"), "{opened}");
+    // The editor's schema is the section's declared keys, each typed.
+    assert_eq!(
+        opened["schema"]["properties"]["smtp_port"]["type"], "integer",
+        "{opened}"
+    );
+    assert_eq!(opened["schema"]["additionalProperties"], false);
+
+    let mut value = opened["value"].clone();
+    value["smtp_host"] = json!("relay.example.org");
+    let edit = json!({
+        "path": "settings/email.json",
+        "value": value,
+        "version": opened["version"],
+    });
+    let (status, plan) = client
+        .send("POST", "/api/registry/plan", Some(edit.clone()))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{plan}");
+    let ops: Vec<&str> = plan["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|op| op["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ops, ["update:setting:email.smtp_host"], "{plan}");
+    assert_eq!(plan["blockers"], json!([]));
+
+    let mut save = edit.clone();
+    save["value"] = plan["value"].clone();
+    save["plan_digest"] = plan["digest"].clone();
+    save["ticked"] = json!(ops);
+    let (status, receipt) = client
+        .send("POST", "/api/registry/save", Some(save.clone()))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    assert_eq!(receipt["result"], "converged", "{receipt}");
+    assert_eq!(receipt["stored"]["smtp_host"], "relay.example.org");
+    assert_eq!(receipt["changes"], json!([]), "{receipt}");
+    assert_eq!(
+        sc_config::stored_config(&catalog, sc_config::email::SMTP_PASSWORD).await?,
+        Some(json!("SMTP-SECRET-3"))
+    );
+
+    // The same save again names the version from before it: stale.
+    let (status, body) = client.send("POST", "/api/registry/save", Some(save)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("stale"),
+        "{body}"
+    );
+
+    // Not one of them is offered to an agent.
+    let set = sc_api::admin_endpoints();
+    for name in [
+        "listRegistry",
+        "getRegistryEntity",
+        "planRegistrySave",
+        "registrySave",
+    ] {
+        let endpoint = set.iter().find(|e| e.name == name).unwrap();
+        assert!(endpoint.mcp.is_none(), "{name} is offered to MCP");
+    }
     Ok(())
 }

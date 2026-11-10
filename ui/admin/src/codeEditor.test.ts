@@ -28,6 +28,12 @@ describe("the editor a code setting opens in", () => {
     expect(editorSettings("python")).toEqual({ id: "python", tabSize: 4, typed: false });
   });
 
+  it("gives JSON its own grammar, for the registry editor, and no TypeScript worker", () => {
+    // Its schema checks come from the JSON worker, which `typed` does not
+    // govern: `typed` is whether the catalog is read for completions.
+    expect(editorSettings("json")).toEqual({ id: "json", tabSize: 2, typed: false });
+  });
+
   it("falls back to plain text for a language it has no grammar for", () => {
     // A server that declares a third language is ahead of this SPA. An
     // unregistered id colours nothing; plaintext at least does not claim to.
