@@ -9,6 +9,9 @@ mod fixture;
 #[path = "base.rs"]
 mod base;
 
+#[path = "deploy.rs"]
+mod deploy;
+
 #[path = "export.rs"]
 mod export;
 

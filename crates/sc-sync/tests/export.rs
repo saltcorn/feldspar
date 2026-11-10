@@ -12,7 +12,7 @@ use crate::fixture::{Installation, all_text, code_app, entity, put};
 /// A small helpdesk: a table with a row, a user, an application with a view,
 /// a trigger, a role, settings of every kind, and one secret of each kind the
 /// definitions hold.
-async fn helpdesk(inst: &Installation) -> Result<()> {
+pub async fn helpdesk(inst: &Installation) -> Result<()> {
     let catalog = &inst.catalog;
     inst.table("tickets", &["title", "status"]).await?;
     inst.sql("INSERT INTO tickets (id, title, status) VALUES (1, 'ROW-MARKER-7731', 'open')")

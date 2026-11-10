@@ -33,28 +33,45 @@
 //! - [`validate`](mod@validate): the dry runs and other checks a plan needs the
 //!   database for.
 //!
-//! The executor (milestone S3) applies a plan.
+//! Milestone S3, the executor:
+//!
+//! - [`apply`](mod@apply): [`Executor`], applying a plan's ticked operations
+//!   in order through each kind's own save path, and [`DeployHost`], what it
+//!   needs from the running server.
+//! - [`deploy`](mod@deploy): [`Deployer`], a deploy or discard from review to
+//!   receipt — the sync lock, the stale-plan check, the policy, the safety
+//!   backup, `reload_all`, the convergence re-diff and the next base.
+//! - [`ledger`]: `_fd_deployments` and the sync lock.
 
+pub mod apply;
 pub mod base;
+pub mod deploy;
 pub mod diff;
 pub mod entity;
 pub mod entity_diff;
 pub mod export;
 pub mod format;
 pub mod identity;
+pub mod ledger;
 pub mod plan;
 pub mod secrets;
 pub mod stores;
 pub mod tree;
 pub mod validate;
 
+pub use apply::{Applied, DeployHost, Executor, Failure, unmask};
 pub use base::{BASE_REF, base_file_bytes, discard_target, keep_base_files};
+pub use deploy::{Confirm, Deployer, Destructive, FullBackup, Policy, Receipt, Request, next_base};
 pub use diff::{Class, Status, StatusEntry};
 pub use entity::{Content, Entities, Entity, Kind, blob_hash};
 pub use entity_diff::{EntityDiff, JsonChange, entity_diff};
 pub use export::{Export, export};
 pub use format::{FORMAT_FILE, FORMAT_VERSION, StructureFormat, check_format, read_format};
 pub use identity::{ensure_overlays, is_structure_table};
+pub use ledger::{
+    DEPLOYMENTS_TABLE, Deployment, LedgerKind, Outcome, SYNC_LOCK_TABLE, Source, SyncLock,
+    bootstrap_ledger, list_deployments, take_lock,
+};
 pub use plan::{Blocker, OpBody, OpClass, Plan, PlannedOp, Step, plan, plan_digest};
 pub use secrets::Registries;
 pub use stores::{

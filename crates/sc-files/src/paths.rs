@@ -94,7 +94,7 @@ pub fn suggest_local_dir(name: &str) -> Result<PathBuf> {
 /// name. Every character outside `[A-Za-z0-9._-]` becomes `_`, and a name that
 /// reduces to nothing (or to `.`/`..`) becomes `store`, since a clone directory
 /// called `..` would be the parent of every clone.
-pub(crate) fn path_safe(name: &str) -> String {
+pub fn path_safe(name: &str) -> String {
     let mapped: String = name
         .chars()
         .map(|c| {

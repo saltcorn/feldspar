@@ -91,7 +91,7 @@ const TRIGGER_BOOKKEEPING: [&str; 5] = [
 ];
 
 /// The settings of each backend that belong to this instance alone (§3.4).
-fn instance_settings(backend: &str) -> &'static [&'static str] {
+pub(crate) fn instance_settings(backend: &str) -> &'static [&'static str] {
     match backend {
         LOCAL_BACKEND => &[CFG_PATH],
         GIT_BACKEND => &[CFG_KEY_PATH, CFG_PUBLIC_KEY, CFG_DIR],

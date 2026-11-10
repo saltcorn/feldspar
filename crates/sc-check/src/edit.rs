@@ -205,6 +205,51 @@ pub async fn create_checklist(
     input: ChecklistInput,
     steps: Vec<StepDraft>,
 ) -> Result<Checklist> {
+    create_checklist_with_id(catalog, registry, editor, Uuid::new_v4(), input, steps).await
+}
+
+/// Make the checklist `id` have these settings and these steps, creating it
+/// with that id when there is none (APP_SYNC_PROPOSAL §3.2: a deployed entity
+/// keeps its id on every instance).
+///
+/// An existing checklist keeps its `run_as`, which is a user of this instance.
+/// Its steps are replaced only when they differ from `steps` — each old one is
+/// removed (a tombstone, so the history keeps it) and the new ones appended —
+/// so a deploy that changes nothing about them writes no versions. A person's
+/// or the operator's alone, as [`update_checklist`] is.
+pub async fn put_checklist(
+    catalog: &Catalog,
+    registry: &StepRegistry,
+    editor: &Editor,
+    id: Uuid,
+    mut input: ChecklistInput,
+    steps: Vec<StepDraft>,
+) -> Result<Checklist> {
+    let Some(existing) = store::load_checklist(catalog, id).await? else {
+        return create_checklist_with_id(catalog, registry, editor, id, input, steps).await;
+    };
+    input.run_as = existing.run_as;
+    let checklist = update_checklist(catalog, registry, editor, id, input).await?;
+    let current = store::current_steps(catalog, id).await?;
+    let drafts: Vec<&StepDraft> = current.iter().map(|s| &s.draft).collect();
+    if drafts.len() == steps.len() && drafts.iter().zip(&steps).all(|(a, b)| *a == b) {
+        return Ok(checklist);
+    }
+    for step in &current {
+        remove_step(catalog, registry, editor, step.id).await?;
+    }
+    append_steps(catalog, registry, editor, id, steps).await?;
+    store::require_checklist(catalog, id).await
+}
+
+async fn create_checklist_with_id(
+    catalog: &Catalog,
+    registry: &StepRegistry,
+    editor: &Editor,
+    id: Uuid,
+    input: ChecklistInput,
+    steps: Vec<StepDraft>,
+) -> Result<Checklist> {
     editor.require_append("create a checklist")?;
     let name = input.name.trim().to_owned();
     if name.is_empty() {
@@ -229,7 +274,7 @@ pub async fn create_checklist(
     check_run_as(catalog, editor, input.run_as).await?;
     check_application(catalog, input.application).await?;
     let checklist = Checklist {
-        id: Uuid::new_v4(),
+        id,
         name,
         description: input.description,
         application: input.application,

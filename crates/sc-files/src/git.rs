@@ -1005,6 +1005,53 @@ impl GitRepo {
         self.checked(checkout, "checkout").await
     }
 
+    /// Check out the **pinned commit** an installation's structure names for
+    /// this store (APP_SYNC_PROPOSAL §3.5, §6 step 8.3): fetch the remote, then
+    /// point the store's branch at `commit` and check it out.
+    ///
+    /// The branch is reset rather than merged: a deploy makes the store serve
+    /// exactly the code the committing instance had. Work in the way is not
+    /// thrown away silently — the planner refuses a pin change on a store with
+    /// uncommitted changes or unpushed commits before this is reached
+    /// (`sc_sync::validate`), and `checkout` keeps git's own refusal for a
+    /// working tree that is not clean. With no branch configured, the commit is
+    /// checked out detached.
+    pub async fn checkout_pinned(&self, commit: &str) -> Result<GitOutput> {
+        let commit = commit.trim();
+        if commit.len() < 4 || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Error::invalid(format!(
+                "`{commit}` is not a commit hash, so the store cannot be checked out at it"
+            )));
+        }
+        self.require_cloned()?;
+        if self.url.is_some() {
+            let mut fetch = self.git(REMOTE_GIT);
+            fetch.args(["fetch", "--quiet", "origin"]);
+            self.checked(fetch, "fetch").await?;
+        }
+        let mut verify = self.git(LOCAL_GIT);
+        verify
+            .args(["cat-file", "-e"])
+            .positional(Operand::new(format!("{commit}^{{commit}}"))?);
+        if !self.run(verify).await?.success {
+            return Err(Error::invalid(format!(
+                "the store's remote does not have commit {commit}; push it from the \
+                 instance that committed the structure, then deploy again"
+            )));
+        }
+        let mut checkout = self.git(LOCAL_GIT);
+        checkout.args(["checkout", "--quiet"]);
+        if let Some(branch) = &self.branch {
+            checkout
+                .arg("-B")
+                .positional(Operand::new(branch.as_str())?);
+        } else {
+            checkout.arg("--detach");
+        }
+        checkout.positional(Operand::new(commit)?);
+        self.checked(checkout, "checkout").await
+    }
+
     /// Whether the repository resolves a committer identity (from its own
     /// config, the user's, or the environment).
     async fn has_identity(&self) -> Result<bool> {

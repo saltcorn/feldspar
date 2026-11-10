@@ -108,26 +108,26 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## S3 — The executor (§5, §6)
 
-- [ ] **S3.1** Apply a plan in §6's order, through the existing save paths. That means
+- [x] **S3.1** Apply a plan in §6's order, through the existing save paths. That means
   `schema_edit::apply` for tables, and `*_from_body` plus the stores for the rest, with
   `merge_secrets` and given ids. Integration test: deploying an exported tree to an empty instance
   and exporting there gives the same tree (the §3.1 acceptance test).
-- [ ] **S3.2** Renames: table and field renames by id go through `RenameTable` / field rename, and
+- [x] **S3.2** Renames: table and field renames by id go through `RenameTable` / field rename, and
   references are rewritten. Test: a view on a renamed field still works after the deploy.
-- [ ] **S3.3** Deferred operations: unticked operations are skipped, and the new base keeps the old
+- [x] **S3.3** Deferred operations: unticked operations are skipped, and the new base keeps the old
   version of their entities. Test: after deferring a drop, Status shows "incoming delete", Deploy
   is not blocked, and Commit does not put the table back into the repo.
-- [ ] **S3.4** The safety backup, written with the existing writer: the structure plus the rows of
+- [x] **S3.4** The safety backup, written with the existing writer: the structure plus the rows of
   each table or column being dropped. The `full_backup` policy. Test: the backup restores the
   dropped rows.
-- [ ] **S3.5** The sync lock, stale-plan detection on confirm, `reload_all`, the convergence
+- [x] **S3.5** The sync lock, stale-plan detection on confirm, `reload_all`, the convergence
   re-diff, and the `_fd_deployments` ledger (§7.1). Tests: a plan confirmed after a live edit is
   refused as stale; a forced divergence is recorded as `drifted`.
-- [ ] **S3.6** Discard: plan and apply the base version of the chosen entities, with the same
+- [x] **S3.6** Discard: plan and apply the base version of the chosen entities, with the same
   classification. Test: discarding a "local new" table with rows is data-destructive and unticked.
-- [ ] **S3.7** The `destructive: never` policy. Test: the API refuses a ticked data-destructive
+- [x] **S3.7** The `destructive: never` policy. Test: the API refuses a ticked data-destructive
   operation, and the CLI with `--allow-destructive` allows it.
-- [ ] **S3.8** Applying file stores (§6 step 8.3). Write and delete synced files in local stores
+- [x] **S3.8** Applying file stores (§6 step 8.3). Write and delete synced files in local stores
   (a delete is a metadata delete); create a new local store at the suggested directory; for git
   stores, keep the instance's own `url` on an existing store, create a new one from `public_url` or
   the derived HTTPS URL, then fetch and reset the branch to the pinned commit. Tests: deploying

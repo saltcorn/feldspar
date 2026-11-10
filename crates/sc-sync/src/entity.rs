@@ -288,13 +288,33 @@ pub enum Comparable<'a> {
     Hash(&'a str),
 }
 
-/// `value` without the ids that matching accounts for.
+/// `value` without the ids that matching accounts for, and without its secrets.
+///
+/// A secret is this instance's (§3.3): the tree carries it as the sentinel,
+/// a deploy keeps the receiving instance's value, and an instance that has
+/// none yet exports none. Whether a secret is set is therefore not a
+/// difference in structure, and a key holding the sentinel is left out of the
+/// comparison — as is a database connection's password, which an export
+/// writes as the sentinel or as empty, and a git store's URL.
 pub fn comparable_json(kind: Kind, value: &Json) -> Json {
     let mut value = value.clone();
-    if kind.has_id()
-        && let Json::Object(map) = &mut value
-    {
-        map.remove("id");
+    drop_secrets(&mut value);
+    if let Json::Object(map) = &mut value {
+        if kind.has_id() {
+            map.remove("id");
+        }
+        if kind == Kind::DbConnection {
+            map.remove("password");
+        }
+        // Likewise a git store's URL: one that exists keeps this instance's
+        // own (SSH here, HTTPS there), and only a new store is made from the
+        // tree's (§3.5).
+        if kind == Kind::FileStore
+            && map.get("backend").and_then(Json::as_str) == Some(sc_files::GIT_BACKEND)
+            && let Some(Json::Object(config)) = map.get_mut("config")
+        {
+            config.remove(sc_files::CFG_URL);
+        }
     }
     if matches!(kind, Kind::Table | Kind::Users)
         && let Some(Json::Array(fields)) = value.get_mut("fields")
@@ -306,6 +326,18 @@ pub fn comparable_json(kind: Kind, value: &Json) -> Json {
         }
     }
     value
+}
+
+/// Take every key holding the sentinel out of `value`'s objects.
+fn drop_secrets(value: &mut Json) {
+    match value {
+        Json::Object(map) => {
+            map.retain(|_, v| v.as_str() != Some(sc_types::SECRET_SENTINEL));
+            map.values_mut().for_each(drop_secrets);
+        }
+        Json::Array(items) => items.iter_mut().for_each(drop_secrets),
+        _ => {}
+    }
 }
 
 /// Every entity of `tree`, in path order.

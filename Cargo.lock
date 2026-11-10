@@ -10004,6 +10004,8 @@ dependencies = [
 name = "sc-sync"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "chrono",
  "ignore",
  "sc-action",
  "sc-action-builtins",
@@ -10018,6 +10020,7 @@ dependencies = [
  "sc-check",
  "sc-config",
  "sc-dataset",
+ "sc-db",
  "sc-error",
  "sc-files",
  "sc-i18n",
@@ -10025,6 +10028,7 @@ dependencies = [
  "sc-mcp",
  "sc-model",
  "sc-module",
+ "sc-query",
  "sc-stream",
  "sc-test-harness",
  "sc-types",

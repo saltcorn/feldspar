@@ -75,7 +75,7 @@ pub use git::{
     derive_https_url, generate_deploy_key, parse_change, record_clone_path,
 };
 pub use local::{LocalFileStore, OP_SUGGEST_DIR};
-pub use paths::{DATA_DIR_ENV, data_dir, suggest_local_dir};
+pub use paths::{DATA_DIR_ENV, data_dir, path_safe, suggest_local_dir};
 pub use reference::{free_path, mime_allowed, mime_for_path, validate_file_path};
 pub use search::{
     DEFAULT_EXCLUDED_DIRS, DEFAULT_MAX_FOUND, DEFAULT_MAX_RESULTS, FoundFiles, MAX_FILE_BYTES,

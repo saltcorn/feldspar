@@ -2,7 +2,7 @@
 //! bootstrapped, and a helper per entity a test puts in it.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Value as Json, json};
 
@@ -10,7 +10,10 @@ use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation, TableSetting
 use sc_catalog::{Catalog, DataFieldKind, FileOnConflict, FileOnDelete, FileStoreId};
 use sc_error::Result;
 use sc_files::FileStoreDef;
-use sc_sync::{Registries, StructureTree};
+use sc_sync::{
+    Confirm, DeployHost, Deployer, Executor, Plan, Policy, Receipt, Registries, Request, Source,
+    StructureTree,
+};
 use sc_test_harness::{TestDb, TestServer};
 
 /// A test's installation. Keep it alive for the test: dropping `db` tears the
@@ -19,6 +22,8 @@ pub struct Installation {
     pub db: TestDb,
     pub catalog: Arc<Catalog>,
     pub registries: Registries,
+    /// What a deploy reaches the server's services through.
+    pub host: Host,
     /// A scratch directory, removed when the installation is dropped.
     pub dir: PathBuf,
 }
@@ -60,10 +65,12 @@ impl Installation {
         let dir =
             std::env::temp_dir().join(format!("sc-sync-it-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
+        let registries = Registries::builtin()?;
         Ok(Installation {
             db,
             catalog,
-            registries: Registries::builtin()?,
+            host: Host::new(&registries)?,
+            registries,
             dir,
         })
     }
@@ -122,10 +129,165 @@ impl Installation {
         sc_app::save_application(&self.catalog, &app).await
     }
 
+    /// A deployer for this installation, as the operator at the CLI, with
+    /// the installation's scratch directory as its data directory.
+    pub fn deployer(&self) -> Deployer<'_> {
+        Deployer::new(Executor {
+            catalog: &self.catalog,
+            host: &self.host,
+            editor: sc_catalog::Editor::Operator(sc_catalog::Operator::at_cli("a test deploy")),
+            data_dir: self.dir.join("data"),
+        })
+    }
+
+    /// Plan deploying `target` here over `base`.
+    pub async fn plan_deploy(&self, base: &StructureTree, target: &StructureTree) -> Result<Plan> {
+        self.deployer().plan_deploy(&request(base, target)).await
+    }
+
+    /// Deploy `target` over `base` with the plan's default ticks, adjusted by
+    /// `confirm`.
+    pub async fn deploy(
+        &self,
+        base: &StructureTree,
+        target: &StructureTree,
+        confirm: impl FnOnce(Confirm) -> Confirm,
+    ) -> Result<Receipt> {
+        let request = request(base, target);
+        let plan = self.deployer().plan_deploy(&request).await?;
+        assert!(plan.blockers.is_empty(), "{:#?}", plan.blockers);
+        let confirm = confirm(Confirm::defaults(&plan));
+        self.deployer().deploy(&request, &confirm).await
+    }
+
+    /// The first column of the first row `sql` returns, as text.
+    pub async fn text(&self, sql: &str) -> String {
+        let client = self.db.client().await.unwrap();
+        let row = client.query_one(sql, &[]).await.unwrap();
+        row.get::<_, String>(0)
+    }
+
     /// Run SQL on the database directly, as an admin with `psql` would.
     pub async fn sql(&self, sql: &str) -> Result<()> {
         self.db.execute(sql).await?;
         self.catalog.reload().await
+    }
+}
+
+/// A deploy of `target` over `base`, from the CLI, under the default policy.
+pub fn request<'a>(base: &'a StructureTree, target: &'a StructureTree) -> Request<'a> {
+    Request {
+        base,
+        target,
+        commit: None,
+        branch: None,
+        actor: Some("operator".into()),
+        source: Source::Cli,
+        policy: Policy::default(),
+    }
+}
+
+/// The server's services as a deploy reaches them, without a server: the
+/// built-in registries, no modules, and no application builds.
+pub struct Host {
+    pub dispatcher: Arc<sc_action::TriggerDispatcher>,
+    pub agents: Arc<sc_agent::AgentRegistry>,
+    pub streams: Arc<sc_stream::StreamRegistry>,
+    pub models: Arc<sc_model::ModelRegistry>,
+    /// A view (application, name) whose description `reload_all` changes, for
+    /// a test that needs live to diverge from what was deployed.
+    pub diverge: Mutex<Option<(sc_app::AppId, String)>>,
+    /// The subdomains `build_and_mount` was asked for.
+    pub built: Mutex<Vec<String>>,
+}
+
+impl Host {
+    fn new(registries: &Registries) -> Result<Host> {
+        Ok(Host {
+            dispatcher: Arc::new(sc_action::TriggerDispatcher::new(Arc::clone(
+                &registries.actions,
+            ))),
+            agents: Arc::clone(&registries.agent_traits),
+            streams: Arc::clone(&registries.streams),
+            models: Arc::new(sc_model::ModelRegistry::new()),
+            diverge: Mutex::new(None),
+            built: Mutex::new(Vec::new()),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl sc_backup::RestoreHost for Host {
+    fn agent_registry(&self) -> Result<Arc<sc_agent::AgentRegistry>> {
+        Ok(Arc::clone(&self.agents))
+    }
+
+    fn trigger_dispatcher(&self) -> Result<Arc<sc_action::TriggerDispatcher>> {
+        Ok(Arc::clone(&self.dispatcher))
+    }
+
+    fn modules_installed(&self) -> Result<()> {
+        Err(sc_error::Error::invalid(
+            "this test installation runs no modules",
+        ))
+    }
+
+    async fn install_module_package(
+        &self,
+        _language: sc_module::ModuleLanguage,
+        _source: sc_module::ModuleSource,
+        _location: &str,
+    ) -> Result<sc_module::InstalledPackage> {
+        Err(sc_error::Error::invalid(
+            "this test installation runs no modules",
+        ))
+    }
+
+    async fn reload_modules(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn stream_registry(&self) -> Result<Arc<sc_stream::StreamRegistry>> {
+        Ok(Arc::clone(&self.streams))
+    }
+
+    async fn reload_streams(&self, _catalog: &Catalog) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn model_registry(&self) -> Result<Arc<sc_model::ModelRegistry>> {
+        Ok(Arc::clone(&self.models))
+    }
+
+    async fn dataset_shape(&self, _dataset: &sc_model::Dataset) -> Option<sc_model::DatasetShape> {
+        None
+    }
+
+    async fn build_and_mount(&self, app: sc_app::Application) -> Result<sc_app::BuildReport> {
+        self.built.lock().unwrap().push(app.subdomain.clone());
+        Err(sc_error::Error::invalid(
+            "this test installation builds nothing",
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl DeployHost for Host {
+    async fn reload_all(&self, catalog: &Catalog) -> Vec<String> {
+        let mut problems = Vec::new();
+        if let Err(e) = catalog.reload().await {
+            problems.push(e.causes());
+        }
+        let diverge = self.diverge.lock().unwrap().take();
+        if let Some((app, name)) = diverge {
+            let mut view = sc_viewpattern::load_view(catalog, app, &name)
+                .await
+                .unwrap()
+                .expect("the view to diverge is there");
+            view.description = "changed behind the deploy's back".into();
+            sc_viewpattern::save_view(catalog, &view).await.unwrap();
+        }
+        problems
     }
 }
 
@@ -225,4 +387,74 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+/// A module's table provider, without a module: `@test/feed`'s `Feed`, whose
+/// settings are a URL and a secret token, presenting `title` and `link`.
+pub struct FeedProvider;
+
+impl FeedProvider {
+    /// Install it on `inst`'s catalog, as a server does for its modules.
+    pub async fn install(inst: &Installation) -> Result<()> {
+        inst.catalog
+            .set_table_providers(Arc::new(FeedProvider) as Arc<dyn sc_catalog::TableProviderHost>)?;
+        inst.catalog.reload().await
+    }
+}
+
+#[async_trait::async_trait]
+impl sc_catalog::TableProviderHost for FeedProvider {
+    fn providers(&self) -> Vec<sc_catalog::TableProviderKind> {
+        use sc_types::{BasicType, FormField, TypeRef};
+        vec![sc_catalog::TableProviderKind {
+            module: "@test/feed".into(),
+            provider: "Feed".into(),
+            config_spec: vec![
+                FormField::new("url", TypeRef::Basic(BasicType::Text)),
+                FormField::new("token", TypeRef::Basic(BasicType::Text)).secret(),
+            ],
+        }]
+    }
+
+    async fn fields(&self, _: &str, _: &str, _: &Json) -> Result<Vec<sc_catalog::DataField>> {
+        use sc_types::{BasicType, TypeRef};
+        Ok(vec![
+            sc_catalog::DataField::plain("title", TypeRef::Basic(BasicType::Text)),
+            sc_catalog::DataField::plain("link", TypeRef::Basic(BasicType::Text)),
+        ])
+    }
+
+    async fn rows(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &Json,
+        _: &Json,
+        _: &Json,
+    ) -> Result<Vec<Json>> {
+        Ok(Vec::new())
+    }
+
+    async fn writes(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &Json,
+    ) -> Result<sc_catalog::ProvidedWrites> {
+        Ok(sc_catalog::ProvidedWrites::NONE)
+    }
+
+    async fn insert(&self, _: &str, _: &str, _: &str, _: &Json, _: &Json) -> Result<Json> {
+        Err(sc_error::Error::invalid("read-only"))
+    }
+
+    async fn update(&self, _: &str, _: &str, _: &str, _: &Json, _: &Json, _: &Json) -> Result<()> {
+        Err(sc_error::Error::invalid("read-only"))
+    }
+
+    async fn delete(&self, _: &str, _: &str, _: &str, _: &Json, _: &Json) -> Result<()> {
+        Err(sc_error::Error::invalid("read-only"))
+    }
 }
