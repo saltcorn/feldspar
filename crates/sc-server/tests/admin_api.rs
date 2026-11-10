@@ -749,3 +749,519 @@ async fn the_registry_lists_opens_plans_and_saves() -> sc_error::Result<()> {
     }
     Ok(())
 }
+
+use crate::support::data_dir;
+
+/// Every structure table a server's start bootstraps (`feldspar serve`'s
+/// `connect_catalog`): what an export reads, a deploy writes and a safety
+/// backup holds.
+async fn bootstrap_structure(catalog: &Catalog) -> sc_error::Result<()> {
+    sc_catalog::bootstrap_table_meta(catalog).await?;
+    sc_catalog::bootstrap_field_meta(catalog).await?;
+    sc_catalog::bootstrap_file_stores(catalog).await?;
+    sc_catalog::bootstrap_db_connections(catalog).await?;
+    sc_catalog::bootstrap_code_libraries(catalog).await?;
+    sc_app::bootstrap(catalog).await?;
+    sc_app::bootstrap_translations(catalog).await?;
+    sc_viewpattern::bootstrap(catalog).await?;
+    sc_action::bootstrap_triggers(catalog).await?;
+    sc_workflow::bootstrap_workflow_versions(catalog).await?;
+    sc_stream::bootstrap_streams(catalog).await?;
+    sc_agent::bootstrap_agents(catalog).await?;
+    sc_llm::bootstrap_llm_providers(catalog).await?;
+    sc_llm::bootstrap_llm_models(catalog).await?;
+    sc_mcp::bootstrap_mcp_servers(catalog).await?;
+    sc_module::bootstrap_modules(catalog).await?;
+    sc_dataset::bootstrap_datasets(catalog).await?;
+    sc_model::bootstrap_models(catalog).await?;
+    sc_analytics::bootstrap_workspaces(catalog).await?;
+    sc_check::bootstrap_checklists(catalog).await?;
+    sc_sync::bootstrap(catalog).await?;
+    catalog.reload().await
+}
+
+/// Run git in `dir`, asserting it succeeded.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: plays another instance's admin pushing to the repository"
+)]
+fn git(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(["-c", "user.name=Bea", "-c", "user.email=bea@example.com"])
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "`git {}` failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Source control (APP_SYNC_PROPOSAL §7.2) over the admin API, against a bare
+/// repository on this machine: admin only, link, Status with its diff, Commit,
+/// branches, an incoming change from another clone pulled, planned and
+/// deployed, a discard reviewed and applied, the ledger, the registry's view of
+/// the base and the tip — and none of it offered to the MCP projection.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn source_control_links_commits_pulls_deploys_and_discards() -> sc_error::Result<()> {
+    let scratch = data_dir().join(format!("repos-{}", uuid::Uuid::new_v4().simple()));
+    let remote = scratch.join("structure.git");
+    std::fs::create_dir_all(&remote).unwrap();
+    git(&remote, &["init", "-q", "--bare", "--initial-branch=main"]);
+    let url = format!("file://{}", remote.display());
+
+    let (mut client, _db, catalog) = setup_with_catalog().await?;
+    bootstrap_structure(&catalog).await?;
+    client.send("GET", "/api/auth/status", None).await;
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/first-user",
+            Some(json!({ "email": "admin@example.com", "password": "hunter2pass" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    sc_auth::bootstrap_roles(&catalog).await?;
+    sc_auth::create_user(&catalog, "staff@example.com", "staffpass1", Role::PUBLIC).await?;
+    client.send("POST", "/api/logout", None).await;
+
+    // Nobody signed in, and a non-admin, are refused.
+    let (status, _) = client.send("GET", "/api/source-control/status", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    client
+        .send(
+            "POST",
+            "/api/login",
+            Some(json!({ "email": "staff@example.com", "password": "staffpass1" })),
+        )
+        .await;
+    for (method, path) in [
+        ("GET", "/api/source-control/link"),
+        ("POST", "/api/source-control/deploy/plan"),
+        ("GET", "/api/source-control/deployments"),
+    ] {
+        let (status, _) = client.send(method, path, Some(json!({}))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {path}");
+    }
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/login",
+            Some(json!({ "email": "admin@example.com", "password": "hunter2pass" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Unlinked: Status says so, and has nothing.
+    let (status, body) = client.send("GET", "/api/source-control/status", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["linked"], false);
+    assert_eq!(body["entries"], json!([]));
+
+    // A link to a repository that is not there is refused, and not kept.
+    let (status, body) = client
+        .send(
+            "PUT",
+            "/api/source-control/link",
+            Some(json!({ "url": format!("file://{}/nowhere.git", scratch.display()), "branch": "main" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (_, body) = client.send("GET", "/api/source-control/link", None).await;
+    assert_eq!(body["link"], Value::Null, "{body}");
+
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/source-control/link/test",
+            Some(json!({ "url": url, "branch": "main" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["branches"], json!([]));
+    let (status, body) = client
+        .send(
+            "PUT",
+            "/api/source-control/link",
+            Some(json!({
+                "url": url,
+                "branch": "main",
+                "credential": { "kind": "none" },
+                "policy": { "full_backup": "optional" },
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["base_taken"], true);
+    let (_, body) = client.send("GET", "/api/source-control/link", None).await;
+    assert_eq!(body["link"]["url"], url.as_str(), "{body}");
+    assert_eq!(body["link"]["policy"]["full_backup"], "optional");
+    assert_eq!(body["credential"]["kind"], "none");
+
+    // A table made here is a local change, which stops a deploy.
+    catalog
+        .create_table(
+            "tickets",
+            &[
+                sc_catalog::DataField::plain(
+                    "id",
+                    sc_types::TypeRef::Basic(sc_types::BasicType::Int),
+                )
+                .required()
+                .primary_key()
+                .generated(sc_db::ColumnGenerator::Identity),
+                sc_catalog::DataField::plain(
+                    "title",
+                    sc_types::TypeRef::Basic(sc_types::BasicType::Text),
+                ),
+            ],
+        )
+        .await?;
+    let (status, body) = client.send("GET", "/api/source-control/status", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["linked"], true);
+    let tickets = body["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["key"] == "table:tickets")
+        .cloned()
+        .unwrap_or_else(|| panic!("{body}"));
+    assert_eq!(tickets["class"], "local_new");
+    assert_eq!(tickets["path"], "tables/tickets.json");
+    assert_eq!(tickets["in_registry"], true);
+    assert!(
+        body["deploy_blockers"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("table:tickets")),
+        "{body}"
+    );
+    let (status, diff) = client
+        .send("GET", "/api/source-control/diff?key=table:tickets", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{diff}");
+    assert_eq!(diff["class"], "local_new");
+    assert_eq!(diff["local"]["changes"][0]["path"], "", "{diff}");
+    assert_eq!(diff["local"]["changes"][0]["after"]["name"], "tickets");
+    let (status, plan) = client
+        .send("POST", "/api/source-control/deploy/plan", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{plan}");
+    assert!(
+        plan["blockers"][0]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("uncommitted"),
+        "{plan}"
+    );
+
+    // Commit: needs a message, then pushes everything local.
+    let (status, _) = client
+        .send(
+            "POST",
+            "/api/source-control/commit",
+            Some(json!({ "message": "  " })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, committed) = client
+        .send(
+            "POST",
+            "/api/source-control/commit",
+            Some(json!({ "message": "Add tickets" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{committed}");
+    assert!(
+        committed["entities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("table:tickets")),
+        "{committed}"
+    );
+    let (_, body) = client.send("GET", "/api/source-control/status", None).await;
+    assert_eq!(body["entries"], json!([]), "{body}");
+    assert_eq!(body["tip"], committed["commit"]);
+
+    // Branches: create one from the tip, see it, and switch back.
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/source-control/branch",
+            Some(json!({ "name": "feature", "create": true })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, body) = client
+        .send("GET", "/api/source-control/branches", None)
+        .await;
+    assert_eq!(body["current"], "feature");
+    assert_eq!(body["branches"], json!(["feature", "main"]), "{body}");
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/source-control/branch",
+            Some(json!({ "name": "main" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Another instance's admin describes the table and pushes.
+    let work = scratch.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    git(&work, &["clone", "-q", &url, "."]);
+    let file = work.join("tables/tickets.json");
+    let mut table: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    table["description"] = json!("Support tickets");
+    std::fs::write(&file, sc_sync::render_json(&table)).unwrap();
+    git(&work, &["commit", "-q", "-am", "Describe tickets"]);
+    git(&work, &["push", "-q", "origin", "main"]);
+
+    // Status is of the last pull until Pull.
+    let (_, body) = client.send("GET", "/api/source-control/status", None).await;
+    assert_eq!(body["entries"], json!([]), "{body}");
+    let (status, pulled) = client.send("POST", "/api/source-control/pull", None).await;
+    assert_eq!(status, StatusCode::OK, "{pulled}");
+    assert_eq!(pulled["before"], committed["commit"]);
+    assert_eq!(pulled["forced"], false);
+    let (_, body) = client.send("GET", "/api/source-control/status", None).await;
+    assert_eq!(body["entries"][0]["key"], "table:tickets", "{body}");
+    assert_eq!(body["entries"][0]["class"], "incoming");
+    assert_eq!(body["deploy_blockers"], json!([]));
+    let (_, diff) = client
+        .send("GET", "/api/source-control/diff?key=table:tickets", None)
+        .await;
+    assert_eq!(
+        diff["incoming"]["changes"][0]["path"], "description",
+        "{diff}"
+    );
+    assert_eq!(diff["incoming"]["changes"][0]["after"], "Support tickets");
+
+    // The registry editor sees the base and the tip beside live.
+    let (status, opened) = client
+        .send("GET", "/api/registry/entity?path=tables/tickets.json", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    assert_eq!(opened["sync"]["class"], "incoming", "{opened}");
+    assert_eq!(opened["sync"]["key"], "table:tickets");
+    assert_eq!(opened["sync"]["tip"]["description"], "Support tickets");
+    assert_eq!(opened["sync"]["base"]["description"], "");
+
+    // Deploy: the review, a confirmation of another digest refused as stale,
+    // then the reviewed one applied.
+    let (status, plan) = client
+        .send("POST", "/api/source-control/deploy/plan", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{plan}");
+    assert_eq!(plan["blockers"], json!([]), "{plan}");
+    assert_eq!(plan["commit"], pulled["tip"]);
+    assert_eq!(plan["policy"]["destructive"], "confirm");
+    let ticked: Vec<Value> = plan["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|op| op["ticked"] == true)
+        .map(|op| op["id"].clone())
+        .collect();
+    assert!(!ticked.is_empty(), "{plan}");
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/source-control/deploy",
+            Some(json!({ "commit": plan["commit"], "plan_digest": "not-the-plan", "ticked": ticked })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("stale"),
+        "{body}"
+    );
+    let (status, receipt) = client
+        .send(
+            "POST",
+            "/api/source-control/deploy",
+            Some(json!({ "commit": plan["commit"], "plan_digest": plan["digest"], "ticked": ticked })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    assert_eq!(receipt["result"], "converged", "{receipt}");
+    let (_, body) = client.send("GET", "/api/source-control/status", None).await;
+    assert_eq!(body["entries"], json!([]), "{body}");
+
+    // A table made and then discarded: reviewed, ticked, gone.
+    catalog
+        .create_table(
+            "scratch",
+            &[sc_catalog::DataField::plain(
+                "id",
+                sc_types::TypeRef::Basic(sc_types::BasicType::Int),
+            )
+            .required()
+            .primary_key()
+            .generated(sc_db::ColumnGenerator::Identity)],
+        )
+        .await?;
+    let keys = json!(["table:scratch"]);
+    let (status, plan) = client
+        .send(
+            "POST",
+            "/api/source-control/discard/plan",
+            Some(json!({ "keys": keys })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{plan}");
+    let all: Vec<Value> = plan["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|op| op["id"].clone())
+        .collect();
+    assert!(!all.is_empty(), "{plan}");
+    let (status, receipt) = client
+        .send(
+            "POST",
+            "/api/source-control/discard",
+            Some(json!({ "keys": keys, "plan_digest": plan["digest"], "ticked": all })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    assert_ne!(receipt["result"], "failed", "{receipt}");
+    let (_, body) = client.send("GET", "/api/source-control/status", None).await;
+    assert_eq!(body["entries"], json!([]), "{body}");
+
+    // The ledger has each of them, newest first.
+    let (status, body) = client
+        .send("GET", "/api/source-control/deployments?limit=10", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let kinds: Vec<&str> = body["deployments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["discard", "deploy", "commit"], "{body}");
+    assert_eq!(body["deployments"][2]["summary"]["message"], "Add tickets");
+
+    // Unlinking forgets the link; Status is unlinked again.
+    let (status, _) = client
+        .send("DELETE", "/api/source-control/link", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = client.send("GET", "/api/source-control/status", None).await;
+    assert_eq!(body["linked"], false);
+
+    // Not one of them is offered to an agent.
+    let set = sc_api::admin_endpoints();
+    for name in [
+        "getSyncLink",
+        "setSyncLink",
+        "deleteSyncLink",
+        "generateSyncKey",
+        "testSyncLink",
+        "getSyncStatus",
+        "getSyncEntityDiff",
+        "syncPull",
+        "syncCommit",
+        "planSyncDiscard",
+        "syncDiscard",
+        "listSyncBranches",
+        "switchSyncBranch",
+        "planSyncDeploy",
+        "syncDeploy",
+        "listDeployments",
+    ] {
+        let endpoint = set
+            .iter()
+            .find(|e| e.name == name)
+            .unwrap_or_else(|| panic!("no endpoint {name}"));
+        assert!(endpoint.mcp.is_none(), "{name} is offered to MCP");
+    }
+    std::fs::remove_dir_all(&scratch).ok();
+    Ok(())
+}
+
+/// A file store's synced contents (APP_SYNC_PROPOSAL §3.5) over the admin
+/// API: what `auto` resolves to for a store nothing uses (nothing, with the
+/// warning Status shows), a preview of `include`, setting it, and refusing a
+/// value that is none of the three — admin only.
+#[tokio::test]
+async fn a_file_stores_synced_contents_are_resolved_previewed_and_set() -> sc_error::Result<()> {
+    let (mut client, _db, catalog) = setup_with_catalog().await?;
+    bootstrap_structure(&catalog).await?;
+    client.send("GET", "/api/auth/status", None).await;
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/first-user",
+            Some(json!({ "email": "admin@example.com", "password": "hunter2pass" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let dir = data_dir().join(format!("assets-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (status, store) = client
+        .send(
+            "POST",
+            "/api/file-stores",
+            Some(json!({
+                "name": "assets", "description": "", "backend": "local",
+                "config": { "path": dir.to_string_lossy() }, "min_role": Value::Null,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{store}");
+    let path = format!("/api/file-stores/{}/sync", store["id"].as_str().unwrap());
+
+    let (status, body) = client.send("GET", &path, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["applies"], true);
+    assert_eq!(body["sync_contents"], "auto");
+    assert_eq!(body["synced"], json!([]));
+    assert!(
+        body["warnings"][0]
+            .as_str()
+            .unwrap_or("")
+            .contains("`assets` is not synced"),
+        "{body}"
+    );
+
+    // A preview changes nothing.
+    let (_, body) = client
+        .send("GET", &format!("{path}?contents=include"), None)
+        .await;
+    assert_eq!(body["sync_contents"], "include");
+    assert_eq!(body["synced"], json!([""]), "{body}");
+    let (_, body) = client.send("GET", &path, None).await;
+    assert_eq!(body["sync_contents"], "auto");
+
+    let (status, body) = client
+        .send("PUT", &path, Some(json!({ "sync_contents": "include" })))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["synced"], json!([""]));
+    let (_, body) = client.send("GET", &path, None).await;
+    assert_eq!(body["sync_contents"], "include");
+    assert_eq!(body["warnings"], json!([]));
+    let (status, _) = client
+        .send("PUT", &path, Some(json!({ "sync_contents": "everything" })))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    client.send("POST", "/api/logout", None).await;
+    let (status, _) = client.send("GET", &path, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    for name in ["getFileStoreSync", "setFileStoreSync"] {
+        let set = sc_api::admin_endpoints();
+        assert!(set.iter().find(|e| e.name == name).unwrap().mcp.is_none());
+    }
+    std::fs::remove_dir_all(&dir).ok();
+    Ok(())
+}

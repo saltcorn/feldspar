@@ -37,15 +37,15 @@ const USAGE: &str = "feldspar registry list [KIND] | get ENTRY | \
 
 /// What a `put` or `delete` was told to do with its plan.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct Apply {
-    plan_only: bool,
-    yes: bool,
-    allow_destructive: bool,
+pub(crate) struct Apply {
+    pub(crate) plan_only: bool,
+    pub(crate) yes: bool,
+    pub(crate) allow_destructive: bool,
 }
 
 impl Apply {
     /// Take the flags out of `args`.
-    fn extract(args: Vec<String>) -> (Apply, Vec<String>) {
+    pub(crate) fn extract(args: Vec<String>) -> (Apply, Vec<String>) {
         let mut out = Apply::default();
         let mut rest = Vec::new();
         for arg in args {
@@ -240,11 +240,11 @@ async fn save(
 
 /// What `--yes` confirms: every operation as it is offered, and the ones that
 /// lose data only with `--allow-destructive`. A plan with a blocker is refused.
-fn confirmation(plan: &Plan, apply: Apply) -> Result<Confirm> {
+pub(crate) fn confirmation(plan: &Plan, apply: Apply) -> Result<Confirm> {
     if !plan.blockers.is_empty() {
         let reasons: Vec<&str> = plan.blockers.iter().map(|b| b.message.as_str()).collect();
         return Err(Error::invalid(format!(
-            "--yes applies only a plan with no blockers; nothing was saved: {}",
+            "--yes applies only a plan with no blockers; nothing was applied: {}",
             reasons.join("; ")
         )));
     }
@@ -255,7 +255,7 @@ fn confirmation(plan: &Plan, apply: Apply) -> Result<Confirm> {
         .collect();
     if !destructive.is_empty() && !apply.allow_destructive {
         return Err(Error::invalid(format!(
-            "the plan loses data ({}); nothing was saved. Pass --allow-destructive to include \
+            "the plan loses data ({}); nothing was applied. Pass --allow-destructive to include \
              it — a safety backup is written first",
             destructive
                 .iter()
@@ -273,7 +273,7 @@ fn confirmation(plan: &Plan, apply: Apply) -> Result<Confirm> {
 }
 
 /// The plan, one operation a line, then what blocks it.
-fn print_plan(path: &str, plan: &Plan) {
+pub(crate) fn print_plan(path: &str, plan: &Plan) {
     println!("plan for {path}:");
     if plan.operations.is_empty() {
         println!("  (nothing to do)");

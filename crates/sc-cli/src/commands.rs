@@ -17,5 +17,6 @@ pub(crate) mod module;
 pub(crate) mod python;
 pub(crate) mod registry;
 pub(crate) mod serve;
+pub(crate) mod sync;
 pub(crate) mod trigger;
 pub(crate) mod users;

@@ -42,11 +42,12 @@ use sc_catalog::{Catalog, load_file_store_by_name};
 use sc_error::{Error, Result};
 use sc_files::{GIT_BACKEND, GitRepo, generate_deploy_key_in};
 
-use crate::base::keep_base_files;
+use crate::base::{base_file_bytes, keep_base_files};
 use crate::deploy::{Confirm, Deployer, Receipt, Request, release};
 use crate::diff::{Class, Status, StatusEntry, pin};
 use crate::entity::{Kind, put_entity, remove_entity};
-use crate::export::Mode;
+use crate::entity_diff::{EntityDiff, entity_diff};
+use crate::export::{Mode, export_mode};
 use crate::format::{FORMAT_FILE, StructureFormat};
 use crate::ledger::{Deployment, LedgerKind, Outcome, Source, record, take_lock};
 use crate::link::{
@@ -55,6 +56,7 @@ use crate::link::{
 };
 use crate::mirror::{Mirror, Pulled, short};
 use crate::plan::Plan;
+use crate::stores::StoreWarning;
 use crate::tree::StructureTree;
 
 /// The deploy key's name in `<data dir>/keys`.
@@ -72,6 +74,24 @@ pub struct LinkedStatus {
     pub base_commit: Option<String>,
     /// The three-way comparison.
     pub status: Status,
+    /// What Status warns about the file stores (§3.5): a store nothing
+    /// classifies, user content over a synced directory, a large file.
+    pub warnings: Vec<String>,
+}
+
+/// A registry file's other sides (§7.6): what the base and the branch tip
+/// hold for the entity live has at that path, for the editor's diff tabs and
+/// its three-way view when the entity is in conflict.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Sides {
+    /// What Status says about the entity, when it is one entity.
+    pub class: Option<Class>,
+    /// Its Status key.
+    pub key: Option<String>,
+    /// The file in the base.
+    pub base: Option<serde_json::Value>,
+    /// The file at the branch tip.
+    pub tip: Option<serde_json::Value>,
 }
 
 /// What linking did.
@@ -283,13 +303,72 @@ impl<'a> SourceControl<'a> {
         let tip_commit = mirror.tip().await?;
         let tip = mirror.tree_at(tip_commit.as_deref()).await?;
         let base = self.base().await?;
-        let live = self.deployer.live_in(Mode::Portable).await?;
+        let registries = self.deployer.executor.host.registries()?;
+        let live = export_mode(self.catalog(), &registries, Mode::Portable).await?;
         Ok(LinkedStatus {
-            status: Status::of(&base.tree, &tip, &live),
+            status: Status::of(&base.tree, &tip, &live.tree),
+            warnings: live.warnings.iter().map(StoreWarning::message).collect(),
             link,
             tip: tip_commit,
             base_commit: base.commit,
         })
+    }
+
+    /// One Status entry's diff, field by field, or line by line for a text
+    /// file (`getSyncEntityDiff`). A base file's bytes come from the mirror.
+    pub async fn entity_diff(&self, key: &str) -> Result<EntityDiff> {
+        let link = self.require_link().await?;
+        let mirror = self.mirror(&link)?;
+        let tip = mirror.tree_at(mirror.tip().await?.as_deref()).await?;
+        let base = self.base().await?;
+        let live = self.deployer.live_in(Mode::Portable).await?;
+        let status = Status::of(&base.tree, &tip, &live);
+        let entry = status
+            .entry(key)
+            .ok_or_else(|| Error::not_found(format!("Status has nothing called `{key}`")))?;
+        let bytes = base_file_bytes(mirror.repo(), &status, &[key]).await?;
+        Ok(entity_diff(entry, &|hash| bytes.get(hash).cloned()))
+    }
+
+    /// What the base and the tip hold for the registry file at `path` of the
+    /// instance tree; `None` when the installation is not linked. A file
+    /// holding one entity is followed by that entity, so a rename shows its
+    /// old file; anything else (a list, a settings section) is the same path.
+    pub async fn sides(&self, path: &str) -> Result<Option<Sides>> {
+        let Some(link) = self.link().await? else {
+            return Ok(None);
+        };
+        let mirror = self.mirror(&link)?;
+        let tip = mirror.tree_at(mirror.tip().await?.as_deref()).await?;
+        let base = self.base().await?;
+        let live = self.deployer.live_in(Mode::Portable).await?;
+        let status = Status::of(&base.tree, &tip, &live);
+        let at_path: Vec<&StatusEntry> = status
+            .entries
+            .iter()
+            .filter(|e| e.live.as_ref().is_some_and(|l| l.path == path))
+            .collect();
+        let file = |tree: &StructureTree, side: Option<&crate::entity::Entity>| {
+            tree.json(side.map_or(path, |e| e.path.as_str())).cloned()
+        };
+        Ok(Some(match at_path.as_slice() {
+            [one] if one.live.as_ref().is_some_and(|l| l.id.is_some()) => Sides {
+                class: Some(one.class),
+                key: Some(one.key.clone()),
+                base: one.base.as_ref().and_then(|b| file(&base.tree, Some(b))),
+                tip: one.tip.as_ref().and_then(|t| file(&tip, Some(t))),
+            },
+            entries => Sides {
+                class: entries
+                    .iter()
+                    .map(|e| e.class)
+                    .find(|c| c.shown())
+                    .or(entries.first().map(|e| e.class)),
+                key: (entries.len() == 1).then(|| entries[0].key.clone()),
+                base: file(&base.tree, None),
+                tip: file(&tip, None),
+            },
+        }))
     }
 
     /// Pull: fetch and move the branch to the remote's tip. Live does not

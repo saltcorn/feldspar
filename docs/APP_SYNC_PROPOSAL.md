@@ -393,18 +393,25 @@ Both are additive and created by the bootstrap, so no `sc-migrate` migration is 
 
 Typed, admin-only endpoints:
 
-- `getSyncLink`, `setSyncLink`, `generateSyncKey`, `testSyncLink`
+- `getSyncLink`, `setSyncLink`, `deleteSyncLink`, `generateSyncKey`, `testSyncLink`
 - `getSyncStatus`, `getSyncEntityDiff`
-- `syncPull`, `syncCommit`, `syncDiscard`, `listSyncBranches`, `switchSyncBranch`
+- `syncPull`, `syncCommit`, `planSyncDiscard`, `syncDiscard`, `listSyncBranches`,
+  `switchSyncBranch`
 - `planSyncDeploy`, `syncDeploy`, `listDeployments`
 - `listRegistry`, `getRegistryEntity`, `planRegistrySave`, `registrySave` (§7.6)
+- `getFileStoreSync`, `setFileStoreSync`: a store's `sync_contents` and what it resolves to (§3.5)
+
+They are mounted under `/api/source-control/` (the file store pair under `/api/file-stores/{id}/sync`),
+apart from an application's offline-sync endpoints.
 
 All of them are **excluded from the MCP/agent projection**, like backup and clearAll.
 
 ### 7.3 CLI
 
-`feldspar sync status | pull | commit -m MSG | discard KIND:NAME… | deploy [--plan] [--yes]
-[--allow-destructive] | branch [NAME] [--create]`
+`feldspar sync link URL [--branch B] [--subdirectory DIR] | unlink | status | pull |
+commit -m MSG [KIND:NAME…] [--keep-mine KIND:NAME]… | discard KIND:NAME… [--plan] [--yes]
+[--allow-destructive] | deploy [--plan] [--yes] [--allow-destructive] [--full-backup] |
+branch [NAME] [--create]`
 
 `feldspar registry list [KIND] | get KIND/NAME | put KIND/NAME [--plan] [--yes]
 [--allow-destructive] | delete KIND/NAME …`. `put` reads the JSON from standard input.

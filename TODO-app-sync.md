@@ -187,12 +187,12 @@ Needs S1–S3 and nothing from git, so it comes before the link.
 
 ## S5 — Admin API, UI and CLI (§7.2, §7.3, §7.5)
 
-- [ ] **S5.1** The §7.2 endpoints in `sc_api::admin`, the handlers, the regenerated clients, and
+- [x] **S5.1** The §7.2 endpoints in `sc_api::admin`, the handlers, the regenerated clients, and
   their exclusion from the MCP projection. Tests in `crates/sc-server/tests/admin_api.rs`,
   including that a non-admin is refused and that MCP does not list them.
-- [ ] **S5.2** Add to the Source control screen (R4): link setup, then Status grouped by class with
+- [x] **S5.2** Add to the Source control screen (R4): link setup, then Status grouped by class with
   expandable diffs.
-- [ ] **S5.3** The rest of the Source control screen:
+- [x] **S5.3** The rest of the Source control screen:
   - commit and discard with tick boxes,
   - the branch selector, Pull,
   - Deploy's review, with destructive ticks, typed confirmation and blockers,
@@ -200,9 +200,9 @@ Needs S1–S3 and nothing from git, so it comes before the link.
   - the registry editor's base and tip diff tabs, and its three-way view for merge in editor.
 
   Add locale strings. Puppeteer check of the definition of done's step 4.
-- [ ] **S5.4** `feldspar sync` subcommands (§7.3). Tests: `deploy --plan` prints the plan without
+- [x] **S5.4** `feldspar sync` subcommands (§7.3). Tests: `deploy --plan` prints the plan without
   writing; `--yes` refuses a plan with blockers or with unflagged data-destructive operations.
-- [ ] **S5.5** File store sync in the admin UI: the `sync_contents` setting on a local store's
+- [x] **S5.5** File store sync in the admin UI: the `sync_contents` setting on a local store's
   form, showing what `auto` resolves to and the store's synced directories; `public_url` on a git
   store's form; the §3.5 warnings in Status. Add locale strings.
 

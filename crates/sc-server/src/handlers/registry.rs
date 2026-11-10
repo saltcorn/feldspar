@@ -44,6 +44,21 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let mut out = serde_json::to_value(entity)
                     .map_err(|e| Error::msg(format!("the registry entry `{path}`: {e}")))?;
                 out["schema"] = schema.unwrap_or(Json::Null);
+                // With a link, the base's and the tip's versions, for the
+                // diff tabs and a merge. The registry works without a link
+                // (D7), so a link that cannot be read leaves them out rather
+                // than refusing the entry.
+                let state = HandlerState {
+                    catalog: catalog.clone(),
+                    apps: apps.clone(),
+                };
+                let sides = super::source_control::source(&state, None)?
+                    .sides(path)
+                    .await
+                    .ok()
+                    .flatten();
+                out["sync"] = serde_json::to_value(sides)
+                    .map_err(|e| Error::msg(format!("the registry entry `{path}`: {e}")))?;
                 Ok(HandlerResponse::ok(out))
             }
         }
@@ -92,9 +107,13 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                         .and_then(sc_query::Value::as_text)
                         .map(str::to_owned),
                     source: sc_sync::Source::Ui,
-                    // The policy is stored with the sync link (S4); until
-                    // there is one, the default's.
-                    policy: sc_sync::Policy::default(),
+                    // The policy stored with the sync link, so a save that
+                    // drops data is refused under `destructive: never` as a
+                    // deploy is.
+                    policy: sc_sync::load_link(&catalog)
+                        .await?
+                        .map(|l| l.policy)
+                        .unwrap_or_default(),
                 };
                 let receipt = deployer(&catalog, &apps, Some(ctx.who.editor()))?
                     .edit(&edit, &confirm, &by)

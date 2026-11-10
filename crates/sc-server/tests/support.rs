@@ -56,3 +56,30 @@ pub fn blog_app() -> Application {
         .with_file_store(FileStoreId("apps".to_owned()))
         .with_api(ApiConfig::new("rest", "/api"))
 }
+
+/// This binary's data directory, set once for all of its tests: where a
+/// restore places a store, and where the sync mirror and its key go. Never the
+/// developer's own.
+///
+/// The environment is process-wide and the tests run in parallel, so there is
+/// one, shared: two files each setting their own would move each other's
+/// directory mid-test. Each test works in a subdirectory of its own.
+#[allow(
+    unsafe_code,
+    clippy::disallowed_methods,
+    reason = "the binary's data directory is set once, through the environment the server reads"
+)]
+pub fn data_dir() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        // Never removed (it outlives every test), so a later run clears it.
+        sc_test_harness::sweep_stale_scratch("sc-server-it-data");
+        let dir = std::env::temp_dir().join(format!("sc-server-it-data-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: test-only: written once per binary, under the `OnceLock`,
+        // and never changed after. A concurrent `getenv` in another test is
+        // the test-code race security review 2026-11 (F §1) records.
+        unsafe { std::env::set_var(sc_files::DATA_DIR_ENV, &dir) };
+        dir
+    })
+}

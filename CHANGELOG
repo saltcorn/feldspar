@@ -2,6 +2,92 @@
 
 Changes in reverse chronological order.
 
+## Source control S5: admin API, UI and CLI
+
+Milestone S5 of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` §7.2, §7.3, §7.5): S4's
+`sc_sync::SourceControl` is now reachable from the admin API, the Source control screen and
+`feldspar sync`. §7.2 and §7.3 are amended to list what was built.
+
+- **The admin API** (S5.1, `sc_api::admin::source_control`, `sc-server` `handlers::source_control`),
+  under `/api/source-control/`:
+  - `getSyncLink`, `setSyncLink`, `deleteSyncLink`, `generateSyncKey` and `testSyncLink`;
+  - `getSyncStatus`, with the entries Status shows, the keys that block Deploy (D5) and the file
+    stores' §3.5 warnings, and `getSyncEntityDiff`;
+  - `syncPull`, `syncCommit` (keys and `keep_mine`), `planSyncDiscard`, `syncDiscard`,
+    `listSyncBranches` and `switchSyncBranch` (`create` to branch from the tip);
+  - `planSyncDeploy` (the plan, its commit and the policy), `syncDeploy` and `listDeployments`.
+
+  Like the registry, none is in the MCP projection. A deploy and a discard reproject applications'
+  APIs, as a registry save does. Unlinked, `getSyncStatus` answers `linked: false` rather than an
+  error. `deleteSyncLink` and `planSyncDiscard` were not in §7.2's list: unlinking needed an
+  endpoint, and a discard is reviewed like a deploy, so it needs a plan of its own.
+- **The registry and the link.** `getRegistryEntity` now also returns `sync`: the class, and the
+  base's and tip's versions of the file, for the diff tabs and the merge view. A broken link leaves
+  `sync` out rather than refusing the entry. A registry save now takes the link's policy, so
+  `destructive: never` refuses a save that drops data, as it refuses a deploy.
+- **`SourceControl`**: `LinkedStatus` carries the store warnings, plus `entity_diff` (base files
+  read from the mirror) and `sides` (a registry file's base and tip, following a renamed entity).
+- **The Source control screen** (S5.2, S5.3, `screens/SyncPanels.tsx`, model `structureSync.ts`).
+  Unlinked, it shows Registry and Link setup. Linked, it shows Status, History, Registry and Link
+  setup. Each tab is a route (`#/source-control?tab=…`).
+  - **Link setup**: URL, branch and subdirectory; credentials (none, a generated deploy key with
+    its public half shown, or an HTTPS token sent only when typed); the policy; testing the
+    connection; and unlinking.
+  - **Status**: grouped as Conflict, Local, Incoming and Incoming delete. Each row expands to its
+    diff (incoming and local, field by field, or a unified text diff) and can be opened in the
+    registry. Every local change starts ticked, and a conflict starts unticked. A ticked conflict
+    is *keep mine* on Commit and *discard mine* on Discard, and "Merge in editor" opens the
+    registry's merge view. Also on the tab: the branch selector (switch, or create from the tip),
+    Pull, the commit message, Commit, and Discard (reviewed).
+  - **Deploy**: refused with a sentence naming the uncommitted changes. Its review groups the
+    operations by class, with counts. What loses data starts unticked; ticking it asks for the
+    branch's name to be typed; under `destructive: never` it cannot be ticked at all. Blockers
+    disable the button. The review also offers the full backup when the policy says `optional`,
+    shows progress, then the receipt: applied, deferred, not reached, drift, backups and notes.
+  - **History**: the ledger, with "Restore this version" on a registry save. It opens the file in
+    the registry with its earlier JSON, and saving that is an ordinary save.
+  - **The registry editor**: tabs comparing what is typed with the base and with the branch tip,
+    leaving out this instance's own values. An entity in conflict also gets a Merge tab: the base,
+    the branch's version and this instance's side by side over the editor, and "Start from the
+    branch's version".
+- **`feldspar sync`** (S5.4): `link`, `unlink`, `status`, `pull`, `commit -m MSG [KEY…]
+  [--keep-mine KEY]…`, `discard KEY…`, `deploy [--full-backup]` and `branch [NAME] [--create]`.
+  `discard` and `deploy` print the plan and take `--plan`, `--yes` and `--allow-destructive` as
+  `feldspar registry` does, sharing its rules. Their refusals now say "nothing was applied".
+- **File stores** (S5.5). `getFileStoreSync` and `setFileStoreSync` (`/api/file-stores/{id}/sync`)
+  return and set a store's `sync_contents`, and what it resolves to: the directories committed,
+  those left out, and the warnings. Passing `contents` previews another setting. `updateFileStore`
+  still keeps attributes server-managed. The store form has a Source control card with the
+  setting, a preview as it is changed, and the result. A store whose files are never copied (a git
+  store) says why and asks for a public URL. `public_url` itself was already on the git backend's
+  form, from its `config_spec`. Status shows the §3.5 warnings.
+- 138 new admin strings, translated into ar, de, es, fr and zh-Hans.
+- `crates/sc-server/tests/support.rs` now has one `data_dir()` for the whole `it` binary, which
+  `backup_api` uses too. Two files each setting `SC_DATA_DIR` to a directory of their own would move
+  each other's directory mid-test.
+
+Tests:
+
+- `crates/sc-server/tests/admin_api.rs`:
+  - `source_control_links_commits_pulls_deploys_and_discards`: admin only; a refused link;
+    test, link, Status, a diff, Deploy blocked by an uncommitted change, Commit; a branch created
+    and switched back; another clone's push pulled, diffed, seen by the registry and deployed
+    (with a stale digest refused first); a discard reviewed and applied; the ledger; unlinking.
+    It also checks that none of the 16 endpoints is offered to MCP.
+  - `a_file_stores_synced_contents_are_resolved_previewed_and_set`.
+- `mcp_server.rs` checks that the source-control endpoints are absent from MCP.
+- `crates/sc-cli/tests/sync.rs`, through the real binary:
+  - `--yes` refuses a plan with a blocker (an uncommitted change), and one that drops a field
+    unless `--allow-destructive` is given;
+  - `deploy --plan`, and a deploy without `--yes`, write nothing;
+  - also link, status, commit, pull, discard and branches.
+- `ui/admin/src/structureSync.test.ts` (15).
+- A puppeteer walk of the definition of done's steps 4 and 5 against a real server. B's helpdesk
+  was committed from the screen, and A's change was pushed from a clone. After Pull, Deploy's review
+  showed the field rename (safe, ticked), the view's metadata delete (ticked) and the drop of
+  `old_notes` (data-destructive, unticked). Deployed without the drop, it converged; `old_notes`
+  kept its row, and Status offered it as "Incoming delete".
+
 ## Source control S4: the link and the repository
 
 Milestone S4 of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` §2, §4, §7.1): an installation can

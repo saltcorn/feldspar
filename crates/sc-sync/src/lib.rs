@@ -95,8 +95,8 @@ pub use plan::{Blocker, OpBody, OpClass, Plan, PlannedOp, Step, plan, plan_diges
 pub use registry::{Edit, EditBy, EditPlan, EditReceipt, RegistryEntity, RegistryEntry};
 pub use secrets::Registries;
 pub use source::{
-    CommitReceipt, CommitRequest, DeployPlan, Linked, LinkedStatus, SYNC_KEY_NAME, SourceControl,
-    link_base,
+    CommitReceipt, CommitRequest, DeployPlan, Linked, LinkedStatus, SYNC_KEY_NAME, Sides,
+    SourceControl, link_base,
 };
 pub use stores::{
     ContentClaim, ContentClaimer, LARGE_FILE_BYTES, StoreUses, StoreWarning, SyncedDirs, resolve,

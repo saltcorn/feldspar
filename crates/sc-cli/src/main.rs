@@ -30,6 +30,7 @@ use commands::module::module_command;
 use commands::python::python_command;
 use commands::registry::registry_command;
 use commands::serve::serve_command;
+use commands::sync::sync_command;
 use commands::trigger::trigger_command;
 use commands::users::{add_user_command, delete_user_command, modify_user_command, role_command};
 use sc_error::Result;
@@ -98,6 +99,7 @@ async fn run(args: &[String]) -> Result<()> {
         Some("backup") => backup_command(&args[1..]).await,
         Some("restore") => restore_command(&args[1..]).await,
         Some("registry") => registry_command(&args[1..]).await,
+        Some("sync") => sync_command(&args[1..]).await,
         Some("app") => app_command(&args[1..]).await,
         Some("check") => check_command(&args[1..]).await,
         Some("module") => module_command(&args[1..]).await,
@@ -246,6 +248,16 @@ fn print_usage() {
     eprintln!(
         "  feldspar registry delete ENTRY… [--plan] [--yes] [--allow-destructive] [database flags]"
     );
+    eprintln!(
+        "  feldspar sync link URL [--branch B] [--subdirectory DIR] | unlink | status | pull \
+         [database flags]"
+    );
+    eprintln!("  feldspar sync commit -m MSG [KEY…] [--keep-mine KEY]… [database flags]");
+    eprintln!(
+        "  feldspar sync discard KEY… | deploy [--plan] [--yes] [--allow-destructive] \
+         [--full-backup] [database flags]"
+    );
+    eprintln!("  feldspar sync branch [NAME] [--create] [database flags]");
     eprintln!("  feldspar demo analytics [--replace] [database flags]");
     eprintln!("  feldspar cmdstan status [--cmdstan DIR]");
     eprintln!("  feldspar cmdstan install [--version V] [--dir D] [--jobs J]");
@@ -387,6 +399,21 @@ fn print_usage() {
        applied only with --yes, which refuses a plan with blockers, and one
        that loses data unless --allow-destructive is given (a safety backup
        is written first).
+
+  sync: source control for this installation's structure — what Source
+       control does in the admin UI. `link` links it to a git repository's
+       branch (the credential stored here is used, so generate a deploy key
+       in the UI first for SSH), and `status` compares the base, the branch
+       tip as of the last `pull`, and live, listing each entity by its KEY
+       (table:tickets, view:APP/NAME). `commit` pushes every local change, or
+       the KEYs given; a conflict is committed only with --keep-mine KEY.
+       `deploy` applies the branch tip and `discard` returns KEYs to the
+       base: each prints the plan and applies it only with --yes, which
+       refuses a plan with blockers, and one that loses data unless
+       --allow-destructive is given (a safety backup is written first, and
+       it is also what lifts a `destructive: never` policy). Deploy is
+       refused while there are local changes. `branch` lists the remote's
+       branches, switches to NAME, or creates it from the tip with --create.
 
   app list: every application with its framework and the project directory
        its source is in on this machine; --json prints an array of

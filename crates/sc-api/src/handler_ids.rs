@@ -86,6 +86,27 @@ pub const GET_REGISTRY_ENTITY: HandlerId<AdminOnly> = HandlerId::new("getRegistr
 pub const PLAN_REGISTRY_SAVE: HandlerId<AdminOnly> = HandlerId::new("planRegistrySave");
 pub const REGISTRY_SAVE: HandlerId<AdminOnly> = HandlerId::new("registrySave");
 
+// --- `admin::source_control` ---
+
+pub const GET_SYNC_LINK: HandlerId<AdminOnly> = HandlerId::new("getSyncLink");
+pub const SET_SYNC_LINK: HandlerId<AdminOnly> = HandlerId::new("setSyncLink");
+pub const DELETE_SYNC_LINK: HandlerId<AdminOnly> = HandlerId::new("deleteSyncLink");
+pub const GENERATE_SYNC_KEY: HandlerId<AdminOnly> = HandlerId::new("generateSyncKey");
+pub const TEST_SYNC_LINK: HandlerId<AdminOnly> = HandlerId::new("testSyncLink");
+pub const GET_SYNC_STATUS: HandlerId<AdminOnly> = HandlerId::new("getSyncStatus");
+pub const GET_SYNC_ENTITY_DIFF: HandlerId<AdminOnly> = HandlerId::new("getSyncEntityDiff");
+pub const SYNC_PULL: HandlerId<AdminOnly> = HandlerId::new("syncPull");
+pub const SYNC_COMMIT: HandlerId<AdminOnly> = HandlerId::new("syncCommit");
+pub const PLAN_SYNC_DISCARD: HandlerId<AdminOnly> = HandlerId::new("planSyncDiscard");
+pub const SYNC_DISCARD: HandlerId<AdminOnly> = HandlerId::new("syncDiscard");
+pub const LIST_SYNC_BRANCHES: HandlerId<AdminOnly> = HandlerId::new("listSyncBranches");
+pub const SWITCH_SYNC_BRANCH: HandlerId<AdminOnly> = HandlerId::new("switchSyncBranch");
+pub const PLAN_SYNC_DEPLOY: HandlerId<AdminOnly> = HandlerId::new("planSyncDeploy");
+pub const SYNC_DEPLOY: HandlerId<AdminOnly> = HandlerId::new("syncDeploy");
+pub const LIST_DEPLOYMENTS: HandlerId<AdminOnly> = HandlerId::new("listDeployments");
+pub const GET_FILE_STORE_SYNC: HandlerId<AdminOnly> = HandlerId::new("getFileStoreSync");
+pub const SET_FILE_STORE_SYNC: HandlerId<AdminOnly> = HandlerId::new("setFileStoreSync");
+
 // --- `admin::checklists` ---
 
 pub const LIST_CHECKLISTS: HandlerId<AdminOnly> = HandlerId::new("listChecklists");

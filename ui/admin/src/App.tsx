@@ -1002,7 +1002,14 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
     return <Settings key={path} requestedTab={settingsTabFromPath(path)} />;
   }
   if (path === "/source-control") {
-    return <SourceControlPage key={route} initialPath={query.get("path") ?? undefined} />;
+    return (
+      <SourceControlPage
+        key={route}
+        initialPath={query.get("path") ?? undefined}
+        initialTab={query.get("tab") ?? undefined}
+        merge={query.get("merge") === "1"}
+      />
+    );
   }
   // Settings → Development → Code library (TODO F3.3).
   if (path.startsWith("/code-libraries")) {

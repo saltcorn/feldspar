@@ -1,6 +1,7 @@
 // The Source control screen (APP_SYNC_PROPOSAL §7.5). It is in the sidebar
-// whether or not the installation is linked to a repository; until linking
-// exists (TODO-app-sync S4, S5) it is the Registry tab alone.
+// whether or not the installation is linked to a repository. Unlinked, it is
+// Registry and Link setup; linked, Status and History come first. Status,
+// History, Link setup and the deploy review are `SyncPanels.tsx`.
 //
 // **Registry** (§7.6): every configuration value of the installation, one JSON
 // file of the instance tree at a time. The tree on the left lists the files by
@@ -30,7 +31,7 @@ import Nav from "react-bootstrap/Nav";
 import Row from "react-bootstrap/Row";
 
 import { api, errorMessage } from "../api";
-import type { PlanRegistrySaveResponse } from "../client";
+import type { GetSyncStatusResponse, PlanRegistrySaveResponse } from "../client";
 import { CodeEditor } from "../CodeEditor";
 import { T, useT } from "../i18n";
 import { IconPlus, IconTrash } from "../icons";
@@ -57,21 +58,104 @@ import {
   type RegistryEntry,
   type RegistryReceipt,
 } from "../registry";
+import {
+  classNote,
+  diffLine,
+  groupLabel,
+  jsonChanges,
+  statusGroup,
+  withoutPointers,
+} from "../structureSync";
+import { HistoryTab, LinkTab, StatusTab } from "./SyncPanels";
 
-export function SourceControlPage({ initialPath }: { initialPath?: string }) {
+type Tab = "status" | "history" | "registry" | "link";
+
+export function SourceControlPage({
+  initialPath,
+  initialTab,
+  merge,
+}: {
+  initialPath?: string;
+  initialTab?: string;
+  merge?: boolean;
+}) {
   const { t } = useT();
+  const [status, setStatus] = useState<GetSyncStatusResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab | null>(
+    initialPath ? "registry" : (initialTab as Tab | undefined) ?? null,
+  );
+  // What the registry is to open: a path from Status, or a version from
+  // History to save back.
+  const [target, setTarget] = useState<{ path?: string; merge?: boolean; restore?: unknown } | null>(
+    initialPath ? { path: initialPath, merge } : null,
+  );
+
+  const load = useCallback(async () => {
+    try {
+      setStatus(await api.getSyncStatus());
+      setError(null);
+    } catch (e) {
+      setError(errorMessage(e, t("Could not load Status.")));
+    }
+  }, [t]);
+  useEffect(() => void load(), [load]);
+
+  const linked = status?.linked ?? false;
+  const tabs: Tab[] = linked ? ["status", "history", "registry", "link"] : ["registry", "link"];
+  const shown: Tab = tab && tabs.includes(tab) ? tab : tabs[0];
+  const label = (k: Tab) =>
+    k === "status" ? t("Status") : k === "history" ? t("History") : k === "registry" ? t("Registry") : t("Link setup");
+
   return (
     <>
       <PageHeader pretitle={t("Administration")} title={t("Source control")} />
       <PageBody>
-        <Nav variant="tabs" className="mb-3" activeKey="registry">
-          <Nav.Item>
-            <Nav.Link eventKey="registry" href="#/source-control">
-              <T text="Registry" />
-            </Nav.Link>
-          </Nav.Item>
+        <Nav variant="tabs" className="mb-3" activeKey={shown}>
+          {tabs.map((k) => (
+            <Nav.Item key={k}>
+              {/* A tab is a route of its own (the page is keyed by it), so it
+                  can be linked to and survives a reload. */}
+              <Nav.Link eventKey={k} href={`#/source-control?tab=${k}`} data-testid={`sync-tab-${k}`}>
+                {label(k)}
+                {k === "status" && status && status.entries.length > 0 && (
+                  <StatusBadge tone="blue" className="ms-2">
+                    {status.entries.length}
+                  </StatusBadge>
+                )}
+              </Nav.Link>
+            </Nav.Item>
+          ))}
         </Nav>
-        <RegistryTab initialPath={initialPath} />
+        {error && <Alert variant="danger">{error}</Alert>}
+        {shown === "status" && status && (
+          <StatusTab
+            status={status}
+            onReload={load}
+            onOpenRegistry={(path, m) => {
+              setTarget({ path, merge: m });
+              setTab("registry");
+            }}
+          />
+        )}
+        {shown === "history" && (
+          <HistoryTab
+            onRestore={(path, value) => {
+              setTarget({ path, restore: value });
+              setTab("registry");
+            }}
+          />
+        )}
+        {shown === "registry" && (
+          <RegistryTab
+            key={JSON.stringify(target)}
+            initialPath={target?.path}
+            merge={target?.merge}
+            restore={target?.restore}
+            onSaved={load}
+          />
+        )}
+        {shown === "link" && <LinkTab onLinked={load} />}
       </PageBody>
     </>
   );
@@ -86,8 +170,22 @@ interface PendingSave {
   version: string | null;
 }
 
-function RegistryTab({ initialPath }: { initialPath?: string }) {
+/** Which view of the open entry the editor card shows. */
+type EditorView = "json" | "base" | "tip" | "merge";
+
+function RegistryTab({
+  initialPath,
+  merge,
+  restore,
+  onSaved,
+}: {
+  initialPath?: string;
+  merge?: boolean;
+  restore?: unknown;
+  onSaved?: () => Promise<void>;
+}) {
   const { t } = useT();
+  const [view, setView] = useState<EditorView>(merge ? "merge" : "json");
   const [entries, setEntries] = useState<RegistryEntry[] | null>(null);
   const [filter, setFilter] = useState("");
   const [open, setOpen] = useState<RegistryEntity | null>(null);
@@ -111,14 +209,16 @@ function RegistryTab({ initialPath }: { initialPath?: string }) {
   }, [t]);
 
   const openPath = useCallback(
-    async (path: string) => {
+    async (path: string, draft?: unknown) => {
       setError(null);
       setReceipt(null);
       setFresh(null);
       try {
         const entity = await api.getRegistryEntity({ path });
         setOpen(entity);
-        setText(draftText(entity.value));
+        setText(draftText(draft === undefined ? entity.value : draft));
+        // Merge is for an entity in conflict; another entry opens as JSON.
+        setView((v) => (v === "merge" && entity.sync?.class !== "conflict" ? "json" : v));
         window.history.replaceState(null, "", `#/source-control?path=${encodeURIComponent(path)}`);
       } catch (e) {
         setError(errorMessage(e, t("Could not open {path}.", { path })));
@@ -129,8 +229,10 @@ function RegistryTab({ initialPath }: { initialPath?: string }) {
 
   useEffect(() => {
     void load();
-    if (initialPath) void openPath(initialPath);
-  }, [load, openPath, initialPath]);
+    // "Restore this version" opens the file with the version to restore in
+    // the editor, and saving it is an ordinary save, reviewed as one.
+    if (initialPath) void openPath(initialPath, restore);
+  }, [load, openPath, initialPath, restore]);
 
   const groups = useMemo(() => groupEntries(entries ?? [], filter, t), [entries, filter, t]);
   const editing = open ?? null;
@@ -179,6 +281,7 @@ function RegistryTab({ initialPath }: { initialPath?: string }) {
     setReceipt(done);
     setFresh(null);
     await load();
+    await onSaved?.();
     if (done.path) {
       const entity = await api.getRegistryEntity({ path: done.path }).catch(() => null);
       setOpen(entity);
@@ -292,15 +395,64 @@ function RegistryTab({ initialPath }: { initialPath?: string }) {
                   })}
                 </p>
               )}
-              <CodeEditor
-                key={current.path}
-                id="registry-editor"
-                language="json"
-                value={text}
-                onChange={setText}
-                jsonSchema={(editing?.schema as object | null | undefined) ?? null}
-                height="60vh"
-              />
+              {editing?.sync && !fresh && (
+                <Nav variant="pills" className="mb-2 small" activeKey={view}>
+                  {(
+                    [
+                      ["json", t("JSON")],
+                      ["base", t("Against the base")],
+                      ["tip", t("Against the branch tip")],
+                      ...(editing.sync.class === "conflict" || merge ? [["merge", t("Merge")]] : []),
+                    ] as [EditorView, string][]
+                  ).map(([k, l]) => (
+                    <Nav.Item key={k}>
+                      <Nav.Link
+                        as="button"
+                        type="button"
+                        className={view === k ? undefined : "bg-transparent"}
+                        eventKey={k}
+                        onClick={() => setView(k)}
+                        data-testid={`registry-view-${k}`}
+                      >
+                        {l}
+                      </Nav.Link>
+                    </Nav.Item>
+                  ))}
+                  {editing.sync.class && editing.sync.class !== "in_sync" && (
+                    <span className="ms-auto align-self-center text-secondary">
+                      {groupLabel(statusGroup(editing.sync.class), t)} · {classNote(editing.sync.class, t)}
+                    </span>
+                  )}
+                </Nav>
+              )}
+              {editing?.sync && (view === "base" || view === "tip") && (
+                <SideAgainst
+                  side={view}
+                  other={view === "base" ? editing.sync.base : editing.sync.tip}
+                  text={text}
+                  instanceOnly={instanceOnlyKeys(editing)}
+                />
+              )}
+              {editing?.sync && view === "merge" && (
+                <MergeView
+                  base={editing.sync.base}
+                  tip={editing.sync.tip}
+                  text={text}
+                  instanceOnly={instanceOnlyKeys(editing)}
+                  onTakeTip={() => setText(draftText(editing.sync?.tip ?? null))}
+                />
+              )}
+              {(view === "json" || view === "merge" || !editing?.sync) && (
+                <CodeEditor
+                  key={current.path}
+                  id="registry-editor"
+                  language="json"
+                  value={text}
+                  onChange={setText}
+                  jsonSchema={(editing?.schema as object | null | undefined) ?? null}
+                  height={view === "merge" ? "40vh" : "60vh"}
+                />
+              )}
               <p className="small text-secondary mt-2 mb-0">
                 <T text="A secret shows as the mask: leave it to keep the stored value, or type a new one to replace it." />
               </p>
@@ -341,6 +493,102 @@ function RegistryTab({ initialPath }: { initialPath?: string }) {
         />
       )}
     </Row>
+  );
+}
+
+/** What is typed, compared with the base's or the tip's version (this
+ * instance's own values left out of both, since they never travel). */
+function SideAgainst({
+  side,
+  other,
+  text,
+  instanceOnly,
+}: {
+  side: "base" | "tip";
+  other: unknown;
+  text: string;
+  instanceOnly: readonly string[];
+}) {
+  const { t } = useT();
+  const parsed = parseDraft(text);
+  if (!parsed.ok) return <Alert variant="warning">{t("The JSON does not parse: {error}", { error: parsed.error })}</Alert>;
+  if (other === null || other === undefined)
+    return (
+      <p className="text-secondary small" data-testid="registry-against">
+        {side === "base" ? t("The base has no such file.") : t("The branch tip has no such file.")}
+      </p>
+    );
+  const changes = jsonChanges(other, withoutPointers(parsed.value, instanceOnly));
+  return (
+    <div data-testid="registry-against">
+      {changes.length === 0 ? (
+        <p className="text-secondary small">
+          {side === "base" ? t("What is typed is the same as the base.") : t("What is typed is the same as the branch tip.")}
+        </p>
+      ) : (
+        <>
+          <p className="small text-secondary mb-1">
+            {side === "base" ? t("From the base to what is typed:") : t("From the branch tip to what is typed:")}
+          </p>
+          <ul className="small" style={{ maxHeight: "60vh", overflow: "auto" }}>
+            {changes.map((c) => (
+              <li key={c.path}>
+                <code>{diffLine(c)}</code>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Merge in editor (§4): the base, the branch's version and this instance's
+ * side by side, over the editor that holds the merged result. */
+function MergeView({
+  base,
+  tip,
+  text,
+  instanceOnly,
+  onTakeTip,
+}: {
+  base: unknown;
+  tip: unknown;
+  text: string;
+  instanceOnly: readonly string[];
+  onTakeTip: () => void;
+}) {
+  const { t } = useT();
+  const parsed = parseDraft(text);
+  const mine = parsed.ok ? withoutPointers(parsed.value, instanceOnly) : null;
+  const pane = (title: string, value: unknown, testid: string) => (
+    <Col md={4}>
+      <div className="small fw-bold text-secondary">{title}</div>
+      <pre
+        className="small border rounded p-2 mb-0"
+        style={{ maxHeight: "22vh", overflow: "auto" }}
+        data-testid={testid}
+      >
+        {value === null || value === undefined ? t("(none)") : JSON.stringify(value, null, 2)}
+      </pre>
+    </Col>
+  );
+  return (
+    <div className="mb-2" data-testid="registry-merge">
+      <Row className="g-2 mb-2">
+        {pane(t("Base"), base, "merge-base")}
+        {pane(t("The branch (theirs)"), tip, "merge-tip")}
+        {pane(t("Here (mine)"), mine, "merge-mine")}
+      </Row>
+      <div className="d-flex gap-2 align-items-center mb-2">
+        <Button size="sm" variant="outline-secondary" onClick={onTakeTip}>
+          <T text="Start from the branch's version" />
+        </Button>
+        <span className="small text-secondary">
+          <T text="Edit the result below and save it. Then commit it from Status with the conflict ticked, which keeps it over the branch's." />
+        </span>
+      </div>
+    </div>
   );
 }
 

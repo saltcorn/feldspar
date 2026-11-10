@@ -124,12 +124,24 @@ fn registry_entity_fields() -> Vec<StructField> {
         .chain([
             StructField::new("value", TypeSchema::json()),
             StructField::new("schema", TypeSchema::optional(TypeSchema::json())),
+            // With a sync link, what the base and the branch tip hold for it,
+            // for the diff tabs and, in a conflict, the three-way merge;
+            // null when the installation is not linked.
+            StructField::new(
+                "sync",
+                TypeSchema::optional(TypeSchema::struct_of([
+                    StructField::new("class", TypeSchema::optional(TypeSchema::text())),
+                    StructField::new("key", TypeSchema::optional(TypeSchema::text())),
+                    StructField::new("base", TypeSchema::optional(TypeSchema::json())),
+                    StructField::new("tip", TypeSchema::optional(TypeSchema::json())),
+                ])),
+            ),
         ])
         .collect()
 }
 
 /// One planned operation (`sc_sync::PlannedOp`).
-fn planned_op_schema() -> TypeSchema {
+pub(super) fn planned_op_schema() -> TypeSchema {
     TypeSchema::struct_of([
         StructField::new("id", TypeSchema::text()),
         StructField::new("step", TypeSchema::text()),
@@ -144,7 +156,7 @@ fn planned_op_schema() -> TypeSchema {
     ])
 }
 
-fn blocker_schema() -> TypeSchema {
+pub(super) fn blocker_schema() -> TypeSchema {
     TypeSchema::struct_of([
         StructField::new("op", TypeSchema::optional(TypeSchema::text())),
         StructField::new("entity", TypeSchema::optional(TypeSchema::text())),
@@ -152,7 +164,7 @@ fn blocker_schema() -> TypeSchema {
     ])
 }
 
-fn failure_schema() -> TypeSchema {
+pub(super) fn failure_schema() -> TypeSchema {
     TypeSchema::struct_of([
         StructField::new("op", TypeSchema::text()),
         StructField::new("summary", TypeSchema::text()),
@@ -160,10 +172,10 @@ fn failure_schema() -> TypeSchema {
     ])
 }
 
-/// A save's receipt (`sc_sync::EditReceipt`).
-fn registry_receipt_schema() -> TypeSchema {
+/// What a deploy, a discard or a save applied (`sc_sync::Receipt`).
+pub(super) fn receipt_fields() -> Vec<StructField> {
     let texts = || TypeSchema::array(TypeSchema::text());
-    TypeSchema::struct_of([
+    vec![
         StructField::new("id", TypeSchema::uuid()),
         // `converged`, `drifted` or `failed`.
         StructField::new("result", TypeSchema::text()),
@@ -174,10 +186,16 @@ fn registry_receipt_schema() -> TypeSchema {
         StructField::new("needs_secret", TypeSchema::array(failure_schema())),
         StructField::new("notes", texts()),
         StructField::new("drift", texts()),
-        // The safety backup's file, when the save dropped data.
+        // The safety backup's file, when the plan dropped data.
         StructField::new("backups", texts()),
         StructField::new("needs_secrets", texts()),
         StructField::new("needs_credentials", texts()),
+    ]
+}
+
+/// A save's receipt (`sc_sync::EditReceipt`).
+fn registry_receipt_schema() -> TypeSchema {
+    TypeSchema::struct_of(receipt_fields().into_iter().chain([
         // Where the entity is now (a rename moves it); null once deleted.
         StructField::new("path", TypeSchema::optional(TypeSchema::text())),
         StructField::new("stored", TypeSchema::optional(TypeSchema::json())),
@@ -191,5 +209,5 @@ fn registry_receipt_schema() -> TypeSchema {
                 StructField::new("after", TypeSchema::optional(TypeSchema::json())),
             ])),
         ),
-    ])
+    ]))
 }

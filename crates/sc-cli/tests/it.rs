@@ -61,6 +61,8 @@ mod serve;
 mod setup;
 #[path = "sqlite_primary.rs"]
 mod sqlite_primary;
+#[path = "sync.rs"]
+mod sync;
 #[path = "users.rs"]
 mod users;
 #[path = "version.rs"]
