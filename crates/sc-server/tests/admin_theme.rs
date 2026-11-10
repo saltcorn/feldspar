@@ -128,9 +128,12 @@ fn the_sidebar_folds_the_way_tabler_folds_it() {
         app.contains("onClick={toggleFolded}") && app.contains("aria-pressed={folded}"),
         "the sidebar should have a button that toggles the fold"
     );
-    // Folded, a link's icon is all there is to go on.
+    // Folded, a link's icon is all there is to go on. The hover label is the
+    // name in the reader's language, the same text as the (collapsed) title.
     assert!(
-        app.contains("title={folded ? item.label : undefined}"),
+        app.contains("const label = navLabel(item.label, t);")
+            && app.contains("title={folded ? label : undefined}")
+            && app.contains(r#"<span className="nav-link-title">{label}</span>"#),
         "a folded nav link should carry its name as a hover label"
     );
 

@@ -25,6 +25,24 @@ server's `--max-upload-bytes` (default 256 MiB) caps every slot and nothing said
   `the_file_s_upload_ceiling_becomes_the_flag` (sc-cli), and additions to
   `app_uploads::a_slots_limit_is_enforced_up_front_and_mid_stream` and
   `mcp_server::a_trigger_is_exposed_on_an_app_and_removed_over_mcp`.
+  
+## Folded-sidebar test follows the translated nav label
+
+`admin_theme::the_sidebar_folds_the_way_tabler_folds_it` still looked for
+`title={folded ? item.label : undefined}` in `ui/admin/src/App.tsx`, but the nav link now shows
+its name in the reader's language (`const label = navLabel(item.label, t)`) and uses that for
+both the title and the hover label. The test now checks for the translated label in both places.
+Test-only change.
+
+## Credits tests no longer race the clock
+
+`credits::a_rollover_carries_what_an_expired_bucket_held` failed under a loaded parallel run: its
+bucket expired 4 s after creation, and when the grant and debit took longer than that, the debit
+landed after expiry as debt, so the balance was −40 instead of zero.
+`the_soonest_expiring_bucket_is_spent_first…` had the same race (1.5 s and 800 ms expiries). Both
+now grant with a long expiry and move it into the past in the database (`expire_bucket` in
+`crates/sc-auth/tests/credits.rs`) instead of sleeping. Test-only change; the ledger is
+unchanged.
 
 ## Security hardening H8: RLS as a hard boundary
 
