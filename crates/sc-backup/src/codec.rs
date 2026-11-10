@@ -165,6 +165,72 @@ pub fn field_kind_json(kind: &DataFieldKind) -> Json {
     }
 }
 
+/// One constraint as [`constraint_json`] writes it, keeping the name it had — a
+/// restored or deployed constraint reports itself by the same name a violation
+/// would have named before. Shared by a restore and a structure deploy.
+pub fn constraint_from_body(obj: &Map<String, Json>) -> Result<TableConstraint> {
+    let text = |key: &str| {
+        obj.get(key)
+            .and_then(Json::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    let fields: Vec<String> = obj
+        .get("fields")
+        .and_then(Json::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Json::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let type_name = obj
+        .get("type")
+        .and_then(Json::as_str)
+        .ok_or_else(|| Error::invalid("a constraint entry needs a `type`"))?;
+    let kind = match type_name {
+        "unique" => ConstraintKind::Unique { fields },
+        "index" if fields.is_empty() => {
+            return Err(Error::invalid(
+                "an index over an expression is not one this restore can recreate; \
+                 add it by hand",
+            ));
+        }
+        "index" => ConstraintKind::Index {
+            fields,
+            expression: None,
+            method: text("method").unwrap_or_else(|| "btree".to_owned()),
+        },
+        "full_text_search" => ConstraintKind::FullTextSearch {
+            language: text("language").unwrap_or_else(|| "english".to_owned()),
+        },
+        "vector_index" => ConstraintKind::VectorIndex {
+            field: fields
+                .into_iter()
+                .next()
+                .ok_or_else(|| Error::invalid("a vector index entry needs its `fields`"))?,
+        },
+        "formula" => ConstraintKind::Formula {
+            formula: text("formula")
+                .ok_or_else(|| Error::invalid("a row constraint entry needs a `formula`"))?,
+        },
+        other => {
+            return Err(Error::invalid(format!(
+                "`{other}` is not a constraint type"
+            )));
+        }
+    };
+    let name = obj
+        .get("name")
+        .and_then(Json::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let mut constraint = TableConstraint::new(name, kind);
+    constraint.error_message = text("error_message");
+    Ok(constraint)
+}
+
 /// Parse the optional `kind` object of a create/update request into a
 /// [`DataFieldKind`], defaulting to `Plain` when absent or null.
 pub fn parse_field_kind(obj: &Map<String, Json>) -> Result<DataFieldKind> {

@@ -152,7 +152,7 @@ pub use password_tokens::{
 pub use roles::{
     COL_ATTRIBUTES as COL_ROLE_ATTRIBUTES, COL_DESCRIPTION as COL_ROLE_DESCRIPTION,
     COL_NAME as COL_ROLE_NAME, ROLES_TABLE, RoleDef, bootstrap_roles, delete_role, list_roles,
-    load_role, save_role,
+    load_role, save_role, users_with_role,
 };
 pub use second_factor::{
     ATTR_REQUIRE_SECOND_FACTOR, Attempt, AttemptPermit, CODE_DIGITS, MAX_GUESSES, PendingChallenge,

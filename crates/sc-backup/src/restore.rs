@@ -37,9 +37,7 @@ use std::sync::Arc;
 
 use sc_access::rows;
 use sc_api::schema_edit;
-use sc_catalog::{
-    Catalog, ConstraintKind, DataFieldKind, Table, TableConstraint, load_file_store_by_name,
-};
+use sc_catalog::{Catalog, DataFieldKind, Table, load_file_store_by_name};
 use sc_db::{ColumnGenerator, SchemaChange};
 use sc_error::{Error, Result};
 use sc_query::{Expr, Insert, Statement};
@@ -1220,7 +1218,7 @@ async fn restore_constraints(
             continue;
         }
         let what = format!("constraint `{constraint_name}` on `{name}`");
-        let constraint = match constraint_from_backup(obj) {
+        let constraint = match crate::codec::constraint_from_body(obj) {
             Ok(constraint) => constraint,
             Err(e) => {
                 report.skipped(format!("{what}: {}", e.causes()));
@@ -1240,72 +1238,6 @@ async fn restore_constraints(
         .map(|_| what.clone());
         report.outcome(&what, result);
     }
-}
-
-/// One constraint out of a backup's `table.json`, keeping the name it had — a
-/// restored constraint reports itself by the same name a violation would have
-/// named before the backup was taken.
-fn constraint_from_backup(obj: &Map<String, Json>) -> Result<TableConstraint> {
-    let text = |key: &str| {
-        obj.get(key)
-            .and_then(Json::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-    };
-    let fields: Vec<String> = obj
-        .get("fields")
-        .and_then(Json::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Json::as_str)
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default();
-    let type_name = obj
-        .get("type")
-        .and_then(Json::as_str)
-        .ok_or_else(|| Error::invalid("a constraint entry needs a `type`"))?;
-    let kind = match type_name {
-        "unique" => ConstraintKind::Unique { fields },
-        "index" if fields.is_empty() => {
-            return Err(Error::invalid(
-                "an index over an expression is not one this restore can recreate; \
-                 add it by hand",
-            ));
-        }
-        "index" => ConstraintKind::Index {
-            fields,
-            expression: None,
-            method: text("method").unwrap_or_else(|| "btree".to_owned()),
-        },
-        "full_text_search" => ConstraintKind::FullTextSearch {
-            language: text("language").unwrap_or_else(|| "english".to_owned()),
-        },
-        "vector_index" => ConstraintKind::VectorIndex {
-            field: fields
-                .into_iter()
-                .next()
-                .ok_or_else(|| Error::invalid("a vector index entry needs its `fields`"))?,
-        },
-        "formula" => ConstraintKind::Formula {
-            formula: text("formula")
-                .ok_or_else(|| Error::invalid("a row constraint entry needs a `formula`"))?,
-        },
-        other => {
-            return Err(Error::invalid(format!(
-                "`{other}` is not a constraint type"
-            )));
-        }
-    };
-    let name = obj
-        .get("name")
-        .and_then(Json::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    let mut constraint = TableConstraint::new(name, kind);
-    constraint.error_message = text("error_message");
-    Ok(constraint)
 }
 
 async fn add_field(catalog: &Catalog, table: &str, field: &Map<String, Json>) -> Result<String> {

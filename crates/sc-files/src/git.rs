@@ -401,6 +401,25 @@ impl GitRepo {
         })
     }
 
+    /// A repository that is no file store's: its working-tree directory, the
+    /// remote, the branch and the key that reaches it, given directly. What the
+    /// sync mirror is (APP_SYNC_PROPOSAL §2), which is configured with the link
+    /// rather than as a store.
+    pub fn new(
+        root: impl Into<PathBuf>,
+        url: Option<String>,
+        branch: Option<String>,
+        key_path: Option<PathBuf>,
+    ) -> GitRepo {
+        let text = |v: Option<String>| v.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+        GitRepo {
+            root: root.into(),
+            url: text(url),
+            branch: text(branch),
+            key_path,
+        }
+    }
+
     /// The working tree's directory — where the clone is or will be.
     pub fn root(&self) -> &Path {
         &self.root
@@ -433,6 +452,124 @@ impl GitRepo {
             .await?;
         let hash = out.output.trim();
         Ok((out.success && !hash.is_empty()).then(|| hash.to_owned()))
+    }
+
+    /// Keep `files` (each a path and its bytes) reachable from `refname`, as one
+    /// commit whose tree holds exactly them, and return that commit.
+    ///
+    /// What lets the sync mirror restore a base version of a store file after
+    /// the remote was force-pushed and the commit that had it is gone
+    /// (APP_SYNC_PROPOSAL §4): the base records each file's blob hash, and this
+    /// ref is what keeps the blob from being garbage-collected. The ref is
+    /// local and never pushed. The blobs are written without filters, so each
+    /// one's hash is git's blob hash of the bytes as they are.
+    pub async fn record_blobs(
+        &self,
+        refname: &'static str,
+        files: &[(String, Vec<u8>)],
+    ) -> Result<String> {
+        self.require_cloned()?;
+        let scratch = self
+            .root
+            .join(".git")
+            .join(format!("feldspar-blobs-{}", uuid::Uuid::new_v4().simple()));
+        tokio::fs::create_dir_all(&scratch)
+            .await
+            .with_context(|| format!("create {}", scratch.display()))?;
+        let result = self.record_blobs_in(&scratch, refname, files).await;
+        let _ = tokio::fs::remove_dir_all(&scratch).await;
+        result
+    }
+
+    async fn record_blobs_in(
+        &self,
+        scratch: &Path,
+        refname: &'static str,
+        files: &[(String, Vec<u8>)],
+    ) -> Result<String> {
+        // The bytes go to numbered scratch files, so no path a store holds is
+        // ever a path on this disk.
+        let mut hashes = Vec::with_capacity(files.len());
+        for (chunk_index, chunk) in files.chunks(200).enumerate() {
+            let mut hash = self.git(LOCAL_GIT);
+            hash.args(["hash-object", "-w", "--no-filters"]);
+            for (i, (_, bytes)) in chunk.iter().enumerate() {
+                let file = scratch.join(format!("{chunk_index}-{i}"));
+                tokio::fs::write(&file, bytes)
+                    .await
+                    .with_context(|| format!("write {}", file.display()))?;
+                hash.operand(Operand::path(&file));
+            }
+            let out = self.raw(hash, "hash-object").await?;
+            hashes.extend(String::from_utf8_lossy(&out).lines().map(str::to_owned));
+        }
+        if hashes.len() != files.len() {
+            return Err(Error::msg(format!(
+                "git hash-object gave {} hashes for {} files",
+                hashes.len(),
+                files.len()
+            )));
+        }
+        let index = scratch.join("index");
+        for (chunk, chunk_hashes) in files.chunks(200).zip(hashes.chunks(200)) {
+            let mut add = self.git(LOCAL_GIT);
+            add.index_file(&index).args(["update-index", "--add"]);
+            for ((path, _), hash) in chunk.iter().zip(chunk_hashes) {
+                add.flag_value("--cacheinfo", format!("100644,{hash},{path}"));
+            }
+            self.raw(add, "update-index").await?;
+        }
+        let mut write = self.git(LOCAL_GIT);
+        write.index_file(&index).arg("write-tree");
+        let tree = String::from_utf8_lossy(&self.raw(write, "write-tree").await?)
+            .trim()
+            .to_owned();
+        let mut commit = self.git(LOCAL_GIT);
+        commit
+            .args([
+                "-c",
+                "user.name=Feldspar",
+                "-c",
+                "user.email=feldspar@localhost",
+                "commit-tree",
+                "-m",
+                "feldspar base",
+            ])
+            .positional(Operand::new(tree.as_str())?);
+        let commit = String::from_utf8_lossy(&self.raw(commit, "commit-tree").await?)
+            .trim()
+            .to_owned();
+        let mut update = self.git(LOCAL_GIT);
+        update
+            .args(["update-ref", refname])
+            .positional(Operand::new(commit.as_str())?);
+        self.raw(update, "update-ref").await?;
+        Ok(commit)
+    }
+
+    /// The bytes of the blob `hash`, or `None` when the repository does not
+    /// have it.
+    pub async fn read_blob(&self, hash: &str) -> Result<Option<Vec<u8>>> {
+        if !self.is_cloned() || hash.len() < 4 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Ok(None);
+        }
+        let mut cat = self.git(LOCAL_GIT);
+        cat.args(["cat-file", "blob"])
+            .positional(Operand::new(hash)?);
+        let output = cat.output().await.map_err(Error::from)?;
+        Ok(output.status.success().then_some(output.stdout))
+    }
+
+    /// Run `git`, and return its stdout, or fail with what it said.
+    async fn raw(&self, git: Git, what: &str) -> Result<Vec<u8>> {
+        let output = git.output().await.map_err(Error::from)?;
+        if !output.status.success() {
+            return Err(Error::msg(format!(
+                "git {what} failed: {}",
+                combined(&output.stdout, &output.stderr)
+            )));
+        }
+        Ok(output.stdout)
     }
 
     /// Clone the remote into the working-tree directory, unless the directory

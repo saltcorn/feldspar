@@ -85,21 +85,21 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## S2 — Status and the planner (§4, §5)
 
-- [ ] **S2.1** The three-way diff over (base, tip, live), matching per §3.2. It gives one class per
+- [x] **S2.1** The three-way diff over (base, tip, live), matching per §3.2. It gives one class per
   entity, as in §4's table. Unit tests: one per row of the table, plus a rename by id, and a name
   match with a different id.
-- [ ] **S2.2** Field-level diff for one entity (`getSyncEntityDiff`'s payload). Unit test.
-- [ ] **S2.3** The planner: from a target tree, it gives the ordered operations of §6 step 8, each
+- [x] **S2.2** Field-level diff for one entity (`getSyncEntityDiff`'s payload). Unit test.
+- [x] **S2.3** The planner: from a target tree, it gives the ordered operations of §6 step 8, each
   with its §5 class and default tick, plus the plan digest. Unit tests per class. The digest changes
   when live or the tip changes, and not otherwise.
-- [ ] **S2.4** "Can fail" validation and blockers. Run the `schema_edit` batches with
+- [x] **S2.4** "Can fail" validation and blockers. Run the `schema_edit` batches with
   `dry_run: true`, and turn a failure into a blocker that carries the reason. Also block on missing
   secrets the plan depends on, on unsupported changes, on a git store whose pin changes while it has
   uncommitted or unpushed work, and on an application built from a new git store that cannot be
   cloned. Tests: making a field with NULLs required blocks with the row count; an SQL type change
   blocks with the add-migrate-drop suggestion; a pin change on a store with unpushed commits blocks
   and names the store.
-- [ ] **S2.5** Files and pins in the diff (§3.5, §4). Store files are entities keyed by store and
+- [x] **S2.5** Files and pins in the diff (§3.5, §4). Store files are entities keyed by store and
   path, compared by hash; the base keeps their blob hashes, reachable under `refs/feldspar/base`. A
   git store's moved pin is a non-blocking local change, and a conflict on the pin alone resolves to
   the tip. A text diff for text files in `getSyncEntityDiff`. Tests: a moved pin does not block

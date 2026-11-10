@@ -6,11 +6,17 @@
 #[path = "fixture.rs"]
 mod fixture;
 
+#[path = "base.rs"]
+mod base;
+
 #[path = "export.rs"]
 mod export;
 
 #[path = "identity.rs"]
 mod identity;
+
+#[path = "plan.rs"]
+mod plan;
 
 #[path = "stores.rs"]
 mod stores;

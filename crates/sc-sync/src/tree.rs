@@ -33,6 +33,19 @@ pub enum TreeEntry {
     /// A file's bytes: a local store's synced file, or anything else in the
     /// repository that is not one of the tree's JSON files.
     File(Vec<u8>),
+    /// A store file known only by its git blob hash (and size, when known).
+    ///
+    /// What a **base** holds for a store file (APP_SYNC_PROPOSAL §4): the base
+    /// is kept in the database, and keeping every synced file's bytes there as
+    /// well would double them; the bytes are in the sync mirror, reachable from
+    /// its base ref. A tree with blobs in it is compared and planned against,
+    /// never written to a repository.
+    Blob {
+        /// The git blob hash.
+        hash: String,
+        /// The size in bytes.
+        size: Option<u64>,
+    },
 }
 
 impl TreeEntry {
@@ -41,6 +54,9 @@ impl TreeEntry {
         match self {
             TreeEntry::Json(value) => render_json(value),
             TreeEntry::File(bytes) => bytes.clone(),
+            // Not the file: a blob's bytes are elsewhere. Its hash stands in for
+            // them in a digest, which is all a base's rendering is used for.
+            TreeEntry::Blob { hash, .. } => format!("blob {hash}").into_bytes(),
         }
     }
 
@@ -48,7 +64,7 @@ impl TreeEntry {
     pub fn as_json(&self) -> Option<&Json> {
         match self {
             TreeEntry::Json(value) => Some(value),
-            TreeEntry::File(_) => None,
+            TreeEntry::File(_) | TreeEntry::Blob { .. } => None,
         }
     }
 }
@@ -77,6 +93,37 @@ impl StructureTree {
     /// Put a file's bytes at `path`, replacing whatever was there.
     pub fn insert_file(&mut self, path: impl Into<String>, bytes: Vec<u8>) {
         self.entries.insert(path.into(), TreeEntry::File(bytes));
+    }
+
+    /// Put a store file known only by its blob hash at `path`.
+    pub fn insert_blob(&mut self, path: impl Into<String>, hash: &str, size: Option<u64>) {
+        self.entries.insert(
+            path.into(),
+            TreeEntry::Blob {
+                hash: hash.to_owned(),
+                size,
+            },
+        );
+    }
+
+    /// This tree with every file's bytes replaced by its blob hash: what a base
+    /// keeps of it.
+    pub fn with_blob_hashes(&self) -> StructureTree {
+        let entries = self
+            .entries
+            .iter()
+            .map(|(path, entry)| {
+                let entry = match entry {
+                    TreeEntry::File(bytes) if is_store_file(path) => TreeEntry::Blob {
+                        hash: crate::entity::blob_hash(bytes),
+                        size: Some(bytes.len() as u64),
+                    },
+                    other => other.clone(),
+                };
+                (path.clone(), entry)
+            })
+            .collect();
+        StructureTree { entries }
     }
 
     /// Remove what is at `path`, returning it.

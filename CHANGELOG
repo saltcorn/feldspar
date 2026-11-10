@@ -2,6 +2,83 @@
 
 Changes in reverse chronological order.
 
+## Source control S2: Status and the planner
+
+Milestone S2 of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` §4, §5): the three-way diff that
+Status shows, and the planner that turns live into a target tree as classified, ordered
+operations. Nothing applies a plan yet (S3), and no endpoint, screen or command uses either yet
+(S5). No database change.
+
+- **Entities** (`sc_sync::entity`): a tree read as entities, each with a kind, an id where the kind
+  has one, a name, and for a child a scope (its application or store). `roles.json` and
+  `modules.json` are one entity per item (by role level, by package), a settings section one per
+  key, a store's synced file one per file (by store and path, compared by its git blob hash). A
+  matched entity's id, and its table's field ids, are not differences, so a name match with
+  another id is the same entity (§3.2). `put_entity` / `remove_entity` write one entity back into
+  a tree, shared files included.
+- **Status** (S2.1, `sc_sync::diff`): `Status::of(base, tip, live)` matches the three trees by id
+  and then by name, within a kind and within the parent's match (so `list` in one application is
+  never matched to `list` in another), id matches before name matches, and gives each entity one
+  class per §4's table: in sync, incoming, incoming delete, incoming new, local change, local
+  delete, local new, conflict. `adopt` marks an in-sync entity whose base should take the tip's
+  version (both sides made the same change, or it was built the same on both before linking).
+  A git store's pin is weighed apart (S2.5): a pin moved here, with nothing else changed, is the
+  new class `PinMoved` — local, committed like any change, but not one of `deploy_blockers()`;
+  a conflict on the pin alone resolves to the tip.
+- **Entity diff** (S2.2, `sc_sync::entity_diff`): `getSyncEntityDiff`'s payload — the base, tip
+  and live versions and the field-level changes base → tip and base → live, at readable paths
+  (`fields[status].label`; list elements matched by id, then name). A text store file gets a
+  unified line diff instead (with the `similar` crate, already in the workspace), a binary one is
+  marked binary.
+- **The planner** (S2.3, `sc_sync::plan`): `plan(live, target, base)` gives the operations that
+  turn live into the target, in §6 step 8's order (modules, roles, connections/stores/libraries
+  and store files, tables, LLM providers and MCP servers, triggers/streams/agents, analytics,
+  applications and their views/pages/library/translations, settings, then every delete in
+  reverse order, children first). Each has a stable id (`drop_field:table:tickets#status`), a §5
+  class and its default tick: safe and metadata deletes and can-fail operations ticked,
+  data-destructive ones unticked, unsupported ones blocked. Tables are `schema_edit` batches:
+  `RenameTable` alone, field renames by id as `AlterField { name }`, creates with the given table
+  and field ids, key and calculated fields after every table exists, Saltcorn-made constraints
+  added, replaced or dropped; a can-fail operation also carries its check batch, written in live's
+  names. Every other kind is a whole-entity put or delete for its save path, a name match carrying
+  live's id. Unsupported: an SQL type change (with the add, copy, drop suggestion), a primary key
+  change, a generated or calculated/stored change, a move between databases, a JSON file this
+  build does not know. Also from the trees alone: entities created with a sentinel secret
+  (`needs_secrets`), a table on a connection this instance has no password for (blocker), new git
+  stores that cannot be cloned anonymously (`needs_credentials`) and an application built from
+  one (blocker), and a newer format (blocker). With a base, a git store whose pin the target did
+  not change keeps live's pin. The digest is SHA-256 over the live, target and base tree digests,
+  so it changes exactly when one of them does.
+- **Validation** (S2.4, `sc_sync::validate`): each can-fail operation's check batch goes through
+  `schema_edit::apply` with `dry_run: true`, and a refusal becomes a blocker with schema_edit's
+  own sentence ("`tickets.status` cannot be made required: 2 rows have no value in it…"); a role
+  delete that users hold becomes data-destructive and unticked, with the count; a pin change on
+  a git store with uncommitted changes, or commits its remote does not have, is blocked naming the
+  store.
+- **The base's files** (S2.5, `sc_sync::base`): `StructureTree` has a hash-only entry,
+  `TreeEntry::Blob`, and `with_blob_hashes()`; the base keeps only each store file's blob hash.
+  `keep_base_files` records the files under `refs/feldspar/base` in the sync mirror (a local ref,
+  never pushed) so they survive a force-push and `gc`; `base_file_bytes` reads them back and
+  `discard_target` builds the tree a Discard plans.
+- **`sc-files`**: `GitRepo::new` (a repository that is no store's, for the mirror; S4.2 adds
+  credentials), `GitRepo::record_blobs` (blobs written with `--no-filters` into a scratch index,
+  `write-tree`, `commit-tree`, `update-ref`) and `GitRepo::read_blob`, all through `sc_proc::Git`.
+- **`sc-backup`**: the constraint parser moved from `restore.rs` into the codec as
+  `constraint_from_body`, shared by a restore and the planner. **`sc-auth`**: `users_with_role`
+  is public.
+- Known gaps, left for S3: `schema_edit` does not refuse adding a *required* field to a table with
+  rows before its DDL, so that case is classified can-fail but the dry run passes it, and the
+  database refuses it at apply time; field order is not planned (a field added to an existing
+  table goes last); a provided table is a whole-entity put for S3 to route to its provider.
+- Tests: unit tests for every row of §4's table, a rename by id, a name match with another id, an
+  id match taking priority, scoping by parent, the pin rules, the field-level and line diffs, and
+  per planner class, order and digest; integration tests (`crates/sc-sync/tests/plan.rs`,
+  `base.rs`) for a required field over NULLs blocking with the count, an SQL type change, the
+  definition of done's step-4 plan from a real export (a field rename, a ticked view delete, an
+  unticked drop of a table with rows), a held role, a git store with unpushed commits and with
+  uncommitted work, and Discard restoring a store file from the mirror after the remote was
+  force-pushed and garbage-collected.
+
 ## Source control S1: the structure tree and its export
 
 Milestone S1 of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` §3): an installation's structure

@@ -40,18 +40,24 @@ sc-action-builtins.workspace = true
 sc-agent-builtins.workspace = true
 
 sc-i18n.workspace = true
+# The planner's table operations are `schema_edit` batches, and its can-fail
+# operations are dry-run through it.
+sc-api.workspace = true
 
 serde.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 uuid.workspace = true
-# The tree's digest.
+# The tree's and a plan's digest.
 sha2.workspace = true
+# A store file is compared by its git blob hash, which is SHA-1.
+sha1.workspace = true
+# A text store file's line diff.
+similar.workspace = true
 # A local store's synced directories are walked with git's own ignore rules.
 ignore = "0.4"
 
 [dev-dependencies]
 sc-test-harness = { workspace = true, features = ["catalog"] }
-sc-api.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [[test]]
