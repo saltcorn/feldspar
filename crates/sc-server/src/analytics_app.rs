@@ -162,6 +162,7 @@ impl FrameworkFactory for AnalyticsFactory {
                           only the rows their role and the ownership formulas let them."
                 .to_owned(),
             serves_ui: true,
+            settings_tabs: None,
         }
     }
 

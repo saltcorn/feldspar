@@ -102,7 +102,18 @@ impl ModuleFrameworks {
                     continue;
                 }
                 match declaration(framework, &module) {
-                    Ok(decl) => frameworks.push((module.clone(), decl)),
+                    Ok((decl, tab_problems)) => {
+                        if !tab_problems.is_empty() {
+                            issues.push(format!(
+                                "the framework `{}` declared by {module} is shown with the \
+                                 default settings tabs, because its `settings_tabs` cannot be \
+                                 used: {}",
+                                framework.name,
+                                tab_problems.join("; ")
+                            ));
+                        }
+                        frameworks.push((module.clone(), decl));
+                    }
                     Err(e) => issues.push(format!(
                         "the framework `{}` declared by {module} is not available: {e}",
                         framework.name
@@ -280,8 +291,9 @@ fn declared_file(
     })
 }
 
-/// Translate one manifest entry into the declaration `sc-app` installs.
-fn declaration(manifest: &FrameworkManifest, module: &str) -> Result<FrameworkDecl> {
+/// Translate one manifest entry into the declaration `sc-app` installs, with
+/// why its settings tabs were dropped, if they were.
+fn declaration(manifest: &FrameworkManifest, module: &str) -> Result<(FrameworkDecl, Vec<String>)> {
     let name = manifest.name.trim();
     if name.is_empty() {
         return Err(Error::invalid(
@@ -296,7 +308,9 @@ fn declaration(manifest: &FrameworkManifest, module: &str) -> Result<FrameworkDe
     let (mut config_spec, _) =
         config_fields_to_form_fields(&manifest.config_fields, &format!("the framework `{name}`"));
     let options = target_options(&manifest.targets, &mut config_spec, name)?;
-    Ok(FrameworkDecl {
+    let (settings_tabs, tab_problems) = settings_tabs(&manifest.settings_tabs);
+    let decl = FrameworkDecl {
+        settings_tabs,
         name: name.to_owned(),
         module: module.to_owned(),
         label: manifest.label.trim().to_owned(),
@@ -311,7 +325,35 @@ fn declaration(manifest: &FrameworkManifest, module: &str) -> Result<FrameworkDe
         },
         checks: checks(&manifest.checks)?,
         scaffolds: manifest.scaffolds,
-    })
+    };
+    Ok((decl, tab_problems))
+}
+
+/// A declared `settings_tabs`: the layout and no problems, `None` and no
+/// problems when there is none, or `None` and why when it cannot be used.
+///
+/// Checked as a framework **without views** — a module framework serves a
+/// built bundle, so it has no Views, Pages or Library screens to place.
+fn settings_tabs(declared: &Json) -> (Option<Vec<sc_app::SettingsTab>>, Vec<String>) {
+    if declared.is_null() {
+        return (None, Vec::new());
+    }
+    match serde_json::from_value::<Vec<sc_app::SettingsTab>>(declared.clone()) {
+        Ok(tabs) => {
+            let problems = sc_app::settings_tabs_problems(&tabs, false);
+            if problems.is_empty() {
+                (Some(tabs), problems)
+            } else {
+                (None, problems)
+            }
+        }
+        Err(e) => (
+            None,
+            vec![format!(
+                "it is not a list of {{ id, label, groups }} tabs ({e})"
+            )],
+        ),
+    }
 }
 
 /// The declared checks: script names, each once. Refused when the module loads,
@@ -742,14 +784,53 @@ mod tests {
         assert!(
             declaration(&manifest(none), "@feldspar/vue")
                 .unwrap()
+                .0
                 .checks
                 .is_empty()
         );
     }
 
     #[test]
+    fn declared_settings_tabs_are_kept_or_dropped_with_the_reason() {
+        let mut with_tabs = vue();
+        with_tabs["settings_tabs"] = json!([
+            { "id": "framework", "label": "Framework", "groups": ["identity", "framework", "settings"] },
+            { "id": "mobile", "label": "Mobile", "groups": ["settings", "targets"] }
+        ]);
+        let (decl, problems) = declaration(&manifest(with_tabs), "@feldspar/vue").unwrap();
+        assert!(problems.is_empty(), "{problems:?}");
+        let tabs = decl.info().settings_tabs.expect("the layout is kept");
+        assert_eq!(tabs[1].id, "mobile");
+        assert_eq!(tabs[1].groups, ["settings", "targets"]);
+
+        // A layout with a problem costs the framework its layout, not the
+        // framework: it is still declared, with the default tabs, and the
+        // reason is the module's issue.
+        let mut bad = vue();
+        bad["settings_tabs"] = json!([{ "id": "x", "label": "X", "groups": ["views"] }]);
+        let (decl, problems) = declaration(&manifest(bad), "@feldspar/vue").unwrap();
+        assert!(decl.settings_tabs.is_none());
+        let problems = problems.join("; ");
+        assert!(
+            problems.contains("only a framework with views"),
+            "{problems}"
+        );
+        assert!(problems.contains("does not hold `identity`"), "{problems}");
+
+        let mut not_a_list = vue();
+        not_a_list["settings_tabs"] = json!({ "id": "x" });
+        let (decl, problems) = declaration(&manifest(not_a_list), "@feldspar/vue").unwrap();
+        assert!(decl.settings_tabs.is_none());
+        assert_eq!(problems.len(), 1);
+
+        // None declared is the default, and no issue.
+        let (decl, problems) = declaration(&manifest(vue()), "@feldspar/vue").unwrap();
+        assert!(decl.settings_tabs.is_none() && problems.is_empty());
+    }
+
+    #[test]
     fn a_declaration_becomes_the_registry_entry_sc_app_installs() {
-        let decl = declaration(&manifest(vue()), "@feldspar/vue").unwrap();
+        let decl = declaration(&manifest(vue()), "@feldspar/vue").unwrap().0;
         assert_eq!(decl.name, "vue");
         assert_eq!(decl.module, "@feldspar/vue");
         assert_eq!(decl.label, "Vue");
@@ -832,7 +913,9 @@ mod tests {
                 ]
             }
         });
-        let decl = declaration(&manifest(with_options), "@feldspar/vue").unwrap();
+        let decl = declaration(&manifest(with_options), "@feldspar/vue")
+            .unwrap()
+            .0;
         // Appended to the framework's own settings, so they are stored and
         // validated like them…
         let names: Vec<&str> = decl.config_spec.iter().map(|f| f.name()).collect();
@@ -898,7 +981,9 @@ mod tests {
                 "artifact": "{{ project }}/android/app-release.apk"
             }
         });
-        let decl = declaration(&manifest(with_targets), "@feldspar/vue").unwrap();
+        let decl = declaration(&manifest(with_targets), "@feldspar/vue")
+            .unwrap()
+            .0;
         assert_eq!(decl.targets.len(), 1);
         let config = [
             ("store".to_owned(), json!("apps")),
@@ -915,6 +1000,7 @@ mod tests {
         assert!(
             declaration(&manifest(vue()), "@feldspar/vue")
                 .unwrap()
+                .0
                 .targets
                 .is_empty()
         );
@@ -930,7 +1016,7 @@ mod tests {
                 "env": { "ANDROID_HOME": " /opt/sdk ", "JAVA_HOME": "", "EXTRA": null }
             }
         });
-        let decl = declaration(&manifest(with_env), "@feldspar/vue").unwrap();
+        let decl = declaration(&manifest(with_env), "@feldspar/vue").unwrap().0;
         let config = [("store".to_owned(), json!("apps"))].into_iter().collect();
         let env = decl.target_spec("android", &config).unwrap().env;
         assert_eq!(
@@ -961,7 +1047,9 @@ mod tests {
                 "options": [{ "name": "keystore_password", "type": "String", "input_type": "password" }]
             }
         });
-        let decl = declaration(&manifest(with_secret), "@feldspar/vue").unwrap();
+        let decl = declaration(&manifest(with_secret), "@feldspar/vue")
+            .unwrap()
+            .0;
         let config = |password: &str| -> sc_types::Attrs {
             [
                 ("store".to_owned(), json!("apps")),
@@ -1003,7 +1091,7 @@ mod tests {
                 }
             }
         });
-        let decl = declaration(&manifest(with_ops), "@feldspar/vue").unwrap();
+        let decl = declaration(&manifest(with_ops), "@feldspar/vue").unwrap().0;
         let op = &decl.targets[0].operations[0];
         assert_eq!(op.name, "generate_keystore");
         assert_eq!(op.label, "Generate a keystore");
@@ -1066,7 +1154,9 @@ mod tests {
                 ]
             }
         });
-        let decl = declaration(&manifest(with_requires), "@feldspar/vue").unwrap();
+        let decl = declaration(&manifest(with_requires), "@feldspar/vue")
+            .unwrap()
+            .0;
         let requires = &decl.targets[0].requires;
         assert_eq!(
             requires[0].kind,
@@ -1137,7 +1227,7 @@ mod tests {
     fn a_framework_that_declares_no_runtime_gets_no_generated_client() {
         let mut plain = vue();
         plain["build"]["runtime"] = Json::Null;
-        let decl = declaration(&manifest(plain), "@feldspar/vue").unwrap();
+        let decl = declaration(&manifest(plain), "@feldspar/vue").unwrap().0;
         let config = [("store".to_owned(), json!("apps"))].into_iter().collect();
         assert_eq!(decl.runtime_dir(&config).unwrap(), None);
         assert_eq!(decl.client_path(&config).unwrap(), None);
@@ -1147,7 +1237,7 @@ mod tests {
     fn a_malformed_csp_directive_is_dropped_rather_than_widening_anything() {
         let mut odd = vue();
         odd["csp"] = json!({ "img-src": "not a list", "connect-src": ["'self'"] });
-        let decl = declaration(&manifest(odd), "@feldspar/vue").unwrap();
+        let decl = declaration(&manifest(odd), "@feldspar/vue").unwrap().0;
         let policy = decl.default_csp();
         assert!(!policy.directives.contains_key("img-src"));
         assert_eq!(policy.directives["connect-src"], ["'self'"]);

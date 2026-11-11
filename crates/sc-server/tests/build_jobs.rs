@@ -76,6 +76,7 @@ fn remote_framework() -> FrameworkDecl {
         builder_prompt: None,
         checks: Vec::new(),
         scaffolds: false,
+        settings_tabs: None,
         targets: vec![TargetTemplate {
             name: "remote".to_owned(),
             label: "Remote bundle".to_owned(),

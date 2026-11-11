@@ -547,6 +547,79 @@ command uses it yet (S5).
   derivation table; `sc-config`'s `only_localisation_and_maps_are_portable`; and an assertion in
   `git_store_api::a_new_application_can_ask_for_a_new_local_store`.
 
+## Application settings in tabs the framework declares, saved as you edit (UX2.1, UX2.2)
+
+An application's Settings tab held its whole record: identity, framework, build targets, tables,
+triggers, streams, APIs, static directories, upload slots, agents, CSP, roles and development
+options. It is now split into tabs, and **the framework declares them**.
+
+- **Groups and layouts.** Each part of the form is a named group (`identity`, `framework`,
+  `tables`, `csp`, …), and so is each of the application's screens (`views`, `pages`,
+  `library`, `translations`). A layout is a list of tabs, each with an id, a label and its groups
+  in order; `settings` marks where the framework's own settings go (`sc_app::SettingsTab`,
+  `crates/sc-app/src/settings_tabs.rs`). A setting names its tab with `tab` (`FormField::tab`).
+  In a module, a `section_header` with a `tab` places its whole section, and a framework
+  declares `settings_tabs` next to its `config_fields`.
+- **The layouts.** The default is Framework, Data, Triggers & Streams, API, Security,
+  Development, Translations. Saltcorn UI declares seven tabs instead of the eleven the default
+  would give it: Site, Views, Pages, Library, Data, Users & Security, and Advanced, which also
+  holds the translations editor. Its settings are placed on Site (site name, menu, home pages,
+  layouts, locale, languages), Data (external tables' read roles, search) and Users & Security
+  (login form, sign-up, new accounts' role, push policy). `plugins/react-native` adds a Mobile
+  tab for its native apps' settings and its Android and iOS builds.
+- **Nothing can be lost.** `resolve_settings_tabs` puts every group a layout leaves out on a tab.
+  A layout with a problem (an unknown or repeated group, a view screen sharing a tab, a first tab
+  without `identity` and `framework`) is replaced by the default, and the module's card says why
+  (`settings_tabs_problems`). The server sends the resolved layout on each framework
+  (`listFrameworks`) and each application row (`settings_tabs`). Each `config_spec` entry now
+  has `tab`.
+- **Routes.** The first tab is `#/applications/<id>/edit` as before, and the others are
+  `edit/<tab>`. A view screen's tab is still its own route. The old `app-settings` link opens
+  the first tab, where a Saltcorn UI application's site settings are now.
+- **Autosave.** An existing application has no Save button. Switches, choices and buttons save
+  at once, typing after a 0.7 s pause, and the subdomain when its box is left: a new subdomain
+  moves the application, so `my` on the way to `myapp` is not saved. Saves run one at a time and
+  edits made during one go in the next. A body equal to the stored one is not sent. A refused
+  save keeps the edits, shows the server's reason, and is retried on the next change. What is
+  waiting is saved on leaving the screen. The header shows "Saving…", "Saved" or "Not saved"
+  (`ui/admin/src/autosave.ts`).
+- **Creating.** A new application shows its first tab plus its tables, because a scaffolded
+  project is generated against them, and a **Create application** button. Everything else takes
+  its defaults (REST at `/api`, the framework's CSP) and is on the tabs once the application
+  exists. This is a change: tables were the only other part of the form that could be filled in
+  at creation and still matters then.
+- Stored data is unchanged and no migration is needed. The tutorials that walked through the
+  old form are updated (React todo, GraphQL, REST queries, code framework, Saltcorn UI,
+  triggers).
+
+Tests: `crates/sc-app/src/settings_tabs.rs` (default, completion, problems, JSON),
+`crates/sc-module/src/spec.rs` (`a_tab_on_a_section_header_places_its_section`),
+`crates/sc-module/src/frameworks.rs` (`declared_settings_tabs_are_kept_or_dropped_with_the_reason`),
+`crates/sc-viewpattern/src/framework.rs` (`the_settings_are_seven_tabs_and_every_setting_names_one`),
+`crates/sc-module/tests/bundled_react_native.rs` (the Mobile tab),
+`crates/sc-server/tests/saltcorn_ui_admin_api.rs` (layouts over HTTP),
+`ui/admin/src/settingsTabs.test.ts`, `ui/admin/src/autosave.test.ts`, `ui/admin/src/views.test.ts`.
+
+## Admin UI: custom queries as a list with an editor per query
+
+An application's custom queries (Application settings → APIs) are now a table, with the number
+of queries in the card's header. Each row shows the query's name with its description cut to
+two lines (the whole of it on hover), its method as a coloured badge (reads green, writes blue,
+changes yellow, deletes red) beside its path, its language and minimum role as badges (Public
+in yellow), and a chip per parameter, an optional one marked `?`. A failed Check shows on its
+row.
+
+Clicking a row opens that query's editor in the card, with "All queries" to go back, so one
+query is inspected at a time instead of every field of every query stacked on the page. The
+editor has two columns. On the left: a request line (the method, coloured, joined to the path),
+the name and description, and framed panels for the code (with its language), the parameters
+(a table with a Required switch per row) and the declared answer. On the right, a settings
+panel that stays in view while scrolling: language, minimum role, body and response formats,
+rate limit. Check and Remove query sit in a footer. "Add query" opens the new query's editor
+straight away.
+
+Tests: `ui/admin/src/screens/CustomQueries.test.tsx`, `ui/admin/src/customQueries.test.ts`.
+
 ## Upload ceiling: settable in feldspar.toml, and visible to the app tools
 
 From user feedback: an app's upload slot was given `max_bytes` 10 GiB through `update_application`,
@@ -570,6 +643,24 @@ server's `--max-upload-bytes` (default 256 MiB) caps every slot and nothing said
   `the_file_s_upload_ceiling_becomes_the_flag` (sc-cli), and additions to
   `app_uploads::a_slots_limit_is_enforced_up_front_and_mid_stream` and
   `mcp_server::a_trigger_is_exposed_on_an_app_and_removed_over_mcp`.
+  
+## Folded-sidebar test follows the translated nav label
+
+`admin_theme::the_sidebar_folds_the_way_tabler_folds_it` still looked for
+`title={folded ? item.label : undefined}` in `ui/admin/src/App.tsx`, but the nav link now shows
+its name in the reader's language (`const label = navLabel(item.label, t)`) and uses that for
+both the title and the hover label. The test now checks for the translated label in both places.
+Test-only change.
+
+## Credits tests no longer race the clock
+
+`credits::a_rollover_carries_what_an_expired_bucket_held` failed under a loaded parallel run: its
+bucket expired 4 s after creation, and when the grant and debit took longer than that, the debit
+landed after expiry as debt, so the balance was −40 instead of zero.
+`the_soonest_expiring_bucket_is_spent_first…` had the same race (1.5 s and 800 ms expiries). Both
+now grant with a long expiry and move it into the past in the database (`expire_bucket` in
+`crates/sc-auth/tests/credits.rs`) instead of sleeping. Test-only change; the ledger is
+unchanged.
 
 ## Security hardening H8: RLS as a hard boundary
 

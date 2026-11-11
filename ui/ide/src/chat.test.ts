@@ -86,6 +86,7 @@ function application(
     builds: true,
     installs: true,
     has_views: false,
+    settings_tabs: [],
     targets: [],
     claude: { available: true, reason: null },
   };

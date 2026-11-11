@@ -938,6 +938,24 @@ routes call it).
   Development tab shows which `claude` runs and its version, or why there is none. The child
   gets the executable's directory first on its `PATH`, so an nvm install finds its `node`.
 
+## UX2 — Application settings in tabs, declared by the framework, saved as you edit
+
+The application form put every part of the record — identity, framework, tables, triggers,
+APIs, CSP, roles, development options — on one Settings tab.
+
+- [x] **UX2.1** Settings tabs declared by the framework: every part of the form is a named group
+  (`identity`, `framework`, `tables`, …, and the screens `views`, `pages`, `library`,
+  `translations`), and a framework declares its tabs (id, label, groups in order). A framework's
+  own settings name their tab with `tab` (a `section_header` with `tab` applies to its section).
+  The default layout is Framework, Data, Triggers & Streams, API, Security, Development,
+  Translations; Saltcorn UI declares Site, Views, Pages, Library, Data, Users & Security,
+  Advanced. A group a layout leaves out goes on its last tab; a bad layout falls back to the
+  default. Old `…/edit` and `…/app-settings` links keep working.
+- [x] **UX2.2** Autosave: an existing application saves as it is edited (toggles and selects at
+  once, text after a pause, the subdomain on blur), one save at a time, with the state in the
+  header. A new application shows its first tab and its tables (a scaffold is generated against
+  them) and a Create button.
+
 ---
 
 ## Open questions

@@ -27,6 +27,7 @@ import type {
   ViewReferencesResponse,
 } from "./client";
 import { roleLabel, type Roles } from "./roles";
+import { settingsTabLinks } from "./settingsTabs";
 import { buildConfig, initialValues, readConfig } from "./settings";
 
 export type AppItem = ListApplicationsResponse[number];
@@ -38,13 +39,10 @@ export type References = ViewReferencesResponse;
 
 export type PageReferences = PageReferencesResponse;
 
-export type AppTab =
-  | "settings"
-  | "views"
-  | "pages"
-  | "library"
-  | "translations"
-  | "app-settings";
+/** Which of an application's tabs a screen is: a settings tab's id, or the
+ * screen it shows (`views`, `translations`), which highlights the tab holding
+ * it (see `activeTabId`). */
+export type AppTab = string;
 
 /** Where the page is, as much of `window.location` as a link needs. */
 export type Here = { protocol: string; host: string };
@@ -60,41 +58,12 @@ export const NO_PAGES =
   "This application has no pages. Its views are still served at /view/<name>; a " +
   "page places views on one screen and can be each role's home page.";
 
-/** The tabs an application's screen has, in order. */
+/** The tabs an application's screen has, in order: its framework's settings
+ * tabs (TODO UX2.1), as the server sends them on the application. */
 export function appTabs(
-  app: Pick<AppItem, "id" | "has_views">,
-): { id: AppTab; label: string; href: string }[] {
-  const base = `#/applications/${encodeURIComponent(app.id)}`;
-  const tabs: { id: AppTab; label: string; href: string }[] = [
-    { id: "settings", label: "Settings", href: `${base}/edit` },
-    // Every application has strings a person reads, whatever its framework
-    // writes them in, so this tab is not conditional on one (§16.1, 4.4).
-    { id: "translations", label: "Translations", href: `${base}/translations` },
-  ];
-  if (app.has_views) {
-    tabs.push({ id: "views", label: "Views", href: `${base}/views` });
-    tabs.push({ id: "pages", label: "Pages", href: `${base}/pages` });
-    // Library items belong to the framework whose views and pages place them
-    // (TODO "The builder" §8), so the tab comes with those two.
-    tabs.push({ id: "library", label: "Library", href: `${base}/library` });
-    tabs.push({
-      id: "app-settings",
-      label: "App settings",
-      href: `${base}/app-settings`,
-    });
-  }
-  return tabs;
-}
-
-/** Whether a framework's own settings live on the App settings tab rather than
- * on the application form. A framework whose applications have views and pages
- * has settings that are the running application's — its menu, login form and
- * languages — which nobody can fill in before the views they name exist, and
- * which would bury the handful of fields that creating an application needs. */
-export function settingsOnOwnTab(
-  framework: { has_views: boolean } | undefined,
-): boolean {
-  return Boolean(framework?.has_views);
+  app: Pick<AppItem, "id" | "settings_tabs">,
+): { id: string; label: string; href: string }[] {
+  return settingsTabLinks(app.id, app.settings_tabs);
 }
 
 /** A view or page name as a path parameter: the generated client puts it in

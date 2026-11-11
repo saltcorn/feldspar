@@ -63,6 +63,7 @@ fn framework() -> FrameworkDecl {
         builder_prompt: None,
         checks: Vec::new(),
         scaffolds: false,
+        settings_tabs: None,
         targets: vec![TargetTemplate {
             name: "bundle".to_owned(),
             label: "Bundle".to_owned(),

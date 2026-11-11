@@ -297,6 +297,16 @@ fn framework_ref_schema() -> TypeSchema {
     ])
 }
 
+/// An application's settings tabs (`sc_app::SettingsTab`): an id, a label, and
+/// the groups of the form the tab holds, in order.
+pub(crate) fn settings_tabs_schema() -> TypeSchema {
+    TypeSchema::array(TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::text()),
+        StructField::new("label", TypeSchema::text()),
+        StructField::new("groups", TypeSchema::array(TypeSchema::text())),
+    ]))
+}
+
 /// A registered framework and the settings it declares, so the admin UI can
 /// render a form for a framework it knows nothing about (§13.3). Each setting is
 /// a [`form_field_schema`] — the same `FormField` vocabulary a row editor uses.
@@ -316,6 +326,11 @@ fn framework_info_schema() -> TypeSchema {
         // form, the languages — so the screen keeps them off the create form
         // and edits them on the application's App settings tab.
         StructField::new("has_views", TypeSchema::bool()),
+        // How an application of this framework is edited: its settings tabs,
+        // in order, each with the parts of the form it holds (TODO UX2.1). The
+        // framework declares them; the server completes them, so every part of
+        // the form is on one.
+        StructField::new("settings_tabs", settings_tabs_schema()),
         // The settings whose value names a file store. `config_spec` cannot say
         // so — by the time it is sent, a store picker has been resolved to a
         // plain list of names — and a new application's form needs to know,
@@ -440,6 +455,10 @@ fn form_field_schema() -> TypeSchema {
         // `section_header`), or null for one that continues the group before
         // it: the form draws the heading above it.
         StructField::new("section", TypeSchema::optional(TypeSchema::text())),
+        // The id of the settings tab the field is shown on (an application
+        // form's, `sc_app::SettingsTab`), or null for the tab holding the
+        // framework choice.
+        StructField::new("tab", TypeSchema::optional(TypeSchema::text())),
         // A sentence or two shown under the control (v1's `sublabel`), or null.
         StructField::new("sublabel", TypeSchema::optional(TypeSchema::text())),
         // The help topic that explains the setting at length (`getHelp`), or

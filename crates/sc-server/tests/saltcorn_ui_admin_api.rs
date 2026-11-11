@@ -170,6 +170,22 @@ async fn table(client: &mut Client, name: &str) {
 
 /// A Saltcorn UI application over `books`, created as the application form
 /// creates one. Its id.
+/// Setting `name` of framework `framework`'s `config_spec`, as listed.
+fn framework_tabs_spec(frameworks: &Value, framework: &str, name: &str) -> Value {
+    frameworks
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == framework)
+        .unwrap()["config_spec"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == name)
+        .unwrap_or_else(|| panic!("{framework} has {name}"))
+        .clone()
+}
+
 async fn application(client: &mut Client) -> String {
     let (status, body) = client
         .send(
@@ -239,6 +255,47 @@ async fn an_applications_views_and_pages_are_managed_over_http() -> sc_error::Re
     };
     assert_eq!(has_views("saltcorn-ui"), true);
     assert_eq!(has_views("code"), false);
+
+    // Each framework says how its settings are laid out in tabs (UX2.1), and
+    // the application row carries the same layout for the screens above it.
+    let tab_ids = |tabs: &Value| -> Vec<String> {
+        tabs.as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let framework_tabs = |name: &str| {
+        frameworks
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == name)
+            .unwrap()["settings_tabs"]
+            .clone()
+    };
+    assert_eq!(
+        tab_ids(&framework_tabs("saltcorn-ui")),
+        [
+            "site", "views", "pages", "library", "data", "users", "advanced"
+        ]
+    );
+    assert_eq!(
+        tab_ids(&framework_tabs("react")),
+        [
+            "framework",
+            "data",
+            "triggers",
+            "api",
+            "security",
+            "development",
+            "translations"
+        ]
+    );
+    assert_eq!(row["settings_tabs"], framework_tabs("saltcorn-ui"), "{row}");
+    // ...and each of its settings names its tab.
+    let login_form = framework_tabs_spec(&frameworks, "saltcorn-ui", "login_form");
+    assert_eq!(login_form["tab"], "users", "{login_form}");
 
     // The patterns a view may be saved with.
     let (status, patterns) = client.send("GET", "/api/view-patterns", None).await;

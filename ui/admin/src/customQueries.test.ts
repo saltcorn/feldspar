@@ -21,6 +21,7 @@ import {
   columnsSummary,
   describeBody,
   isCode,
+  methodTone,
   languageOptions,
   needsParamsNote,
   pythonAvailable,
@@ -308,5 +309,14 @@ describe("returns and rate limits (TODO F4.1, F4.3)", () => {
 
   it("reports a typed code query's check", () => {
     expect(statusSummary({ kind: "checked", typed: true })).toMatch(/declared type/);
+  });
+});
+
+describe("the list of queries", () => {
+  it("colours a method by what it does", () => {
+    expect(methodTone("GET")).toBe("green");
+    expect(methodTone("post")).toBe("blue");
+    expect(methodTone("PATCH")).toBe("yellow");
+    expect(methodTone("DELETE")).toBe("red");
   });
 });

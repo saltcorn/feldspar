@@ -556,6 +556,13 @@ pub struct FrameworkManifest {
     /// file store. JSON for the reason `build` is.
     #[serde(default)]
     pub targets: Json,
+    /// How an application's settings are laid out in tabs:
+    /// `[{ id, label, groups: ["identity", "framework", "settings"] }, …]`
+    /// (`sc_app::SettingsTab`). Absent for the default layout. JSON for the
+    /// reason `build` is: a bad layout costs the framework its layout, not the
+    /// module its framework.
+    #[serde(default)]
+    pub settings_tabs: Json,
 }
 
 /// One **checklist step type** a module declares (TODO-checklists C3.5).

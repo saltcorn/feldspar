@@ -438,6 +438,7 @@ fn builtin_framework_info() -> Vec<FrameworkInfo> {
                           it. Pick a file store and a name."
                 .to_owned(),
             serves_ui: true,
+            settings_tabs: None,
         },
         FrameworkInfo {
             name: CODE_FRAMEWORK.to_owned(),
@@ -447,6 +448,7 @@ fn builtin_framework_info() -> Vec<FrameworkInfo> {
                           project React's conventions do not fit."
                 .to_owned(),
             serves_ui: true,
+            settings_tabs: None,
         },
     ]
 }
@@ -473,6 +475,24 @@ pub struct FrameworkInfo {
     /// be answered from a stored [`FrameworkRef`](crate::FrameworkRef) alone, at
     /// save time, with no built instance to ask.
     pub serves_ui: bool,
+    /// How an application's settings are laid out in tabs
+    /// ([`SettingsTab`](crate::SettingsTab)), or `None` for the default layout.
+    /// Resolved by [`framework_settings_tabs`], which is what the admin UI is
+    /// sent.
+    pub settings_tabs: Option<Vec<crate::SettingsTab>>,
+}
+
+/// The settings tabs an application of framework `name` is edited in: what it
+/// declares, completed, or the default (see
+/// [`resolve_settings_tabs`](crate::resolve_settings_tabs)). `has_views` is
+/// whether its applications have views and pages, which the caller knows and
+/// this crate does not.
+pub fn framework_settings_tabs(name: &str, has_views: bool) -> Vec<crate::SettingsTab> {
+    let declared = registered_framework_info()
+        .into_iter()
+        .find(|f| f.name == name)
+        .and_then(|f| f.settings_tabs);
+    crate::resolve_settings_tabs(declared.as_deref(), has_views)
 }
 
 /// Every registered framework with its presentation, in the order an admin
@@ -1254,6 +1274,7 @@ mod tests {
                 label: "Fake".to_owned(),
                 description: "Constructed, not built.".to_owned(),
                 serves_ui: true,
+                settings_tabs: None,
             }
         }
         fn config_spec(&self) -> Vec<FormField> {

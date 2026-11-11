@@ -93,6 +93,7 @@ impl FrameworkFactory for NoneFactory {
                           directory serves, say."
                 .to_owned(),
             serves_ui: false,
+            settings_tabs: None,
         }
     }
 

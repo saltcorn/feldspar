@@ -69,6 +69,9 @@ export type FieldSpec = {
    * group before it. Presentation only, so it is declared on the field rather
    * than as an entry of the spec that is not a setting. */
   section?: string | null;
+  /** The id of the application settings tab the setting is shown on
+   * (`settingsTabs.ts`); absent for the tab holding the framework choice. */
+  tab?: string | null;
   /** A sentence or two under the control (v1's `sublabel`): what to enter and
    * where to find it. */
   sublabel?: string | null;

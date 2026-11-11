@@ -93,6 +93,7 @@ mod none;
 mod react;
 mod scaffold;
 pub mod server_render;
+mod settings_tabs;
 mod skill;
 mod store;
 mod streams;
@@ -175,8 +176,9 @@ pub use framework::{
     CFG_SOURCE, CFG_STORE, CODE_FRAMEWORK, CodeFramework, Framework, FrameworkInfo, InstallSpec,
     RequestBody, asset_content_type, code_config_spec, config_spec_in, default_csp_in,
     framework_config_spec, framework_default_csp, framework_info_in, framework_serves_ui,
-    registered_framework_info, registered_frameworks, serves_ui_in, validate_config_in,
-    validate_config_structure_in, validate_framework_config, validate_framework_config_structure,
+    framework_settings_tabs, registered_framework_info, registered_frameworks, serves_ui_in,
+    validate_config_in, validate_config_structure_in, validate_framework_config,
+    validate_framework_config_structure,
 };
 pub use i18n::{
     ATTR_DEFAULT_LOCALE, ATTR_LOCALES, CatalogStore, FileCatalogStore, I18N_SEGMENT, LOCALES_DIR,
@@ -201,6 +203,14 @@ pub use scaffold::{
 };
 pub use server_render::{
     ServerRendered, check_server_entry, mount_code_framework, prerender as prerender_site,
+};
+pub use settings_tabs::{
+    GROUP_ACCESS, GROUP_AGENTS, GROUP_APIS, GROUP_CHECKLISTS, GROUP_CODING_AGENT, GROUP_CSP,
+    GROUP_FILE_STORES, GROUP_FRAMEWORK, GROUP_GUEST_SESSIONS, GROUP_IDENTITY, GROUP_LIBRARY,
+    GROUP_PAGES, GROUP_ROW_API, GROUP_SETTINGS, GROUP_STATIC_DIRS, GROUP_STREAMS, GROUP_TABLES,
+    GROUP_TARGETS, GROUP_TRANSLATIONS, GROUP_TRIGGERS, GROUP_UPLOADS, GROUP_VIEWS, RECORD_GROUPS,
+    SCREEN_GROUPS, SettingsTab, VIEW_SCREENS, default_settings_tabs, resolve_settings_tabs,
+    settings_tabs_problems,
 };
 pub use skill::{SKILL_FILE, generate_skill};
 pub use store::{

@@ -7683,7 +7683,30 @@ the keystore's settings only when it is ticked. A module may also group its sett
 headings with v1's `{ input_type: "section_header", label }`. That entry is not a setting, so it
 is not kept as one: its label becomes the `section` of the next setting, and the form draws it
 above the first shown setting of the group. `plugins/react-native` heads its native apps'
-settings this way, from the server URL on. A text setting may also declare a pattern (v1's
+settings this way, from the server URL on.
+
+**Settings tabs** (TODO UX2.1). An application's form is shown in tabs, and the framework says
+which tabs (`sc_app::SettingsTab`, `FrameworkInfo::settings_tabs`, a module framework's
+`settings_tabs`). Each part of the form is a named group: `identity`, `framework`, `targets`,
+`tables`, `file_stores`, `triggers`, `streams`, `apis`, `row_api`, `static_dirs`, `uploads`,
+`agents`, `access`, `guest_sessions`, `csp`, `coding_agent`, `checklists`, and the screens
+`views`, `pages`, `library` and `translations`. A tab lists its groups in order, and `settings`
+marks where the framework's own settings for that tab go. A setting names its tab with `tab`
+(`FormField::tab`); in a module, a `section_header` with a `tab` places its whole section. A
+setting that names no tab goes on the tab holding `framework`. The default layout is Framework,
+Data, Triggers & Streams, API, Security, Development, Translations. Saltcorn UI declares Site,
+Views, Pages, Library, Data, Users & Security and Advanced (which holds the translations editor);
+`plugins/react-native` adds a Mobile tab for its native apps' settings and builds. The layout is
+presentation only, so it cannot hide part of the form: `resolve_settings_tabs` puts every group a
+layout leaves out on a tab (a left-out view screen gets its own tab after the first, the rest go
+on the last tab), and a layout with a problem (an unknown or repeated group, a view screen sharing
+a tab, a first tab without `identity` and `framework`) is replaced by the default.
+`settings_tabs_problems` gives the reasons, which a module's card shows. The server sends the
+resolved layout on each framework and each application row. A new application is created from
+its first tab plus its tables, because a scaffold is generated against them. An existing
+application saves as it is edited (TODO UX2.2): a switch, a choice or a button at once, typing
+after a pause, the subdomain when its box is left. Saves run one at a time, and the header says
+whether the last one was saved. A text setting may also declare a pattern (v1's
 `regexp`, with `re_invalid_error` as its message), which the form checks as the admin types and
 the server checks on save, for module settings too. A target's `env` values are templates too, which
 is how a secret setting (the keystore password) reaches the build without being written into

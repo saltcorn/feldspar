@@ -64,7 +64,8 @@ only requirement is that your build command emits static files into a directory,
 | **Build command** | `npm run build` |
 | **Generated client path** | `todo/src/client.ts` |
 | Tables | `tasks` |
-| APIs (Provider / Mount) | `rest` / `/api` |
+
+A new application serves REST at `/api` (on its **API** tab once it exists).
 
 Every path is relative to the file store, and they must agree with each other and with the
 project you created — that consistency is the part the `react` framework takes off your hands.
@@ -164,7 +165,7 @@ Put a file in the store — through **Files** in the admin UI, or on the host:
 mkdir -p /srv/apps/media && cp ~/hero.png /srv/apps/media/hero.png
 ```
 
-Then edit the application and add a row under **Static directories**:
+Then edit the application and add a row under **Static directories**, on its **API** tab:
 
 | Mount | Store | Path |
 |---|---|---|

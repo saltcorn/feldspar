@@ -48,6 +48,27 @@ async fn fixture() -> Result<Fixture> {
     Ok(Fixture { catalog, _db: db })
 }
 
+/// Move a bucket's expiry into the past, as if its time had run out. A grant
+/// cannot be made already expired, and waiting out a short real expiry is a
+/// race against the rest of a parallel test run.
+async fn expire_bucket(f: &Fixture, user: Uuid, key: &str) -> Result<()> {
+    let expired = f
+        ._db
+        .client()
+        .await?
+        .execute(
+            &format!(
+                r#"UPDATE "{CREDIT_BUCKETS_TABLE}" SET "expires_at" = now() - interval '1 second'
+                   WHERE "user_id" = $1 AND "key" = $2"#
+            ),
+            &[&user, &key],
+        )
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    assert_eq!(expired, 1, "one bucket {key}");
+    Ok(())
+}
+
 fn d(n: i64) -> Decimal {
     Decimal::from(n)
 }
@@ -303,7 +324,7 @@ async fn the_soonest_expiring_bucket_is_spent_first_and_an_expired_one_does_not_
     let soon = grant_credits(
         &f.catalog,
         NewCreditGrant {
-            expires_at: Some(Utc::now() + Duration::milliseconds(1500)),
+            expires_at: Some(Utc::now() + Duration::days(1)),
             ..grant(user.id(), 4, "soon")
         },
         Authority::system("test"),
@@ -329,19 +350,26 @@ async fn the_soonest_expiring_bucket_is_spent_first_and_an_expired_one_does_not_
     );
 
     // Expiry is a read: grant a little more to the soon bucket's kind and let
-    // it lapse, with nothing written at the moment it does.
+    // it lapse, with nothing written at the moment it does. The lapse is made in
+    // the database: a short real expiry races the reads under a loaded run.
     grant_credits(
         &f.catalog,
         NewCreditGrant {
-            expires_at: Some(Utc::now() + Duration::milliseconds(800)),
+            expires_at: Some(Utc::now() + Duration::days(1)),
             ..grant(user.id(), 3, "brief")
         },
         Authority::system("test"),
     )
     .await?;
     assert_eq!(credit_balance(&f.catalog, user.id()).await?.balance, d(21));
-    tokio::time::sleep(std::time::Duration::from_millis(1600)).await;
+    expire_bucket(&f, user.id(), "brief").await?;
     assert_eq!(credit_balance(&f.catalog, user.id()).await?.balance, d(18));
+    let buckets = list_credit_buckets(&f.catalog, user.id()).await?;
+    assert_eq!(
+        buckets.iter().find(|b| b.key == "brief").unwrap().remaining,
+        d(3),
+        "nothing is taken out of a bucket when it lapses"
+    );
     Ok(())
 }
 
@@ -623,32 +651,26 @@ async fn an_allowance_rolls_over_none_all_or_capped_over_three_periods() -> Resu
 async fn a_rollover_carries_what_an_expired_bucket_held() -> Result<()> {
     let f = fixture().await?;
     let user = create_user(&f.catalog, "late@example.com", "pw", Role::of(80)).await?;
-    // The period, and its allowance, end just before the renewal arrives. The
-    // grant and the debit have to land inside the period, which under a full
-    // parallel test run can take well over a second, so the period is generous
-    // and the wait is for whatever is left of it.
-    let expires_at = Utc::now() + Duration::seconds(4);
-    let first = NewCreditGrant {
-        expires_at: Some(expires_at),
-        ..allowance(user.id(), "period", 1, None)
-    };
-    grant_credits(&f.catalog, first, Authority::system("test")).await?;
+    // The period, and its allowance, end before the renewal arrives. A grant
+    // cannot be made already expired, and racing a short real expiry fails under
+    // a loaded parallel run (the debit lands after it, as debt), so the bucket is
+    // granted for the whole period, spent from, and then expired in the database.
+    grant_credits(
+        &f.catalog,
+        allowance(user.id(), "period", 1, None),
+        Authority::system("test"),
+    )
+    .await?;
     debit_credits(
         &f.catalog,
         debit(user.id(), d(40), "s1"),
         Authority::system("test"),
     )
     .await?;
-    let left = (expires_at - Utc::now() + Duration::milliseconds(200))
-        .to_std()
-        .unwrap_or_default();
-    tokio::time::sleep(left).await;
-    assert!(
-        credit_balance(&f.catalog, user.id())
-            .await?
-            .balance
-            .is_zero()
-    );
+    assert_eq!(credit_balance(&f.catalog, user.id()).await?.balance, d(60));
+    expire_bucket(&f, user.id(), "period:1").await?;
+    let balance = credit_balance(&f.catalog, user.id()).await?.balance;
+    assert!(balance.is_zero(), "an expired bucket counts for nothing, got {balance}");
 
     let renewed = grant_credits(
         &f.catalog,

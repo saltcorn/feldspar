@@ -833,14 +833,17 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
       />
     );
   }
+  // `edit` is the first settings tab and `edit/<id>` another (TODO UX2.1);
+  // `app-settings`, where a Saltcorn UI application's settings used to be,
+  // opens the first tab, which is where its site settings are now.
   const editMatch = path.match(
-    /^\/applications\/([^/]+)\/(edit|app-settings)$/,
+    /^\/applications\/([^/]+)\/(?:edit(?:\/([^/]+))?|app-settings)$/,
   );
   if (editMatch) {
     return (
       <ApplicationForm
         appId={decodeURIComponent(editMatch[1])}
-        tab={editMatch[2] === "app-settings" ? "app-settings" : "settings"}
+        tab={editMatch[2] ? decodeURIComponent(editMatch[2]) : undefined}
       />
     );
   }
