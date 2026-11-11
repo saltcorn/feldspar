@@ -10,6 +10,31 @@ use sc_error::Result;
 use crate::apps::AppMounts;
 use crate::handlers::{agents_of, dataset_shape, models_of, modules_of, streams_of, triggers_of};
 
+/// The subdirectory of the modules root a restored local module's source is
+/// unpacked into, one directory per module.
+const RESTORED_SOURCES_DIR: &str = "sources";
+
+/// A package name as one directory name: `@acme/legacy-bridge` is
+/// `_acme_legacy-bridge`. Anything but ASCII letters, digits, `-` and `_` is
+/// `_`, so there is no `.`, `/` or a backslash left to climb out with.
+fn source_dir_name(name: &str) -> String {
+    let safe: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if safe.is_empty() {
+        "_".to_owned()
+    } else {
+        safe
+    }
+}
+
 #[async_trait::async_trait]
 impl sc_backup::RestoreHost for AppMounts {
     fn agent_registry(&self) -> Result<Arc<sc_agent::AgentRegistry>> {
@@ -37,6 +62,18 @@ impl sc_backup::RestoreHost for AppMounts {
 
     async fn reload_modules(&self) -> Result<()> {
         modules_of(self)?.reload().await
+    }
+
+    /// `<modules root>/sources/<name>`, the name reduced to characters a
+    /// directory name cannot be anything but one with: it comes from the
+    /// backup, so `..` or a `/` in it must not reach a path.
+    fn module_source_dir(&self, name: &str) -> Result<std::path::PathBuf> {
+        let modules = modules_of(self)?;
+        Ok(modules
+            .installer()
+            .root()
+            .join(RESTORED_SOURCES_DIR)
+            .join(source_dir_name(name)))
     }
 
     fn stream_registry(&self) -> Result<Arc<sc_stream::StreamRegistry>> {
@@ -110,5 +147,20 @@ impl sc_sync::DeployHost for AppMounts {
                 .map_or(builtin.agent_traits, |a| Arc::clone(a.registry())),
             modules: std::collections::BTreeMap::new(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_dir_name;
+
+    #[test]
+    fn a_package_name_becomes_one_directory_name() {
+        assert_eq!(
+            source_dir_name("@acme/legacy-bridge"),
+            "_acme_legacy-bridge"
+        );
+        assert_eq!(source_dir_name("../../etc"), "______etc");
+        assert_eq!(source_dir_name(""), "_");
     }
 }

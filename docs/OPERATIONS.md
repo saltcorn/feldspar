@@ -1731,6 +1731,14 @@ most for `--modules-dir`. **Restart a server that is already running on that
 database** afterwards, because it loaded its tables, applications and triggers when
 it started.
 
+A module installed from a **local directory** (one built on the server, say) has that
+directory's files in the backup — without `node_modules`, `.git`, `__pycache__` or a
+virtual environment, which the install puts back or does not need. The restore unpacks
+them into `<modules dir>/sources/<package name>` and installs the module from there, so
+the module comes back on a machine that never had the original directory; its row then
+names the new location. A directory that was gone when the backup was taken is not in
+it, and the restore tries the recorded path as before.
+
 #### Password-protected backups
 
 A backup can be protected by a password. Every entry in the zip is then

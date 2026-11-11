@@ -3077,6 +3077,29 @@ async fn restore_modules(
             {
                 return Ok(None);
             }
+            // A local module whose source came in the backup is installed from
+            // that copy, unpacked where this server keeps such things.
+            let unpacked = match value.get("package").filter(|p| p.is_object()) {
+                Some(package) if module.source == sc_module::ModuleSource::Local => {
+                    match apps.module_source_dir(&module.name) {
+                        Ok(dir) => {
+                            unpack_module_source(archive, package, &dir, &name).await?;
+                            module.location = dir.display().to_string();
+                            true
+                        }
+                        Err(e) => {
+                            report.skipped(format!(
+                                "the source of module `{name}` in the backup was not unpacked, \
+                                 so it is installed from `{}`: {}",
+                                module.location,
+                                e.causes()
+                            ));
+                            false
+                        }
+                    }
+                }
+                _ => false,
+            };
             let package = apps
                 .install_module_package(module.language, module.source, &module.location)
                 .await?;
@@ -3086,16 +3109,22 @@ async fn restore_modules(
             module.name = package.name;
             module.version = Some(package.version.clone());
             sc_module::save_module(catalog, &module).await?;
-            Ok(Some(package.version))
+            Ok(Some((package.version, unpacked.then_some(module.location))))
         }
         .await;
         match result {
             Ok(None) => report.skipped(format!(
                 "module `{name}` is already installed here; its settings and permissions were kept"
             )),
-            Ok(Some(version)) => {
+            Ok(Some((version, unpacked))) => {
                 any = true;
-                report.did(format!("module `{name}` {version}, installed"));
+                report.did(match unpacked {
+                    Some(dir) => format!(
+                        "module `{name}` {version}, installed from its source in the backup, \
+                         now in `{dir}`"
+                    ),
+                    None => format!("module `{name}` {version}, installed"),
+                });
             }
             Err(e) => report.skipped(format!("module `{name}`: {}", e.causes())),
         }
@@ -3106,6 +3135,60 @@ async fn restore_modules(
             e.causes()
         ));
     }
+}
+
+/// A local module's source directory, from the backup into `dir`: emptied
+/// first, so what is installed is the backup's tree and nothing left from an
+/// earlier one.
+///
+/// All or nothing, unlike a file store's files: a module missing one of its
+/// files is a module that does not load, so a file that cannot be written fails
+/// the module, with the reason. An entry name that is not a plain relative path
+/// is refused before anything is read — a zip is a file somebody can hand us.
+async fn unpack_module_source(
+    archive: &Archive,
+    package: &Json,
+    dir: &std::path::Path,
+    name: &str,
+) -> Result<()> {
+    let prefix = package
+        .get("prefix")
+        .and_then(Json::as_str)
+        .ok_or_else(|| Error::invalid(format!("the source of `{name}` names no prefix")))?;
+    let io = |e: std::io::Error| {
+        Error::file(format!(
+            "preparing {} for the source of `{name}`: {e}",
+            dir.display()
+        ))
+    };
+    if dir.exists() {
+        std::fs::remove_dir_all(dir).map_err(io)?;
+    }
+    std::fs::create_dir_all(dir).map_err(io)?;
+    let store = sc_files::LocalFileStore::new(format!("module {name}"), dir)?;
+    for file in array_list(package.get("files").unwrap_or(&Json::Null)) {
+        let path = file
+            .get("path")
+            .and_then(Json::as_str)
+            .ok_or_else(|| Error::invalid(format!("a file of `{name}`'s source has no path")))?;
+        if path.split('/').any(|part| part == ".." || part == ".") {
+            return Err(Error::invalid(format!(
+                "file `{path}` of `{name}`'s source: the path is not relative"
+            )));
+        }
+        let at = sc_files::StorePath::parse(path)?;
+        archive
+            .copy_into(&format!("{prefix}{path}"), &store, &at)
+            .await?;
+        if let Some(mode) = file
+            .get("mode")
+            .and_then(Json::as_u64)
+            .and_then(|mode| u32::try_from(mode).ok())
+        {
+            set_mode(&store, &at, mode)?;
+        }
+    }
+    Ok(())
 }
 
 /// Connections to other databases — the SQLite ones (`sqlite == true`), whose

@@ -2,6 +2,33 @@
 
 Changes in reverse chronological order.
 
+## Backups include local modules' source
+
+A module installed from a local directory was backed up as its row alone: source `local` and a
+path on the server. Restored anywhere that path did not exist — a new machine, or after the
+checkout was cleaned up — the reinstall failed and the module was lost. Modules agents build on
+the server (over MCP, for integration with legacy systems) are all of this kind.
+
+- **The backup carries the directory** (`sc-backup` `write.rs`, `write_module_source`). For each
+  `local` module whose directory is readable, its files go to `modules/<id>/files/<path>` in the
+  zip, with their sizes and Unix modes listed under a new `package` key of the module's
+  `modules.json` item. `node_modules`, `.git`, `__pycache__`, `.venv` and `venv` are left out.
+  It is read through a `LocalFileStore` over the directory, with the walker file stores use (now
+  taking the skip rule as a parameter). A directory that is not there backs up as the row alone,
+  as before.
+- **The restore installs from the backup's copy** (`restore.rs`, `unpack_module_source`). The
+  directory comes from a new `RestoreHost::module_source_dir` — `<modules root>/sources/<name>` on
+  the server, the package name reduced to `[A-Za-z0-9_-]` so a backup cannot choose the path —
+  which is emptied, filled (entry paths with `..` or `.` refused; modes restored, `rwx` only) and
+  installed from; the restored row's `location` names it. All or nothing per module. A host with no
+  such directory (the default) reports that and installs from the recorded path.
+- **Compatible both ways.** An older backup has no `package` key and restores as before; an older
+  server reading a new backup ignores the key and the extra entries.
+- Test: `modules_api::a_local_modules_source_travels_in_the_backup` (the checkout deleted before
+  the restore; the build output left out; the module installed and loaded from the unpacked copy;
+  an executable bit kept), and a unit test of the directory name. `docs/OPERATIONS.md` says where
+  the source lands.
+
 ## Admin UI: a favicon, and a tab title per screen
 
 - **Favicon.** The Saltcorn logo from `ui/logo` is now the admin UI's icon: `logo.svg` as
