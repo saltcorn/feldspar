@@ -211,3 +211,79 @@ async fn sync_from_the_cli_plans_and_applies_only_when_told() -> sc_error::Resul
     assert!(err.contains("no branch `nowhere`"), "{err}");
     Ok(())
 }
+
+#[tokio::test]
+async fn a_structure_zip_moves_structure_to_an_unlinked_instance_and_deletes_nothing()
+-> sc_error::Result<()> {
+    // A has `tickets` and `notes`; B has a `tickets` of its own, with a field
+    // A has not got, and a table A has not got.
+    let a = TestDb::new().await?;
+    let a_catalog = connect_catalog(&DbConfig::from_url(a.url())).await?;
+    a.on_teardown(a_catalog.teardown_hook());
+    let text = |name: &str| DataField::plain(name, TypeRef::Basic(BasicType::Text));
+    a_catalog
+        .create_table("tickets", &[int_id(), text("title"), text("priority")])
+        .await?;
+    a_catalog
+        .create_table("notes", &[int_id(), text("body")])
+        .await?;
+    let b = TestDb::new().await?;
+    let b_catalog = connect_catalog(&DbConfig::from_url(b.url())).await?;
+    b.on_teardown(b_catalog.teardown_hook());
+    b_catalog
+        .create_table("tickets", &[int_id(), text("title"), text("legacy")])
+        .await?;
+    b_catalog.create_table("archive", &[int_id()]).await?;
+
+    let data = std::env::temp_dir().join(format!("sc-cli-zip-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&data).unwrap();
+    let zip = data.join("structure.zip");
+    let out = Command::new(env!("CARGO_BIN_EXE_feldspar"))
+        .args(["backup", "--structure-only"])
+        .arg(&zip)
+        .args(["--database-url", &a.url()])
+        .env("SC_DATA_DIR", &data)
+        .output()
+        .expect("run the feldspar binary");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("wrote the structure to"), "{err}");
+    // A structure zip is never protected by a password.
+    let refused = Command::new(env!("CARGO_BIN_EXE_feldspar"))
+        .args(["backup", "--structure-only"])
+        .arg(data.join("other.zip"))
+        .args(["--password", "pw", "--database-url", &a.url()])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("leave out --password"));
+
+    let sync = Sync { url: b.url(), data };
+    let zip = zip.to_string_lossy().into_owned();
+    // `--plan` prints the plan and writes nothing.
+    let (out, err) = sync.ok(&["deploy", "--from", &zip, "--plan"]);
+    assert!(err.contains("nothing was applied"), "{err}");
+    assert!(out.contains("additively"), "{out}");
+    assert!(out.contains("notes") && out.contains("priority"), "{out}");
+    assert!(!out.contains("data-destructive"), "{out}");
+    assert!(columns(&b, "notes").await.is_empty());
+
+    let (_, err) = sync.ok(&["deploy", "--from", &zip, "--yes"]);
+    assert!(err.contains("deployed (converged)"), "{err}");
+    assert_eq!(columns(&b, "notes").await, ["body", "id"]);
+    assert_eq!(
+        columns(&b, "tickets").await,
+        ["id", "legacy", "priority", "title"]
+    );
+    assert_eq!(columns(&b, "archive").await, ["id"]);
+
+    // A file that is not a structure zip is refused before anything is done.
+    let (ok, _, err) = sync.run(&[
+        "deploy",
+        "--from",
+        &sync.data.join("nothing.zip").to_string_lossy(),
+    ]);
+    assert!(!ok);
+    assert!(err.contains("nothing.zip"), "{err}");
+    Ok(())
+}

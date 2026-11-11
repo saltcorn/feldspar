@@ -26,6 +26,114 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     reg.handle(ids::PLAN_SYNC_DEPLOY, typed(state, plan_deploy));
     reg.handle(ids::SYNC_DEPLOY, typed(state, deploy));
     reg.handle(ids::LIST_DEPLOYMENTS, typed(state, deployments));
+
+    // A structure zip (§7.4) waits in `pending` between its upload and its
+    // deploy, as an uploaded backup does between its upload and its restore.
+    let pending = sc_backup::PendingUploads::new();
+    reg.handle(ids::UPLOAD_STRUCTURE_ZIP, {
+        let pending = pending.clone();
+        typed(state, move |_state, ctx: HandlerCtx<Admin>, (): ()| {
+            let pending = pending.clone();
+            async move {
+                let file = ctx
+                    .raw_file
+                    .clone()
+                    .ok_or_else(|| Error::invalid("this handler requires an uploaded file"))?;
+                // Read once here, so a file that is not a structure zip is
+                // refused on the upload rather than at the review.
+                let tree = read_upload(&file).await?;
+                let id = pending.keep(file)?;
+                Ok(json!({ "id": id.to_string(), "files": tree.len() }))
+            }
+        })
+    });
+    reg.handle(ids::PLAN_SYNC_ZIP_DEPLOY, {
+        let pending = pending.clone();
+        typed(
+            state,
+            move |state, ctx: HandlerCtx<Admin>, body: UploadBody| {
+                let pending = pending.clone();
+                async move {
+                    let zip =
+                        read_upload(held(&pending, upload_id(&body.upload)?)?.as_ref()).await?;
+                    let sc = source(&state, None)?;
+                    let planned = sc.plan_zip(&zip, actor(&ctx), sc_sync::Source::Ui).await?;
+                    let policy = sc.link().await?.map(|l| l.policy).unwrap_or_default();
+                    let mut out = to_json(&planned.plan)?;
+                    out["linked"] = json!(planned.linked);
+                    out["policy"] = json!(policy);
+                    Ok(out)
+                }
+            },
+        )
+    });
+    reg.handle(ids::SYNC_ZIP_DEPLOY, {
+        let pending = pending.clone();
+        typed(
+            state,
+            move |state, ctx: HandlerCtx<Admin>, body: ZipDeployBody| {
+                let pending = pending.clone();
+                async move {
+                    let id = upload_id(&body.upload)?;
+                    let zip = read_upload(held(&pending, id)?.as_ref()).await?;
+                    let confirm = sc_sync::Confirm {
+                        plan_digest: body.plan_digest,
+                        ticked: body.ticked,
+                        allow_destructive: false,
+                        full_backup: body.full_backup.unwrap_or(false),
+                    };
+                    let receipt = source(&state, Some(ctx.who.editor()))?
+                        .deploy_zip(&zip, &confirm, actor(&ctx), sc_sync::Source::Ui)
+                        .await?;
+                    // Deployed: the upload is done with. A refused deploy (a stale
+                    // plan) keeps it, for the review of the new plan.
+                    let _ = pending.take(id);
+                    reproject_apps(&state.apps);
+                    to_json(&receipt)
+                }
+            },
+        )
+    });
+}
+
+#[derive(Deserialize)]
+struct UploadBody {
+    upload: String,
+}
+
+#[derive(Deserialize)]
+struct ZipDeployBody {
+    upload: String,
+    plan_digest: String,
+    ticked: BTreeSet<String>,
+    #[serde(default)]
+    full_backup: Option<bool>,
+}
+
+fn upload_id(raw: &str) -> Result<uuid::Uuid> {
+    uuid::Uuid::parse_str(raw.trim())
+        .map_err(|_| Error::invalid("`upload` must be the id the upload answered"))
+}
+
+/// The upload `id` names, still held.
+fn held(pending: &sc_backup::PendingUploads, id: uuid::Uuid) -> Result<Arc<sc_backup::SpoolFile>> {
+    pending.file(id).map_err(|_| {
+        Error::not_found("that uploaded structure zip is no longer held — upload the file again")
+    })
+}
+
+/// The structure zip an upload holds, read off the async threads.
+async fn read_upload(file: &sc_backup::SpoolFile) -> Result<sc_sync::StructureTree> {
+    let path = file.path().to_owned();
+    // Not `read_zip`, which names the file: this one is a spool file, and
+    // its path means nothing to the admin who uploaded it.
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(&path)
+            .map_err(|e| Error::file(format!("reading the uploaded zip: {e}")))?;
+        sc_sync::read_zip_from(std::io::BufReader::new(file))
+    })
+    .await
+    .map_err(|e| Error::msg(format!("reading the structure zip: {e}")))?
 }
 
 /// Source control over the running server, as `editor` (or as an admin read,

@@ -29,3 +29,9 @@ mod stores;
 
 #[path = "source.rs"]
 mod source;
+
+#[path = "structure_zip.rs"]
+mod structure_zip;
+
+#[path = "definition_of_done.rs"]
+mod definition_of_done;

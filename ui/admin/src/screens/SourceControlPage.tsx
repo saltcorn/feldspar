@@ -66,9 +66,9 @@ import {
   statusGroup,
   withoutPointers,
 } from "../structureSync";
-import { HistoryTab, LinkTab, StatusTab } from "./SyncPanels";
+import { HistoryTab, LinkTab, StatusTab, ZipTab } from "./SyncPanels";
 
-type Tab = "status" | "history" | "registry" | "link";
+type Tab = "status" | "history" | "registry" | "zip" | "link";
 
 export function SourceControlPage({
   initialPath,
@@ -102,10 +102,18 @@ export function SourceControlPage({
   useEffect(() => void load(), [load]);
 
   const linked = status?.linked ?? false;
-  const tabs: Tab[] = linked ? ["status", "history", "registry", "link"] : ["registry", "link"];
+  const tabs: Tab[] = linked ? ["status", "history", "registry", "zip", "link"] : ["registry", "zip", "link"];
   const shown: Tab = tab && tabs.includes(tab) ? tab : tabs[0];
   const label = (k: Tab) =>
-    k === "status" ? t("Status") : k === "history" ? t("History") : k === "registry" ? t("Registry") : t("Link setup");
+    k === "status"
+      ? t("Status")
+      : k === "history"
+        ? t("History")
+        : k === "registry"
+          ? t("Registry")
+          : k === "zip"
+            ? t("Deploy a zip")
+            : t("Link setup");
 
   return (
     <>
@@ -155,6 +163,7 @@ export function SourceControlPage({
             onSaved={load}
           />
         )}
+        {shown === "zip" && <ZipTab linked={linked} onDeployed={load} />}
         {shown === "link" && <LinkTab onLinked={load} />}
       </PageBody>
     </>

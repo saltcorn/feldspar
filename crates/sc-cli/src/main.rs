@@ -239,6 +239,7 @@ fn print_usage() {
     eprintln!("  feldspar module remove NAME [database flags]");
     eprintln!("  feldspar send-email --to ADDR --subject TEXT [database flags] < body");
     eprintln!("  feldspar backup FILE|- [--password [P]] [database flags]");
+    eprintln!("  feldspar backup --structure-only FILE|- [database flags]");
     eprintln!("  feldspar restore FILE [--password [P]] [database flags] [server flags]");
     eprintln!("  feldspar registry list [KIND] | get ENTRY [database flags]");
     eprintln!(
@@ -256,6 +257,10 @@ fn print_usage() {
     eprintln!(
         "  feldspar sync discard KEY… | deploy [--plan] [--yes] [--allow-destructive] \
          [--full-backup] [database flags]"
+    );
+    eprintln!(
+        "  feldspar sync deploy --from FILE.zip [--plan] [--yes] [--allow-destructive] \
+         [database flags]"
     );
     eprintln!("  feldspar sync branch [NAME] [--create] [database flags]");
     eprintln!("  feldspar demo analytics [--replace] [database flags]");
@@ -376,6 +381,9 @@ fn print_usage() {
        standard tools open with the same password; --password with no value
        asks for it. A password on the command line is visible to other users
        of the machine (ps) — prefer the prompt or the variable.
+       --structure-only writes the structure instead — the files a Source
+       control commit holds, and no rows, accounts or uploads — for
+       `feldspar sync deploy --from`.
 
   restore: restores everything in FILE — a backup from `feldspar backup`, from
        Settings → Backup, or from Saltcorn 1 — exactly as the Restore dialog
@@ -414,6 +422,10 @@ fn print_usage() {
        it is also what lifts a `destructive: never` policy). Deploy is
        refused while there are local changes. `branch` lists the remote's
        branches, switches to NAME, or creates it from the tip with --create.
+       `deploy --from FILE.zip` deploys a zip from `feldspar backup
+       --structure-only` instead of the tip: on a linked installation in the
+       tip's place, with the same rules; on one with no link additively — it
+       creates and updates, and deletes nothing.
 
   app list: every application with its framework and the project directory
        its source is in on this machine; --json prints an array of

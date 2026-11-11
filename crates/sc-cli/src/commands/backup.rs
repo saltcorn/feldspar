@@ -46,6 +46,14 @@ pub(crate) fn file_argument(
 /// `--password` or `FELDSPAR_BACKUP_PASSWORD` encrypts it with AES-256 (see
 /// [`sc_cli::backup_password`]).
 pub(crate) async fn backup_command(args: &[String]) -> Result<()> {
+    if args.iter().any(|a| a == STRUCTURE_ONLY) {
+        let args: Vec<String> = args
+            .iter()
+            .filter(|a| *a != STRUCTURE_ONLY)
+            .cloned()
+            .collect();
+        return structure_backup(&args).await;
+    }
     let (file, rest) = match args.split_first() {
         Some((first, rest)) if first == "-" => (None, rest.to_vec()),
         _ => {
@@ -122,6 +130,79 @@ pub(crate) async fn backup_command(args: &[String]) -> Result<()> {
         selection.tables.len(),
         selection.applications.len(),
         selection.file_stores.len(),
+        human_size(size)
+    );
+    Ok(())
+}
+
+const STRUCTURE_ONLY: &str = "--structure-only";
+
+/// `feldspar backup --structure-only FILE|- [database flags]` — the
+/// structure, as the files a Source control commit holds, in a zip
+/// (APP_SYNC_PROPOSAL §7.4): what `feldspar sync deploy --from` reads. No
+/// rows, no accounts, no uploads, no instance-bound settings, and every
+/// secret as the mask, exactly as in git.
+///
+/// It is never protected by a password, since nothing in it is secret; a
+/// `--password` is refused rather than ignored.
+async fn structure_backup(args: &[String]) -> Result<()> {
+    let (file, rest) = match args.split_first() {
+        Some((first, rest)) if first == "-" => (None, rest.to_vec()),
+        _ => {
+            let (file, rest) = file_argument("backup", args)?;
+            (Some(file), rest)
+        }
+    };
+    let (db, leftover) = DbConfig::extract(rest)?;
+    if let Some(unknown) = leftover.first() {
+        return Err(sc_error::Error::config(
+            if unknown.starts_with("--password") {
+                "a structure zip holds no secret (each is written as the mask), so it is not \
+             protected by a password: leave out --password"
+                    .to_owned()
+            } else {
+                format!("unknown backup argument `{unknown}`")
+            },
+        ));
+    }
+    if file.is_none() && std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        return Err(sc_error::Error::config(
+            "backup - writes the zip to stdout, which is a terminal: \
+             redirect or pipe it (feldspar backup --structure-only - > structure.zip)",
+        ));
+    }
+    if let Some(source) = db.source() {
+        eprintln!("feldspar: database configured from {source}");
+    }
+    let catalog = connect_catalog(&db).await?;
+    sc_log::set_log_sql(false);
+    // A local store's synced files are read through its connection.
+    connect_stored_file_stores(&catalog).await?;
+    let apps = sc_server::AppMounts::new(catalog.clone());
+    let registries = sc_sync::DeployHost::registries(&apps)?;
+    let export = sc_sync::export_mode(&catalog, &registries, sc_sync::Mode::Portable).await?;
+    for warning in &export.warnings {
+        eprintln!("warning: {}", warning.message());
+    }
+    let bytes = sc_sync::zip_bytes(&export.tree)?;
+    let size = bytes.len() as u64;
+    match &file {
+        Some(file) => {
+            write_whole(file, |mut out| async move {
+                std::io::Write::write_all(&mut out, &bytes)
+                    .map_err(|e| sc_error::Error::file(format!("writing the zip: {e}")))?;
+                Ok(size)
+            })
+            .await?;
+        }
+        None => std::io::Write::write_all(&mut std::io::stdout(), &bytes)
+            .map_err(|e| sc_error::Error::file(format!("writing the zip to stdout: {e}")))?,
+    }
+    eprintln!(
+        "feldspar: wrote the structure to {} ({} files, {})",
+        file.as_ref()
+            .map_or_else(|| "stdout".to_owned(), |f| f.display().to_string()),
+        export.tree.len(),
         human_size(size)
     );
     Ok(())

@@ -2,6 +2,65 @@
 
 Changes in reverse chronological order.
 
+## Source control S6: the zip transport, documentation, the definition of done
+
+Milestone S6 of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` §7.4). With it, every item of the
+list is done.
+
+- **The structure zip** (S6.1, `sc_sync::structure_zip`). `write_zip` puts the tree's files at the
+  zip's root, with no timestamps, so the same tree is the same zip. `read_zip` refuses a file that
+  is not a zip, a zip with no `feldspar-structure.json` (and says when the file is a backup, which
+  goes to restore), an encrypted entry, a zip that unpacks to more than 1 GiB, and, as every tree
+  read does, a newer format.
+- **Deploying a zip**: `SourceControl::plan_zip` and `deploy_zip`.
+  - **With a link**, the zip takes the branch tip's place, and the base rules apply. Local changes
+    block it (D5), what the zip lacks is deleted (a data-destructive drop starts unticked), and the
+    next base is stored with no commit.
+  - **Without a link**, the target is `additive_target(live, zip)`: live, with each of the zip's
+    entities put over the one it matches. A table keeps the fields and managed constraints that
+    the zip's version lacks, so the plan creates and updates and never deletes.
+  - Either way it goes through the same planner, lock, stale-plan check, safety backup and
+    ledger as a deploy of the tip.
+- **The CLI**.
+  - `feldspar backup --structure-only FILE|-` writes the portable export, the files a commit holds.
+    It refuses `--password`, since a structure zip holds no secret.
+  - `feldspar sync deploy --from FILE.zip [--plan] [--yes] [--allow-destructive]` prints the plan,
+    saying which rule applies. It applies the plan only with `--yes`, as a deploy of the tip does.
+    The zip is read before the database is connected to.
+- **The admin API and the UI**.
+  - A raw route, `POST /source-control/upload`, which is admin-session only, like the backup
+    upload. Its handler, `uploadStructureZip`, reads the zip, refuses one that is not a structure
+    zip without naming the spool file, and holds the file as a pending upload.
+  - Two typed endpoints: `planSyncZipDeploy` and `syncZipDeploy`, neither of them in the MCP
+    projection. A deployed upload is dropped; a refused one (a stale plan) is kept for the next
+    review.
+  - The Source control screen has a **Deploy a zip** tab, linked or not. It uploads the zip and
+    opens the same review as Deploy, and the tab says which rule applies.
+  - Locale strings for the five locales, and the four regenerated clients.
+  - `upload_backup` in the router is now `upload_to`, shared by both uploads.
+- **Documentation** (S6.2).
+  - `docs/OPERATIONS.md` has a new §14, "Source control: moving structure between instances":
+    linking and credentials, the everyday loop, destructive changes and the policy, rollback and
+    restoring a safety backup, the structure zip, and what is kept where.
+  - `docs/TECHNICAL_DESIGN.md` has a new §9.3, "The structure tree and source control (`sc-sync`)".
+    The §1 sentence that said there is no on-disk app format now points to it.
+  - `APP_SYNC_PROPOSAL.md` §7.2–§7.4 list what was built.
+- **The definition of done** (S6.3, `crates/sc-sync/tests/definition_of_done.rs`): the list's
+  nine steps in one test. It uses two installations in one process, a bare structure repository
+  and a second bare repository behind the git store `web`. "B serves `helpdesk`" is checked as far
+  as a test installation goes: the application and its views are on B, and the deploy asked the
+  host to build and mount it. Serving a built application is tested in `sc-server`.
+- **Tests**:
+  - `sc-sync` unit tests: a zip round-trips byte for byte and is stable; a file that is not a
+    structure zip is refused with what it is; the additive target keeps what only live has.
+  - `sc-sync` integration tests: a zip on an unlinked instance creates and updates and deletes
+    nothing, including another table's rows and a field the zip's table lacks; a zip on a linked
+    instance is blocked by a local change and plans an unticked drop.
+  - `sc-cli` (`sync.rs`): a structure-only backup from one database deployed `--from` onto
+    another, `--plan` writing nothing, and `--password` refused.
+  - `sc-server` (`admin_api.rs`): upload, plan and deploy over HTTP; refused when signed out and for
+    a file that is not a zip; the upload gone once it is deployed; and not in MCP.
+
 ## Source control S5: admin API, UI and CLI
 
 Milestone S5 of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` §7.2, §7.3, §7.5): S4's

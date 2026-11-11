@@ -453,6 +453,10 @@ export type SwitchSyncBranchResponse = { before?: string | null; tip?: string | 
 export type PlanSyncDeployResponse = { operations: Array<{ id: string; step: string; class: string; ticked: boolean; kind: string; entity: string; action: string; summary: string }>; blockers: Array<{ op?: string | null; entity?: string | null; message: string }>; needs_secrets: Array<string>; needs_credentials: Array<string>; digest: string; commit?: string | null; policy: { destructive: string; full_backup: string } };
 export type SyncDeployRequest = { commit?: string | null; plan_digest: string; ticked: Array<string>; full_backup?: boolean | null };
 export type SyncDeployResponse = { id: string; result: string; applied: Array<string>; deferred: Array<string>; not_reached: Array<string>; failed?: { op: string; summary: string; message: string } | null; needs_secret: Array<{ op: string; summary: string; message: string }>; notes: Array<string>; drift: Array<string>; backups: Array<string>; needs_secrets: Array<string>; needs_credentials: Array<string> };
+export type PlanSyncZipDeployRequest = { upload: string };
+export type PlanSyncZipDeployResponse = { operations: Array<{ id: string; step: string; class: string; ticked: boolean; kind: string; entity: string; action: string; summary: string }>; blockers: Array<{ op?: string | null; entity?: string | null; message: string }>; needs_secrets: Array<string>; needs_credentials: Array<string>; digest: string; linked: boolean; policy: { destructive: string; full_backup: string } };
+export type SyncZipDeployRequest = { upload: string; plan_digest: string; ticked: Array<string>; full_backup?: boolean | null };
+export type SyncZipDeployResponse = { id: string; result: string; applied: Array<string>; deferred: Array<string>; not_reached: Array<string>; failed?: { op: string; summary: string; message: string } | null; needs_secret: Array<{ op: string; summary: string; message: string }>; notes: Array<string>; drift: Array<string>; backups: Array<string>; needs_secrets: Array<string>; needs_credentials: Array<string> };
 export type GetFileStoreSyncQuery = { contents?: string };
 export type GetFileStoreSyncResponse = { applies: boolean; sync_contents: string; synced: Array<string>; excluded: Array<string>; warnings: Array<string> };
 export type SetFileStoreSyncRequest = { sync_contents: string };
@@ -870,6 +874,8 @@ export interface ApiClient {
   switchSyncBranch(body: SwitchSyncBranchRequest): Promise<SwitchSyncBranchResponse>;
   planSyncDeploy(): Promise<PlanSyncDeployResponse>;
   syncDeploy(body: SyncDeployRequest): Promise<SyncDeployResponse>;
+  planSyncZipDeploy(body: PlanSyncZipDeployRequest): Promise<PlanSyncZipDeployResponse>;
+  syncZipDeploy(body: SyncZipDeployRequest): Promise<SyncZipDeployResponse>;
   getFileStoreSync(id: string, query?: GetFileStoreSyncQuery): Promise<GetFileStoreSyncResponse>;
   setFileStoreSync(id: string, body: SetFileStoreSyncRequest): Promise<SetFileStoreSyncResponse>;
   listDeployments(query?: ListDeploymentsQuery): Promise<ListDeploymentsResponse>;
@@ -3585,6 +3591,24 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("syncDeploy", res);
       return (await res.json()) as SyncDeployResponse;
+    },
+    async planSyncZipDeploy(body) {
+      const res = await doFetch(`${baseUrl}/api/source-control/zip/plan`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("planSyncZipDeploy", res);
+      return (await res.json()) as PlanSyncZipDeployResponse;
+    },
+    async syncZipDeploy(body) {
+      const res = await doFetch(`${baseUrl}/api/source-control/zip/deploy`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("syncZipDeploy", res);
+      return (await res.json()) as SyncZipDeployResponse;
     },
     async getFileStoreSync(id, query) {
       const search = new URLSearchParams();

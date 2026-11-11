@@ -42,6 +42,17 @@ impl Client {
 
     /// Issue a request, updating the stored cookies from the response.
     async fn send(&mut self, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
+        let body = body.map(|b| (serde_json::to_vec(&b).unwrap(), "application/json"));
+        self.send_bytes(method, path, body).await
+    }
+
+    /// [`send`](Self::send) with a body of any type: an upload's bytes.
+    async fn send_bytes(
+        &mut self,
+        method: &str,
+        path: &str,
+        body: Option<(Vec<u8>, &str)>,
+    ) -> (StatusCode, Value) {
         let mut builder = Request::builder().method(method).uri(path);
 
         // Send every stored cookie.
@@ -62,9 +73,9 @@ impl Client {
         }
 
         let request = match body {
-            Some(ref b) => builder
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_vec(b).unwrap()))
+            Some((bytes, content_type)) => builder
+                .header(header::CONTENT_TYPE, content_type)
+                .body(Body::from(bytes))
                 .unwrap(),
             None => builder.body(Body::empty()).unwrap(),
         };
@@ -1185,6 +1196,136 @@ async fn source_control_links_commits_pulls_deploys_and_discards() -> sc_error::
         assert!(endpoint.mcp.is_none(), "{name} is offered to MCP");
     }
     std::fs::remove_dir_all(&scratch).ok();
+    Ok(())
+}
+
+/// A structure zip (APP_SYNC_PROPOSAL §7.4) uploaded through the admin API
+/// and deployed onto an installation with no link: refused signed out, and when it
+/// is not a structure zip, planned additively — a table the zip lacks is not
+/// dropped — and applied; neither endpoint is offered to the MCP projection.
+#[tokio::test]
+async fn a_structure_zip_is_uploaded_planned_and_deployed_additively() -> sc_error::Result<()> {
+    let (mut client, _db, catalog) = setup_with_catalog().await?;
+    bootstrap_structure(&catalog).await?;
+    let int_id = || {
+        sc_catalog::DataField::plain("id", sc_types::TypeRef::Basic(sc_types::BasicType::Int))
+            .required()
+            .primary_key()
+            .generated(sc_db::ColumnGenerator::Identity)
+    };
+    catalog.create_table("kept", &[int_id()]).await?;
+    // The zip: this installation's structure with `kept` taken out and a
+    // `tickets` table put in, as another instance would have written it.
+    let mut tree = sc_sync::export(&catalog, &sc_sync::Registries::builtin()?)
+        .await?
+        .tree;
+    let mut tickets = tree.json("tables/kept.json").unwrap().clone();
+    tree.remove("tables/kept.json").unwrap();
+    tickets["id"] = json!(uuid::Uuid::new_v4().to_string());
+    tickets["name"] = json!("tickets");
+    tickets["label"] = json!("tickets");
+    tickets["fields"][0]["id"] = json!(uuid::Uuid::new_v4().to_string());
+    tree.insert_json("tables/tickets.json", tickets);
+    let zip = sc_sync::zip_bytes(&tree)?;
+
+    client.send("GET", "/api/auth/status", None).await;
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/first-user",
+            Some(json!({ "email": "admin@example.com", "password": "hunter2pass" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    sc_auth::bootstrap_roles(&catalog).await?;
+    // Signed out, the upload is refused (the admin login takes only admins).
+    client.send("POST", "/api/logout", None).await;
+    let (status, _) = client
+        .send_bytes(
+            "POST",
+            "/source-control/upload",
+            Some((zip.clone(), "application/zip")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/login",
+            Some(json!({ "email": "admin@example.com", "password": "hunter2pass" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Not a structure zip: refused on the upload.
+    let (status, body) = client
+        .send_bytes(
+            "POST",
+            "/source-control/upload",
+            Some((b"no".to_vec(), "application/zip")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("not a zip"), "{body}");
+    assert!(!body.to_string().contains("spool"), "{body}");
+
+    let (status, uploaded) = client
+        .send_bytes(
+            "POST",
+            "/source-control/upload",
+            Some((zip, "application/zip")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{uploaded}");
+    let upload = uploaded["id"].as_str().unwrap().to_owned();
+    let (status, plan) = client
+        .send(
+            "POST",
+            "/api/source-control/zip/plan",
+            Some(json!({ "upload": upload })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{plan}");
+    assert_eq!(plan["linked"], false);
+    let ops: Vec<&str> = plan["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|op| op["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ops, ["create_table:table:tickets"], "{plan}");
+
+    let (status, receipt) = client
+        .send(
+            "POST",
+            "/api/source-control/zip/deploy",
+            Some(json!({
+                "upload": upload,
+                "plan_digest": plan["digest"],
+                "ticked": ops,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    assert_eq!(receipt["result"], "converged", "{receipt}");
+    catalog.reload().await?;
+    assert!(catalog.get("tickets")?.is_some());
+    assert!(catalog.get("kept")?.is_some());
+    // Deployed, the upload is gone.
+    let (status, _) = client
+        .send(
+            "POST",
+            "/api/source-control/zip/plan",
+            Some(json!({ "upload": upload })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let set = sc_api::admin_endpoints();
+    for name in ["planSyncZipDeploy", "syncZipDeploy"] {
+        let endpoint = set.iter().find(|e| e.name == name).unwrap();
+        assert!(endpoint.mcp.is_none(), "{name} is offered to MCP");
+    }
     Ok(())
 }
 

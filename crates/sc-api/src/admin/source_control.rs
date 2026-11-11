@@ -216,6 +216,44 @@ pub(super) fn register(set: &mut EndpointSet) {
             .output(TypeSchema::struct_of(receipt_fields())),
     );
 
+    // Plan deploying a structure zip (§7.4), uploaded to
+    // `/source-control/upload` (a raw route: its body is the zip), which
+    // answered `upload`. `linked` says which rule applies: in the branch tip's
+    // place, with the base rules, or with no link additively — created and
+    // updated, never deleted.
+    set.register(
+        Endpoint::new(
+            ids::PLAN_SYNC_ZIP_DEPLOY,
+            Method::Post,
+            sc().lit("zip").lit("plan"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "upload",
+            TypeSchema::text(),
+        )]))
+        .output(TypeSchema::struct_of(plan_fields().into_iter().chain([
+            StructField::new("linked", TypeSchema::bool()),
+            StructField::new("policy", policy_schema()),
+        ]))),
+    );
+
+    // Apply the reviewed zip deploy. The upload is kept until it is
+    // deployed, so a stale plan can be reviewed again.
+    set.register(
+        Endpoint::new(
+            ids::SYNC_ZIP_DEPLOY,
+            Method::Post,
+            sc().lit("zip").lit("deploy"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("upload", TypeSchema::text()),
+            StructField::new("plan_digest", TypeSchema::text()),
+            StructField::new("ticked", TypeSchema::array(TypeSchema::text())),
+            StructField::new("full_backup", TypeSchema::optional(TypeSchema::bool())),
+        ]))
+        .output(TypeSchema::struct_of(receipt_fields())),
+    );
+
     // A file store's synced contents (§3.5): its `sync_contents` setting, and
     // what it resolves to from how the structure uses the store — the
     // directories committed, those left out inside them, and the warnings

@@ -208,12 +208,12 @@ Needs S1–S3 and nothing from git, so it comes before the link.
 
 ## S6 — Zip transport, documentation, definition of done
 
-- [ ] **S6.1** `feldspar backup --structure-only` and `feldspar sync deploy --from FILE.zip`,
+- [x] **S6.1** `feldspar backup --structure-only` and `feldspar sync deploy --from FILE.zip`,
   including the additive rule without a link (§7.4). Upload in the UI. Test: deploying a
   structure zip onto an unlinked instance creates and updates but deletes nothing.
-- [ ] **S6.2** `docs/OPERATIONS.md`: a section "Source control: moving structure between instances"
+- [x] **S6.2** `docs/OPERATIONS.md`: a section "Source control: moving structure between instances"
   (linking, the everyday loop, destructive changes, rollback, credentials).
   `docs/TECHNICAL_DESIGN.md`: a section on the design, replacing the sentence at §1 that says there
   is no on-disk app format.
-- [ ] **S6.3** The definition-of-done test above, with two instances in one test process and a
+- [x] **S6.3** The definition-of-done test above, with two instances in one test process and a
   local bare repository. CHANGELOG entry.

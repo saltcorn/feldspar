@@ -51,6 +51,11 @@
 //! - [`source`]: [`SourceControl`] — link, Status, Pull, Commit, branches, and
 //!   Deploy and Discard with the base kept.
 //!
+//! Milestone S6, the zip transport:
+//!
+//! - [`structure_zip`]: the tree as a zip, and the additive target a zip is
+//!   deployed as on an installation with no link.
+//!
 //! Milestone R, the registry editor:
 //!
 //! - [`registry`]: the instance tree one file at a time, and a save as a
@@ -73,6 +78,7 @@ pub mod registry;
 pub mod secrets;
 pub mod source;
 pub mod stores;
+pub mod structure_zip;
 pub mod tree;
 pub mod validate;
 
@@ -96,11 +102,12 @@ pub use registry::{Edit, EditBy, EditPlan, EditReceipt, RegistryEntity, Registry
 pub use secrets::Registries;
 pub use source::{
     CommitReceipt, CommitRequest, DeployPlan, Linked, LinkedStatus, SYNC_KEY_NAME, Sides,
-    SourceControl, link_base,
+    SourceControl, ZipPlan, link_base,
 };
 pub use stores::{
     ContentClaim, ContentClaimer, LARGE_FILE_BYTES, StoreUses, StoreWarning, SyncedDirs, resolve,
     store_uses, walk_synced,
 };
+pub use structure_zip::{additive_target, read_zip, read_zip_from, write_zip, zip_bytes};
 pub use tree::{StructureTree, TreeEntry, path_segment, render_json};
 pub use validate::validate;

@@ -23,6 +23,7 @@ Contents:
 11. [Vectors with pgvector](#11-vectors-with-pgvector)
 12. [The Docker image](#12-the-docker-image)
 13. [Making a release](#13-making-a-release)
+14. [Source control: moving structure between instances](#14-source-control-moving-structure-between-instances)
 
 ---
 
@@ -2463,3 +2464,201 @@ which libc the process maps (the host's on a glibc image, the bundle's on Alpine
 and on Debian 13 and Alpine a venv with a pure-Python package and a manylinux wheel,
 and an upgrade over a running install. It is skipped for a target that is not this
 machine's architecture.
+
+---
+
+## 14. Source control: moving structure between instances
+
+An installation's **structure** can live in a git repository and move between instances. The
+structure is its tables and fields, applications with their views and pages, triggers, roles,
+modules, file stores, settings that travel, and so on. Instances are separate installations,
+each with its own database; "development", "staging" and "production" are only labels. The
+design is [`APP_SYNC_PROPOSAL.md`](APP_SYNC_PROPOSAL.md), and the implementation is
+[`TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md) §9.3.
+
+**What travels, and what never does.** One JSON file per entity, plus the code and asset
+directories of local file stores. What never travels: rows, users, sessions, tokens, run history,
+uploaded content, a git store's files (only its URL, branch and pinned commit go), the settings
+that belong to the machine (`ssl`, `email`, `authentication`, `development`, backup schedules),
+custom domains, store paths, build hosts, `feldspar.toml`, and the link itself. Every secret is
+written as a mask. A new entity whose secret this instance has not got is created without it and
+listed in the receipt as needing one.
+
+Everything here is under **Administration → Source control** in the admin UI, and `feldspar sync`
+does the same from a terminal. Every action is admin-only and is never offered to an agent over
+MCP.
+
+### 14.1 Linking
+
+A link is a remote URL, a branch, and optionally a subdirectory, for a repository that holds other
+things too. Set it up under **Source control → Link setup**, choosing one of two credentials:
+
+- **A deploy key.** **Generate key** creates an ed25519 key under `<data dir>/keys` and shows its
+  public half. Add it to the repository as a deploy key, with write access on an instance that
+  commits. A read-only key is enough for an instance that only deploys: the remote then refuses
+  its pushes.
+- **An HTTPS token.** It is sealed with the instance key (`secrets.key`, §8.2) and given to git
+  through its environment. It never appears in a command line, a log or `.git/config`.
+
+**Test connection** lists the remote's branches without storing anything. From a terminal, after
+generating a key in the UI:
+
+```bash
+sudo -u feldspar feldspar sync link git@github.com:acme/structure.git --branch main \
+  --environment production
+sudo -u feldspar feldspar sync status --environment production
+```
+
+Linking sets the **base**, the record of what was last in step. It starts from the branch tip,
+leaving out each entity the instance does not have. So:
+
+| Starting point | What Status shows |
+|---|---|
+| an empty repository | everything here is "local new"; the first Commit exports the installation |
+| an empty instance | everything is incoming; Deploy builds it |
+| both have content | identical entities are in sync; review anything else before the first deploy |
+
+The clone at `<data dir>/sync-repo` is a mirror, never a workspace. Do not edit in it: every
+Pull resets it to the remote.
+
+### 14.2 The everyday loop
+
+On the instance where the change is made (call it A):
+
+1. Make the change as usual: a new field, an edited view, a new trigger.
+2. **Status** lists it as **Local**. Expand a row to see its diff.
+3. **Commit** pushes every ticked local change with a message. If another instance pushed first,
+   the push is refused and nothing changes. Press Commit again to redo it on top of the new tip.
+
+On the instance that receives it (B):
+
+1. **Pull** fetches the branch. Live does not change. Status lists the changes as **Incoming**.
+2. **Deploy** opens the review: every operation, grouped by class, with counts and blockers.
+   Confirm it, and the receipt says what was applied, deferred or not reached, and whether the
+   instance now matches the commit (`converged`) or not (`drifted`, with the differences listed).
+3. **History** lists every deploy, discard, commit and registry save, with who, from where and the
+   outcome.
+
+**Deploy is refused while the instance has uncommitted changes**, with a sentence naming them.
+Commit them, or **Discard** them (back to the base, reviewed like a deploy). A git store whose
+checked-out commit moved is the one exception: it never blocks Deploy.
+
+A **Conflict** is an entity changed both here and on the branch. On Commit, choose *keep mine*
+(commit this instance's version), *discard mine* (go back to the base, so the entity becomes
+incoming), or *merge in editor* (the registry editor shows mine, theirs and the base; save the
+merge, then keep mine).
+
+**Branches.** The branch selector switches which tip Status and Deploy compare against. It does
+not change live, and local changes stay local, so creating a branch and then committing puts this
+instance's changes on the new branch.
+
+From a terminal:
+
+```bash
+feldspar sync pull
+feldspar sync deploy --plan                     # print the plan, apply nothing
+feldspar sync deploy --yes                      # apply it, if it has no blockers
+feldspar sync commit -m "Add priority to tickets"
+feldspar sync discard view:helpdesk/list --yes
+feldspar sync branch feature --create
+```
+
+Restart a server that is running on the same database after a CLI deploy: it loaded its
+structure when it started. A deploy from the admin UI reloads the running server itself.
+
+**The registry editor** (**Source control → Registry**, or `feldspar registry`) edits any
+entity's JSON directly, including what only this instance has (marked "this instance only"). A
+save is planned and reviewed like a one-entity deploy. A save of a portable entity is an ordinary
+local change, to commit or discard. An edit to an instance-only value never shows in Status.
+
+### 14.3 Destructive changes
+
+Every operation in a plan is classified, and the class sets whether it starts ticked:
+
+| Class | Examples | In the review |
+|---|---|---|
+| safe | create anything, update a view, add a field, rename by id | ticked |
+| metadata delete | delete a view, page, trigger or a synced file | ticked, listed in red |
+| can fail | make a field required, add a unique constraint | ticked; checked against the data first, and a blocker with the reason ("312 rows have NULL in `status`") if it would fail |
+| data-destructive | drop a table or a field, delete a role users hold, delete a file store | **unticked**; tick each one and type the branch's name to confirm |
+| unsupported | change a column's SQL type, change a primary key | a blocker: add a new field, copy the values, then drop the old one |
+
+**Unticked is deferred, not forgotten.** The table or field stays, Status keeps it as "Incoming
+delete", and the next deploy offers the drop again. It never becomes a local change, so it does
+not block a later deploy, and Commit does not put it back into the repository.
+
+**A safety backup comes first.** When a data-destructive operation is ticked, a backup is written
+before anything is applied. It holds the structure plus the rows of every table or field about to
+be dropped, in `<data dir>/sync-backups/safety-<time>-<id>.zip`. Its path is in the receipt and in
+History.
+
+**The policy**, under Link setup, so instances can differ:
+
+- `destructive`: `confirm` (the default) or `never`. Under `never`, nothing that loses data can be
+  ticked in the UI or applied over the API. Only `feldspar sync deploy --yes --allow-destructive`,
+  run on the server, can apply it. Use `never` on production.
+- `full_backup`: `off` (the default), `optional` (the review offers one), or `required`. A full
+  backup goes through every backup schedule to its destination before the deploy. Under
+  `required`, a deploy is refused if no schedule exists.
+
+At the CLI, `--yes` applies only a plan with no blockers. It refuses a plan that loses data
+unless `--allow-destructive` is given.
+
+### 14.4 Rollback
+
+Rollback is a deploy of an earlier commit. Revert the commit in git (or switch to a branch at the
+earlier commit), then Pull and Deploy. The plan shows exactly what going back changes. It is
+classified like any other: going back past a field's creation is a data-destructive drop of that
+field.
+
+**Dropped data comes back only from the safety backup.** It is an ordinary backup file. Restore it
+under **Settings → Backup → Restore**, or:
+
+```bash
+sudo -u feldspar feldspar restore /var/lib/feldspar/sync-backups/safety-20261110T101500Z-1a2b3c4d.zip \
+  --environment production
+```
+
+Deploy the structure that has the table or field first, so the restore has somewhere to put the
+rows.
+
+### 14.5 Without a repository: the structure zip
+
+The same tree can travel as a zip, for an instance with no link or for a snapshot taken by hand:
+
+```bash
+sudo -u feldspar feldspar backup --structure-only /tmp/structure.zip --environment staging
+sudo -u feldspar feldspar sync deploy --from /tmp/structure.zip --plan --environment production
+sudo -u feldspar feldspar sync deploy --from /tmp/structure.zip --yes --environment production
+```
+
+Or upload it under **Source control → Deploy a zip**, which shows the same review. The zip holds
+what a commit holds: no rows, no accounts, no uploads, and secrets as the mask. It is never
+protected by a password, and `--password` is refused.
+
+- **On an instance with a link**, the zip takes the branch tip's place: local changes block it,
+  what the zip does not have is deleted (data-destructive drops start unticked), and the base is
+  updated as after a deploy of the tip.
+- **On an instance with no link** there is no base to tell a deletion from something that was
+  never there. The zip is applied **additively**: what it has is created or updated, and nothing
+  is deleted. That includes a field a table has here and the zip's version of it lacks.
+
+### 14.6 Credentials and what is on disk
+
+| What | Where |
+|---|---|
+| the link, its policy, the base, a sealed HTTPS token | the `_fd_sync` row |
+| the deploy key | `<data dir>/keys/feldspar-sync.key`, and its public half |
+| the mirror | `<data dir>/sync-repo` |
+| safety backups | `<data dir>/sync-backups` |
+| the ledger | `_fd_deployments` |
+
+- **A backup does not carry the link**, its credential or the ledger: they belong to this
+  instance. After restoring onto a new host, link it again (§14.1). Where the restored structure and
+  the branch agree, Status shows them in sync.
+- **Rotating a credential:** generate a new key (or type a new token) under Link setup. That keeps
+  the base, so Status is unchanged. Then remove the old deploy key from the repository.
+- **Unlinking** (`feldspar sync unlink`, or **Unlink** in Link setup) forgets the link and the base,
+  and leaves the structure as it is. Linking again starts from §14.1's rules.
+- **One deploy at a time.** A deploy, discard, commit or registry save holds the sync lock. A lock
+  older than an hour belongs to a process that died, and the next action takes it over.

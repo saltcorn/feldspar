@@ -104,6 +104,8 @@ pub const SWITCH_SYNC_BRANCH: HandlerId<AdminOnly> = HandlerId::new("switchSyncB
 pub const PLAN_SYNC_DEPLOY: HandlerId<AdminOnly> = HandlerId::new("planSyncDeploy");
 pub const SYNC_DEPLOY: HandlerId<AdminOnly> = HandlerId::new("syncDeploy");
 pub const LIST_DEPLOYMENTS: HandlerId<AdminOnly> = HandlerId::new("listDeployments");
+pub const PLAN_SYNC_ZIP_DEPLOY: HandlerId<AdminOnly> = HandlerId::new("planSyncZipDeploy");
+pub const SYNC_ZIP_DEPLOY: HandlerId<AdminOnly> = HandlerId::new("syncZipDeploy");
 pub const GET_FILE_STORE_SYNC: HandlerId<AdminOnly> = HandlerId::new("getFileStoreSync");
 pub const SET_FILE_STORE_SYNC: HandlerId<AdminOnly> = HandlerId::new("setFileStoreSync");
 
@@ -470,6 +472,7 @@ pub const UPLOAD_FILE: HandlerId<AdminOnly> = HandlerId::new("uploadFile");
 pub const DOWNLOAD_FILE: HandlerId<AdminOnly> = HandlerId::new("downloadFile");
 pub const CREATE_BACKUP: HandlerId<AdminOnly> = HandlerId::new("createBackup");
 pub const UPLOAD_BACKUP: HandlerId<AdminOnly> = HandlerId::new("uploadBackup");
+pub const UPLOAD_STRUCTURE_ZIP: HandlerId<AdminOnly> = HandlerId::new("uploadStructureZip");
 
 #[cfg(test)]
 mod tests {

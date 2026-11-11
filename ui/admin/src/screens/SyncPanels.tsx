@@ -12,6 +12,9 @@
 // - **History**: the ledger, with "restore this version" on a registry save.
 // - **Link**: URL, branch, subdirectory, credential (generate a key or paste a
 //   token), policy, and a test-connection button.
+// - **Deploy a zip** (§7.4): upload a structure zip and deploy it through the
+//   same review — in the branch tip's place on a linked instance, and
+//   additively (nothing deleted) on one with no link.
 //
 // The model is `structureSync.ts`.
 
@@ -27,7 +30,7 @@ import Row from "react-bootstrap/Row";
 import Spinner from "react-bootstrap/Spinner";
 import Table from "react-bootstrap/Table";
 
-import { api, errorMessage } from "../api";
+import { api, errorMessage, uploadStructureZip, type UploadedStructureZip } from "../api";
 import { T, useT } from "../i18n";
 import { IconArrowDown, IconChevronDown, IconChevronRight, IconGitBranch, IconRefresh } from "../icons";
 import { StatusBadge, type Tone } from "../layout";
@@ -711,6 +714,96 @@ function Review({
         )}
       </Modal.Footer>
     </Modal>
+  );
+}
+
+/** Upload a structure zip and deploy it (§7.4), through the same review as a
+ * deploy of the branch tip. */
+export function ZipTab({ linked, onDeployed }: { linked: boolean; onDeployed: () => Promise<void> }) {
+  const { t } = useT();
+  const [file, setFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploaded, setUploaded] = useState<(UploadedStructureZip & { name: string }) | null>(null);
+  const [reviewing, setReviewing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const upload = async () => {
+    if (!file) return;
+    setUploading(true);
+    setError(null);
+    try {
+      const done = await uploadStructureZip(file);
+      setUploaded({ ...done, name: file.name });
+      setReviewing(true);
+    } catch (e) {
+      setError(errorMessage(e, t("The file could not be uploaded.")));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <Card data-testid="sync-zip">
+      <Card.Body>
+        <Card.Title>
+          <T text="Deploy a structure zip" />
+        </Card.Title>
+        <p className="text-secondary small">
+          {linked ? (
+            <T text="The zip takes the branch tip's place: it is planned and applied as a deploy is, what it does not have is deleted (what loses data stays unticked), and it is refused while this instance has uncommitted changes." />
+          ) : (
+            <T text="This installation is not linked, so the zip is applied additively: what it has is created or updated, and nothing is deleted." />
+          )}{" "}
+          <T text="A structure zip is written by feldspar backup --structure-only." />
+        </p>
+        {error && <Alert variant="danger">{error}</Alert>}
+        <div className="d-flex gap-2 align-items-center flex-wrap">
+          <Form.Control
+            type="file"
+            accept=".zip,application/zip"
+            style={{ maxWidth: "24rem" }}
+            aria-label={t("Structure zip")}
+            onChange={(e) => {
+              const input = e.target as HTMLInputElement;
+              setFile(input.files?.[0] ?? null);
+              setUploaded(null);
+            }}
+            data-testid="sync-zip-file"
+          />
+          <Button disabled={!file || uploading} onClick={() => void upload()} data-testid="sync-zip-upload">
+            {uploading ? t("Uploading…") : t("Upload and review")}
+          </Button>
+          {uploaded && !reviewing && (
+            <Button variant="outline-secondary" onClick={() => setReviewing(true)}>
+              <T text="Review again" />
+            </Button>
+          )}
+        </div>
+      </Card.Body>
+      {reviewing && uploaded && (
+        <Review
+          title={t("Deploy {file} ({count} files)", { file: uploaded.name, count: uploaded.files })}
+          word={t("deploy")}
+          plan={async () => {
+            const plan = await api.planSyncZipDeploy({ upload: uploaded.id });
+            return { plan, policy: plan.policy, commit: null };
+          }}
+          apply={(plan, ticked, fullBackup) =>
+            api.syncZipDeploy({
+              upload: uploaded.id,
+              plan_digest: plan.digest,
+              ticked: [...ticked],
+              full_backup: fullBackup,
+            })
+          }
+          confirmLabel={t("Deploy")}
+          onClose={() => {
+            setReviewing(false);
+            void onDeployed();
+          }}
+        />
+      )}
+    </Card>
   );
 }
 

@@ -57,6 +57,7 @@ use crate::link::{
 use crate::mirror::{Mirror, Pulled, short};
 use crate::plan::Plan;
 use crate::stores::StoreWarning;
+use crate::structure_zip::additive_target;
 use crate::tree::StructureTree;
 
 /// The deploy key's name in `<data dir>/keys`.
@@ -140,6 +141,16 @@ pub struct CommitReceipt {
 pub struct DeployPlan {
     /// The tip commit the plan deploys.
     pub commit: Option<String>,
+    /// The plan.
+    pub plan: Plan,
+}
+
+/// A plan of deploying a structure zip (§7.4).
+#[derive(Debug, Clone, Serialize)]
+pub struct ZipPlan {
+    /// Whether the installation is linked, so the zip takes the branch tip's
+    /// place and the base rules apply; otherwise it is applied additively.
+    pub linked: bool,
     /// The plan.
     pub plan: Plan,
 }
@@ -604,6 +615,72 @@ impl<'a> SourceControl<'a> {
         Ok(receipt)
     }
 
+    /// Plan deploying the structure zip `zip` (§7.4). With a link, the zip
+    /// takes the branch tip's place: the base rules apply, so local changes
+    /// block it (D5) and what the zip lacks is deleted. Without one, it is
+    /// applied additively ([`additive_target`]): created and updated, never
+    /// deleted.
+    pub async fn plan_zip(
+        &self,
+        zip: &StructureTree,
+        actor: Option<String>,
+        source: Source,
+    ) -> Result<ZipPlan> {
+        crate::format::check_format(zip)?;
+        Ok(match self.link().await? {
+            Some(link) => {
+                let base = self.base().await?;
+                let request = zip_request(Some(&link), &base.tree, zip, actor, source);
+                ZipPlan {
+                    linked: true,
+                    plan: self.deployer.plan_deploy(&request).await?,
+                }
+            }
+            None => {
+                let live = self.deployer.live_in(Mode::Portable).await?;
+                let target = additive_target(&live, zip);
+                let request = zip_request(None, &live, &target, actor, source);
+                ZipPlan {
+                    linked: false,
+                    plan: self.deployer.plan_deploy(&request).await?,
+                }
+            }
+        })
+    }
+
+    /// Deploy the structure zip `zip` as the plan `confirm` reviewed
+    /// ([`plan_zip`](Self::plan_zip)). With a link, the next base is stored, as
+    /// after a deploy of the tip; it was taken from no commit.
+    pub async fn deploy_zip(
+        &self,
+        zip: &StructureTree,
+        confirm: &Confirm,
+        actor: Option<String>,
+        source: Source,
+    ) -> Result<Receipt> {
+        crate::format::check_format(zip)?;
+        match self.link().await? {
+            Some(link) => {
+                let mirror = self.mirror(&link)?;
+                let base = self.base().await?;
+                let request = zip_request(Some(&link), &base.tree, zip, actor, source);
+                let receipt = self.deployer.deploy(&request, confirm).await?;
+                let tree = keep_base_files(mirror.repo(), &receipt.base).await?;
+                store_base(self.catalog(), &Base { tree, commit: None }).await?;
+                Ok(receipt)
+            }
+            None => {
+                // The target is made from live as it is now; a live that
+                // moves before the lock is taken changes the plan's digest,
+                // so the plan is stale, as any other would be.
+                let live = self.deployer.live_in(Mode::Portable).await?;
+                let target = additive_target(&live, zip);
+                let request = zip_request(None, &live, &target, actor, source);
+                self.deployer.deploy(&request, confirm).await
+            }
+        }
+    }
+
     /// Plan discarding `keys`: each back at its base version (§2, §5).
     pub async fn plan_discard(&self, keys: &[&str]) -> Result<Plan> {
         let link = self.require_link().await?;
@@ -678,6 +755,27 @@ fn deploy_request<'r>(
         actor,
         source,
         policy: link.policy,
+    }
+}
+
+/// A deploy of a structure zip: over the link's base and policy, or, with no
+/// link, over live itself — so nothing is a local change — and the default
+/// policy.
+fn zip_request<'r>(
+    link: Option<&SyncLink>,
+    base: &'r StructureTree,
+    target: &'r StructureTree,
+    actor: Option<String>,
+    source: Source,
+) -> Request<'r> {
+    Request {
+        base,
+        target,
+        commit: None,
+        branch: link.map(|l| l.branch.clone()),
+        actor,
+        source,
+        policy: link.map(|l| l.policy).unwrap_or_default(),
     }
 }
 

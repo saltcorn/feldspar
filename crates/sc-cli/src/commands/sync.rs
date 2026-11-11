@@ -8,7 +8,7 @@
 //! feldspar sync pull
 //! feldspar sync commit -m MSG [KEY…] [--keep-mine KEY]…
 //! feldspar sync discard KEY… [--plan] [--yes] [--allow-destructive]
-//! feldspar sync deploy [--plan] [--yes] [--allow-destructive] [--full-backup]
+//! feldspar sync deploy [--from FILE.zip] [--plan] [--yes] [--allow-destructive] [--full-backup]
 //! feldspar sync branch [NAME] [--create]
 //! ```
 //!
@@ -18,7 +18,13 @@
 //! data unless `--allow-destructive` says so. `--allow-destructive` is also
 //! what lifts a `destructive: never` policy, which only the operator on the
 //! server can do.
+//!
+//! `deploy --from FILE.zip` deploys a structure zip (`feldspar backup
+//! --structure-only`) instead of the branch tip (§7.4). With a link it takes
+//! the tip's place and the base rules apply; without one it is applied
+//! additively: created and updated, and nothing deleted.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use sc_cli::{DbConfig, connect_catalog, connect_stored_databases, connect_stored_file_stores};
@@ -40,7 +46,8 @@ const ACTOR: &str = "operator";
 const USAGE: &str = "feldspar sync link URL [--branch B] [--subdirectory DIR] | unlink | status | \
      pull | commit -m MSG [KEY…] [--keep-mine KEY]… | \
      discard KEY… [--plan] [--yes] [--allow-destructive] | \
-     deploy [--plan] [--yes] [--allow-destructive] [--full-backup] | branch [NAME] [--create]";
+     deploy [--from FILE.zip] [--plan] [--yes] [--allow-destructive] [--full-backup] | \
+     branch [NAME] [--create]";
 
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn sync_command(args: &[String]) -> Result<()> {
@@ -196,33 +203,67 @@ pub(crate) async fn sync_command(args: &[String]) -> Result<()> {
         "deploy" => {
             let full_backup = rest.iter().any(|a| a == "--full-backup");
             let rest: Vec<String> = rest.into_iter().filter(|a| a != "--full-backup").collect();
+            let (from, rest) = take_values(rest, &["--from"])?;
             let (apply, rest) = Apply::extract(rest);
             no_more(
                 &rest,
-                "feldspar sync deploy [--plan] [--yes] [--allow-destructive] [--full-backup]",
+                "feldspar sync deploy [--from FILE.zip] [--plan] [--yes] [--allow-destructive] \
+                 [--full-backup]",
             )?;
+            // The zip before the database: one that is not a structure zip is
+            // refused before anything has been connected to.
+            let zip = match from[0].last() {
+                Some(file) => Some((file.clone(), sc_sync::read_zip(Path::new(file))?)),
+                None => None,
+            };
             let (catalog, apps) = served(&db).await?;
             let sc = source(&catalog, &apps)?;
-            let planned = sc.plan_deploy(Some(ACTOR.to_owned()), Source::Cli).await?;
-            print_plan(
-                &format!(
-                    "deploying {}",
-                    planned.commit.as_deref().map_or("no commit", short)
-                ),
-                &planned.plan,
-            );
-            let Some(mut confirm) = confirmed(&planned.plan, apply)? else {
+            let (plan, commit) = match &zip {
+                Some((file, tree)) => {
+                    let planned = sc
+                        .plan_zip(tree, Some(ACTOR.to_owned()), Source::Cli)
+                        .await?;
+                    print_plan(
+                        &if planned.linked {
+                            format!("deploying {file} in the branch tip's place")
+                        } else {
+                            format!("deploying {file} additively (no link: nothing is deleted)")
+                        },
+                        &planned.plan,
+                    );
+                    (planned.plan, None)
+                }
+                None => {
+                    let planned = sc.plan_deploy(Some(ACTOR.to_owned()), Source::Cli).await?;
+                    print_plan(
+                        &format!(
+                            "deploying {}",
+                            planned.commit.as_deref().map_or("no commit", short)
+                        ),
+                        &planned.plan,
+                    );
+                    (planned.plan, planned.commit)
+                }
+            };
+            let Some(mut confirm) = confirmed(&plan, apply)? else {
                 return Ok(());
             };
             confirm.full_backup = full_backup;
-            let receipt = sc
-                .deploy(
-                    planned.commit.as_deref(),
-                    &confirm,
-                    Some(ACTOR.to_owned()),
-                    Source::Cli,
-                )
-                .await?;
+            let receipt = match &zip {
+                Some((_, tree)) => {
+                    sc.deploy_zip(tree, &confirm, Some(ACTOR.to_owned()), Source::Cli)
+                        .await?
+                }
+                None => {
+                    sc.deploy(
+                        commit.as_deref(),
+                        &confirm,
+                        Some(ACTOR.to_owned()),
+                        Source::Cli,
+                    )
+                    .await?
+                }
+            };
             report("deployed", &receipt)
         }
         "branch" => {

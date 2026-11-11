@@ -44,8 +44,11 @@ Two design invariants that fall out of the goals and pervade everything below:
   or triggered by, rows.
 - **The database is the source of truth.** All metadata and users live in the primary
   database (in `_fd_*` tables and `users`). The in-memory catalog is a *cache* of that
-  truth, kept coherent across processes by the message bus. There is no separate on-disk
-  app format; a backup is a database dump plus the file stores.
+  truth, kept coherent across processes by the message bus. The structure also has an
+  on-disk form, the **structure tree** (§9.3): one canonical JSON file per entity, which
+  Source control keeps in a git repository and `feldspar backup --structure-only` writes to a
+  zip. It is an export of the database and a target to deploy, never a second place the
+  running instance reads its structure from. A backup is a database dump plus the file stores.
 
 ---
 
@@ -3279,6 +3282,86 @@ deliberately relationship-free key/value stores — every `_fd_config` key gets 
 `FormField` declaration in `sc-config`, not from a row pointing anywhere.
 
 Tables named in §9 that are **not yet created**: `_fd_errors`.
+
+### 9.3 The structure tree and source control (`sc-sync`)
+
+The metadata in §9.1 also has an on-disk form: the **structure tree**, an installation's structure
+as one canonical JSON file per entity. It is how an installation's structure is kept in a git
+repository and moved between instances by Commit, Pull and Deploy, and how it travels as a zip. The
+decisions behind it (D1–D7: the whole installation is the unit, a link is a remote and a branch,
+data loss is opt-in, instances are separate, Deploy waits for local changes, the repository holds
+code and not content, the registry editor) are in
+[`APP_SYNC_PROPOSAL.md`](APP_SYNC_PROPOSAL.md); this section is what was built.
+
+**The database stays the source of truth for a running instance.** The tree is an export of it and
+a target to deploy, never a second store that the instance reads its structure from.
+
+**The tree** (`tree`, `format`). An ordered map from repository path (`tables/tickets.json`,
+`applications/helpdesk/views/list.json`, `file-stores/assets/files/logo.png`) to a JSON value or a
+store file's bytes. Rendering is canonical (keys sorted at every depth, two-space indentation, a
+trailing newline), so a tree read from a commit compares with one exported from live by their bytes,
+and two exports of the same structure are the same bytes. `feldspar-structure.json` carries the
+format version, and a tree in a newer format is refused with a sentence naming both versions.
+
+**Export** (`export`, `identity`, `secrets`, `stores`). Every kind is written through the admin
+API's own `*_json`, the shape a backup uses too, with bookkeeping and instance-bound fields stripped.
+There are two modes. **Portable** is what goes to git and to a zip. **Instance** adds what only this
+instance has a say in: every settings section, build hosts, custom domains, store paths and keys.
+The registry editor works on the instance mode. Every table and field is given an overlay id before
+it is exported, so ids match across instances. Every secret is written as `SECRET_SENTINEL`, and
+`merge_secrets` keeps the stored value on the way back in. A local store's synced directories (its
+code and asset directories, from how the structure uses it, or its `sync_contents` override) are
+exported file by file. A git store is exported as its URL, branch and the commit checked out (its
+pin).
+
+**Status** (`entity`, `diff`, `base`). Entities are matched across trees by id and then by name
+(roles by level, modules by package, settings by section and key). Each entity is compared across
+the **base** (the tree as last synced here, kept gzipped in `_fd_sync`, with store files as blob
+hashes the mirror keeps reachable under `refs/feldspar/base`), the branch **tip** and **live**, and
+falls into one class: in sync, incoming (or incoming new, incoming delete), local (change, delete,
+new), a moved git-store pin, or a conflict.
+
+**The planner** (`plan`, `validate`). From live and a target tree it makes the ordered operations
+of a deploy. Modules come first, then roles, then connections, stores and their files, tables and
+fields (`schema_edit` batches), providers, automations, analytics, applications and what is in
+them, and settings; deletes come last, in reverse order. Each operation is classified (safe,
+metadata delete, can fail, data-destructive, unsupported), and its class sets its default tick.
+Can-fail operations are dry-run against live data; unsupported ones, missing secrets that the plan
+depends on, and unsafe pin moves are blockers. The plan's digest covers live, the target and the
+base, so it changes exactly when any of them does.
+
+**The executor** (`apply`, `deploy`, `ledger`). A confirmed plan is applied under the sync lock
+(`_fd_sync_lock`) through each kind's own save path. Before anything is applied, the plan is made
+again: a digest that differs means the plan is stale, and nothing is applied. If a data-destructive
+operation is ticked, a safety backup (the structure plus the rows about to be dropped, written with
+the backup writer to `<data dir>/sync-backups`) comes first. After the plan runs, `reload_all`,
+then live is re-diffed against the target, and a difference marks the receipt `drifted`. The run
+is recorded in `_fd_deployments`. The next base is the target, except for entities whose operations
+were not applied: they keep live's version, so a deferred drop stays "incoming delete" and is
+never a local change. A discard and a registry save are the same run over other targets: the base
+version of the chosen entities, and the instance tree with one file replaced.
+
+**The link** (`link`, `mirror`, `source`). `_fd_sync` holds one link: a URL, a branch, an optional
+subdirectory, a credential (a deploy key under `<data dir>/keys`, or an HTTPS token sealed with the
+instance key and handed to git through its environment, never argv or `.git/config`), the policy,
+and the base. The clone at `<data dir>/sync-repo` is a mirror, never a workspace. Pull is a
+fast-forward, or a reset after a force-push. Commit writes the tip plus the chosen local changes
+and pushes. A refused push resets the mirror to the remote, and the base advances only after a
+successful push. `SourceControl` puts the actions together for the API, the UI and the CLI.
+
+**The zip transport** (`structure_zip`). `feldspar backup --structure-only` writes the portable tree
+into a zip, at its root, with no timestamps (the same tree is the same zip). A zip is deployed by
+`feldspar sync deploy --from FILE.zip` or uploaded on the Source control screen (a raw route,
+`/source-control/upload`, like the backup upload, then the typed `planSyncZipDeploy` and
+`syncZipDeploy`). **With a link** the zip takes the branch tip's place and the base rules apply.
+**Without one** there is no base to tell a deletion from something never there, so the target is
+live with the zip's entities put over the ones they match (keeping a table's fields and
+constraints that the zip lacks): it creates and updates, and never deletes, as a restore does.
+
+**Where it is reached.** The admin API's `/api/source-control/` endpoints and the registry's
+(`sc_api::admin::source_control`, `::registry`), none of them in the MCP projection; the Source
+control screen (`ui/admin/src/screens/SourceControlPage.tsx`, `SyncPanels.tsx`); and `feldspar
+sync` and `feldspar registry`. The operator's guide is [`OPERATIONS.md`](OPERATIONS.md) §14.
 
 ---
 

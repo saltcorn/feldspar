@@ -66,6 +66,8 @@ flate2.workspace = true
 base64.workspace = true
 # A local store's synced directories are walked with git's own ignore rules.
 ignore = "0.4"
+# The zip transport (§7.4): a structure tree as a zip, and back.
+zip.workspace = true
 
 [dev-dependencies]
 sc-test-harness = { workspace = true, features = ["catalog"] }
