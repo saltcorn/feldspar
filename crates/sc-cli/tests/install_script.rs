@@ -223,6 +223,62 @@ fn dry_run_downloads_and_installs_nothing() {
     fs::remove_dir_all(&dir).ok();
 }
 
+/// `--version X.Y.Z` installs that release, by its versioned name, beside a
+/// latest release it leaves alone; a version that is not there is said to be
+/// missing, and one that is not X.Y.Z is refused before anything is fetched.
+#[test]
+fn version_installs_that_release_or_says_it_is_not_there() {
+    if as_root() || !on_a_known_distribution() || !on_x86_64() {
+        eprintln!("skipped: needs a non-root run on x86_64 Debian, Ubuntu or Alpine");
+        return;
+    }
+    let dir = scratch("version");
+    let release = fake_release(&dir);
+    let versioned = "feldspar-0.3.2-linux-x86_64.tar.gz";
+    fs::copy(release.join(OBJECT), release.join(versioned)).unwrap();
+    let sum = fs::read_to_string(release.join(format!("{OBJECT}.sha256"))).unwrap();
+    fs::write(
+        release.join(format!("{versioned}.sha256")),
+        sum.replace(OBJECT, versioned),
+    )
+    .unwrap();
+    // The latest is not what is asked for: a broken one shows it is not read.
+    fs::write(release.join(OBJECT), "not this one").unwrap();
+
+    let (out, sudo) = install(&dir, &release, &["--version", "0.3.2"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains(&format!("downloading {versioned}")),
+        "{stdout}"
+    );
+    assert!(sudo.contains("/install.sh --no-next-steps"), "{sudo}");
+
+    let (out, sudo) = install(&dir, &release, &["--version", "0.3.3"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(
+        stderr.contains("there is no feldspar 0.3.3 for linux x86_64")
+            && stderr.contains("versions.txt"),
+        "{stderr}"
+    );
+    assert!(sudo.lines().count() == 1, "installed again: {sudo}");
+
+    for bad in ["0.3", "latest", "0.3.2-rc1"] {
+        let (out, _) = install(&dir, &release, &["--version", bad]);
+        assert_eq!(out.status.code(), Some(2), "{bad}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("--version takes a release version"),
+            "{bad}"
+        );
+    }
+    fs::remove_dir_all(&dir).ok();
+}
+
 /// It is published as plain `sh`, and must stay that way: Alpine has no bash.
 #[test]
 fn the_installer_is_posix_sh_and_documented() {

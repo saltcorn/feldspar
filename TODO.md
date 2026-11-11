@@ -958,6 +958,30 @@ APIs, CSP, roles, development options — on one Settings tab.
 
 ---
 
+## R1 — Versioned releases
+
+Releases get a version, `X.Y.Z`, so that a host can be pinned to one, go back to one, and tell
+which one it runs; the version-less names stay the latest release, which existing hosts fetch.
+The manual is docs/OPERATIONS.md §13.1.
+
+- [x] **R1.1** `scripts/build-static.sh --release X.Y.Z`: refused unless `X.Y.Z` is at least the
+  version in `Cargo.toml`, the newest `vX.Y.Z` tag and the newest in `versions.txt`, the checkout
+  is clean, and this architecture's versioned tarball is not in the bucket. A new version is set
+  in `Cargo.toml` and `Cargo.lock`, committed as `Release X.Y.Z` and tagged `vX.Y.Z` before the
+  build; after it, `X.Y.(Z+1)-dev` is committed on top and the branch and tag are pushed,
+  before any upload. At a commit already tagged (another architecture, or a run that failed)
+  it only builds and publishes, finishing the branch push when it has not happened.
+- [x] **R1.2** Published as `feldspar-X.Y.Z-linux-<arch>.tar.gz` (never replaced) beside the
+  version-less latest names, with `versions.txt` (every version, sorted, each once) and
+  `latest.txt` (the newest) in the bucket.
+- [x] **R1.3** `install.sh --version X.Y.Z` installs that release, says plainly when it is not
+  there, and refuses a downgrade without `--allow-downgrade`.
+- [ ] **R1.4** Settings → System compares the running version with `latest.txt` and says when a
+  newer release is out.
+- [ ] **R1.5** Channels other than latest (`beta`, …), under names of their own.
+
+---
+
 ## Open questions
 
 - F9: should a refused but signed-in caller of a Saltcorn UI application be shown "your account

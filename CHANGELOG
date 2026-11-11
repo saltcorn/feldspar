@@ -2,6 +2,68 @@
 
 Changes in reverse chronological order.
 
+## Versioned releases (TODO R1.1–R1.3)
+
+Releases now carry a version. The version-less names hosts already fetch stay the latest
+release, so nothing installed has to change.
+
+- **Between releases the workspace version is `X.Y.(Z+1)-dev`** (a SemVer pre-release,
+  which Cargo accepts; nothing in the workspace parses `CARGO_PKG_VERSION`, they all
+  pass it through as text). After the build, `release_push` sets and commits it as
+  `Start X.Y.(Z+1)-dev` (`release_next_dev`) on top of the tagged release commit, then
+  pushes the branch and the tag in one atomic push. If the push is refused, it resets to
+  the tag (the `-dev` commit is taken back off) and uploads nothing. Run again with HEAD
+  at the tag, on a branch whose upstream does not have it (`RELEASE_ADVANCE`), and it
+  finishes the release: build, `-dev` commit, push. A release is compared with the
+  `Cargo.toml` version without its suffix (`release_version_base`), because `sort -V`
+  orders `0.1.2-dev` after `0.1.2`. `install.sh`'s downgrade check strips the suffix from
+  the installed version the same way.
+
+- **`scripts/build-static.sh --release X.Y.Z`** (the version is now required). Before the
+  build, `release_version_preflight` (`scripts/lib/release.sh`) does a `git fetch --tags` and
+  refuses: a version that is not `X.Y.Z`; one older than `Cargo.toml`, the newest `vX.Y.Z` tag
+  or the newest in the bucket's `versions.txt` (equal is allowed); a checkout with uncommitted
+  changes; and a version whose `feldspar-X.Y.Z-linux-<arch>.tar.gz` is already in the bucket.
+  A new version needs a branch level with or ahead of its upstream. `release_prepare` then sets
+  the version in `Cargo.toml` and in `Cargo.lock`'s workspace packages (as text, so no host
+  cargo or network is needed), commits it as `Release X.Y.Z` and tags it `vX.Y.Z`. When
+  `Cargo.toml` already has that version, only the tag is added. At a commit already tagged
+  `vX.Y.Z` (the other architecture's machine, or a run being repeated) it commits and tags
+  nothing. After the build, `release_push` pushes the commit and tag atomically, before any
+  upload.
+- **Uploads, in order:** `feldspar-X.Y.Z-linux-<arch>.tar.gz` and its `.sha256`, then the
+  version-less latest names as before (`feldspar-linux-<arch>.tar.gz`, plus `feldspar.tar.gz`
+  from x86_64), then `versions.txt` (read again, the version added, `sort -uV`) and
+  `latest.txt` (the newest version), then `install.sh`. Reads use
+  `wrangler r2 object get`. Only "The specified key does not exist" counts as absent; any other
+  failure stops the run. `log` in `build-static.sh` is now defined before the preflight that
+  uses it. A release from a dirty tree, which used to be allowed with a warning, is now
+  refused.
+- **`install.sh --version X.Y.Z`** fetches the versioned tarball. A version that is not in the
+  bucket for this architecture is reported as such, naming `versions.txt`, and a malformed one
+  exits 2. A version older than the installed one (from `/opt/feldspar/bin/feldspar
+  --version`) is refused unless `--allow-downgrade` is given. The variable is `WANT_VERSION`,
+  not `VERSION`, because `/etc/os-release` (sourced later) sets `VERSION`.
+- Docs: docs/OPERATIONS.md §13.1 (which versions may be released, a new version vs. another
+  architecture, what is uploaded in which order), §2.1 and §2.2; README §2 and §4.1; the
+  tarball's README.
+- Tests (`crates/sc-cli/tests/build_static_release.rs`): the fixture is now a git repository
+  with a bare `origin`, and the `npx` stub works as a bucket (`get` answers from what was
+  `put`). New: `a_new_version_is_committed_tagged_pushed_and_listed` (Cargo.toml and lock bump,
+  where the registry package is untouched; the commit and annotated tag on the remote; push
+  before the first upload; `versions.txt` merged), `another_architecture_publishes_at_the_tag_and_a_version_is_never_replaced`,
+  `versions_that_may_not_be_published_are_refused_before_the_build` (format, older than
+  Cargo/tag/list, already published, dirty, tagged on another commit, behind upstream,
+  detached, no version; in each case nothing is built, committed, tagged or uploaded), and
+  version-ordering checks in the library test. `install_script.rs`:
+  `version_installs_that_release_or_says_it_is_not_there`. The existing tests now expect the
+  versioned and list uploads. For `-dev`: `a_new_version_is_committed_tagged_pushed_and_listed`
+  now starts at `0.4.1-dev` and checks the release commit, the `Start 0.4.2-dev` commit on
+  top, where `main` and the tag are on the remote, and that 0.5.0 can be released next;
+  `a_refused_push_uploads_nothing_and_the_same_command_finishes_the_release` (a
+  `pre-receive` hook that refuses); a 0.4.0 from 0.4.1-dev refusal; and `release_next_dev`
+  and `release_version_base` checks.
+
 ## Admin UI: settings-tab and sign-in-target labels are extractable
 
 `every_declared_domain_scans_without_an_unreadable_call_site` failed: two admin call sites passed

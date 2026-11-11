@@ -246,6 +246,15 @@ Piping a script off the internet into a shell deserves that one look first:
 `--dry-run` prints every command without running any, and the libc it expects to
 use (§1.2). `--help` lists the rest.
 
+`--version X.Y.Z` installs that release instead of the latest (`versions.txt` beside the
+installer lists them), for pinning a host or going back to a known release. A version
+older than the one installed is refused unless `--allow-downgrade` is given too: the newer
+release may already have migrated the database, so take a dump first (§3).
+
+```bash
+curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh -s -- --version 0.1.1
+```
+
 The installer (`scripts/install.sh`) installs what it needs to download and unpack
 (ca-certificates, curl or wget, tar, gzip, find, awk) with the distribution's package
 manager, downloads the tarball for this platform and its checksum, checks it, and
@@ -270,7 +279,10 @@ is each step by hand, with the reason for it.
 
 Those URLs **carry no version**. The objects behind them are always the latest
 release, which is also what makes them the upgrade path (§3.2); there is no
-version to look up. The published `.sha256` names the file you downloaded rather
+version to look up. Each release also stays downloadable by its version, as
+`feldspar-<version>-linux-x86_64.tar.gz` (and its `.sha256`), and
+`https://feldspar-latest-static.saltcorn.com/versions.txt` lists the versions; the curl
+installer takes one with `--version` (§2.1). The published `.sha256` names the file you downloaded rather
 than the versioned file it was computed over, so `sha256sum -c` works on it as it
 is.
 
@@ -2387,11 +2399,11 @@ For whoever publishes feldspar, not for an operator installing it.
 ### 13.1 Building and publishing
 
 `scripts/build-static.sh` builds the release tarball in a checkout, checks it, and with
-`--release` publishes it:
+`--release X.Y.Z` publishes it as that version:
 
 ```bash
-scripts/build-static.sh                 # dist/feldspar-<version>-<target>.tar.gz and its .sha256
-scripts/build-static.sh --release       # ...and upload it, then the curl installer
+scripts/build-static.sh                     # dist/feldspar-<version>-<target>.tar.gz and its .sha256
+scripts/build-static.sh --release 0.1.1     # ...as release 0.1.1: commit, tag, build, push, upload
 ```
 
 (The name is older than what it builds: the first release was a statically linked
@@ -2407,26 +2419,74 @@ binary. It is now the one dynamically linked artifact with its own CPython and g
 | `-j N` | lower cargo's parallelism if the linker runs the machine out of memory. This workspace links V8 |
 | `--no-verify` | skip the post-build checks: the binary links `libpython3.13.so.1.0` from `$ORIGIN/../python/lib`, the `.glibc` copies have the bundled loader and `DT_RPATH`, and the smoke test of §13.3 |
 
-`--release` uploads the tarball and its `.sha256` to the Cloudflare R2 bucket
-`feldspar-latest-static`, served as `https://feldspar-latest-static.saltcorn.com`:
+**The version between releases.** After releasing `X.Y.Z`, the workspace version is
+`X.Y.(Z+1)-dev`: after 0.1.1, `Cargo.toml` says `0.1.2-dev`. That is a SemVer pre-release
+of the next patch release, ordered between the two (`0.1.1 < 0.1.2-dev < 0.1.2`), and it is
+what a build from a checkout reports (`feldspar --version`, Settings → System). The next
+release may be 0.1.2, or a minor or major one such as 0.2.0.
+
+**Which versions may be released.** `X.Y.Z` (digits, no `v`, no `-rc1`) must be the
+same as or newer than the version in `Cargo.toml` (`[workspace.package]`) without its
+`-dev` suffix, the newest
+`vX.Y.Z` git tag and the newest version in the bucket's `versions.txt`; and this
+architecture's `feldspar-X.Y.Z-linux-<arch>.tar.gz` must not be in the bucket yet, since a
+published version is never replaced. The checkout must have no uncommitted changes. All of
+this is checked, after a `git fetch --tags`, before anything is built.
+
+**A new version** is released from a branch (normally `main`) that is level with or ahead
+of its upstream. Before the build, the script sets `X.Y.Z` in `Cargo.toml` and in
+`Cargo.lock`'s workspace packages, commits the two files as `Release X.Y.Z`, and tags that
+commit `vX.Y.Z` (an annotated tag). When `Cargo.toml` already says `X.Y.Z` exactly (a
+checkout that has never had a `-dev` version), there is nothing to commit and the tag goes
+on `HEAD`. After the build and its checks pass, the script commits the next development
+version as `Start X.Y.(Z+1)-dev`, and pushes the branch (now at that commit) and the tag
+(at the release commit) in one atomic `git push`, **before** any upload: a tag whose
+tarball is not up yet is put right by running the command again, while a published
+tarball whose commit is not on the remote would not be. A refused push takes the `-dev`
+commit back off and uploads nothing. A build or push that fails leaves the release commit
+and tag local with `HEAD` at the tag; run the same command again, which builds there and
+finishes the release, or drop them (`git tag -d vX.Y.Z && git reset --hard HEAD~1`, as the
+script prints).
+
+**Another architecture of the same version** is built on its own machine, at the tag:
+
+```bash
+git fetch --tags && git checkout v0.1.1
+scripts/build-static.sh --target aarch64-unknown-linux-gnu --release 0.1.1
+```
+
+At a commit already tagged `vX.Y.Z` (and already on the remote) the script commits and
+tags nothing; it builds, makes sure the tag is on the remote, and publishes this
+architecture. A run that failed
+part-way through its uploads is repeated the same way.
+
+**What is uploaded**, to the Cloudflare R2 bucket `feldspar-latest-static`, served as
+`https://feldspar-latest-static.saltcorn.com`, in this order:
 
 | Object | What it is |
 |---|---|
-| `feldspar-linux-x86_64.tar.gz`, `.sha256` | the release, under its own name |
+| `feldspar-X.Y.Z-linux-x86_64.tar.gz`, `.sha256` | this version, kept: what `install.sh --version X.Y.Z` fetches |
+| `feldspar-linux-x86_64.tar.gz`, `.sha256` | the latest release, under its version-less name; each release overwrites it |
 | `feldspar.tar.gz`, `.sha256` | the same tarball, under the name the first releases had, which scripts outside this repository still fetch (`~/feldspar-hosted`) |
+| `versions.txt` | every published version, one per line, oldest first |
+| `latest.txt` | the newest version, alone |
 | `install.sh` | the curl installer, uploaded last |
 
-The object names carry no version, so each release overwrites the last and the
-download URLs of §2 never change. They carry the platform, and a build publishes only
-its own: an aarch64 build publishes `feldspar-linux-aarch64.tar.gz` and nothing
-else, because `feldspar.tar.gz` has always been the x86_64 tarball. Each `.sha256`
-names its own object. The installer goes last because it fetches the version-less
-name: between the two uploads, a new installer fetching an old tarball is the less
-surprising half-way state.
+The version-less names are the latest release, so the download URLs of §2 never change.
+All names carry the platform, and a build publishes only its own: an aarch64 build
+publishes `feldspar-X.Y.Z-linux-aarch64.tar.gz` and `feldspar-linux-aarch64.tar.gz`, but
+not `feldspar.tar.gz`, which has always been the x86_64 tarball. Each `.sha256` names its
+own object. The versioned tarball goes first, so that the latest names never point at
+something that cannot also be fetched by its version; `versions.txt` is read again just
+before it is written (another architecture may have added the version meanwhile), sorted
+and de-duplicated, so it lists a version once, as soon as one architecture has it. The
+installer goes last because it fetches the version-less name: between the two uploads, a
+new installer fetching an old tarball is the less surprising half-way state.
 
-It runs `npx wrangler r2 object put --remote`, so it needs `npx` on `PATH` (which
-is checked before the build starts) and a wrangler login with access to the
-bucket. `--bucket NAME` uploads somewhere else; such a bucket is not served at
+It runs `npx wrangler r2 object get` and `put --remote`, so it needs `npx` on `PATH`
+(which is checked before the build starts) and a wrangler login with access to the
+bucket; a read that fails for any reason but a missing object stops the run rather than
+being taken for "not published". `--bucket NAME` uploads somewhere else; such a bucket is not served at
 that hostname and is deliberately given no public URL in the output. The upload
 itself is `scripts/lib/release.sh`, which a macOS build script will source too
 (TODO-portable-release R5).

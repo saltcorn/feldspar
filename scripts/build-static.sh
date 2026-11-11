@@ -29,13 +29,24 @@
 # ----------------
 #   dist/feldspar-<version>-<target>.tar.gz   and a .sha256 beside it
 #
-# and, with `--release`, publishes it under names with no version but with the
-# platform, each from the build machine of its own architecture:
+# and, with `--release X.Y.Z`, publishes it as that version, each architecture
+# from the build machine of its own (scripts/lib/release.sh):
 #
-#   feldspar-linux-<arch>.tar.gz   the release
-#   feldspar.tar.gz                (x86_64) the same file, under the name the
-#                                  first releases had, which existing scripts
-#                                  and hosts fetch
+#   feldspar-X.Y.Z-linux-<arch>.tar.gz  this version, kept: never replaced
+#   feldspar-linux-<arch>.tar.gz        the latest release, which install.sh
+#                                       fetches; each release overwrites it
+#   feldspar.tar.gz                     (x86_64) the latest too, under the name
+#                                       the first releases had, which existing
+#                                       scripts and hosts fetch
+#   versions.txt, latest.txt            every published version, one per line;
+#                                       the newest
+#
+# The first run of a version sets it in Cargo.toml and Cargo.lock, commits that
+# as "Release X.Y.Z" and tags it vX.Y.Z; after the build has passed it commits
+# the next development version, X.Y.(Z+1)-dev, as "Start X.Y.(Z+1)-dev", and
+# pushes the branch and the tag before anything is uploaded. Another
+# architecture's run of the same version is made at that tag
+# (`git checkout vX.Y.Z`) and only publishes.
 #
 # unpacking to the **install prefix** (`/opt/feldspar` by default):
 #
@@ -69,7 +80,7 @@
 #   scripts/build-static.sh --target aarch64-unknown-linux-gnu
 #   scripts/build-static.sh --prefix /usr/local/feldspar
 #   scripts/build-static.sh --no-ui                  # no Node toolchain needed
-#   scripts/build-static.sh --release                # ...and publish it to the R2 bucket
+#   scripts/build-static.sh --release 0.1.1          # ...and publish it as 0.1.1
 #
 set -euo pipefail
 
@@ -79,6 +90,8 @@ readonly REPO_ROOT
 # the bucket, checksums and the uploads (TODO-portable-release D15).
 # shellcheck source-path=SCRIPTDIR source=lib/release.sh
 source "${REPO_ROOT}/scripts/lib/release.sh"
+
+log() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -99,6 +112,7 @@ VERIFY=1
 RUST_VERSION="1.97"
 NODE_VERSION="22.14.0"
 RELEASE=0
+RELEASE_VERSION=""
 # The bucket the published artifact lives in (scripts/lib/release.sh).
 R2_BUCKET="${DEFAULT_R2_BUCKET}"
 # The name the first releases were published under, before names carried a
@@ -171,16 +185,30 @@ Packaging
                         a container of each supported distribution).
 
 Publishing
-      --release         After packaging, upload the tarball and its .sha256 to the
-                        Cloudflare R2 bucket ${R2_BUCKET} as
+      --release X.Y.Z   Publish this build as version X.Y.Z. X.Y.Z must not be
+                        older than the version in Cargo.toml (0.1.2 may be
+                        released from 0.1.2-dev), the newest vX.Y.Z
+                        tag or the newest in versions.txt, and this
+                        architecture's tarball of it must not be published yet.
+                        From a clean checkout on a branch level with (or ahead
+                        of) its upstream, it sets the version in Cargo.toml and
+                        Cargo.lock, commits that and tags it vX.Y.Z before the
+                        build; at a commit already tagged vX.Y.Z (another
+                        architecture, or a run that failed) it only builds.
+                        After the build it commits the next development
+                        version, X.Y.(Z+1)-dev, pushes the branch and the tag,
+                        then uploads the tarball and its .sha256 to the Cloudflare
+                        R2 bucket ${R2_BUCKET} as
+                          ${R2_PUBLIC_BASE}/feldspar-X.Y.Z-linux-<arch>.tar.gz
+                        and, as the latest release, as
                           ${R2_PUBLIC_BASE}/feldspar-linux-<arch>.tar.gz
                         and, from an x86_64 build, also as
                           ${R2_PUBLIC_BASE}/${LEGACY_OBJECT}
-                        (and a .sha256 beside each), then scripts/install.sh as
-                        ${R2_PUBLIC_BASE}/install.sh. The names carry no
-                        version, so each release overwrites the last. Runs
-                        \`npx wrangler r2 object put --remote\`, so it needs npx on
-                        PATH and a wrangler login with access to the bucket.
+                        then adds X.Y.Z to versions.txt, writes latest.txt, and
+                        uploads scripts/install.sh as
+                        ${R2_PUBLIC_BASE}/install.sh. Runs \`npx wrangler r2\`,
+                        so it needs npx on PATH and a wrangler login with access
+                        to the bucket.
       --bucket NAME     Upload to this bucket instead (default ${R2_BUCKET}).
   -h, --help            This message.
 EOF
@@ -213,7 +241,10 @@ while [[ $# -gt 0 ]]; do
                  "is installed with its own install.sh or scripts/install.sh" \
                  "(docs/OPERATIONS.md §2)" >&2
             exit 2 ;;
-        --release)         RELEASE=1; shift ;;
+        --release)
+            [[ $# -ge 2 && "$2" != -* ]] ||
+                { echo "error: --release takes the version to publish, e.g. --release 0.1.1" >&2; exit 2; }
+            RELEASE=1; RELEASE_VERSION="$2"; shift 2 ;;
         --bucket)          need_value "$@"; R2_BUCKET="$2"; shift 2 ;;
         -h|--help)         usage; exit 0 ;;
         *)                 echo "error: unknown option $1" >&2; echo >&2; usage >&2; exit 2 ;;
@@ -274,9 +305,20 @@ case "${TARGET}" in
     *)         TARGET_ARCH="${TARGET%%-*}" ;;
 esac
 
-# An empty bucket, an absent npx or a missing installer (scripts/lib/release.sh)
-# is worth finding out now and not after the compile.
-[[ ${RELEASE} -eq 1 ]] && release_preflight
+# This architecture's name for the version being released.
+VERSIONED_OBJECT="feldspar-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz"
+
+# An empty bucket, an absent npx or a missing installer, a version that may not
+# be published from here (scripts/lib/release.sh): all worth finding out now
+# and not after the compile. Then the version is committed and tagged, so that
+# what is built below carries it.
+if [[ ${RELEASE} -eq 1 ]]; then
+    release_preflight
+    RELEASE_WORK="$(mktemp -d "${TMPDIR:-/tmp}/feldspar-release.XXXXXX")"
+    trap 'rm -rf "${RELEASE_WORK}"' EXIT
+    release_version_preflight "${RELEASE_VERSION}" "${VERSIONED_OBJECT}" "${RELEASE_WORK}"
+    release_prepare "${RELEASE_VERSION}"
+fi
 
 # A container build needs both docker and its buildx plugin; `docker build` alone
 # cannot run the Dockerfile. Deciding here rather than inside `build_docker` keeps
@@ -319,8 +361,7 @@ fi
 # ---------------------------------------------------------------------------
 
 # The workspace version, read from the one place it is declared.
-VERSION="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\([^"]*\)".*/\1/p' \
-    "${REPO_ROOT}/Cargo.toml" | head -n1)"
+VERSION="$(release_workspace_version)"
 [[ -n "${VERSION}" ]] || { echo "error: could not read the version from Cargo.toml" >&2; exit 1; }
 
 # A dirty tree is worth recording in the artifact's name: an operator holding two
@@ -346,7 +387,7 @@ export SC_BUILD_TIME SC_BUILD_COMMIT
 
 NAME="feldspar-${VERSION}${GIT_DESC:+-${GIT_DESC}}-${TARGET}"
 STAGE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/feldspar-package.XXXXXX")"
-trap 'rm -rf "${STAGE_ROOT}"' EXIT
+trap 'rm -rf "${STAGE_ROOT}" ${RELEASE_WORK:+"${RELEASE_WORK}"}' EXIT
 STAGE="${STAGE_ROOT}/tree"
 BINARY="${STAGE}/bin/feldspar"
 TARBALL="${OUTPUT_DIR}/${NAME}.tar.gz"
@@ -356,8 +397,6 @@ mkdir -p "${STAGE}"
 OBJECTS=("feldspar-linux-${TARGET_ARCH}.tar.gz")
 [[ "${TARGET_ARCH}" == x86_64 ]] && OBJECTS+=("${LEGACY_OBJECT}")
 OBJECT="${OBJECTS[0]}"
-
-log() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 
 log "feldspar ${VERSION}${GIT_DESC:+ (${GIT_DESC})}, built ${SC_BUILD_TIME}"
 log "target ${TARGET}, ${MODE} build, install prefix ${PREFIX}"
@@ -743,8 +782,11 @@ command that puts the previous tree back.
 Where a newer one comes from
   ${R2_PUBLIC_BASE}/${OBJECT}
   ${R2_PUBLIC_BASE}/${OBJECT}.sha256
-  That URL is always the latest build; it carries no version, so there is nothing
-  to look up. \`sha256sum -c ${OBJECT}.sha256\` checks a download.
+  That URL is always the latest release; it carries no version, so there is
+  nothing to look up. \`sha256sum -c ${OBJECT}.sha256\` checks a download.
+  Every release stays downloadable by its version, as
+  ${R2_PUBLIC_BASE}/feldspar-<version>-linux-${TARGET_ARCH}.tar.gz,
+  and ${R2_PUBLIC_BASE}/versions.txt lists them.
 
 What is in the tarball
   bin/feldspar          the server and management CLI
@@ -810,19 +852,26 @@ package_tree
 # Publish
 # ---------------------------------------------------------------------------
 
-# Copy the artifact to the R2 bucket under each of its fixed, version-less
-# names, so that an installer can always fetch the same URL and get the newest
-# build; then the curl installer, last.
+# Push the release commit and tag; then copy the artifact to the R2 bucket under
+# its versioned name, then under each of its fixed, version-less names, so that
+# an installer can always fetch the same URL and get the newest build; then
+# list the version, and upload the curl installer, last.
 if [[ ${RELEASE} -eq 1 ]]; then
     release_warn_if_dirty "${GIT_DESC}"
-    release_upload "${TARBALL}" "${STAGE_ROOT}" "${OBJECTS[@]}"
+    release_push "${RELEASE_VERSION}"
+    release_upload "${TARBALL}" "${STAGE_ROOT}" "${VERSIONED_OBJECT}" "${OBJECTS[@]}"
+    release_record_version "${RELEASE_VERSION}" "${RELEASE_WORK}"
     if release_is_public; then
         cat <<EOF
 
-It is now what a new host downloads:
+Released ${RELEASE_VERSION}, tagged v${RELEASE_VERSION}. It is now what a new host downloads:
 
   curl -fLO ${R2_PUBLIC_BASE}/${OBJECT}
   curl -fLO ${R2_PUBLIC_BASE}/${OBJECT}.sha256
+
+and stays downloadable as this version (install.sh --version ${RELEASE_VERSION}):
+
+  ${R2_PUBLIC_BASE}/${VERSIONED_OBJECT}
 EOF
         for older in "${OBJECTS[@]:1}"; do
             echo
