@@ -63,6 +63,30 @@ release_preflight() {
         { echo "error: --release needs npx (node), which is not on PATH" >&2; exit 1; }
     [[ -f "${REPO_ROOT}/scripts/install.sh" ]] ||
         { echo "error: scripts/install.sh is missing; --release publishes it" >&2; exit 1; }
+    release_wrangler_ready
+}
+
+# release_wrangler ARGS...: `npx wrangler ARGS...` in the checkout. npx is told
+# yes in advance: when wrangler is not installed it otherwise asks "Ok to
+# proceed? (y)" before downloading it, and where wrangler's output is captured
+# (release_r2_get) that question is never seen and the release waits on it.
+release_wrangler() {
+    (cd "${REPO_ROOT}" && npm_config_yes=true npx wrangler "$@")
+}
+
+# release_wrangler_ready: before anything reads the bucket, make sure wrangler
+# runs, with its output in view. A wrangler npx has to download first is
+# downloaded here, said out loud, and not silently in the middle of a read.
+release_wrangler_ready() {
+    local version
+    log "checking for wrangler"
+    if version="$(cd "${REPO_ROOT}" && npm_config_yes=false npx wrangler --version 2>/dev/null)"; then
+        log "using wrangler ${version##*$'\n'}"
+        return 0
+    fi
+    log "wrangler is not installed: npx is downloading it"
+    release_wrangler --version ||
+        release_die "could not run wrangler (npx wrangler --version); --release uploads with it"
 }
 
 # release_checksum TARBALL: write TARBALL.sha256 beside it, naming the file by
@@ -99,12 +123,12 @@ release_upload() {
             "$(cut -d' ' -f1 < "${tarball}.sha256")" "${object}" > "${published_sha}"
 
         log "uploading $(du -h "${tarball}" | cut -f1) to r2://${R2_BUCKET}/${object}"
-        (cd "${REPO_ROOT}" && npx wrangler r2 object put \
-            "${R2_BUCKET}/${object}" -f "${tarball}" --remote)
+        release_wrangler r2 object put \
+            "${R2_BUCKET}/${object}" -f "${tarball}" --remote
 
         log "uploading r2://${R2_BUCKET}/${object}.sha256"
-        (cd "${REPO_ROOT}" && npx wrangler r2 object put \
-            "${R2_BUCKET}/${object}.sha256" -f "${published_sha}" --remote)
+        release_wrangler r2 object put \
+            "${R2_BUCKET}/${object}.sha256" -f "${published_sha}" --remote
 
         log "published $(basename -- "${tarball}") as ${R2_BUCKET}/${object}"
     done
@@ -122,9 +146,9 @@ release_is_public() {
 # release, which is the less surprising of the two orders to land half-way.
 release_upload_installer() {
     log "uploading r2://${R2_BUCKET}/install.sh"
-    (cd "${REPO_ROOT}" && npx wrangler r2 object put \
+    release_wrangler r2 object put \
         "${R2_BUCKET}/install.sh" -f "${REPO_ROOT}/scripts/install.sh" \
-        --content-type "text/x-shellscript" --remote)
+        --content-type "text/x-shellscript" --remote
     if release_is_public; then
         cat <<EOF
 
@@ -222,7 +246,8 @@ release_set_workspace_version() {
 release_r2_get() {
     local key="$1" file="$2" out
     rm -f "${file}"
-    if out="$(cd "${REPO_ROOT}" && npx wrangler r2 object get \
+    log "reading r2://${R2_BUCKET}/${key}"
+    if out="$(release_wrangler r2 object get \
             "${R2_BUCKET}/${key}" --file "${file}" --remote 2>&1)"; then
         return 0
     fi
@@ -390,8 +415,8 @@ release_push() {
 # release_put_text KEY FILE: upload a small text file.
 release_put_text() {
     log "uploading r2://${R2_BUCKET}/$1"
-    (cd "${REPO_ROOT}" && npx wrangler r2 object put \
-        "${R2_BUCKET}/$1" -f "$2" --content-type "text/plain; charset=utf-8" --remote)
+    release_wrangler r2 object put \
+        "${R2_BUCKET}/$1" -f "$2" --content-type "text/plain; charset=utf-8" --remote
 }
 
 # release_record_version VERSION WORKDIR: add VERSION to versions.txt (read

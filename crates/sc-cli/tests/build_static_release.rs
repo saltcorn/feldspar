@@ -534,7 +534,13 @@ fn release_uploads_the_tarball_and_checksum_under_versioned_and_version_less_nam
     );
     assert_eq!(f.bucket("versions.txt"), "0.4.0\n");
     assert_eq!(f.bucket("latest.txt"), "0.4.0\n");
-    assert!(calls.iter().all(|c| c.ends_with(" --remote")), "{calls:?}");
+    assert!(
+        calls
+            .iter()
+            .filter(|c| c.starts_with("wrangler r2 "))
+            .all(|c| c.ends_with(" --remote")),
+        "{calls:?}"
+    );
     // The installer that fetches it — byte for byte the checkout's.
     assert_eq!(
         fs::read(f.uploads.join("install.sh")).expect("the uploaded installer"),
@@ -1320,7 +1326,7 @@ fn the_release_library_publishes_for_any_build_script() {
     write_executable(
         &bin.join("npx"),
         &format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\nkey=\"${{5#*/}}\"\ncp \"$7\" '{up}'/\"$key\"\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\n[ \"${{4:-}}\" = put ] || exit 0\nkey=\"${{5#*/}}\"\ncp \"$7\" '{up}'/\"$key\"\n",
             log = log.display(),
             up = uploads.display()
         ),
@@ -1374,6 +1380,7 @@ fn the_release_library_publishes_for_any_build_script() {
     let keys: Vec<String> = fs::read_to_string(&log)
         .unwrap()
         .lines()
+        .filter(|l| l.split_whitespace().nth(3) == Some("put"))
         .map(|l| l.split_whitespace().nth(4).unwrap().to_owned())
         .collect();
     assert_eq!(
@@ -1430,5 +1437,103 @@ fn the_release_library_publishes_for_any_build_script() {
     let out = run("release_preflight", no_npx.to_str().unwrap());
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("needs npx"));
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// `npx wrangler` with no wrangler installed asks "Ok to proceed? (y)" before
+/// downloading it. Where the release captures wrangler's output (reading
+/// versions.txt) that question was never seen, and the release sat silent.
+/// The preflight now downloads it in view, and every call says yes in advance.
+#[test]
+fn a_wrangler_npx_must_download_is_fetched_in_view_and_never_asks() {
+    let dir = scratch("wrangler-download");
+    let repo = dir.join("repo");
+    fs::create_dir_all(repo.join("scripts/lib")).unwrap();
+    fs::copy(
+        workspace_root().join("scripts/lib/release.sh"),
+        repo.join("scripts/lib/release.sh"),
+    )
+    .unwrap();
+    fs::write(repo.join("scripts/install.sh"), "#!/bin/sh\n").unwrap();
+
+    // npx as it behaves: with wrangler absent, `npm_config_yes=false` fails,
+    // `true` downloads it, and neither asks; unset, it asks and waits for an
+    // answer (here: hangs, and says so on a file the test reads).
+    let bin = dir.join("bin");
+    let installed = dir.join("installed");
+    let asked = dir.join("asked");
+    write_executable(
+        &bin.join("npx"),
+        &format!(
+            "#!/bin/sh\n\
+             if [ ! -f '{installed}' ]; then\n\
+               case \"${{npm_config_yes:-}}\" in\n\
+               true) echo 'npm: downloading wrangler@4.0.0' >&2; touch '{installed}' ;;\n\
+               false) echo 'npm error npx canceled due to missing packages and no YES option' >&2; exit 1 ;;\n\
+               *) echo 'Ok to proceed? (y)'; touch '{asked}'; sleep 30; exit 1 ;;\n\
+               esac\n\
+             fi\n\
+             case \"$*\" in\n\
+             'wrangler --version') echo '4.0.0' ;;\n\
+             *' get '*) echo 'X [ERROR] The specified key does not exist.'; exit 1 ;;\n\
+             esac\n",
+            installed = installed.display(),
+            asked = asked.display(),
+        ),
+    );
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let run = || {
+        let started = std::time::Instant::now();
+        let out = Command::new("bash")
+            .arg("-c")
+            .arg(format!(
+                "set -euo pipefail\nREPO_ROOT='{}'\nlog() {{ echo \"==> $*\"; }}\n\
+                 source \"$REPO_ROOT/scripts/lib/release.sh\"\nR2_BUCKET=b\n\
+                 release_preflight\nrelease_published_versions '{}'",
+                repo.display(),
+                dir.display()
+            ))
+            .env("PATH", &path)
+            .env_remove("npm_config_yes")
+            .output()
+            .unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "it waited on a prompt"
+        );
+        out
+    };
+
+    let out = run();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stdout}{stderr}");
+    assert!(!asked.exists(), "npx asked to install wrangler: {stdout}");
+    // The download is announced, its output is in view, and it is over before
+    // the bucket is read.
+    let downloading = stdout
+        .find("==> wrangler is not installed: npx is downloading it")
+        .expect(&stdout);
+    let reading = stdout.find("==> reading r2://b/versions.txt").expect(&stdout);
+    assert!(downloading < reading, "{stdout}");
+    assert!(stderr.contains("npm: downloading wrangler@4.0.0"), "{stderr}");
+
+    // Installed now: the preflight names the version and downloads nothing.
+    let out = run();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    assert!(stdout.contains("==> using wrangler 4.0.0"), "{stdout}");
+    assert!(!stdout.contains("downloading"), "{stdout}");
+
+    // A wrangler that cannot be had stops the release before anything else.
+    fs::remove_file(&installed).unwrap();
+    write_executable(&bin.join("npx"), "#!/bin/sh\necho 'npm error 404' >&2\nexit 1\n");
+    let out = run();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("could not run wrangler"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     fs::remove_dir_all(&dir).ok();
 }
