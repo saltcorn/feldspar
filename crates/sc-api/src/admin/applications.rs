@@ -497,6 +497,11 @@ fn application_schema() -> TypeSchema {
     // its deployment, so the list offers no Build button and shows no
     // "not built yet" state.
     fields.push(StructField::new("builds", TypeSchema::bool()));
+    // Whether this server knows the application's framework. `false` is an
+    // application stored on a framework that is switched off or whose module
+    // is gone: it is kept and listed, but not served or built, and its
+    // settings say "Unknown framework".
+    fields.push(StructField::new("framework_known", TypeSchema::bool()));
     // Whether the build installs the project's dependencies itself (a `react`
     // app's `npm install`), so the list offers Deep clean.
     fields.push(StructField::new("installs", TypeSchema::bool()));

@@ -1056,6 +1056,8 @@ async fn build_now(
     mut log: String,
     quick: bool,
 ) -> Result<HandlerResponse> {
+    // Nothing to scaffold or build on a framework this server does not have.
+    crate::apps::refuse_unknown_framework(&app)?;
     // Bring the generated code up to date first — the same call as
     // "Update client", so a project directory that was emptied is
     // scaffolded rather than handed to a bundler with nothing to

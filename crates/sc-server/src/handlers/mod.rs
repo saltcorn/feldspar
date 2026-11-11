@@ -242,6 +242,10 @@ pub fn admin_handlers_with(
 /// keeps.
 pub(crate) fn application_api_json(app: &Application) -> Json {
     let mut out = application_json(app);
+    // Here rather than in the backup codec's `application_json`: it is a fact
+    // about this server, not about the application, and has no place in a
+    // backup or an export.
+    out["framework_known"] = json!(sc_app::framework_known(&app.framework.name));
     if let Ok(spec) = framework_config_spec(&app.framework.name) {
         out["framework"]["config"] =
             Json::Object(sc_types::redact_attrs(&spec, &app.framework.config));

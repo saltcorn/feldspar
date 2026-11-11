@@ -1125,3 +1125,76 @@ async fn the_admin_host_runs_each_operation_through_its_handler() -> sc_error::R
     );
     Ok(())
 }
+
+/// **An application on a framework this server does not have is kept, not
+/// lost.** An upgrade can leave one behind: a framework switched off in a
+/// release (the Analytics UI, for the first one), or a module's that was
+/// uninstalled. It is still listed, says `framework_known: false` (the admin UI
+/// shows "Unknown framework" on its settings), is neither mounted at boot nor
+/// built, and can still be deleted. The other applications are unaffected.
+#[tokio::test]
+async fn an_application_on_an_unknown_framework_is_listed_but_not_served() -> sc_error::Result<()> {
+    let tmp = TempDir::new("unknown-framework");
+    let (router, catalog, db) = setup(&tmp).await?;
+    create_user(&catalog, "admin@example.com", "correct-horse", Role::ADMIN).await?;
+    let mut admin = Client::new(router.clone(), BASE_DOMAIN);
+    admin.login("admin@example.com", "correct-horse").await;
+
+    std::fs::create_dir_all(tmp.path().join("public")).unwrap();
+    let mut ids = HashMap::new();
+    for subdomain in ["kept", "retired"] {
+        let (status, created) = admin
+            .send(
+                "POST",
+                "/api/applications",
+                Some(json!({ "name": subdomain, "subdomain": subdomain,
+                             "framework": { "name": "none",
+                                            "config": { "store": "apps", "source": "public" } } })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        ids.insert(subdomain, created["id"].as_str().unwrap().to_owned());
+    }
+    // What an older server left in the table: no save path would write it,
+    // since saving checks the framework.
+    db.execute(
+        "UPDATE _fd_applications SET framework = '{\"name\":\"retired-framework\",\"config\":{}}' \
+         WHERE subdomain = 'retired'",
+    )
+    .await?;
+
+    // Listed, and marked.
+    let (status, listed) = admin.send("GET", "/api/applications", None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let known = |subdomain: &str| {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["subdomain"] == json!(subdomain))
+            .unwrap_or_else(|| panic!("`{subdomain}` is listed: {listed}"))["framework_known"]
+            .clone()
+    };
+    assert_eq!(known("kept"), json!(true));
+    assert_eq!(known("retired"), json!(false));
+
+    // Not built: the refusal names the framework.
+    let (status, refused) = admin
+        .send("POST", &format!("/api/applications/{}/build", ids["retired"]), None)
+        .await;
+    assert!(!status.is_success(), "{status} {refused}");
+    assert!(refused.to_string().contains("retired-framework"), "{refused}");
+
+    // Not mounted at boot; the other application is.
+    let apps = AppMounts::new(catalog.clone()).with_base_domain(Some(BASE_DOMAIN.to_owned()));
+    sc_server::mount_all(&apps).await;
+    assert!(apps.get("kept").is_some(), "the known application mounts");
+    assert!(apps.get("retired").is_none(), "the unknown one is not served");
+
+    // And it can still be deleted.
+    let (status, deleted) = admin
+        .send("DELETE", &format!("/api/applications/{}", ids["retired"]), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{deleted}");
+    Ok(())
+}

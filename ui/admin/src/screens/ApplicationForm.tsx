@@ -1351,6 +1351,7 @@ export function ApplicationForm({
             active={current?.id ?? ""}
           />
         )}
+        {stored && <UnknownFrameworkAlert app={stored} />}
         {error && <Alert variant="danger">{error}</Alert>}
         {saveState.kind === "error" && (
           <Alert variant="danger">
@@ -1780,5 +1781,29 @@ function TargetOperationButtons({
         </Alert>
       )}
     </div>
+  );
+}
+
+/** The red box on an application's settings when this server does not have
+ * its framework — one switched off in this release, or a module's that was
+ * uninstalled. The server keeps the application but does not serve or build
+ * it; nothing is shown for one whose framework it knows. */
+export function UnknownFrameworkAlert({
+  app,
+}: {
+  app: Pick<AppItem, "framework" | "framework_known">;
+}) {
+  const { t } = useT();
+  if (app.framework_known !== false) return null;
+  return (
+    <Alert variant="danger" data-testid="unknown-framework">
+      <Alert.Heading as="h4">
+        <T text="Unknown framework" />
+      </Alert.Heading>
+      {t(
+        "This application uses the framework “{framework}”, which this server does not have. It is not served or built until the framework is available again. You can still delete it.",
+        { framework: app.framework.name },
+      )}
+    </Alert>
   );
 }

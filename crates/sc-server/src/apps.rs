@@ -1350,6 +1350,7 @@ pub async fn build_and_mount_with(
     let catalog = apps.catalog().ok_or_else(|| {
         Error::config("this server was built with no catalog, so it cannot mount applications")
     })?;
+    refuse_unknown_framework(&app)?;
     if let Some(factory) = sc_app::framework_factory(&app.framework.name) {
         mount_constructed(apps, &*factory, app).await?;
         // Nothing was built, and the report says so: no bundle, no output, no
@@ -1424,6 +1425,7 @@ pub(crate) async fn mount_from_disk(apps: &AppMounts, app: Application) -> Resul
     let catalog = apps.catalog().ok_or_else(|| {
         Error::config("this server was built with no catalog, so it cannot mount applications")
     })?;
+    refuse_unknown_framework(&app)?;
     if let Some(factory) = sc_app::framework_factory(&app.framework.name) {
         mount_constructed(apps, &*factory, app).await?;
         return Ok(0);
@@ -1436,6 +1438,22 @@ pub(crate) async fn mount_from_disk(apps: &AppMounts, app: Application) -> Resul
     let mounted = MountedApp::new_with(app, framework, catalog, apps.evaluator(), apps.triggers())?;
     apps.remount(mounted);
     Ok(assets)
+}
+
+/// Refuse to serve or build `app` when this server does not know its framework
+/// ([`sc_app::framework_known`]) — one switched off in this release, or a
+/// module's that was uninstalled. Without this a name with no factory would be
+/// taken for a built framework and fail somewhere less clear. The application
+/// stays stored and listed; the admin UI marks it "Unknown framework".
+pub(crate) fn refuse_unknown_framework(app: &Application) -> Result<()> {
+    if sc_app::framework_known(&app.framework.name) {
+        return Ok(());
+    }
+    Err(Error::config(format!(
+        "application `{}` is on the framework `{}`, which this server does not have, so it \
+         is not served",
+        app.subdomain, app.framework.name
+    )))
 }
 
 /// Construct `app`'s framework through `factory` and mount it.

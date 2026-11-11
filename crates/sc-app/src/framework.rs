@@ -502,6 +502,16 @@ pub fn registered_framework_info() -> Vec<FrameworkInfo> {
     framework_info_in(&installed_frameworks())
 }
 
+/// Whether `name` is a framework this server can serve: a built-in, a
+/// constructed one compiled in, or one an installed module declares.
+///
+/// An application stored on any other name — one whose framework was switched
+/// off, or whose module was uninstalled — is kept, listed and deletable, but is
+/// not mounted or built until its framework is back.
+pub fn framework_known(name: &str) -> bool {
+    registered_framework_info().iter().any(|f| f.name == name)
+}
+
 /// The registry as it stands given `set` — the built-ins first, then whatever the
 /// modules declare.
 ///

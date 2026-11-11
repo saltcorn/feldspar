@@ -2,6 +2,32 @@
 
 Changes in reverse chronological order.
 
+## Applications on an unknown framework are kept, not served
+
+An upgrade can leave an application stored on a framework this server no longer has: the
+Analytics framework, switched off for the first release (below), or a module's framework
+whose module was uninstalled. Before this change, a name with no factory was taken for a built
+framework and failed in less clear ways (a scaffold attempt, a mount error at boot).
+
+- **`sc_app::framework_known(name)`**: whether the name is a built-in, a compiled-in
+  constructed framework or one an installed module declares (`registered_framework_info`).
+- **Not served or built.** `mount_from_disk` (boot, `SIGHUP`) and `build_and_mount_with`
+  refuse such an application through `apps::refuse_unknown_framework`, with a message that
+  names the framework. `build_now` refuses before it scaffolds anything. `mount_all` logs it
+  and skips it, and the other applications mount as usual.
+- **Still listed and deletable.** Application responses (list, create, update; `sc-api`
+  schema) carry `framework_known`. It is added in the server's `application_api_json` and not
+  in the backup codec's `application_json`, so backups and `sc-sync` exports don't change.
+  The four generated `client.ts` files are regenerated.
+- **Admin UI:** the application's settings show a red *Unknown framework* box
+  (`UnknownFrameworkAlert` in `ApplicationForm.tsx`) that names the framework and says the
+  application is not served until the framework is back. Saving its settings is still refused
+  by the server's framework check. Deleting it works.
+- Tests: `an_application_on_an_unknown_framework_is_listed_but_not_served`
+  (`admin_applications_api`): a row rewritten to an unknown framework is listed with
+  `framework_known: false`, its build is refused, `mount_all` mounts its sibling and not it,
+  and it deletes. `screens/unknownFramework.test.tsx` covers the alert.
+
 ## Analytics held back from the first release
 
 The rest of the system is ready for a first release and the Analytics UI is not, so it is
