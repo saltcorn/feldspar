@@ -11,13 +11,18 @@
 
 import { describe, expect, it } from "vitest";
 
-import { NAV, groupLabel } from "./App";
+import {
+  ANALYTICS_IN_SIDEBAR,
+  ANALYTICS_NAV_ITEM,
+  NAV,
+  groupLabel,
+} from "./App";
 
 /** Which entry, if any, the sidebar marks as current for a route. */
 function activeLabels(route: string): string[] {
-  return NAV.filter((item) => item.matches.some((prefix) => route.startsWith(prefix))).map(
-    (item) => item.label,
-  );
+  return NAV.filter((item) =>
+    item.matches.some((prefix) => route.startsWith(prefix)),
+  ).map((item) => item.label);
 }
 
 describe("the admin sidebar", () => {
@@ -69,13 +74,23 @@ describe("the admin sidebar", () => {
   });
 
   /** The Analytics UI is a bundle of its own, so its entry is a page and not
-   * a hash route; it replaced *Predictive models* (analytics TODO A3.8). */
-  it("links to the Analytics UI where Predictive models was", () => {
+   * a hash route; it replaced *Predictive models* (analytics TODO A3.8). It is
+   * out of the sidebar, Insights heading and all, until `ANALYTICS_IN_SIDEBAR`
+   * is turned back on. */
+  it("has no Analytics entry or Insights heading while Analytics is switched off", () => {
     const labels = NAV.map((item) => item.label);
     expect(labels).not.toContain("Predictive models");
-    expect(labels.indexOf("Analytics")).toBe(labels.indexOf("Agents") + 1);
-    expect(NAV.find((item) => item.label === "Analytics")?.href).toBe("/analytics/");
+    expect(ANALYTICS_IN_SIDEBAR).toBe(false);
+    expect(labels).not.toContain("Analytics");
+    expect(NAV.map((item) => item.href)).not.toContain("/analytics/");
+    expect(NAV.map((item) => item.group)).not.toContain("Insights");
     expect(activeLabels("/models")).toEqual([]);
+  });
+
+  it("keeps the Analytics entry, linking to the Analytics UI, for when it returns", () => {
+    expect(ANALYTICS_NAV_ITEM.label).toBe("Analytics");
+    expect(ANALYTICS_NAV_ITEM.group).toBe("Insights");
+    expect(ANALYTICS_NAV_ITEM.href).toBe("/analytics/");
   });
 
   it("lights up Settings for the data-only checklists, and not for an application's", () => {
@@ -96,16 +111,27 @@ describe("the admin sidebar", () => {
 
   /** Each heading is drawn once, where its group starts, so a group whose
    * entries were split would get its heading twice. */
-  it("groups the entries under Data, Automation, Insights and Administration", () => {
+  it("groups the entries under Data, Automation and Administration", () => {
     const groups = NAV.map((item) => item.group).filter(
       (group, n, all) => group !== all[n - 1],
     );
-    expect(groups).toEqual(["Data", "Automation", "Insights", "Administration"]);
+    // Insights sits between Automation and Administration while the Analytics
+    // entry is in the sidebar (`ANALYTICS_IN_SIDEBAR`).
+    expect(groups).toEqual(["Data", "Automation", "Administration"]);
     const members = (group: string) =>
       NAV.filter((item) => item.group === group).map((item) => item.label);
-    expect(members("Data")).toEqual(["All entities", "Tables", "Files", "Streams"]);
+    expect(members("Data")).toEqual([
+      "All entities",
+      "Tables",
+      "Files",
+      "Streams",
+    ]);
     expect(members("Automation")).toEqual(["Triggers", "Agents"]);
-    expect(members("Administration")).toEqual(["Users", "Source control", "Settings"]);
+    expect(members("Administration")).toEqual([
+      "Users",
+      "Source control",
+      "Settings",
+    ]);
   });
 
   /** The logo is the way home; an entry for it would only make the sidebar

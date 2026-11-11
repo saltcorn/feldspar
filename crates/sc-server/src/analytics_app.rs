@@ -123,6 +123,13 @@ pub(crate) fn check_app_gates(handlers: &crate::handler::HandlerRegistry) -> Res
     }
 }
 
+/// Whether a server offers the Analytics framework to applications. Off for the
+/// first release: the rest of the system is ready and the Analytics UI is not
+/// yet. The framework, its routes and its tests stay; turn this back on (with
+/// the admin sidebar's `ANALYTICS_IN_SIDEBAR`) to offer it again. A test that
+/// needs it calls [`install_analytics_framework`] itself.
+pub const ANALYTICS_FRAMEWORK_ENABLED: bool = false;
+
 /// Install the Analytics framework into `sc-app`'s registry. Idempotent.
 pub fn install_analytics_framework() -> Result<()> {
     sc_app::install_framework_factory(Arc::new(AnalyticsFactory))

@@ -241,6 +241,8 @@ async fn serve(
     registry.register(Arc::new(crate::posterior_api::Sampler))?;
     models.set_registry(Arc::new(registry));
     let dispatcher = install_triggers(&catalog, default_js_evaluator(), &agents, &models).await?;
+    // Off by default for the first release; these tests are about it.
+    sc_server::install_analytics_framework()?;
     let apps = Arc::new(
         AppMounts::new(catalog.clone())
             .with_base_domain(base_domain.map(str::to_owned))

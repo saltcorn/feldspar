@@ -456,8 +456,14 @@ async fn the_react_framework_is_offered_first_and_brings_its_own_defaults() -> s
         .collect();
     // Saltcorn UI and the Analytics UI follow them: compiled in, and
     // constructed rather than built; then `none`, the application with no UI
-    // at all.
-    assert_eq!(names, ["react", "code", "saltcorn-ui", "analytics", "none"]);
+    // at all. The Analytics UI is off for the first release
+    // (`ANALYTICS_FRAMEWORK_ENABLED`), but the framework registry is
+    // process-wide and the Analytics tests in this binary register it, so
+    // whether it is listed here depends on test order; it is left out of the
+    // comparison (the unit test in `apps.rs` checks that a server does not
+    // offer it).
+    let names: Vec<&str> = names.into_iter().filter(|n| *n != "analytics").collect();
+    assert_eq!(names, ["react", "code", "saltcorn-ui", "none"]);
 
     // Each carries the label and the sentence the picker shows. Without these the
     // admin UI could only distinguish the two by special-casing the name `react`,

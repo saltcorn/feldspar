@@ -340,6 +340,25 @@ struct Preview {
     last_used: Instant,
 }
 
+/// Register the constructed frameworks compiled into this binary.
+fn install_compiled_frameworks() {
+    // A server that can mount applications can mount every framework
+    // compiled into it. Saltcorn UI is constructed rather than built, so it
+    // is a factory in `sc-app`'s registry (TODO "Saltcorn UI" 5.2), and
+    // installing it twice is harmless.
+    if let Err(e) = sc_viewpattern::install_saltcorn_ui() {
+        eprintln!("feldspar: the Saltcorn UI framework could not be registered: {e}");
+    }
+    // The Analytics UI as a framework (analytics TODO A9.2), constructed for
+    // the same reason: it serves a bundle this binary already has. Not
+    // offered while `ANALYTICS_FRAMEWORK_ENABLED` is off (the first release).
+    if crate::analytics_app::ANALYTICS_FRAMEWORK_ENABLED {
+        if let Err(e) = crate::analytics_app::install_analytics_framework() {
+            eprintln!("feldspar: the Analytics framework could not be registered: {e}");
+        }
+    }
+}
+
 /// The previews, and the tokens that may reach each run's.
 #[derive(Default)]
 struct Previews {
@@ -355,18 +374,7 @@ impl AppMounts {
 
     /// A registry whose apps build and run against `catalog`.
     pub fn new(catalog: Arc<Catalog>) -> AppMounts {
-        // A server that can mount applications can mount every framework
-        // compiled into it. Saltcorn UI is constructed rather than built, so it
-        // is a factory in `sc-app`'s registry (TODO "Saltcorn UI" 5.2), and
-        // installing it twice is harmless.
-        if let Err(e) = sc_viewpattern::install_saltcorn_ui() {
-            eprintln!("feldspar: the Saltcorn UI framework could not be registered: {e}");
-        }
-        // The Analytics UI as a framework (analytics TODO A9.2), constructed for
-        // the same reason: it serves a bundle this binary already has.
-        if let Err(e) = crate::analytics_app::install_analytics_framework() {
-            eprintln!("feldspar: the Analytics framework could not be registered: {e}");
-        }
+        install_compiled_frameworks();
         AppMounts {
             catalog: Some(catalog),
             evaluator: None,
@@ -1568,6 +1576,18 @@ fn path_under_mount(mount: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Analytics framework is held back from the first release: a server
+    /// registers Saltcorn UI and not `analytics`. (Nothing else in this test
+    /// binary registers it; the integration tests that need it do so
+    /// themselves.) Turning `ANALYTICS_FRAMEWORK_ENABLED` back on means
+    /// replacing this test with one that it is offered.
+    #[test]
+    fn the_analytics_framework_is_not_offered_while_switched_off() {
+        install_compiled_frameworks();
+        assert!(sc_app::framework_factory("saltcorn-ui").is_some());
+        assert!(sc_app::framework_factory(sc_analytics::app::ANALYTICS_FRAMEWORK).is_none());
+    }
 
     #[test]
     fn subdomain_resolution() {

@@ -2,6 +2,27 @@
 
 Changes in reverse chronological order.
 
+## Analytics held back from the first release
+
+The rest of the system is ready for a first release and the Analytics UI is not, so it is
+switched off rather than removed. Two flags bring it back:
+
+- **Admin sidebar:** `ANALYTICS_IN_SIDEBAR` (`ui/admin/src/App.tsx`, `false`). The
+  *Analytics* entry is kept as `ANALYTICS_NAV_ITEM` and goes back between Agents and Users,
+  under its *Insights* heading, when the flag is on. With it off the heading is gone too,
+  since headings come from the entries' groups. The `/analytics/` bundle and the old
+  `#/models/…` redirects into it are unchanged.
+- **Application framework:** `ANALYTICS_FRAMEWORK_ENABLED` (`crates/sc-server/src/analytics_app.rs`,
+  `false`). The framework registration moved into `install_compiled_frameworks` in
+  `apps.rs`, which now skips `analytics`. This removes it from `GET /api/frameworks` and the
+  new-application picker. `install_analytics_framework` is now exported, so the
+  `analytics_apps` and `analytics_done` tests register it themselves and keep testing it.
+- Tests: `nav.test.ts` checks that there is no Analytics entry or Insights heading and that
+  the kept entry still links to `/analytics/`. A unit test in `apps.rs` checks that a server
+  registers Saltcorn UI but not `analytics`. The frameworks list in `admin_applications_api`
+  leaves `analytics` out of the comparison, because the registry is process-wide and the
+  Analytics tests in the same binary register it.
+
 ## Versioned releases (TODO R1.1–R1.3)
 
 Releases now carry a version. The version-less names hosts already fetch stay the latest

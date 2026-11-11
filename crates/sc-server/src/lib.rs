@@ -113,6 +113,7 @@ mod ws;
 
 pub use admin_host::{AdminHost, HANDOFF_ROUTE, HANDOFF_TTL};
 pub use agents::{AgentServices, install_agents, install_agents_on};
+pub use analytics_app::{ANALYTICS_FRAMEWORK_ENABLED, install_analytics_framework};
 pub use apps::{AppMounts, MountedApp, build_and_mount, mount_all, subdomain_in, subdomain_of};
 pub use browser::{
     BROWSER_NAMES, ChromiumDriver, DriverConfig, check_browser_sandbox, detect_browser,
