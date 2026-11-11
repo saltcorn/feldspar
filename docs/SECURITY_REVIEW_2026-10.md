@@ -1302,6 +1302,8 @@ endpoint called by an in-process tool layer through `Admin::delegated`) cannot m
 | sc-server `admin_session.rs` (`AdminSession::person`, `Admin::editor`) | `ADMIN_SESSION` | a browser's admin session on the admin host (`AdminSession::of_request`); a delegated `Admin` is `Editor::Delegated` with its own `by` |
 | sc-cli `commands/backup.rs` | `restore` | the operator restoring a backup with `feldspar restore` on the server |
 | sc-cli `commands/trigger.rs` | `trigger approve-system` | the operator approving a trigger's current configuration to run as system, with `feldspar trigger approve-system NAME` on the server (it prints what it approves) |
+| sc-cli `commands/sync.rs` | `sync` | the operator deploying, committing or discarding application changes with `feldspar sync` on the server (a deploy prints its plan and applies it only with `--yes`) |
+| sc-cli `commands/registry.rs` | `registry` | the operator saving one configuration entry with `feldspar registry put` / `delete` on the server (it prints the plan and applies it only with `--yes`) |
 
 **Spawn authorities (TODO-type-hardening H4).** Every program the server starts goes through
 `sc_proc::HostCommand` (or `sc_proc::Git`), which takes a sealed `SpawnAuthority`: an
