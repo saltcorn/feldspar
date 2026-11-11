@@ -1107,7 +1107,7 @@ function CredentialsDialog({
             >
               {targets.map((x) => (
                 <option key={x.key} value={x.key}>
-                  {x.key === ADMIN_SIGN_IN_TARGET ? t(x.label) : x.label}
+                  {x.key === ADMIN_SIGN_IN_TARGET ? t("Admin UI") : x.label}
                 </option>
               ))}
             </Form.Select>

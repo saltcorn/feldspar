@@ -2,6 +2,19 @@
 
 Changes in reverse chronological order.
 
+## Admin UI: settings-tab and sign-in-target labels are extractable
+
+`every_declared_domain_scans_without_an_unreadable_call_site` failed: two admin call sites passed
+a variable to `t()`, which the extractor cannot read because a message id is its English text.
+- `ApplicationTabs` (`t(tab.label)`) now calls the new `settingsTabLabel` in `settingsTabs.ts`,
+  which has a literal `t()` for each tab label the server's default layout, Saltcorn UI and the
+  bundled frameworks declare (Framework, Site, Views, Pages, Library, Data, Triggers & Streams,
+  API, Security, Users & Security, Development, Advanced, Mobile, Translations). A label a
+  framework declares beyond those is shown as declared, as before tabs were translated.
+- The password dialog's sign-in target select writes `t("Admin UI")` for the admin target.
+- Test: `settingsTabs.test.ts` checks every label in the React and Saltcorn UI layouts is
+  translated and an unknown one passes through.
+
 ## Admin-proof inventory: the `registry` and `sync` operators
 
 `admin_proofs_are_in_the_inventory` failed: `feldspar registry` (the registry editor) makes an

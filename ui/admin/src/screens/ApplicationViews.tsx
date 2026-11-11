@@ -57,7 +57,7 @@ import {
   type ViewItem,
 } from "../views";
 import { T, useT } from "../i18n";
-import { activeTabId } from "../settingsTabs";
+import { activeTabId, settingsTabLabel } from "../settingsTabs";
 
 /** The rename dialog: a view or a page, the name being typed, and what refers to
  * it — `null` while that is being found out. */
@@ -94,7 +94,7 @@ export function ApplicationTabs({
             aria-current={tab.id === current ? "page" : undefined}
             href={tab.href}
           >
-            {t(tab.label)}
+            {settingsTabLabel(tab.label, t)}
           </a>
         </li>
       ))}

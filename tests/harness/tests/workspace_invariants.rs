@@ -232,11 +232,13 @@ const UNSAFE_FILES: &[&str] = &[
     "crates/sc-files/src/paths.rs",
     "crates/sc-files/tests/git_store.rs",
     "crates/sc-net/tests/proxy_env.rs",
-    "crates/sc-server/tests/backup_api.rs",
     "crates/sc-server/tests/build_from_a_sentence.rs",
     "crates/sc-server/tests/git_store_api.rs",
     "crates/sc-server/tests/ide_terminal.rs",
     "crates/sc-server/tests/modules_no_node.rs",
+    // The binary's shared data directory (`support::data_dir`, moved here
+    // from `backup_api.rs` so every test file sets the same one).
+    "crates/sc-server/tests/support.rs",
     "crates/sc-server/tests/systemd_notify.rs",
 ];
 

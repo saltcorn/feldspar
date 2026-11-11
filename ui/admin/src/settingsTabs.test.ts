@@ -5,6 +5,7 @@ import {
   fieldsOnTab,
   formTab,
   groupsToRender,
+  settingsTabLabel,
   settingsTabLinks,
   type SettingsTab,
 } from "./settingsTabs";
@@ -99,5 +100,20 @@ describe("fieldsOnTab", () => {
     expect(groupsToRender(mobile, true)).toEqual(["targets", "settings"]);
     expect(groupsToRender(mobile, false)).toEqual(["targets"]);
     expect(groupsToRender(REACT[0], true)).toEqual(REACT[0].groups);
+  });
+});
+
+describe("settingsTabLabel", () => {
+  // A stand-in translator that marks what it was asked to translate.
+  const t = (text: string) => `«${text}»`;
+
+  it("translates the labels the server and the bundled frameworks declare", () => {
+    for (const tab of [...REACT, ...SALTCORN_UI]) {
+      expect(settingsTabLabel(tab.label, t)).toBe(`«${tab.label}»`);
+    }
+  });
+
+  it("shows a framework's own label as declared", () => {
+    expect(settingsTabLabel("Mobile apps", t)).toBe("Mobile apps");
   });
 });

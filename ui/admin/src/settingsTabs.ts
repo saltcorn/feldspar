@@ -18,6 +18,8 @@
 //   their `tab`, and on the tab holding the framework choice, those naming no
 //   tab (or one there is not) — where every setting was before tabs.
 
+import type { Translator } from "./i18n";
+
 /** One settings tab, as the server sends it. */
 export type SettingsTab = { id: string; label: string; groups: string[] };
 
@@ -43,6 +45,46 @@ export function screenOf(tab: SettingsTab): string | undefined {
 export function isFormTab(tab: SettingsTab): boolean {
   if (screenOf(tab)) return false;
   return !(tab.groups.length === 1 && tab.groups[0] === GROUP_TRANSLATIONS);
+}
+
+/** What a tab says, in the admin's language. The framework declares a tab's
+ * label as English text, so the labels the server's default layout and the
+ * bundled frameworks use are translated here — each written out, because a
+ * message id is its English source text and the extractor reads it from the
+ * call site. Any other label, a framework's own, is shown as it was declared. */
+export function settingsTabLabel(label: string, t: Translator["t"]): string {
+  switch (label) {
+    case "Framework":
+      return t("Framework");
+    case "Site":
+      return t("Site");
+    case "Views":
+      return t("Views");
+    case "Pages":
+      return t("Pages");
+    case "Library":
+      return t("Library");
+    case "Data":
+      return t("Data");
+    case "Triggers & Streams":
+      return t("Triggers & Streams");
+    case "API":
+      return t("API");
+    case "Security":
+      return t("Security");
+    case "Users & Security":
+      return t("Users & Security");
+    case "Development":
+      return t("Development");
+    case "Advanced":
+      return t("Advanced");
+    case "Mobile":
+      return t("Mobile");
+    case "Translations":
+      return t("Translations");
+    default:
+      return label;
+  }
 }
 
 /** The link each tab opens, in order. */
