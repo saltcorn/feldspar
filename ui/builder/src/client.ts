@@ -423,6 +423,46 @@ export type DeleteBackupScheduleResponse = { deleted: boolean };
 export type GetClearAllPreviewResponse = { file_stores: Array<{ name: string; backend: string; directory?: string | null }> };
 export type ClearAllRequest = { delete_from_disk: Array<string> };
 export type ClearAllResponse = { cleared: Array<string>; warnings: Array<string> };
+export type ListRegistryResponse = { entries: Array<{ path: string; kind: string; name: string; application?: string | null; instance_only?: { scope: string; keys?: Array<string> | null } | null; version: string }> };
+export type GetRegistryEntityQuery = { path: string };
+export type GetRegistryEntityResponse = { path: string; kind: string; name: string; application?: string | null; instance_only?: { scope: string; keys?: Array<string> | null } | null; version: string; value: unknown; schema?: unknown | null; sync?: { class?: string | null; key?: string | null; base?: unknown | null; tip?: unknown | null } | null };
+export type PlanRegistrySaveRequest = { path: string; value?: unknown | null; version?: string | null };
+export type PlanRegistrySaveResponse = { operations: Array<{ id: string; step: string; class: string; ticked: boolean; kind: string; entity: string; action: string; summary: string }>; blockers: Array<{ op?: string | null; entity?: string | null; message: string }>; needs_secrets: Array<string>; needs_credentials: Array<string>; digest: string; before?: unknown | null; value?: unknown | null };
+export type RegistrySaveRequest = { path: string; value?: unknown | null; version?: string | null; plan_digest: string; ticked: Array<string> };
+export type RegistrySaveResponse = { id: string; result: string; applied: Array<string>; deferred: Array<string>; not_reached: Array<string>; failed?: { op: string; summary: string; message: string } | null; needs_secret: Array<{ op: string; summary: string; message: string }>; notes: Array<string>; drift: Array<string>; backups: Array<string>; needs_secrets: Array<string>; needs_credentials: Array<string>; path?: string | null; stored?: unknown | null; stored_version?: string | null; changes: Array<{ path: string; before?: unknown | null; after?: unknown | null }> };
+export type GetSyncLinkResponse = { link?: { url: string; branch: string; subdirectory?: string | null; credential: { kind: string; public_key?: string | null; username?: string | null }; policy: { destructive: string; full_backup: string } } | null; credential: { kind: string; public_key?: string | null; username?: string | null } };
+export type SetSyncLinkRequest = { url: string; branch: string; subdirectory?: string | null; credential?: { kind: string; username?: string | null; token?: string | null } | null; policy?: { destructive?: string | null; full_backup?: string | null } | null };
+export type SetSyncLinkResponse = { tip?: string | null; base_taken: boolean };
+export type DeleteSyncLinkResponse = { ok: boolean };
+export type GenerateSyncKeyResponse = { kind: string; public_key?: string | null; username?: string | null };
+export type TestSyncLinkRequest = { url: string; branch: string; subdirectory?: string | null; credential?: { kind: string; username?: string | null; token?: string | null } | null; policy?: { destructive?: string | null; full_backup?: string | null } | null };
+export type TestSyncLinkResponse = { branches: Array<string> };
+export type GetSyncStatusResponse = { linked: boolean; link?: { url: string; branch: string; subdirectory?: string | null; credential: { kind: string; public_key?: string | null; username?: string | null }; policy: { destructive: string; full_backup: string } } | null; tip?: string | null; base_commit?: string | null; entries: Array<{ key: string; kind: string; name: string; class: string; application?: string | null; path: string; in_registry: boolean }>; deploy_blockers: Array<string>; warnings: Array<string> };
+export type GetSyncEntityDiffQuery = { key: string };
+export type GetSyncEntityDiffResponse = { key: string; kind: string; name: string; class: string; base?: unknown | null; tip?: unknown | null; live?: unknown | null; incoming: { changes: Array<{ path: string; before?: unknown | null; after?: unknown | null }>; text?: { unified: string } | null; binary: boolean }; local: { changes: Array<{ path: string; before?: unknown | null; after?: unknown | null }>; text?: { unified: string } | null; binary: boolean } };
+export type SyncPullResponse = { before?: string | null; tip?: string | null; forced: boolean };
+export type SyncCommitRequest = { message: string; keys?: Array<string> | null; keep_mine?: Array<string> | null };
+export type SyncCommitResponse = { id: string; commit: string; branch: string; entities: Array<string>; warnings: Array<string> };
+export type PlanSyncDiscardRequest = { keys: Array<string> };
+export type PlanSyncDiscardResponse = { operations: Array<{ id: string; step: string; class: string; ticked: boolean; kind: string; entity: string; action: string; summary: string }>; blockers: Array<{ op?: string | null; entity?: string | null; message: string }>; needs_secrets: Array<string>; needs_credentials: Array<string>; digest: string };
+export type SyncDiscardRequest = { keys: Array<string>; plan_digest: string; ticked: Array<string> };
+export type SyncDiscardResponse = { id: string; result: string; applied: Array<string>; deferred: Array<string>; not_reached: Array<string>; failed?: { op: string; summary: string; message: string } | null; needs_secret: Array<{ op: string; summary: string; message: string }>; notes: Array<string>; drift: Array<string>; backups: Array<string>; needs_secrets: Array<string>; needs_credentials: Array<string> };
+export type ListSyncBranchesResponse = { current: string; branches: Array<string> };
+export type SwitchSyncBranchRequest = { name: string; create?: boolean | null };
+export type SwitchSyncBranchResponse = { before?: string | null; tip?: string | null; forced: boolean };
+export type PlanSyncDeployResponse = { operations: Array<{ id: string; step: string; class: string; ticked: boolean; kind: string; entity: string; action: string; summary: string }>; blockers: Array<{ op?: string | null; entity?: string | null; message: string }>; needs_secrets: Array<string>; needs_credentials: Array<string>; digest: string; commit?: string | null; policy: { destructive: string; full_backup: string } };
+export type SyncDeployRequest = { commit?: string | null; plan_digest: string; ticked: Array<string>; full_backup?: boolean | null };
+export type SyncDeployResponse = { id: string; result: string; applied: Array<string>; deferred: Array<string>; not_reached: Array<string>; failed?: { op: string; summary: string; message: string } | null; needs_secret: Array<{ op: string; summary: string; message: string }>; notes: Array<string>; drift: Array<string>; backups: Array<string>; needs_secrets: Array<string>; needs_credentials: Array<string> };
+export type PlanSyncZipDeployRequest = { upload: string };
+export type PlanSyncZipDeployResponse = { operations: Array<{ id: string; step: string; class: string; ticked: boolean; kind: string; entity: string; action: string; summary: string }>; blockers: Array<{ op?: string | null; entity?: string | null; message: string }>; needs_secrets: Array<string>; needs_credentials: Array<string>; digest: string; linked: boolean; policy: { destructive: string; full_backup: string } };
+export type SyncZipDeployRequest = { upload: string; plan_digest: string; ticked: Array<string>; full_backup?: boolean | null };
+export type SyncZipDeployResponse = { id: string; result: string; applied: Array<string>; deferred: Array<string>; not_reached: Array<string>; failed?: { op: string; summary: string; message: string } | null; needs_secret: Array<{ op: string; summary: string; message: string }>; notes: Array<string>; drift: Array<string>; backups: Array<string>; needs_secrets: Array<string>; needs_credentials: Array<string> };
+export type GetFileStoreSyncQuery = { contents?: string };
+export type GetFileStoreSyncResponse = { applies: boolean; sync_contents: string; synced: Array<string>; excluded: Array<string>; warnings: Array<string> };
+export type SetFileStoreSyncRequest = { sync_contents: string };
+export type SetFileStoreSyncResponse = { applies: boolean; sync_contents: string; synced: Array<string>; excluded: Array<string>; warnings: Array<string> };
+export type ListDeploymentsQuery = { limit?: number };
+export type ListDeploymentsResponse = { deployments: Array<{ id: string; kind: string; result: string; commit?: string | null; branch?: string | null; actor?: string | null; source: string; summary: unknown; deferred: Array<string>; backups: Array<string>; before?: unknown | null; after?: unknown | null; started_at: string; finished_at: string }> };
 export type ListDatasetsResponse = Array<{ id: string; name: string; description: string; base: unknown; table: string; operations: number; columns: Array<unknown>; error?: string | null; grain?: unknown | null; share_role?: number | null; may_change: boolean }>;
 export type GetDatasetResponse = { dataset: unknown; report: { base: unknown; operations: Array<unknown>; tables: unknown; children: unknown } };
 export type CreateDatasetRequest = { name: string; description?: string | null; base: unknown; operations?: unknown | null };
@@ -815,6 +855,30 @@ export interface ApiClient {
   deleteBackupSchedule(id: string): Promise<DeleteBackupScheduleResponse>;
   getClearAllPreview(): Promise<GetClearAllPreviewResponse>;
   clearAll(body: ClearAllRequest): Promise<ClearAllResponse>;
+  listRegistry(): Promise<ListRegistryResponse>;
+  getRegistryEntity(query: GetRegistryEntityQuery): Promise<GetRegistryEntityResponse>;
+  planRegistrySave(body: PlanRegistrySaveRequest): Promise<PlanRegistrySaveResponse>;
+  registrySave(body: RegistrySaveRequest): Promise<RegistrySaveResponse>;
+  getSyncLink(): Promise<GetSyncLinkResponse>;
+  setSyncLink(body: SetSyncLinkRequest): Promise<SetSyncLinkResponse>;
+  deleteSyncLink(): Promise<DeleteSyncLinkResponse>;
+  generateSyncKey(): Promise<GenerateSyncKeyResponse>;
+  testSyncLink(body: TestSyncLinkRequest): Promise<TestSyncLinkResponse>;
+  getSyncStatus(): Promise<GetSyncStatusResponse>;
+  getSyncEntityDiff(query: GetSyncEntityDiffQuery): Promise<GetSyncEntityDiffResponse>;
+  syncPull(): Promise<SyncPullResponse>;
+  syncCommit(body: SyncCommitRequest): Promise<SyncCommitResponse>;
+  planSyncDiscard(body: PlanSyncDiscardRequest): Promise<PlanSyncDiscardResponse>;
+  syncDiscard(body: SyncDiscardRequest): Promise<SyncDiscardResponse>;
+  listSyncBranches(): Promise<ListSyncBranchesResponse>;
+  switchSyncBranch(body: SwitchSyncBranchRequest): Promise<SwitchSyncBranchResponse>;
+  planSyncDeploy(): Promise<PlanSyncDeployResponse>;
+  syncDeploy(body: SyncDeployRequest): Promise<SyncDeployResponse>;
+  planSyncZipDeploy(body: PlanSyncZipDeployRequest): Promise<PlanSyncZipDeployResponse>;
+  syncZipDeploy(body: SyncZipDeployRequest): Promise<SyncZipDeployResponse>;
+  getFileStoreSync(id: string, query?: GetFileStoreSyncQuery): Promise<GetFileStoreSyncResponse>;
+  setFileStoreSync(id: string, body: SetFileStoreSyncRequest): Promise<SetFileStoreSyncResponse>;
+  listDeployments(query?: ListDeploymentsQuery): Promise<ListDeploymentsResponse>;
   listDatasets(): Promise<ListDatasetsResponse>;
   getDataset(id: string): Promise<GetDatasetResponse>;
   createDataset(body: CreateDatasetRequest): Promise<CreateDatasetResponse>;
@@ -3360,6 +3424,222 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("clearAll", res);
       return (await res.json()) as ClearAllResponse;
+    },
+    async listRegistry() {
+      const res = await doFetch(`${baseUrl}/api/registry`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listRegistry", res);
+      return (await res.json()) as ListRegistryResponse;
+    },
+    async getRegistryEntity(query) {
+      const search = new URLSearchParams();
+      search.append("path", String(query.path));
+      const qs = search.toString();
+      const res = await doFetch(`${baseUrl}/api/registry/entity${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getRegistryEntity", res);
+      return (await res.json()) as GetRegistryEntityResponse;
+    },
+    async planRegistrySave(body) {
+      const res = await doFetch(`${baseUrl}/api/registry/plan`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("planRegistrySave", res);
+      return (await res.json()) as PlanRegistrySaveResponse;
+    },
+    async registrySave(body) {
+      const res = await doFetch(`${baseUrl}/api/registry/save`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("registrySave", res);
+      return (await res.json()) as RegistrySaveResponse;
+    },
+    async getSyncLink() {
+      const res = await doFetch(`${baseUrl}/api/source-control/link`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getSyncLink", res);
+      return (await res.json()) as GetSyncLinkResponse;
+    },
+    async setSyncLink(body) {
+      const res = await doFetch(`${baseUrl}/api/source-control/link`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("setSyncLink", res);
+      return (await res.json()) as SetSyncLinkResponse;
+    },
+    async deleteSyncLink() {
+      const res = await doFetch(`${baseUrl}/api/source-control/link`, {
+        method: "DELETE",
+        headers: requestHeaders("DELETE", false),
+      });
+      if (!res.ok) throw await clientError("deleteSyncLink", res);
+      return (await res.json()) as DeleteSyncLinkResponse;
+    },
+    async generateSyncKey() {
+      const res = await doFetch(`${baseUrl}/api/source-control/key`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("generateSyncKey", res);
+      return (await res.json()) as GenerateSyncKeyResponse;
+    },
+    async testSyncLink(body) {
+      const res = await doFetch(`${baseUrl}/api/source-control/link/test`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("testSyncLink", res);
+      return (await res.json()) as TestSyncLinkResponse;
+    },
+    async getSyncStatus() {
+      const res = await doFetch(`${baseUrl}/api/source-control/status`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getSyncStatus", res);
+      return (await res.json()) as GetSyncStatusResponse;
+    },
+    async getSyncEntityDiff(query) {
+      const search = new URLSearchParams();
+      search.append("key", String(query.key));
+      const qs = search.toString();
+      const res = await doFetch(`${baseUrl}/api/source-control/diff${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getSyncEntityDiff", res);
+      return (await res.json()) as GetSyncEntityDiffResponse;
+    },
+    async syncPull() {
+      const res = await doFetch(`${baseUrl}/api/source-control/pull`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("syncPull", res);
+      return (await res.json()) as SyncPullResponse;
+    },
+    async syncCommit(body) {
+      const res = await doFetch(`${baseUrl}/api/source-control/commit`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("syncCommit", res);
+      return (await res.json()) as SyncCommitResponse;
+    },
+    async planSyncDiscard(body) {
+      const res = await doFetch(`${baseUrl}/api/source-control/discard/plan`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("planSyncDiscard", res);
+      return (await res.json()) as PlanSyncDiscardResponse;
+    },
+    async syncDiscard(body) {
+      const res = await doFetch(`${baseUrl}/api/source-control/discard`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("syncDiscard", res);
+      return (await res.json()) as SyncDiscardResponse;
+    },
+    async listSyncBranches() {
+      const res = await doFetch(`${baseUrl}/api/source-control/branches`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listSyncBranches", res);
+      return (await res.json()) as ListSyncBranchesResponse;
+    },
+    async switchSyncBranch(body) {
+      const res = await doFetch(`${baseUrl}/api/source-control/branch`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("switchSyncBranch", res);
+      return (await res.json()) as SwitchSyncBranchResponse;
+    },
+    async planSyncDeploy() {
+      const res = await doFetch(`${baseUrl}/api/source-control/deploy/plan`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("planSyncDeploy", res);
+      return (await res.json()) as PlanSyncDeployResponse;
+    },
+    async syncDeploy(body) {
+      const res = await doFetch(`${baseUrl}/api/source-control/deploy`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("syncDeploy", res);
+      return (await res.json()) as SyncDeployResponse;
+    },
+    async planSyncZipDeploy(body) {
+      const res = await doFetch(`${baseUrl}/api/source-control/zip/plan`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("planSyncZipDeploy", res);
+      return (await res.json()) as PlanSyncZipDeployResponse;
+    },
+    async syncZipDeploy(body) {
+      const res = await doFetch(`${baseUrl}/api/source-control/zip/deploy`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("syncZipDeploy", res);
+      return (await res.json()) as SyncZipDeployResponse;
+    },
+    async getFileStoreSync(id, query) {
+      const search = new URLSearchParams();
+      if (query?.contents !== undefined && query?.contents !== null) search.append("contents", String(query?.contents));
+      const qs = search.toString();
+      const res = await doFetch(`${baseUrl}/api/file-stores/${encodeURIComponent(id)}/sync${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getFileStoreSync", res);
+      return (await res.json()) as GetFileStoreSyncResponse;
+    },
+    async setFileStoreSync(id, body) {
+      const res = await doFetch(`${baseUrl}/api/file-stores/${encodeURIComponent(id)}/sync`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("setFileStoreSync", res);
+      return (await res.json()) as SetFileStoreSyncResponse;
+    },
+    async listDeployments(query) {
+      const search = new URLSearchParams();
+      if (query?.limit !== undefined && query?.limit !== null) search.append("limit", String(query?.limit));
+      const qs = search.toString();
+      const res = await doFetch(`${baseUrl}/api/source-control/deployments${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listDeployments", res);
+      return (await res.json()) as ListDeploymentsResponse;
     },
     async listDatasets() {
       const res = await doFetch(`${baseUrl}/api/datasets`, {

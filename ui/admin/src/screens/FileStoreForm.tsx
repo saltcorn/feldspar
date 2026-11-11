@@ -48,6 +48,7 @@ import Spinner from "react-bootstrap/Spinner";
 import { api, errorMessage } from "../api";
 import type {
   CreateFileStoreRequest,
+  GetFileStoreSyncResponse,
   ListFileStoreBackendsResponse,
   ListFileStoresResponse,
 } from "../client";
@@ -292,6 +293,11 @@ export function FileStoreForm({ storeId }: { storeId?: string }) {
           </Button>
         </Form>
 
+        {/* How source control treats the store's files (APP_SYNC_PROPOSAL
+            §3.5): the server says whether they are copied at all, so this
+            still never asks which backend it is. */}
+        {storeId && <SyncedContents storeId={storeId} />}
+
         {/* Only for a store that exists: an instance operation has nothing to
             run against until there is a saved store. */}
         {storeId && (
@@ -303,6 +309,132 @@ export function FileStoreForm({ storeId }: { storeId?: string }) {
         )}
       </PageBody>
     </>
+  );
+}
+
+/** Source control's view of a saved store (§3.5): `sync_contents`, what it
+ * resolves to from how the structure uses the store — the directories a
+ * Commit carries and those left out — and the warnings Status shows. Picking a
+ * setting previews it; Save stores it. A store whose files are never copied (a
+ * git store, pinned at a commit instead) says so and offers no setting. */
+function SyncedContents({ storeId }: { storeId: string }) {
+  const { t } = useT();
+  const [stored, setStored] = useState<string | null>(null);
+  const [shown, setShown] = useState<GetFileStoreSyncResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api
+      .getFileStoreSync(storeId)
+      .then((got) => {
+        setShown(got);
+        setStored(got.sync_contents);
+      })
+      .catch((e: unknown) => setError(errorMessage(e, t("Could not read the store's synced contents."))));
+  }, [storeId, t]);
+
+  if (error) return <Alert variant="warning">{error}</Alert>;
+  if (!shown) return null;
+
+  const preview = async (contents: string) => {
+    setError(null);
+    try {
+      setShown(await api.getFileStoreSync(storeId, { contents }));
+    } catch (e) {
+      setError(errorMessage(e, t("Could not read the store's synced contents.")));
+    }
+  };
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const got = await api.setFileStoreSync(storeId, { sync_contents: shown.sync_contents });
+      setShown(got);
+      setStored(got.sync_contents);
+    } catch (e) {
+      setError(errorMessage(e, t("Could not save the store's synced contents.")));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const dir = (d: string) => (d === "" ? t("the whole store") : d);
+
+  return (
+    <Card className="mb-3" data-testid="store-sync">
+      <Card.Header>
+        <T text="Source control" />
+      </Card.Header>
+      <Card.Body>
+        {!shown.applies ? (
+          <p className="small text-secondary mb-0">
+            <T text="This store's files are not copied into source control: it is a repository of its own, and what is committed is its URL, its branch and the commit it is checked out at. Give it a public URL that other instances can clone without this instance's credentials." />
+          </p>
+        ) : (
+          <>
+            <Form.Group className="mb-2" controlId="store-sync-contents">
+              <Form.Label>
+                <T text="Synced contents" />
+              </Form.Label>
+              <Form.Select
+                value={shown.sync_contents}
+                onChange={(e) => void preview(e.target.value)}
+                style={{ maxWidth: "28rem" }}
+              >
+                <option value="auto">{t("Automatic: the code and static directories applications use")}</option>
+                <option value="include">{t("Everything in the store")}</option>
+                <option value="exclude">{t("Nothing: the store holds user content")}</option>
+              </Form.Select>
+              <Form.Text>
+                <T text="User uploads are never committed; what a Commit carries is the code and the assets the structure needs." />
+              </Form.Text>
+            </Form.Group>
+            <div className="small mb-2">
+              {shown.synced.length === 0 ? (
+                <span className="text-secondary">
+                  <T text="Nothing in this store is committed." />
+                </span>
+              ) : (
+                <>
+                  <div className="fw-bold">
+                    <T text="Committed:" />
+                  </div>
+                  <ul className="mb-1">
+                    {shown.synced.map((d) => (
+                      <li key={d}>
+                        <code>{dir(d)}</code>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              {shown.excluded.length > 0 && (
+                <>
+                  <div className="fw-bold">
+                    <T text="Left out (user content and build output):" />
+                  </div>
+                  <ul className="mb-1">
+                    {shown.excluded.map((d) => (
+                      <li key={d}>
+                        <code>{d}</code>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </div>
+            {shown.warnings.map((w) => (
+              <Alert key={w} variant="warning" className="small py-2">
+                {w}
+              </Alert>
+            ))}
+            <Button size="sm" disabled={busy || shown.sync_contents === stored} onClick={() => void save()}>
+              {shown.sync_contents === stored ? t("Saved") : t("Save synced contents")}
+            </Button>
+          </>
+        )}
+      </Card.Body>
+    </Card>
   );
 }
 

@@ -9393,6 +9393,7 @@ dependencies = [
  "sc-query",
  "sc-server",
  "sc-stan",
+ "sc-sync",
  "sc-test-harness",
  "sc-types",
  "sc-viewpattern",
@@ -9588,6 +9589,7 @@ name = "sc-files"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "fsquirrel",
@@ -9936,6 +9938,7 @@ dependencies = [
  "sc-ratelimit",
  "sc-stan",
  "sc-stream",
+ "sc-sync",
  "sc-test-harness",
  "sc-types",
  "sc-viewpattern",
@@ -9999,6 +10002,52 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "sc-sync"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "flate2",
+ "ignore",
+ "sc-action",
+ "sc-action-builtins",
+ "sc-agent",
+ "sc-agent-builtins",
+ "sc-analytics",
+ "sc-api",
+ "sc-app",
+ "sc-auth",
+ "sc-backup",
+ "sc-catalog",
+ "sc-check",
+ "sc-config",
+ "sc-dataset",
+ "sc-db",
+ "sc-error",
+ "sc-files",
+ "sc-i18n",
+ "sc-llm",
+ "sc-mcp",
+ "sc-model",
+ "sc-module",
+ "sc-query",
+ "sc-stream",
+ "sc-test-harness",
+ "sc-types",
+ "sc-viewpattern",
+ "sc-workflow",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.10.9",
+ "similar",
+ "tokio",
+ "uuid",
+ "zip",
 ]
 
 [[package]]

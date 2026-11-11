@@ -173,6 +173,11 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
     sc_config::bootstrap(&catalog)
         .await
         .context("ensuring the configuration tables exist")?;
+    // Source control (TODO-app-sync S4.1): the sync link and the base, the
+    // deployment ledger and the sync lock.
+    sc_sync::bootstrap(&catalog)
+        .await
+        .context("ensuring the source control tables exist")?;
     // Geometry (analytics TODO A5.1): PostGIS where the role may install it,
     // and a sentence where it may not, so the admin knows why a geometry field
     // is refused before trying one.

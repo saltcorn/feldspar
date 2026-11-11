@@ -30,6 +30,8 @@ sc-proc.workspace = true
 sc-error.workspace = true
 sc-log.workspace = true
 sc-server.workspace = true
+# `feldspar registry`: the registry editor's export, planner and executor.
+sc-sync.workspace = true
 # `feldspar backup` and `feldspar restore`: the archive, written and read.
 sc-backup.workspace = true
 # `CodeAdapter`: the Python adapter `serve` hands the trigger set. (Also a stub

@@ -227,7 +227,14 @@ pub struct DeployKey {
 /// key — would leave the admin looking at a public key the remote has already
 /// rejected with no way to get a new one.
 pub async fn generate_deploy_key(name: &str) -> Result<DeployKey> {
-    let dir = key_dir()?;
+    generate_deploy_key_in(&key_dir()?, name).await
+}
+
+/// [`generate_deploy_key`], into `dir` rather than the data directory's `keys`:
+/// for a key that belongs to something configured with its own data directory,
+/// as the sync link is (APP_SYNC_PROPOSAL §2).
+pub async fn generate_deploy_key_in(dir: &Path, name: &str) -> Result<DeployKey> {
+    let dir = dir.to_path_buf();
     tokio::fs::create_dir_all(&dir)
         .await
         .with_context(|| format!("creating deploy-key directory {}", dir.display()))?;
@@ -359,6 +366,61 @@ pub struct GitRepo {
     url: Option<String>,
     branch: Option<String>,
     key_path: Option<PathBuf>,
+    token: Option<HttpsToken>,
+}
+
+/// An HTTPS token a remote is reached with, and the username it goes with.
+///
+/// Given to git through its environment only ([`sc_proc::Git::https_token`]),
+/// so it is in no argument list, log or `.git/config`. Its `Debug` prints
+/// nothing of the token.
+#[derive(Clone, PartialEq, Eq)]
+pub struct HttpsToken {
+    username: String,
+    token: String,
+}
+
+impl HttpsToken {
+    /// The username most forges take with a token in place of a password
+    /// (GitHub's own; GitLab and Gitea take any).
+    pub const DEFAULT_USERNAME: &'static str = "x-access-token";
+
+    /// `token`, sent as `username` (or [`DEFAULT_USERNAME`](Self::DEFAULT_USERNAME)).
+    pub fn new(username: Option<&str>, token: impl Into<String>) -> HttpsToken {
+        HttpsToken {
+            username: username
+                .map(str::trim)
+                .filter(|u| !u.is_empty())
+                .unwrap_or(Self::DEFAULT_USERNAME)
+                .to_owned(),
+            token: token.into(),
+        }
+    }
+
+    /// The username.
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+}
+
+impl std::fmt::Debug for HttpsToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpsToken")
+            .field("username", &self.username)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
+/// One file of a commit's tree, as `git ls-tree` gives it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeFile {
+    /// Its mode (`100644`, `100755`, `120000`, `160000`).
+    pub mode: String,
+    /// Its object's hash.
+    pub hash: String,
+    /// Its path from the top of the repository.
+    pub path: String,
 }
 
 impl GitRepo {
@@ -398,7 +460,34 @@ impl GitRepo {
                 .map(str::trim)
                 .filter(|p| !p.is_empty())
                 .map(PathBuf::from),
+            token: None,
         })
+    }
+
+    /// A repository that is no file store's: its working-tree directory, the
+    /// remote, the branch and the key that reaches it, given directly. What the
+    /// sync mirror is (APP_SYNC_PROPOSAL §2), which is configured with the link
+    /// rather than as a store.
+    pub fn new(
+        root: impl Into<PathBuf>,
+        url: Option<String>,
+        branch: Option<String>,
+        key_path: Option<PathBuf>,
+    ) -> GitRepo {
+        let text = |v: Option<String>| v.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+        GitRepo {
+            root: root.into(),
+            url: text(url),
+            branch: text(branch),
+            key_path,
+            token: None,
+        }
+    }
+
+    /// This repository, reaching its remote over HTTPS with `token`.
+    pub fn with_https_token(mut self, token: HttpsToken) -> GitRepo {
+        self.token = Some(token);
+        self
     }
 
     /// The working tree's directory — where the clone is or will be.
@@ -416,6 +505,564 @@ impl GitRepo {
     /// directory, since that is what a worktree or submodule link looks like.
     pub fn is_cloned(&self) -> bool {
         self.root.join(".git").exists()
+    }
+
+    /// The full hash of the checked-out commit, or `None` when there is none to
+    /// name: no clone yet, or a repository with no commits.
+    ///
+    /// What the installation's structure **pins** a git store at
+    /// (APP_SYNC_PROPOSAL §3.5): read from the working tree each time, never
+    /// stored, so it is whatever the store actually serves.
+    pub async fn head_commit(&self) -> Result<Option<String>> {
+        if !self.is_cloned() {
+            return Ok(None);
+        }
+        let out = self
+            .run_args(&["rev-parse", "--verify", "-q", "HEAD"])
+            .await?;
+        let hash = out.output.trim();
+        Ok((out.success && !hash.is_empty()).then(|| hash.to_owned()))
+    }
+
+    /// Keep `files` (each a path and its bytes) reachable from `refname`, as one
+    /// commit whose tree holds exactly them, and return that commit.
+    ///
+    /// What lets the sync mirror restore a base version of a store file after
+    /// the remote was force-pushed and the commit that had it is gone
+    /// (APP_SYNC_PROPOSAL §4): the base records each file's blob hash, and this
+    /// ref is what keeps the blob from being garbage-collected. The ref is
+    /// local and never pushed. The blobs are written without filters, so each
+    /// one's hash is git's blob hash of the bytes as they are.
+    pub async fn record_blobs(
+        &self,
+        refname: &'static str,
+        files: &[(String, Vec<u8>)],
+    ) -> Result<String> {
+        self.require_cloned()?;
+        let scratch = self
+            .root
+            .join(".git")
+            .join(format!("feldspar-blobs-{}", uuid::Uuid::new_v4().simple()));
+        tokio::fs::create_dir_all(&scratch)
+            .await
+            .with_context(|| format!("create {}", scratch.display()))?;
+        let result = self.record_blobs_in(&scratch, refname, files).await;
+        let _ = tokio::fs::remove_dir_all(&scratch).await;
+        result
+    }
+
+    async fn record_blobs_in(
+        &self,
+        scratch: &Path,
+        refname: &'static str,
+        files: &[(String, Vec<u8>)],
+    ) -> Result<String> {
+        // The bytes go to numbered scratch files, so no path a store holds is
+        // ever a path on this disk.
+        let mut hashes = Vec::with_capacity(files.len());
+        for (chunk_index, chunk) in files.chunks(200).enumerate() {
+            let mut hash = self.git(LOCAL_GIT);
+            hash.args(["hash-object", "-w", "--no-filters"]);
+            for (i, (_, bytes)) in chunk.iter().enumerate() {
+                let file = scratch.join(format!("{chunk_index}-{i}"));
+                tokio::fs::write(&file, bytes)
+                    .await
+                    .with_context(|| format!("write {}", file.display()))?;
+                hash.operand(Operand::path(&file));
+            }
+            let out = self.raw(hash, "hash-object").await?;
+            hashes.extend(String::from_utf8_lossy(&out).lines().map(str::to_owned));
+        }
+        if hashes.len() != files.len() {
+            return Err(Error::msg(format!(
+                "git hash-object gave {} hashes for {} files",
+                hashes.len(),
+                files.len()
+            )));
+        }
+        let index = scratch.join("index");
+        for (chunk, chunk_hashes) in files.chunks(200).zip(hashes.chunks(200)) {
+            let mut add = self.git(LOCAL_GIT);
+            add.index_file(&index).args(["update-index", "--add"]);
+            for ((path, _), hash) in chunk.iter().zip(chunk_hashes) {
+                add.flag_value("--cacheinfo", format!("100644,{hash},{path}"));
+            }
+            self.raw(add, "update-index").await?;
+        }
+        let mut write = self.git(LOCAL_GIT);
+        write.index_file(&index).arg("write-tree");
+        let tree = String::from_utf8_lossy(&self.raw(write, "write-tree").await?)
+            .trim()
+            .to_owned();
+        let mut commit = self.git(LOCAL_GIT);
+        commit
+            .args([
+                "-c",
+                "user.name=Feldspar",
+                "-c",
+                "user.email=feldspar@localhost",
+                "commit-tree",
+                "-m",
+                "feldspar base",
+            ])
+            .positional(Operand::new(tree.as_str())?);
+        let commit = String::from_utf8_lossy(&self.raw(commit, "commit-tree").await?)
+            .trim()
+            .to_owned();
+        let mut update = self.git(LOCAL_GIT);
+        update
+            .args(["update-ref", refname])
+            .positional(Operand::new(commit.as_str())?);
+        self.raw(update, "update-ref").await?;
+        Ok(commit)
+    }
+
+    /// The bytes of the blob `hash`, or `None` when the repository does not
+    /// have it.
+    pub async fn read_blob(&self, hash: &str) -> Result<Option<Vec<u8>>> {
+        if !self.is_cloned() || hash.len() < 4 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Ok(None);
+        }
+        let mut cat = self.git(LOCAL_GIT);
+        cat.args(["cat-file", "blob"])
+            .positional(Operand::new(hash)?);
+        let output = cat.output().await.map_err(Error::from)?;
+        Ok(output.status.success().then_some(output.stdout))
+    }
+
+    // --- a mirror: a repository with no working tree in use ---------------------
+    //
+    // The sync link's clone (APP_SYNC_PROPOSAL §2) is a mirror, never a
+    // workspace: nothing is checked out or edited in it. Trees are read from
+    // commit objects and commits are written from an index of their own, so
+    // there is no working tree to get out of step, and the only refs that move
+    // are the ones these methods name.
+
+    /// Make the directory a mirror of the remote: a repository whose `origin`
+    /// is the URL, fetching every branch. Idempotent; a URL that changed is
+    /// set again, and nothing is fetched yet.
+    pub async fn init_mirror(&self) -> Result<()> {
+        let Some(url) = &self.url else {
+            return Err(Error::invalid("a mirror needs the URL of its remote"));
+        };
+        if !self.is_cloned() {
+            tokio::fs::create_dir_all(&self.root)
+                .await
+                .with_context(|| format!("create {}", self.root.display()))?;
+            let mut init = Git::without_repository(&self.root, &git_authority(), LOCAL_GIT);
+            init.args(["init", "-q"]).operand(Operand::path(&self.root));
+            let out = self.run(init).await?;
+            if !out.success {
+                return Err(Error::invalid(format!("git init failed: {}", out.output)));
+            }
+        }
+        let mut set_url = self.git(LOCAL_GIT);
+        set_url
+            .args(["config", "remote.origin.url"])
+            .positional(Operand::new(url.as_str())?);
+        self.checked(set_url, "config").await?;
+        let mut refspec = self.git(LOCAL_GIT);
+        refspec.args([
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ]);
+        self.checked(refspec, "config").await?;
+        Ok(())
+    }
+
+    /// Fetch every branch of `origin`, forcing the remote-tracking refs to
+    /// wherever the remote has them now (a force-push included) and dropping
+    /// those of deleted branches.
+    pub async fn fetch(&self) -> Result<GitOutput> {
+        let mut fetch = self.git(REMOTE_GIT);
+        fetch.args(["fetch", "--prune", "--quiet", "origin"]);
+        self.checked(fetch, "fetch").await
+    }
+
+    /// The commit `refname` points at, or `None` when there is no such ref.
+    pub async fn ref_commit(&self, refname: &str) -> Result<Option<String>> {
+        self.require_cloned()?;
+        let mut rev = self.git(LOCAL_GIT);
+        rev.args(["rev-parse", "--verify", "-q"])
+            .positional(Operand::new(format!("{refname}^{{commit}}"))?);
+        let out = self.run(rev).await?;
+        let hash = out.output.trim();
+        Ok((out.success && !hash.is_empty()).then(|| hash.to_owned()))
+    }
+
+    /// Point `refname` at `commit`, or delete it for `None`.
+    pub async fn set_ref(&self, refname: &str, commit: Option<&str>) -> Result<()> {
+        self.require_cloned()?;
+        let mut update = self.git(LOCAL_GIT);
+        update.arg("update-ref");
+        match commit {
+            Some(commit) => {
+                update
+                    .positional(Operand::new(refname)?)
+                    .positional(Operand::new(commit)?);
+            }
+            None => {
+                update.arg("-d").positional(Operand::new(refname)?);
+            }
+        }
+        self.checked(update, "update-ref").await.map(drop)
+    }
+
+    /// Whether `ancestor` is `commit` or reachable from it.
+    pub async fn is_ancestor(&self, ancestor: &str, commit: &str) -> Result<bool> {
+        self.require_cloned()?;
+        let mut base = self.git(LOCAL_GIT);
+        base.args(["merge-base", "--is-ancestor"])
+            .positional(Operand::new(ancestor)?)
+            .positional(Operand::new(commit)?);
+        Ok(self.run(base).await?.success)
+    }
+
+    /// Whether some remote-tracking branch has `commit`: whether the remote
+    /// had it at the last [`fetch`](Self::fetch).
+    pub async fn on_remote(&self, commit: &str) -> Result<bool> {
+        self.require_cloned()?;
+        let mut refs = self.git(LOCAL_GIT);
+        refs.args(["for-each-ref", "--count=1", "--format=%(refname)"])
+            .flag_eq("--contains", commit)
+            .positional(Operand::new("refs/remotes/")?);
+        let out = self.run(refs).await?;
+        Ok(out.success && !out.output.trim().is_empty())
+    }
+
+    /// The branches the remote has, asked of it directly (`git ls-remote`):
+    /// what a link's branch selector offers, and the check that the link's
+    /// URL and credentials reach it at all.
+    pub async fn remote_branches(&self) -> Result<Vec<String>> {
+        let mut ls = self.git(REMOTE_GIT);
+        ls.args(["ls-remote", "--heads", "origin"]);
+        let out = self.checked(ls, "ls-remote").await?;
+        let mut names: Vec<String> = out
+            .output
+            .lines()
+            .filter_map(|line| line.split_once('\t'))
+            .filter_map(|(_, r)| r.trim().strip_prefix("refs/heads/"))
+            .map(str::to_owned)
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
+    /// Every file of `commit`'s tree, or of its `subdir` only.
+    pub async fn tree_files(&self, commit: &str, subdir: Option<&str>) -> Result<Vec<TreeFile>> {
+        self.require_cloned()?;
+        let mut ls = self.git(LOCAL_GIT);
+        ls.args(["ls-tree", "-r", "-z", "--full-tree"])
+            .positional(Operand::new(commit)?);
+        if let Some(subdir) = subdir {
+            ls.operand(Operand::new(format!("{subdir}/"))?);
+        }
+        let out = self.raw(ls, "ls-tree").await?;
+        let mut files = Vec::new();
+        for record in out.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+            let record = String::from_utf8_lossy(record);
+            let Some((meta, path)) = record.split_once('\t') else {
+                continue;
+            };
+            let mut meta = meta.split(' ');
+            let (Some(mode), Some(_kind), Some(hash)) = (meta.next(), meta.next(), meta.next())
+            else {
+                continue;
+            };
+            files.push(TreeFile {
+                mode: mode.to_owned(),
+                hash: hash.to_owned(),
+                path: path.to_owned(),
+            });
+        }
+        Ok(files)
+    }
+
+    /// The files of `commit` under `subdir` (or all of them), each by its
+    /// path **below** `subdir`, with its bytes as git stores them. A
+    /// submodule has no bytes here and is left out.
+    pub async fn read_files_at(
+        &self,
+        commit: &str,
+        subdir: Option<&str>,
+    ) -> Result<std::collections::BTreeMap<String, Vec<u8>>> {
+        let files: Vec<TreeFile> = self
+            .tree_files(commit, subdir)
+            .await?
+            .into_iter()
+            .filter(|f| f.mode != "160000")
+            .collect();
+        let hashes: Vec<&str> = files.iter().map(|f| f.hash.as_str()).collect();
+        let blobs = self.read_blobs(&hashes).await?;
+        let mut out = std::collections::BTreeMap::new();
+        for (file, bytes) in files.into_iter().zip(blobs) {
+            let bytes = bytes.ok_or_else(|| {
+                Error::msg(format!(
+                    "commit {commit} names {}, which is missing",
+                    file.hash
+                ))
+            })?;
+            let path = match subdir {
+                Some(dir) => file
+                    .path
+                    .strip_prefix(dir)
+                    .and_then(|p| p.strip_prefix('/'))
+                    .unwrap_or(&file.path)
+                    .to_owned(),
+                None => file.path,
+            };
+            out.insert(path, bytes);
+        }
+        Ok(out)
+    }
+
+    /// The bytes of each of `hashes`, in order, `None` for one the
+    /// repository does not have: one `git cat-file --batch` for them all.
+    pub async fn read_blobs(&self, hashes: &[&str]) -> Result<Vec<Option<Vec<u8>>>> {
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.require_cloned()?;
+        for hash in hashes {
+            if hash.len() < 4 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(Error::invalid(format!("`{hash}` is not an object hash")));
+            }
+        }
+        let mut input = Vec::new();
+        for hash in hashes {
+            input.extend_from_slice(hash.as_bytes());
+            input.push(b'\n');
+        }
+        let mut cat = self.git(LOCAL_GIT);
+        cat.args(["cat-file", "--batch"]);
+        let out = self.with_input(cat, input, "cat-file").await?;
+        let mut blobs = Vec::with_capacity(hashes.len());
+        let mut rest: &[u8] = &out;
+        for _ in hashes {
+            let end = rest
+                .iter()
+                .position(|b| *b == b'\n')
+                .ok_or_else(|| Error::msg("git cat-file --batch stopped early"))?;
+            let header = String::from_utf8_lossy(&rest[..end]).into_owned();
+            rest = &rest[end + 1..];
+            if header.ends_with(" missing") {
+                blobs.push(None);
+                continue;
+            }
+            let size: usize = header
+                .rsplit(' ')
+                .next()
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| Error::msg(format!("git cat-file said `{header}`")))?;
+            if rest.len() < size + 1 {
+                return Err(Error::msg("git cat-file --batch stopped early"));
+            }
+            blobs.push(Some(rest[..size].to_vec()));
+            rest = &rest[size + 1..];
+        }
+        Ok(blobs)
+    }
+
+    /// Write a commit whose tree is `parent`'s with everything under `subdir`
+    /// (or everything, with no `subdir`) replaced by `files`, each given by
+    /// its path below `subdir`. No ref moves: the caller pushes the commit,
+    /// and only then points a branch at it.
+    ///
+    /// `None` when the tree is `parent`'s own, so there is nothing to commit.
+    /// The identity is `author` (a name and an email), else Feldspar's.
+    pub async fn commit_files(
+        &self,
+        parent: Option<&str>,
+        subdir: Option<&str>,
+        files: &std::collections::BTreeMap<String, Vec<u8>>,
+        message: &str,
+        author: Option<(&str, &str)>,
+    ) -> Result<Option<String>> {
+        self.require_cloned()?;
+        let message = message.trim();
+        if message.is_empty() {
+            return Err(Error::invalid("a commit needs a message"));
+        }
+        let scratch = self
+            .root
+            .join(".git")
+            .join(format!("feldspar-commit-{}", uuid::Uuid::new_v4().simple()));
+        tokio::fs::create_dir_all(&scratch)
+            .await
+            .with_context(|| format!("create {}", scratch.display()))?;
+        let result = self
+            .commit_files_in(&scratch, parent, subdir, files, message, author)
+            .await;
+        let _ = tokio::fs::remove_dir_all(&scratch).await;
+        result
+    }
+
+    async fn commit_files_in(
+        &self,
+        scratch: &Path,
+        parent: Option<&str>,
+        subdir: Option<&str>,
+        files: &std::collections::BTreeMap<String, Vec<u8>>,
+        message: &str,
+        author: Option<(&str, &str)>,
+    ) -> Result<Option<String>> {
+        let mut index_info = String::new();
+        if let Some(parent) = parent {
+            for file in self.tree_files(parent, None).await? {
+                let replaced = match subdir {
+                    None => true,
+                    Some(dir) => file
+                        .path
+                        .strip_prefix(dir)
+                        .is_some_and(|rest| rest.starts_with('/')),
+                };
+                if !replaced {
+                    index_info.push_str(&format!("{} {}\t{}\n", file.mode, file.hash, file.path));
+                }
+            }
+        }
+        let list: Vec<(&String, &Vec<u8>)> = files.iter().collect();
+        for (chunk_index, chunk) in list.chunks(200).enumerate() {
+            let mut hash = self.git(LOCAL_GIT);
+            hash.args(["hash-object", "-w", "--no-filters"]);
+            for (i, (_, bytes)) in chunk.iter().enumerate() {
+                let file = scratch.join(format!("{chunk_index}-{i}"));
+                tokio::fs::write(&file, bytes)
+                    .await
+                    .with_context(|| format!("write {}", file.display()))?;
+                hash.operand(Operand::path(&file));
+            }
+            let out = self.raw(hash, "hash-object").await?;
+            let hashes: Vec<String> = String::from_utf8_lossy(&out)
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            if hashes.len() != chunk.len() {
+                return Err(Error::msg(format!(
+                    "git hash-object gave {} hashes for {} files",
+                    hashes.len(),
+                    chunk.len()
+                )));
+            }
+            for ((path, _), hash) in chunk.iter().zip(hashes) {
+                let path = match subdir {
+                    Some(dir) => format!("{dir}/{path}"),
+                    None => (*path).clone(),
+                };
+                if path.contains('\n') || path.contains('\t') {
+                    return Err(Error::invalid(format!(
+                        "`{}` cannot be committed: its name has a tab or a line break",
+                        path.escape_debug()
+                    )));
+                }
+                index_info.push_str(&format!("100644 {hash}\t{path}\n"));
+            }
+        }
+        let index = scratch.join("index");
+        let mut update = self.git(LOCAL_GIT);
+        update
+            .index_file(&index)
+            .args(["update-index", "--add", "--index-info"]);
+        self.with_input(update, index_info.into_bytes(), "update-index")
+            .await?;
+        let mut write = self.git(LOCAL_GIT);
+        write.index_file(&index).arg("write-tree");
+        let tree = String::from_utf8_lossy(&self.raw(write, "write-tree").await?)
+            .trim()
+            .to_owned();
+        if let Some(parent) = parent {
+            let mut rev = self.git(LOCAL_GIT);
+            rev.arg("rev-parse")
+                .positional(Operand::new(format!("{parent}^{{tree}}"))?);
+            let parent_tree = String::from_utf8_lossy(&self.raw(rev, "rev-parse").await?)
+                .trim()
+                .to_owned();
+            if parent_tree == tree {
+                return Ok(None);
+            }
+        }
+        let clean = |s: &str| s.chars().filter(|c| !c.is_control()).collect::<String>();
+        let (name, email) = author.unwrap_or(("Feldspar", "feldspar@localhost"));
+        let mut commit = self.git(LOCAL_GIT);
+        commit
+            .flag_value("-c", format!("user.name={}", clean(name)))
+            .flag_value("-c", format!("user.email={}", clean(email)))
+            .arg("commit-tree")
+            .flag_value("-m", message);
+        if let Some(parent) = parent {
+            commit.flag_value("-p", parent);
+        }
+        commit.positional(Operand::new(tree.as_str())?);
+        let commit = String::from_utf8_lossy(&self.raw(commit, "commit-tree").await?)
+            .trim()
+            .to_owned();
+        Ok(Some(commit))
+    }
+
+    /// Push `commit` to the remote's `branch`, as a fast-forward only. The
+    /// outcome is git's, success or not: a refusal (the remote moved, or a
+    /// read-only key) is something the caller explains, not an error here.
+    pub async fn push_commit(&self, commit: &str, branch: &str) -> Result<GitOutput> {
+        self.require_cloned()?;
+        let mut push = self.git(REMOTE_GIT);
+        push.args(["push", "--quiet", "origin"])
+            .positional(Operand::new(format!("{commit}:refs/heads/{branch}"))?);
+        self.run(push).await
+    }
+
+    /// Run `git` with `input` on its stdin, and return its stdout, or fail
+    /// with what it said.
+    async fn with_input(&self, mut git: Git, input: Vec<u8>, what: &str) -> Result<Vec<u8>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        git.stdin_piped()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = git.into_command().spawn().map_err(Error::from)?;
+        let mut stdin = child
+            .take_stdin()
+            .ok_or_else(|| Error::msg(format!("git {what}: no stdin")))?;
+        let mut stdout = child
+            .take_stdout()
+            .ok_or_else(|| Error::msg(format!("git {what}: no stdout")))?;
+        let mut stderr = child
+            .take_stderr()
+            .ok_or_else(|| Error::msg(format!("git {what}: no stderr")))?;
+        let write = async move {
+            let written = stdin.write_all(&input).await;
+            drop(stdin);
+            written
+        };
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let (written, read, read_err) = tokio::join!(
+            write,
+            stdout.read_to_end(&mut out),
+            stderr.read_to_end(&mut err)
+        );
+        let status = child.wait().await.map_err(Error::from)?;
+        if !status.success() {
+            return Err(Error::msg(format!(
+                "git {what} failed: {}",
+                combined(&out, &err)
+            )));
+        }
+        written.with_context(|| format!("writing to git {what}"))?;
+        read.with_context(|| format!("reading git {what}"))?;
+        read_err.with_context(|| format!("reading git {what}"))?;
+        Ok(out)
+    }
+
+    /// Run `git`, and return its stdout, or fail with what it said.
+    async fn raw(&self, git: Git, what: &str) -> Result<Vec<u8>> {
+        let output = git.output().await.map_err(Error::from)?;
+        if !output.status.success() {
+            return Err(Error::msg(format!(
+                "git {what} failed: {}",
+                combined(&output.stdout, &output.stderr)
+            )));
+        }
+        Ok(output.stdout)
     }
 
     /// Clone the remote into the working-tree directory, unless the directory
@@ -851,6 +1498,53 @@ impl GitRepo {
         self.checked(checkout, "checkout").await
     }
 
+    /// Check out the **pinned commit** an installation's structure names for
+    /// this store (APP_SYNC_PROPOSAL §3.5, §6 step 8.3): fetch the remote, then
+    /// point the store's branch at `commit` and check it out.
+    ///
+    /// The branch is reset rather than merged: a deploy makes the store serve
+    /// exactly the code the committing instance had. Work in the way is not
+    /// thrown away silently — the planner refuses a pin change on a store with
+    /// uncommitted changes or unpushed commits before this is reached
+    /// (`sc_sync::validate`), and `checkout` keeps git's own refusal for a
+    /// working tree that is not clean. With no branch configured, the commit is
+    /// checked out detached.
+    pub async fn checkout_pinned(&self, commit: &str) -> Result<GitOutput> {
+        let commit = commit.trim();
+        if commit.len() < 4 || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Error::invalid(format!(
+                "`{commit}` is not a commit hash, so the store cannot be checked out at it"
+            )));
+        }
+        self.require_cloned()?;
+        if self.url.is_some() {
+            let mut fetch = self.git(REMOTE_GIT);
+            fetch.args(["fetch", "--quiet", "origin"]);
+            self.checked(fetch, "fetch").await?;
+        }
+        let mut verify = self.git(LOCAL_GIT);
+        verify
+            .args(["cat-file", "-e"])
+            .positional(Operand::new(format!("{commit}^{{commit}}"))?);
+        if !self.run(verify).await?.success {
+            return Err(Error::invalid(format!(
+                "the store's remote does not have commit {commit}; push it from the \
+                 instance that committed the structure, then deploy again"
+            )));
+        }
+        let mut checkout = self.git(LOCAL_GIT);
+        checkout.args(["checkout", "--quiet"]);
+        if let Some(branch) = &self.branch {
+            checkout
+                .arg("-B")
+                .positional(Operand::new(branch.as_str())?);
+        } else {
+            checkout.arg("--detach");
+        }
+        checkout.positional(Operand::new(commit)?);
+        self.checked(checkout, "checkout").await
+    }
+
     /// Whether the repository resolves a committer identity (from its own
     /// config, the user's, or the environment).
     async fn has_identity(&self) -> Result<bool> {
@@ -906,6 +1600,9 @@ impl GitRepo {
         if let Some(key) = &self.key_path {
             git.ssh_key(key);
         }
+        if let Some(token) = &self.token {
+            git.https_token(&token.username, &token.token);
+        }
         let output = git.output().await.map_err(|e| match e.is_not_found() {
             true => Error::config(format!("{e}; git must be installed to use the git backend")),
             false => e.into(),
@@ -915,6 +1612,58 @@ impl GitRepo {
             output: combined(&output.stdout, &output.stderr),
         })
     }
+}
+
+/// The anonymous HTTPS URL of a repository given by an SSH URL on a well-known
+/// host — GitHub, GitLab, Bitbucket or Codeberg — or `None` when there is no
+/// such derivation.
+///
+/// What another instance clones a git store from when the structure that
+/// creates the store names no [`public_url`](crate::CFG_PUBLIC_URL)
+/// (APP_SYNC_PROPOSAL §3.5): it has none of this instance's keys, and these
+/// hosts serve a public repository over HTTPS at the same owner and name. Both
+/// SSH spellings are understood, `git@github.com:o/r.git` and
+/// `ssh://git@github.com/o/r.git`; an `https://` URL is already what is wanted
+/// and comes back as it is. Any other host gets `None`, because guessing at a
+/// self-hosted server's HTTPS layout would hand a deploy a URL that is wrong in
+/// a way nobody chose.
+pub fn derive_https_url(url: &str) -> Option<String> {
+    const HOSTS: [&str; 4] = ["github.com", "gitlab.com", "bitbucket.org", "codeberg.org"];
+    let url = url.trim();
+    if let Some(rest) = url.strip_prefix("https://") {
+        return (!rest.is_empty()).then(|| url.to_owned());
+    }
+    // `ssh://[user@]host[:port]/path` or the scp-like `[user@]host:path`.
+    let (host, path) = if let Some(rest) = url.strip_prefix("ssh://") {
+        let (authority, path) = rest.split_once('/')?;
+        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+        // A port belongs to the SSH server, not to the HTTPS one.
+        (host.split_once(':').map_or(host, |(h, _)| h), path)
+    } else {
+        if url.contains("://") {
+            return None;
+        }
+        let (authority, path) = url.split_once(':')?;
+        (
+            authority.rsplit_once('@').map_or(authority, |(_, h)| h),
+            path,
+        )
+    };
+    let host = host.to_ascii_lowercase();
+    if !HOSTS.contains(&host.as_str()) {
+        return None;
+    }
+    let path = path.trim_matches('/');
+    // `owner/repo` at least, and nothing that would climb out of it.
+    if path.split('/').count() < 2 || path.split('/').any(|s| s.is_empty() || s == "..") {
+        return None;
+    }
+    let path = if path.ends_with(".git") {
+        path.to_owned()
+    } else {
+        format!("{path}.git")
+    };
+    Some(format!("https://{host}/{path}"))
 }
 
 /// Checked pathspecs as operands (each already refuses a leading `-`).
@@ -1632,6 +2381,48 @@ mod tests {
             assert_eq!(repo.key_path, Some(PathBuf::from("/keys/app.key")));
             assert!(!repo.is_cloned());
         });
+    }
+
+    #[test]
+    fn an_https_url_is_derived_for_the_well_known_hosts_only() {
+        let cases = [
+            // The scp-like SSH spelling, on each of the four hosts.
+            ("git@github.com:o/r.git", Some("https://github.com/o/r.git")),
+            (
+                "git@gitlab.com:group/sub/r.git",
+                Some("https://gitlab.com/group/sub/r.git"),
+            ),
+            (
+                "git@bitbucket.org:o/r.git",
+                Some("https://bitbucket.org/o/r.git"),
+            ),
+            ("git@codeberg.org:o/r", Some("https://codeberg.org/o/r.git")),
+            // The URL spelling, a port and a host in capitals.
+            (
+                "ssh://git@github.com/o/r.git",
+                Some("https://github.com/o/r.git"),
+            ),
+            (
+                "ssh://git@GitHub.com:22/o/r",
+                Some("https://github.com/o/r.git"),
+            ),
+            // Already HTTPS: nothing to derive.
+            (
+                "https://example.com/o/r.git",
+                Some("https://example.com/o/r.git"),
+            ),
+            // Not one of the four, or not a repository path: no guess.
+            ("git@git.example.com:o/r.git", None),
+            ("ssh://git@example.com/o/r.git", None),
+            ("http://github.com/o/r.git", None),
+            ("git@github.com:r.git", None),
+            ("git@github.com:o/../r.git", None),
+            ("/srv/repos/r.git", None),
+            ("", None),
+        ];
+        for (url, want) in cases {
+            assert_eq!(derive_https_url(url).as_deref(), want, "{url}");
+        }
     }
 
     #[test]

@@ -69,7 +69,7 @@ pub use defs::{
     ADMIN_NOTICES, BACKUP_INCLUDE, BACKUP_SCHEDULE_STATUS, BACKUP_SCHEDULES, ConfigDef,
     ConfigSection, DEFAULT_LLM_PROVIDER, ONBOARDING_DONE, RLS_BOUNDARY_REPORTED, STARTUP_HISTORY,
     STARTUP_HISTORY_DAYS, config_sections, config_spec, definition, hidden_sections, internal_defs,
-    known_keys,
+    known_keys, portable_sections,
 };
 pub use development::{
     ADMIN_SUBDOMAIN, CLAUDE_CODE_PATH, DevelopmentSettings, IDE_TERMINAL_ENABLED, LOG_SQL,
@@ -91,8 +91,8 @@ pub use localisation::{
     localisation_settings, localisation_settings_from,
 };
 pub use maps::{
-    DEFAULT_MAP_STYLE, DEFAULT_MAP_STYLE_DARK, MAP_HOSTS, MAP_STYLE, MAP_STYLE_DARK, MapSettings,
-    allow_map_host, hosts_with, map_defs, map_settings, map_settings_from, origin_of,
+    DEFAULT_MAP_STYLE, DEFAULT_MAP_STYLE_DARK, MAP_HOSTS, MAP_STYLE, MAP_STYLE_DARK, MAPS_SECTION,
+    MapSettings, allow_map_host, hosts_with, map_defs, map_settings, map_settings_from, origin_of,
     save_map_settings,
 };
 pub use ssl::{

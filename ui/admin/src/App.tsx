@@ -32,6 +32,7 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconFolder,
+  IconGitBranch,
   IconList,
   IconLogout,
   IconMoon,
@@ -76,6 +77,7 @@ import { Login } from "./screens/Login";
 import { Roles } from "./screens/Roles";
 import { AccountSecurity } from "./screens/SecondFactor";
 import { Settings, settingsTabFromPath } from "./screens/Settings";
+import { SourceControlPage } from "./screens/SourceControlPage";
 import { CodeLibraries } from "./screens/CodeLibraries";
 import { SharedTranslations } from "./screens/SharedTranslations";
 import { StreamForm } from "./screens/StreamForm";
@@ -306,6 +308,17 @@ export const NAV: NavItem[] = [
     matches: ["/users", "/roles"],
   },
   {
+    // The installation's structure as JSON, one file at a time (the registry
+    // editor, APP_SYNC_PROPOSAL §7.6), and — once the installation can be
+    // linked to a repository — committing and deploying it. In the sidebar
+    // whether or not there is a link (§7.5).
+    href: "#/source-control",
+    group: "Administration",
+    label: "Source control",
+    icon: <IconGitBranch />,
+    matches: ["/source-control"],
+  },
+  {
     href: "#/settings",
     group: "Administration",
     label: "Settings",
@@ -356,6 +369,8 @@ function navLabel(label: string, t: Translator["t"]): string {
       return t("Users");
     case "Settings":
       return t("Settings");
+    case "Source control":
+      return t("Source control");
     default:
       return label;
   }
@@ -988,6 +1003,16 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   }
   if (path.startsWith("/settings")) {
     return <Settings key={path} requestedTab={settingsTabFromPath(path)} />;
+  }
+  if (path === "/source-control") {
+    return (
+      <SourceControlPage
+        key={route}
+        initialPath={query.get("path") ?? undefined}
+        initialTab={query.get("tab") ?? undefined}
+        merge={query.get("merge") === "1"}
+      />
+    );
   }
   // Settings → Development → Code library (TODO F3.3).
   if (path.startsWith("/code-libraries")) {

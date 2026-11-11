@@ -14,7 +14,8 @@
 //! rule.
 
 use sc_catalog::{
-    Catalog, ProvidedTableDef, Table, TableMeta, load_table_meta_by_name, save_table_meta_row,
+    Catalog, ProvidedTableDef, Table, TableMeta, TableMetaId, load_table_meta_by_name,
+    save_table_meta_row,
 };
 use sc_error::{Error, Result};
 use sc_types::Attrs;
@@ -36,6 +37,28 @@ pub async fn create(
     provider: &str,
     configuration: Attrs,
 ) -> Result<Table> {
+    create_with_id(
+        catalog,
+        TableMetaId::new(),
+        name,
+        module,
+        provider,
+        configuration,
+    )
+    .await
+}
+
+/// [`create`], with the definition row given `id` rather than a fresh one: a
+/// deployed provided table keeps its id on every instance, so a later deploy
+/// tells a rename from a delete and a create (APP_SYNC_PROPOSAL §3.2).
+pub async fn create_with_id(
+    catalog: &Catalog,
+    id: TableMetaId,
+    name: &str,
+    module: &str,
+    provider: &str,
+    configuration: Attrs,
+) -> Result<Table> {
     let name = name.trim();
     crate::schema_edit::check_identifier(name, "table")?;
     if catalog.get(name)?.is_some() {
@@ -52,6 +75,7 @@ pub async fn create(
     let (module, provider) = require_provider(catalog, module, provider)?;
 
     let mut meta = TableMeta::new(name);
+    meta.id = id;
     meta.set_provider(Some(
         &ProvidedTableDef::new(module, provider).configuration(configuration),
     ));

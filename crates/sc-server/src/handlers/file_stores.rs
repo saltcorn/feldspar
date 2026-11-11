@@ -3,6 +3,7 @@
 use super::*;
 
 /// Register this domain's admin handlers on `reg`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
 
@@ -75,6 +76,43 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 // effect immediately, with no restart (§1.3).
                 recreate_backend_resources(&catalog, &mut def).await?;
                 Ok(HandlerResponse::ok(file_store_json(&catalog, &def)?))
+            }
+        }
+    });
+
+    reg.handle(sc_api::handler_ids::GET_FILE_STORE_SYNC, {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = parse_file_store_id(ctx.path_param("id")?)?;
+                let mut def = load_file_store(&catalog, id)
+                    .await?
+                    .ok_or_else(|| Error::not_found(format!("no file store with id {id:?}")))?;
+                if let Some(raw) = ctx.query_get("contents").filter(|c| !c.is_empty()) {
+                    def = def.with_sync_contents(sc_files::SyncContents::parse(raw)?);
+                }
+                Ok(HandlerResponse::ok(store_sync_json(&catalog, &def).await?))
+            }
+        }
+    });
+
+    // `sync_contents` is the one attribute an admin sets; the rest stay
+    // server-managed, which is why it is not part of `updateFileStore`.
+    reg.handle(sc_api::handler_ids::SET_FILE_STORE_SYNC, {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = parse_file_store_id(ctx.path_param("id")?)?;
+                let existing = load_file_store(&catalog, id)
+                    .await?
+                    .ok_or_else(|| Error::not_found(format!("no file store with id {id:?}")))?;
+                let raw = require_object(&ctx.body)?.non_empty_str_field("sync_contents")?;
+                let def = existing.with_sync_contents(sc_files::SyncContents::parse(raw)?);
+                sc_files::validate_file_store_config(&def)?;
+                save_file_store(&catalog, &def).await?;
+                Ok(HandlerResponse::ok(store_sync_json(&catalog, &def).await?))
             }
         }
     });
@@ -324,6 +362,24 @@ fn ephemeral_file_store_json(catalog: &Catalog, name: &str) -> Result<Json> {
         "connected": true,
         "error": Json::Null,
         "is_git_repo": Some(git),
+    }))
+}
+
+/// What a store's `sync_contents` resolves to (APP_SYNC_PROPOSAL §3.5).
+async fn store_sync_json(catalog: &Catalog, def: &FileStoreDef) -> Result<Json> {
+    let contents = def.sync_contents()?;
+    let applies = def.backend != sc_files::GIT_BACKEND;
+    let uses = sc_sync::store_uses(catalog)
+        .await?
+        .remove(&def.name)
+        .unwrap_or_default();
+    let dirs = sc_sync::resolve(def, &uses)?;
+    Ok(json!({
+        "applies": applies,
+        "sync_contents": contents.as_str(),
+        "synced": if applies { dirs.synced } else { Vec::new() },
+        "excluded": dirs.excluded,
+        "warnings": dirs.warnings.iter().map(sc_sync::StoreWarning::message).collect::<Vec<_>>(),
     }))
 }
 

@@ -260,7 +260,14 @@ async fn a_git_store_is_cloned_on_save_and_serves_the_repository() -> sc_error::
         .collect();
     assert_eq!(
         settings,
-        ["url", "directory", "branch", "key_path", "public_key"]
+        [
+            "url",
+            "directory",
+            "branch",
+            "public_url",
+            "key_path",
+            "public_key"
+        ]
     );
     // The working-copy directory is settable once, when the store is created:
     // it says where the checkout was put, so an edit would abandon it rather
@@ -1253,6 +1260,10 @@ async fn a_new_application_can_ask_for_a_new_local_store() -> sc_error::Result<(
         def.setting(sc_files::CFG_PATH),
         Some(dir.to_string_lossy().as_ref())
     );
+    // Made for the application's code, so its files travel with the structure
+    // whole (APP_SYNC_PROPOSAL §3.5): the intent is known here, and nowhere
+    // later.
+    assert_eq!(def.sync_contents()?, sc_files::SyncContents::Include);
     assert!(
         catalog
             .file_store("notebook1", sc_catalog::Unchecked::system("test"))?

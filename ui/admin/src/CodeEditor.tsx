@@ -53,10 +53,13 @@ type Editor = import("monaco-editor").editor.IStandaloneCodeEditor;
  * language contributions are imported one by one rather than through
  * `monaco-editor`'s barrel, which would bundle every language it ships. */
 async function loadMonaco(): Promise<Monaco> {
-  const [monaco, editorWorker, tsWorker] = await Promise.all([
+  const [monaco, editorWorker, tsWorker, jsonWorker] = await Promise.all([
     import("monaco-editor/esm/vs/editor/editor.api"),
     import("monaco-editor/esm/vs/editor/editor.worker?worker"),
     import("monaco-editor/esm/vs/language/typescript/ts.worker?worker"),
+    // JSON, for the registry editor (APP_SYNC_PROPOSAL §7.6): a language
+    // service of its own, which is what checks a document against a schema.
+    import("monaco-editor/esm/vs/language/json/json.worker?worker"),
     import("monaco-editor/esm/vs/editor/editor.all.js"),
     import("monaco-editor/esm/vs/language/typescript/monaco.contribution"),
     import("monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution"),
@@ -66,12 +69,13 @@ async function loadMonaco(): Promise<Monaco> {
     // analysis behind it, which is exactly the difference `editorSettings`
     // below describes.
     import("monaco-editor/esm/vs/basic-languages/python/python.contribution"),
+    import("monaco-editor/esm/vs/language/json/monaco.contribution"),
   ]);
   self.MonacoEnvironment = {
     getWorker(_workerId: string, label: string) {
-      return label === "typescript" || label === "javascript"
-        ? new tsWorker.default()
-        : new editorWorker.default();
+      if (label === "typescript" || label === "javascript") return new tsWorker.default();
+      if (label === "json") return new jsonWorker.default();
+      return new editorWorker.default();
     },
   };
   const ts = monaco.languages.typescript;
@@ -137,8 +141,13 @@ export function editorSettings(language: string): {
 } {
   if (language === "javascript") return { id: "javascript", tabSize: 2, typed: true };
   if (language === "python") return { id: "python", tabSize: 4, typed: false };
+  if (language === "json") return { id: "json", tabSize: 2, typed: false };
   return { id: "plaintext", tabSize: 2, typed: false };
 }
+
+/** A distinct address for each JSON editor's model, which is what a schema is
+ * attached to (`fileMatch`). */
+let jsonModels = 0;
 
 /** The colour scheme the page is in, read from the attribute `useTheme` sets. */
 function monacoTheme(): string {
@@ -164,6 +173,8 @@ export function CodeEditor({
   onChange,
   readOnly = false,
   id,
+  jsonSchema,
+  height = "22rem",
 }: {
   value: string;
   /** The language the setting declared (`"javascript"`). */
@@ -173,6 +184,11 @@ export function CodeEditor({
   onChange: (value: string) => void;
   readOnly?: boolean;
   id?: string;
+  /** For `json`: the JSON Schema the document is checked against as it is
+   * typed. Advisory — problems are underlined, nothing is refused. */
+  jsonSchema?: object | null;
+  /** The editor's height. */
+  height?: string;
 }) {
   const container = useRef<HTMLDivElement | null>(null);
   const editor = useRef<Editor | null>(null);
@@ -181,6 +197,8 @@ export function CodeEditor({
   const change = useRef(onChange);
   change.current = onChange;
   const [failed, setFailed] = useState(false);
+  // The JSON model's address, fixed for the editor's life.
+  const modelUri = useRef(`inmemory://registry/${++jsonModels}.json`);
 
   // The declarations, as a string. `null` until the catalog has been read; the
   // editor opens without waiting for it, because a body is worth typing into
@@ -220,9 +238,14 @@ export function CodeEditor({
     void monacoModule()
       .then((monaco) => {
         if (disposed || !container.current) return;
+        // A JSON document gets a model of its own at a known address, so a
+        // schema can name it.
+        const model =
+          settings.id === "json"
+            ? monaco.editor.createModel(value, "json", monaco.Uri.parse(modelUri.current))
+            : undefined;
         const instance = monaco.editor.create(container.current, {
-          value,
-          language: settings.id,
+          ...(model ? { model } : { value, language: settings.id }),
           theme: monacoTheme(),
           readOnly,
           automaticLayout: true,
@@ -275,6 +298,30 @@ export function CodeEditor({
     editor.current?.updateOptions({ readOnly });
   }, [readOnly]);
 
+  // The schema, for a JSON document: the JSON service holds one set for the
+  // page, and this editor's is the one attached to its model.
+  const schemaKey = jsonSchema ? JSON.stringify(jsonSchema) : "";
+  useEffect(() => {
+    if (settings.id !== "json") return;
+    let cancelled = false;
+    void monacoModule()
+      .then((monaco) => {
+        if (cancelled) return;
+        monaco.languages.json.jsonDefaults.setDiagnosticsOptions({
+          validate: true,
+          allowComments: false,
+          schemas: jsonSchema
+            ? [{ uri: `${modelUri.current}#schema`, fileMatch: [modelUri.current], schema: jsonSchema }]
+            : [],
+        });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schemaKey, settings.id]);
+
   // The declarations, published to the language service as an ambient library.
   // Keyed by a stable path so a later catalog read replaces the earlier one
   // instead of declaring `db` twice.
@@ -315,7 +362,7 @@ export function CodeEditor({
       id={id}
       ref={container}
       className="border rounded"
-      style={{ height: "22rem", overflow: "hidden" }}
+      style={{ height, overflow: "hidden" }}
     />
   );
 }

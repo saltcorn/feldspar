@@ -152,6 +152,11 @@ members = [
     "crates/sc-check",
     "crates/sc-agent-builtins",
     "crates/sc-backup",
+    # Source control for an installation's structure (TODO-app-sync): the tree
+    # an installation exports to git, and the diff, planner and executor over
+    # it. Above `sc-backup`, whose entity codecs every record in the tree is
+    # written with; below the server, which drives it.
+    "crates/sc-sync",
     "crates/sc-server",
     # Layer 10 — CLI binary
     "crates/sc-cli",
@@ -228,6 +233,7 @@ sc-check = { path = "crates/sc-check" }
 sc-action-builtins = { path = "crates/sc-action-builtins" }
 sc-agent-builtins = { path = "crates/sc-agent-builtins" }
 sc-backup = { path = "crates/sc-backup" }
+sc-sync = { path = "crates/sc-sync" }
 sc-server = { path = "crates/sc-server" }
 sc-test-harness = { path = "tests/harness" }
 

@@ -55,6 +55,12 @@ pub struct ConfigSection {
     /// A paragraph under the heading: what these settings do, and what taking
     /// effect requires.
     pub description: &'static str,
+    /// Whether the section **travels with the installation's structure**: it is
+    /// exported into source control and deployed onto other instances
+    /// (APP_SYNC_PROPOSAL §3.4). Most sections are this instance's own — its
+    /// TLS, its mail server, its sign-in rules — and are not; the languages the
+    /// applications are translated into and the base map are.
+    pub portable: bool,
     /// The keys in this section, in form order.
     pub fields: Vec<ConfigDef>,
 }
@@ -129,6 +135,32 @@ pub fn config_sections() -> &'static [ConfigSection] {
             crate::authentication::authentication_section(),
             crate::localisation::localisation_section(),
         ]
+    })
+}
+
+/// The sections that travel with the installation's structure
+/// ([`ConfigSection::portable`]): the portable sections of the settings screen,
+/// then the Maps settings.
+///
+/// The Maps settings are edited on the Analytics UI's own page and so are not
+/// a section of the settings screen ([`config_sections`] does not list them);
+/// they are given one here, named `maps`, because a structure file needs a name
+/// to put them under.
+pub fn portable_sections() -> &'static [ConfigSection] {
+    static SECTIONS: OnceLock<Vec<ConfigSection>> = OnceLock::new();
+    SECTIONS.get_or_init(|| {
+        config_sections()
+            .iter()
+            .filter(|section| section.portable)
+            .cloned()
+            .chain(std::iter::once(ConfigSection {
+                name: crate::maps::MAPS_SECTION,
+                label: "Maps",
+                description: "The base map the Analytics UI draws its layers over",
+                portable: true,
+                fields: crate::maps::map_defs(),
+            }))
+            .collect()
     })
 }
 
@@ -266,6 +298,32 @@ mod tests {
         assert_eq!(sorted.len(), keys.len(), "duplicate configuration key");
         assert_eq!(config_spec().len() + internal_defs().len(), keys.len());
     }
+
+    /// What travels with the installation's structure (APP_SYNC_PROPOSAL §3.4):
+    /// the languages and the base map, and none of this instance's own — its
+    /// TLS, mail server, sign-in rules or development settings.
+    #[test]
+    fn only_localisation_and_maps_are_portable() {
+        let portable: Vec<&str> = portable_sections().iter().map(|s| s.name).collect();
+        assert_eq!(portable, ["localisation", MAPS_SECTION_NAME]);
+        let instance: Vec<&str> = config_sections()
+            .iter()
+            .filter(|s| !s.portable)
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(instance, ["ssl", "email", "development", "authentication"]);
+        // The maps section carries exactly the Maps settings' keys, which stay
+        // off the settings form.
+        let maps = portable_sections().last().unwrap();
+        let keys: Vec<&str> = maps.fields.iter().map(ConfigDef::key).collect();
+        assert_eq!(
+            keys,
+            [crate::MAP_STYLE, crate::MAP_STYLE_DARK, crate::MAP_HOSTS]
+        );
+        assert!(!config_spec().iter().any(|f| f.name() == crate::MAP_STYLE));
+    }
+
+    const MAPS_SECTION_NAME: &str = crate::maps::MAPS_SECTION;
 
     /// The keys no form shows are storable — `definition` finds them, so a write
     /// is checked — but they are **not** in the form's spec, which is what keeps

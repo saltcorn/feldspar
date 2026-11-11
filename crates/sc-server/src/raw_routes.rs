@@ -19,6 +19,9 @@ use axum::extract::DefaultBodyLimit;
 use axum::routing::{MethodFilter, MethodRouter, any, get, on, post};
 use sc_backup::{BACKUP_CREATE_ROUTE, BACKUP_UPLOAD_ROUTE};
 
+/// Where a browser hands over a structure zip to be deployed.
+pub(crate) const STRUCTURE_ZIP_UPLOAD_ROUTE: &str = "/source-control/upload";
+
 use crate::router::AppState;
 
 /// How a raw route decides who is calling.
@@ -174,6 +177,16 @@ pub const RAW_ROUTES: &[RawRoute] = &[
         methods: POST,
         auth: RouteAuth::AdminSession,
         route: || post(crate::router::upload_backup),
+    },
+    // A structure zip for Source control to deploy (APP_SYNC_PROPOSAL §7.4),
+    // outside the endpoint set for the backup upload's reason: its request
+    // is a file. Planning and deploying it are typed (`planSyncZipDeploy`,
+    // `syncZipDeploy`).
+    RawRoute {
+        path: STRUCTURE_ZIP_UPLOAD_ROUTE,
+        methods: POST,
+        auth: RouteAuth::AdminSession,
+        route: || post(crate::router::upload_structure_zip),
     },
     // The file-store IDE's language server (design §12.1). A real route
     // rather than a branch of the fallback, because a WebSocket upgrade is

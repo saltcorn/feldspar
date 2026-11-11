@@ -133,6 +133,9 @@ tokio.workspace = true
 # Backup and restore, and the entity JSON codecs the admin handlers answer
 # with (a backup is the admin API's JSON in a zip).
 sc-backup.workspace = true
+# Source control for the structure: the registry editor's export, planner
+# and executor (APP_SYNC_PROPOSAL §7.6).
+sc-sync.workspace = true
 # Zip archives: a project handed to a build host, a model run's download.
 zip.workspace = true
 axum.workspace = true

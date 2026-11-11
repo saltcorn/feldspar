@@ -286,7 +286,7 @@ pub async fn delete_role(catalog: &Catalog, role: Role) -> Result<bool> {
 }
 
 /// How many users hold `role`.
-async fn users_with_role(catalog: &Catalog, role: Role) -> Result<usize> {
+pub async fn users_with_role(catalog: &Catalog, role: Role) -> Result<usize> {
     let select = Select::from(Source::table(USERS_TABLE))
         .filter(Expr::col(crate::users::COL_ROLE).eq(Expr::lit(i64::from(role))));
     Ok(rows(catalog, select).await?.len())

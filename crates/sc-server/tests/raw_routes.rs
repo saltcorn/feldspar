@@ -39,6 +39,7 @@ const EXPECTED: &[(&str, &[&str], RouteAuth)] = &[
     ("/download/{store}/{*path}", &["GET"], AdminSession),
     ("/backup/create", &["POST"], AdminSession),
     ("/backup/upload", &["POST"], AdminSession),
+    ("/source-control/upload", &["POST"], AdminSession),
     ("/ide/lsp/{store}", &["GET"], AdminSession),
     ("/ide/terminal/{store}", &["GET"], AdminSession),
     ("/admin/agent-chat", &["GET"], AdminSession),

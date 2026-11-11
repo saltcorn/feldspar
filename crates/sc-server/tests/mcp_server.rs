@@ -680,7 +680,26 @@ async fn a_token_without_the_trigger_area_is_offered_no_trigger_tools() -> sc_er
     }
     // Tier 3 is absent — the number of tools is the design constraint.
     // (`listUsers` left tier 3 with TODO F1.9; `createUser` has not.)
-    for absent in ["listRows", "writeFile", "createUser", "createApiToken"] {
+    // So is the registry editor (APP_SYNC_PROPOSAL §7.2): a save can drop
+    // data, and an agent has its own tools.
+    for absent in [
+        "listRows",
+        "writeFile",
+        "createUser",
+        "createApiToken",
+        "listRegistry",
+        "getRegistryEntity",
+        "planRegistrySave",
+        "registrySave",
+        // Nor is source control: a deploy or a discard can drop data, and a
+        // commit publishes the structure.
+        "getSyncStatus",
+        "syncCommit",
+        "planSyncDeploy",
+        "syncDeploy",
+        "syncDiscard",
+        "listDeployments",
+    ] {
         assert!(!offered.contains(&absent.to_owned()), "{offered:?}");
     }
 

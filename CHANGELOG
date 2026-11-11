@@ -2,6 +2,551 @@
 
 Changes in reverse chronological order.
 
+## Source control S6: the zip transport, documentation, the definition of done
+
+Milestone S6 of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` §7.4). With it, every item of the
+list is done.
+
+- **The structure zip** (S6.1, `sc_sync::structure_zip`). `write_zip` puts the tree's files at the
+  zip's root, with no timestamps, so the same tree is the same zip. `read_zip` refuses a file that
+  is not a zip, a zip with no `feldspar-structure.json` (and says when the file is a backup, which
+  goes to restore), an encrypted entry, a zip that unpacks to more than 1 GiB, and, as every tree
+  read does, a newer format.
+- **Deploying a zip**: `SourceControl::plan_zip` and `deploy_zip`.
+  - **With a link**, the zip takes the branch tip's place, and the base rules apply. Local changes
+    block it (D5), what the zip lacks is deleted (a data-destructive drop starts unticked), and the
+    next base is stored with no commit.
+  - **Without a link**, the target is `additive_target(live, zip)`: live, with each of the zip's
+    entities put over the one it matches. A table keeps the fields and managed constraints that
+    the zip's version lacks, so the plan creates and updates and never deletes.
+  - Either way it goes through the same planner, lock, stale-plan check, safety backup and
+    ledger as a deploy of the tip.
+- **The CLI**.
+  - `feldspar backup --structure-only FILE|-` writes the portable export, the files a commit holds.
+    It refuses `--password`, since a structure zip holds no secret.
+  - `feldspar sync deploy --from FILE.zip [--plan] [--yes] [--allow-destructive]` prints the plan,
+    saying which rule applies. It applies the plan only with `--yes`, as a deploy of the tip does.
+    The zip is read before the database is connected to.
+- **The admin API and the UI**.
+  - A raw route, `POST /source-control/upload`, which is admin-session only, like the backup
+    upload. Its handler, `uploadStructureZip`, reads the zip, refuses one that is not a structure
+    zip without naming the spool file, and holds the file as a pending upload.
+  - Two typed endpoints: `planSyncZipDeploy` and `syncZipDeploy`, neither of them in the MCP
+    projection. A deployed upload is dropped; a refused one (a stale plan) is kept for the next
+    review.
+  - The Source control screen has a **Deploy a zip** tab, linked or not. It uploads the zip and
+    opens the same review as Deploy, and the tab says which rule applies.
+  - Locale strings for the five locales, and the four regenerated clients.
+  - `upload_backup` in the router is now `upload_to`, shared by both uploads.
+- **Documentation** (S6.2).
+  - `docs/OPERATIONS.md` has a new §14, "Source control: moving structure between instances":
+    linking and credentials, the everyday loop, destructive changes and the policy, rollback and
+    restoring a safety backup, the structure zip, and what is kept where.
+  - `docs/TECHNICAL_DESIGN.md` has a new §9.3, "The structure tree and source control (`sc-sync`)".
+    The §1 sentence that said there is no on-disk app format now points to it.
+  - `APP_SYNC_PROPOSAL.md` §7.2–§7.4 list what was built.
+- **The definition of done** (S6.3, `crates/sc-sync/tests/definition_of_done.rs`): the list's
+  nine steps in one test. It uses two installations in one process, a bare structure repository
+  and a second bare repository behind the git store `web`. "B serves `helpdesk`" is checked as far
+  as a test installation goes: the application and its views are on B, and the deploy asked the
+  host to build and mount it. Serving a built application is tested in `sc-server`.
+- **Tests**:
+  - `sc-sync` unit tests: a zip round-trips byte for byte and is stable; a file that is not a
+    structure zip is refused with what it is; the additive target keeps what only live has.
+  - `sc-sync` integration tests: a zip on an unlinked instance creates and updates and deletes
+    nothing, including another table's rows and a field the zip's table lacks; a zip on a linked
+    instance is blocked by a local change and plans an unticked drop.
+  - `sc-cli` (`sync.rs`): a structure-only backup from one database deployed `--from` onto
+    another, `--plan` writing nothing, and `--password` refused.
+  - `sc-server` (`admin_api.rs`): upload, plan and deploy over HTTP; refused when signed out and for
+    a file that is not a zip; the upload gone once it is deployed; and not in MCP.
+
+## Source control S5: admin API, UI and CLI
+
+Milestone S5 of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` §7.2, §7.3, §7.5): S4's
+`sc_sync::SourceControl` is now reachable from the admin API, the Source control screen and
+`feldspar sync`. §7.2 and §7.3 are amended to list what was built.
+
+- **The admin API** (S5.1, `sc_api::admin::source_control`, `sc-server` `handlers::source_control`),
+  under `/api/source-control/`:
+  - `getSyncLink`, `setSyncLink`, `deleteSyncLink`, `generateSyncKey` and `testSyncLink`;
+  - `getSyncStatus`, with the entries Status shows, the keys that block Deploy (D5) and the file
+    stores' §3.5 warnings, and `getSyncEntityDiff`;
+  - `syncPull`, `syncCommit` (keys and `keep_mine`), `planSyncDiscard`, `syncDiscard`,
+    `listSyncBranches` and `switchSyncBranch` (`create` to branch from the tip);
+  - `planSyncDeploy` (the plan, its commit and the policy), `syncDeploy` and `listDeployments`.
+
+  Like the registry, none is in the MCP projection. A deploy and a discard reproject applications'
+  APIs, as a registry save does. Unlinked, `getSyncStatus` answers `linked: false` rather than an
+  error. `deleteSyncLink` and `planSyncDiscard` were not in §7.2's list: unlinking needed an
+  endpoint, and a discard is reviewed like a deploy, so it needs a plan of its own.
+- **The registry and the link.** `getRegistryEntity` now also returns `sync`: the class, and the
+  base's and tip's versions of the file, for the diff tabs and the merge view. A broken link leaves
+  `sync` out rather than refusing the entry. A registry save now takes the link's policy, so
+  `destructive: never` refuses a save that drops data, as it refuses a deploy.
+- **`SourceControl`**: `LinkedStatus` carries the store warnings, plus `entity_diff` (base files
+  read from the mirror) and `sides` (a registry file's base and tip, following a renamed entity).
+- **The Source control screen** (S5.2, S5.3, `screens/SyncPanels.tsx`, model `structureSync.ts`).
+  Unlinked, it shows Registry and Link setup. Linked, it shows Status, History, Registry and Link
+  setup. Each tab is a route (`#/source-control?tab=…`).
+  - **Link setup**: URL, branch and subdirectory; credentials (none, a generated deploy key with
+    its public half shown, or an HTTPS token sent only when typed); the policy; testing the
+    connection; and unlinking.
+  - **Status**: grouped as Conflict, Local, Incoming and Incoming delete. Each row expands to its
+    diff (incoming and local, field by field, or a unified text diff) and can be opened in the
+    registry. Every local change starts ticked, and a conflict starts unticked. A ticked conflict
+    is *keep mine* on Commit and *discard mine* on Discard, and "Merge in editor" opens the
+    registry's merge view. Also on the tab: the branch selector (switch, or create from the tip),
+    Pull, the commit message, Commit, and Discard (reviewed).
+  - **Deploy**: refused with a sentence naming the uncommitted changes. Its review groups the
+    operations by class, with counts. What loses data starts unticked; ticking it asks for the
+    branch's name to be typed; under `destructive: never` it cannot be ticked at all. Blockers
+    disable the button. The review also offers the full backup when the policy says `optional`,
+    shows progress, then the receipt: applied, deferred, not reached, drift, backups and notes.
+  - **History**: the ledger, with "Restore this version" on a registry save. It opens the file in
+    the registry with its earlier JSON, and saving that is an ordinary save.
+  - **The registry editor**: tabs comparing what is typed with the base and with the branch tip,
+    leaving out this instance's own values. An entity in conflict also gets a Merge tab: the base,
+    the branch's version and this instance's side by side over the editor, and "Start from the
+    branch's version".
+- **`feldspar sync`** (S5.4): `link`, `unlink`, `status`, `pull`, `commit -m MSG [KEY…]
+  [--keep-mine KEY]…`, `discard KEY…`, `deploy [--full-backup]` and `branch [NAME] [--create]`.
+  `discard` and `deploy` print the plan and take `--plan`, `--yes` and `--allow-destructive` as
+  `feldspar registry` does, sharing its rules. Their refusals now say "nothing was applied".
+- **File stores** (S5.5). `getFileStoreSync` and `setFileStoreSync` (`/api/file-stores/{id}/sync`)
+  return and set a store's `sync_contents`, and what it resolves to: the directories committed,
+  those left out, and the warnings. Passing `contents` previews another setting. `updateFileStore`
+  still keeps attributes server-managed. The store form has a Source control card with the
+  setting, a preview as it is changed, and the result. A store whose files are never copied (a git
+  store) says why and asks for a public URL. `public_url` itself was already on the git backend's
+  form, from its `config_spec`. Status shows the §3.5 warnings.
+- 138 new admin strings, translated into ar, de, es, fr and zh-Hans.
+- `crates/sc-server/tests/support.rs` now has one `data_dir()` for the whole `it` binary, which
+  `backup_api` uses too. Two files each setting `SC_DATA_DIR` to a directory of their own would move
+  each other's directory mid-test.
+
+Tests:
+
+- `crates/sc-server/tests/admin_api.rs`:
+  - `source_control_links_commits_pulls_deploys_and_discards`: admin only; a refused link;
+    test, link, Status, a diff, Deploy blocked by an uncommitted change, Commit; a branch created
+    and switched back; another clone's push pulled, diffed, seen by the registry and deployed
+    (with a stale digest refused first); a discard reviewed and applied; the ledger; unlinking.
+    It also checks that none of the 16 endpoints is offered to MCP.
+  - `a_file_stores_synced_contents_are_resolved_previewed_and_set`.
+- `mcp_server.rs` checks that the source-control endpoints are absent from MCP.
+- `crates/sc-cli/tests/sync.rs`, through the real binary:
+  - `--yes` refuses a plan with a blocker (an uncommitted change), and one that drops a field
+    unless `--allow-destructive` is given;
+  - `deploy --plan`, and a deploy without `--yes`, write nothing;
+  - also link, status, commit, pull, discard and branches.
+- `ui/admin/src/structureSync.test.ts` (15).
+- A puppeteer walk of the definition of done's steps 4 and 5 against a real server. B's helpdesk
+  was committed from the screen, and A's change was pushed from a clone. After Pull, Deploy's review
+  showed the field rename (safe, ticked), the view's metadata delete (ticked) and the drop of
+  `old_notes` (data-destructive, unticked). Deployed without the drop, it converged; `old_notes`
+  kept its row, and Status offered it as "Incoming delete".
+
+## Source control S4: the link and the repository
+
+Milestone S4 of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` §2, §4, §7.1): an installation can
+be linked to a branch of a git repository. Commit pushes its local changes there, Pull brings down
+other instances' commits, and Deploy and Discard run S3's executor with the base read from, and
+stored back into, the link. All of it is in `sc_sync::SourceControl`, which the admin API, the UI
+and `feldspar sync` (S5) will call. The new table is additive and created by the bootstrap, so there
+is no migration.
+
+- **`_fd_sync`** (S4.1, `sc_sync::link`). One row holds:
+  - the URL, branch and subdirectory;
+  - the credential: none, a deploy key, or an HTTPS token sealed with the instance key;
+  - the policy;
+  - the base, as gzipped JSON with store files as blob hashes, and the commit it was taken from.
+
+  `sc_sync::bootstrap` creates it and the ledger's two tables. `connect_catalog` (the CLI's and
+  the server's bootstrap) now calls it, so an existing database gains all three on its next start.
+  The new `Unchecked::system` is in `docs/SECURITY_REVIEW_2026-10.md`'s inventory, and the table
+  is in `docs/TECHNICAL_DESIGN.md`'s schema diagram.
+- **A repository with no file store** (S4.2). `GitRepo::new` already took a directory, URL, branch
+  and key. It now also takes an HTTPS token (`with_https_token`, `sc_files::HttpsToken`). The token
+  goes to git through a credential helper given in the environment (`GIT_CONFIG_COUNT`, new
+  `sc_proc::Git::https_token`), so it is in no argv, no `.git/config`, no URL and no log. The
+  machine's own helpers are cleared first. `HostCommand` gained `secret_env`, whose value its
+  `Debug` redacts. `generate_deploy_key_in` makes the link's key in `<data dir>/keys`.
+- **The mirror** (S4.3, `sc_sync::mirror`), at `<data dir>/sync-repo`. It never checks anything
+  out. Trees are read from commit objects (`GitRepo::read_files_at`, one `cat-file --batch`), and
+  a commit is written from an index of its own on top of the tip (`commit_files`, replacing only
+  the link's subdirectory). Pull is a fast-forward, or a reset when the remote was force-pushed
+  (`Pulled::forced`). Only a push that succeeded moves the branch. A refused push resets the branch
+  to the remote's tip and fails with a sentence: the branch moved, so commit again; or the key is
+  read-only. The base advances only after a successful push.
+- **Commit of a selection** (S4.4). The committed tree is the tip plus the chosen entities' live
+  versions (all local changes by default), and only those entities' bases advance. A conflict is
+  committed only with *keep mine*. Otherwise the commit is refused, naming the conflicts and the
+  three choices. *Discard mine* is a Discard of the entity, which then shows as incoming. *Merge in
+  editor* is a registry save, then keep mine. A file with no entity in it (`modules.json` = `[]`, a
+  settings section left at its defaults) is written as live has it, so committing everything is the
+  export byte for byte. Each commit is a ledger row of kind `commit`.
+- **Branches** (S4.5). Branches are listed with `ls-remote`. Switching changes only the tip; live
+  and the base stay. Creating a branch pushes the current tip to it, then switches.
+- **Linking** (S4.6). The base is the tip's tree **less each entity live does not have**. Against
+  the full tip, everything an empty instance lacks would be a "local delete", and a Commit would
+  delete it from the repository. §4 is amended to say so. The result: an empty repository makes
+  everything local new, an empty instance makes everything incoming, and where both have content,
+  identical entities are in sync. Re-linking takes a new base only for a new URL or subdirectory.
+  `test_link` checks a link without storing it.
+- **A git store's pin on Commit** (S4.7). A pin that moved is checked before the commit. The store
+  is fetched, and a commit its remote does not have is refused with a sentence naming the store.
+  Uncommitted work in the store is a warning on the receipt.
+- `keep_base_files` also keeps the base's hash-only files reachable, so an advanced base does not
+  lose the older files' blobs. New `StructureTree::insert_entry`.
+
+Tests: `crates/sc-sync/tests/source.rs` (13: bootstrap, sealed token, key before linking, the
+three starting points, the lost push race and its retry, force-push reset, subdirectory, a
+selection, a conflict kept, discarded and merged, branches, the pin), unit tests in `link.rs`,
+`crates/sc-files/tests/git_mirror.rs` (6, including the token arriving at an HTTP remote and
+nowhere on disk), two in `sc-proc`, and `the_bootstrap_creates_the_sync_tables_and_keeps_them` in
+sc-cli.
+
+## Source control R: the registry editor
+
+Milestone R of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` D7, §7.6): every configuration
+value of the installation, one JSON file at a time, in the browser (Source control → Registry),
+through the admin API, and at the CLI (`feldspar registry`). A save is a one-entity deploy against
+live, through S2's planner and S3's executor. It needs no sync link, and none exists yet (S4).
+Nothing is stored in a new place, so there is no migration.
+
+- **The instance export** (R1, `sc_sync::export_mode`, `Mode::Instance`): the portable tree plus
+  what is this instance's alone (§3.4, except `feldspar.toml` and the link):
+  - every settings section, the non-portable ones marked whole, and an `internal` section for the
+    keys no settings form shows (the backup schedules and include-selection, the identity
+    providers, the default LLM provider, onboarding, the first-user token). The keys only the
+    server writes (backup status, startup history, admin notices, the RLS report flag) are left
+    out as bookkeeping;
+  - the build hosts (`build-hosts/<name>.json`: id, name, targets, never the token's hash), a new
+    `Kind::BuildHost` that only an instance tree has;
+  - a local store's `path`, and a git store's key path, public key, directory and clone path,
+    each marked by its JSON pointer (`InstanceOnly::Keys`).
+
+  Secrets are still the sentinel: a secret setting, and an identity provider's client secret
+  inside `oauth_providers`. The portable export is unchanged, byte for byte. Feldspar
+  applications have no custom-domain field, so "an application's custom domains" in the TODO is
+  the TLS section's `ssl_extra_domains`, which the instance tree carries and the portable one does
+  not.
+- **The registry save** (R2, `sc_sync::registry`): `list`, `get` and `resolve` over the instance
+  export; `Deployer::plan_edit` and `Deployer::edit`. The target is live with one file replaced,
+  added (an id is generated for a kind that has one) or removed (`edit_target`), planned by the new
+  `plan_instance`, which also plans what only this instance has a say in (a git store's URL), and
+  applied by `Executor::apply_instance`, which applies a store's own directory, key and clone path
+  as typed rather than keeping them. Two staleness checks: the file's **version** (a digest of its
+  canonical JSON) must still be what the editor opened, and the plan's digest, under the sync
+  lock, as for a deploy. Classification, dry runs, the `destructive` policy and the safety backup
+  are the deploy's. After the run the file is exported again; the receipt has what is stored, its
+  new path (a rename moves the file), and where it differs from what was submitted (a secret that
+  reads back as the sentinel is not a difference). The ledger row is of kind `edit`, with the
+  file's JSON before and after. A setting with a nested secret is now unmasked against the stored
+  value on any deploy too, and a build host is updated or deleted by id (a new one still has to be
+  added on the Build hosts screen, which shows its token once).
+- **Admin API** (R3): `listRegistry`, `getRegistryEntity` (with a JSON Schema for the editor: a
+  settings section's declared keys exactly, and for a view, page, trigger, application, agent,
+  stream or file store its admin endpoint's input types, opened so that the codec's extra keys
+  are not flagged), `planRegistrySave` and `registrySave`. Admin only, not tagged for MCP. The
+  four TypeScript clients are regenerated. sc-server now implements `sc_sync::DeployHost` on
+  `AppMounts`: `reload_all` reloads the catalog, the triggers and the streams and re-projects the
+  applications, and the registries fall back to the built-in ones for a service the server does
+  not run, so the registry reads on an admin-only server too.
+- **The Source control screen** (R4, `screens/SourceControlPage.tsx`, `registry.ts`): a new
+  sidebar entry under Administration, before Settings, with a Registry tab. The tree lists the
+  files by kind with a filter box and "this instance only" marks; the editor is Monaco, which now
+  has a JSON mode that checks the document against the schema as it is typed (`CodeEditor`'s
+  `language="json"` and `jsonSchema`). Save opens the review: operations under their class,
+  data-destructive ones unticked, a typed confirmation (the entry's name) once one is ticked,
+  blockers that disable Save. Afterwards the editor shows what is stored, with a notice listing
+  any differences, the safety backup and anything deferred. New (kind, application, name) and
+  Delete go through the same review. 43 new strings, translated in the five admin locales.
+- **`feldspar registry list [KIND] | get ENTRY | put ENTRY | delete ENTRY…`** (R5). An ENTRY is a
+  tree path or `KIND/NAME` (`table/tickets`, `setting/email`, `view/APP/NAME`). `put` reads the
+  JSON from stdin. `put` and `delete` print the plan and apply it only with `--yes`, which refuses
+  a plan with blockers, and one that loses data unless `--allow-destructive` is given (that flag
+  also lifts a `destructive: never` policy, as `sync deploy`'s will).
+- Tests: `crates/sc-sync/tests/registry.rs` (the instance tree holds `email`, the extra domains,
+  the identity providers, the build hosts and a store's path, marked, and no secret; a view edit
+  applies and is "Local" in Status; an email edit applies and is not a local change; a sentinel
+  keeps a secret and a typed value replaces it; removing a field is an unticked data-destructive
+  drop, deferred, then dropped after a safety backup; a stale version and a stale digest are
+  refused; New and Delete; a store directory and a build host saved as typed) and unit tests in
+  `sc_sync::registry`; `admin_api::the_registry_lists_opens_plans_and_saves` (anonymous and
+  non-admin refused, list, get with schema, plan, save, stale) and the MCP listing test;
+  `sc-cli`'s `registry` test against the real binary (`get` then `put` plans nothing, `--plan`
+  and a put without `--yes` write nothing, `--yes` refuses a blocker and an unflagged drop,
+  `--allow-destructive` drops after a safety backup); `registry.test.ts` and the sidebar test.
+  A puppeteer walk of the definition of done's step 9 against a scratch database: a list view
+  created with New and edited, the email section edited (marked "this instance only"), and
+  `title` removed from `tables/tickets.json` offered as an unticked data-destructive drop whose
+  Save waits for the typed name; the editor's schema marks a string in `smtp_port` and an unknown
+  key. Step 9's Status and Commit halves wait for S4/S5.
+
+## Source control S3: the executor
+
+Milestone S3 of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` §5, §6): a plan is applied, as a
+deploy or a discard, from the review's digest to a receipt and the next base. No endpoint, screen
+or command calls it yet (S5), and nothing stores the base or the link yet (S4). The two new tables
+are additive and made on first use; no migration.
+
+- **The executor** (S3.1, `sc_sync::apply`): `Executor::apply` runs a plan's ticked operations in
+  §6's order and stops at the first failure, saying exactly what was applied, deferred, not
+  reached and why it stopped. Table operations are their `schema_edit::apply` batches with the
+  plan's given ids and the deploying editor; every other kind goes through its admin-API parser
+  (`sc_backup::codec::*_from_body`) and its own store — roles, settings (keys this host's
+  `feldspar.toml` pins are kept), modules (installed or reinstalled through the host), database
+  connections (connected, the catalog reloaded), file stores, code libraries (compile-checked),
+  LLM providers with their models, MCP servers, triggers with their workflow (a new version only
+  when the steps changed, validated as the editor's save is), streams, agents, datasets, models,
+  workspaces, applications, views, pages, library items, translations and checklists — and the
+  matching deletes. Afterwards it reloads the modules, the triggers and the streams it touched,
+  and builds and mounts every application it put or whose store's files or checkout moved (a
+  failed build is a note, not a failure).
+  - **Secrets** (§3.3): `unmask` puts back the value stored here wherever the tree has the
+    sentinel — by key, and a list's items by `id`, `name` or `trait` — and drops a sentinel with
+    nothing behind it rather than storing the mask. It needs no spec, which matters because the
+    export redacts values no spec declares. A **new** entity whose save path then refuses it
+    because the secret is required (an LLM provider's key, an MCP header's value) is not a
+    failure: it is listed in the receipt's `needs_secret` and stays "incoming new" until an admin
+    creates it here with the secret under the same name, which the next deploy matches (§3.2).
+    This differs from §3.3's "is still created", which the save paths do not allow for a
+    *required* secret.
+  - **`DeployHost`**: what the executor needs from the server, `sc_backup::RestoreHost` plus
+    `reload_all` and the registries an export redacts by. sc-server's implementation comes with
+    the endpoints (S5.1).
+- **Renames** (S3.2): `RenameTable` and a field rename by id run as such, before the
+  applications, views and pages that name the new names, so rows and views survive.
+- **Deferred operations and the next base** (S3.3): unticked operations are skipped. The receipt
+  carries the next base — the target, except that each entity with an operation that was not
+  applied (deferred, after a failure, or waiting for a secret) takes the version live has now
+  (`next_base`). A deferred drop therefore stays "incoming delete": not a local change, not a
+  deploy blocker, not something a Commit puts back.
+- **The safety backup** (S3.4): when a data-destructive operation is ticked, the existing writer
+  first writes `<data dir>/sync-backups/safety-<time>-<id>.zip` — every table's structure and the
+  rows of each table a dropped table or field belongs to, without accounts, store files or fits —
+  and its path is in the receipt and the ledger. The `full_backup` policy (`off`, `optional`,
+  `required`) runs every backup schedule to its destination first; `required` with no schedule
+  refuses the deploy.
+- **The run** (S3.5, `sc_sync::deploy`): `Deployer::plan_deploy` is the review (plan, `validate`,
+  and a blocker naming each uncommitted change or conflict, D5); `Deployer::deploy` takes the
+  `Confirm` back (digest, ticked operation ids) and, under the sync lock, plans again from scratch
+  and refuses a **stale** plan (digest changed) or one with blockers before anything is applied,
+  writes the backups, applies, calls `reload_all`, exports again and **re-diffs against the
+  target**: a difference the plan did not account for makes the result `drifted` and is listed.
+  Results are `converged`, `drifted` or `failed`.
+  - `_fd_deployments` (`sc_sync::ledger`): one row per deploy or discard (and later commit and
+    registry save) — kind, result, commit, branch, actor, source, plan counts, applied, deferred,
+    notes, drift, backups, before/after for a registry save, timings. `list_deployments`.
+  - `_fd_sync_lock`: a single row any process sharing the database sees, released whatever the
+    run's outcome; one older than an hour belongs to a process that died, and is taken over. Its
+    `Unchecked::system` is listed in `docs/SECURITY_REVIEW_2026-10.md`'s inventory.
+- **Discard** (S3.6): `Deployer::plan_discard` / `discard` plan live with the chosen entities
+  back at their base version (`base::discard_target`, store files read from the mirror) and run
+  it the same way, classified the same way — discarding a "local new" table with rows is an
+  unticked data-destructive drop. The base does not move.
+- **The `destructive: never` policy** (S3.7): `Policy { destructive, full_backup }`. Under
+  `never`, a ticked data-destructive operation is refused unless the request comes from the CLI
+  with `allow_destructive` (`--allow-destructive`); the API cannot set it for itself.
+- **File stores** (S3.8): a synced file is written into, or deleted from, its local store's
+  directory (a delete is a ticked metadata delete). A store that exists keeps its own directory,
+  key and — for a git store — URL. A new local store is made at `<data dir>/local-stores/<name>`;
+  a new git store is cloned into `<data dir>/git-stores/<name>` from its `public_url`, else the
+  HTTPS URL its SSH URL implies, else its URL (a failed clone leaves the store defined, with a
+  note). Then the store's branch is reset to the pinned commit: `GitRepo::checkout_pinned`
+  (sc-files) fetches, checks the commit exists with a sentence telling the admin to push it if
+  not, and `checkout -B <branch> <commit>`.
+- **Comparing** (`comparable_json`): whether a secret is set is the instance's, not structure, so
+  keys holding the sentinel, a database connection's password and an existing git store's URL are
+  left out of the comparison. Without this, an instance deployed to without its secrets (or with
+  its own SSH URL) would show a local change forever.
+- **`sc-check`**: `edit::put_checklist`, a create-or-update that keeps a given id (a deployed
+  checklist has its id on every instance), keeps an existing checklist's `run_as`, and replaces
+  the steps only when they differ. `create_checklist` is unchanged.
+- **`sc-files`**: `path_safe` is public.
+- **Provided tables**: a table a module's provider serves has no DDL, so it is not a schema batch.
+  A new one is created through the admin API's own path with its id
+  (`sc_api::provided_tables::create_with_id`, which `create` now calls with a fresh id). One that
+  exists is renamed with `RenameTable`, reconfigured with `provided_tables::configure` (its
+  secret settings unmasked against the stored configuration, so this instance's token stays),
+  and in both cases given the tree's table settings with `AlterTable`. A delete is
+  `provided_tables::forget` — a metadata delete, since the rows were never this database's. A
+  table that is a database table here and a provided one in the target, or served by another
+  provider, is refused with a sentence saying what to do.
+- Known gaps: a required field
+  added to a table with rows is refused by the database at apply time rather than by the dry run
+  (as S2 noted), and the deploy stops there; definition writes do not share the DDL's
+  transaction, so a failure leaves what came before it applied, which the receipt lists.
+- Tests (`crates/sc-sync/tests/deploy.rs`, two installations in one process): §3.1's
+  acceptance test — the export test's installation deployed to an empty one exports the same,
+  byte for byte except the secret-holding entities, which compare equal, with nothing left in
+  Status but the two waiting for their secrets, and a ledger row; a view on a renamed table and
+  field still validates and the row survives; a deferred drop stays incoming delete with its rows;
+  a ticked drop writes a safety backup holding only the dropped table's rows, which restores them;
+  a plan confirmed after a live edit is stale and applies nothing, then blocks on the uncommitted
+  change; the lock refuses a second deploy; a forced divergence is recorded as `drifted`; a
+  discard restores a view and leaves an unticked drop of a new table; the `never` policy refuses
+  the API and a CLI without the flag, and the flag deploys; an existing git store keeps its SSH URL
+  and moves to the pin; a new git store is cloned from a `file://` public URL at the pin, not the
+  newer tip; synced files are written and a deleted one is a ticked metadata delete; a checklist
+  keeps its id and is updated in place; a provided table (over a test provider with a secret
+  setting) is created with its id, renamed, reconfigured keeping this instance's token, and
+  forgotten. A unit test for `unmask`.
+
+## Source control S2: Status and the planner
+
+Milestone S2 of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` §4, §5): the three-way diff that
+Status shows, and the planner that turns live into a target tree as classified, ordered
+operations. Nothing applies a plan yet (S3), and no endpoint, screen or command uses either yet
+(S5). No database change.
+
+- **Entities** (`sc_sync::entity`): a tree read as entities, each with a kind, an id where the kind
+  has one, a name, and for a child a scope (its application or store). `roles.json` and
+  `modules.json` are one entity per item (by role level, by package), a settings section one per
+  key, a store's synced file one per file (by store and path, compared by its git blob hash). A
+  matched entity's id, and its table's field ids, are not differences, so a name match with
+  another id is the same entity (§3.2). `put_entity` / `remove_entity` write one entity back into
+  a tree, shared files included.
+- **Status** (S2.1, `sc_sync::diff`): `Status::of(base, tip, live)` matches the three trees by id
+  and then by name, within a kind and within the parent's match (so `list` in one application is
+  never matched to `list` in another), id matches before name matches, and gives each entity one
+  class per §4's table: in sync, incoming, incoming delete, incoming new, local change, local
+  delete, local new, conflict. `adopt` marks an in-sync entity whose base should take the tip's
+  version (both sides made the same change, or it was built the same on both before linking).
+  A git store's pin is weighed apart (S2.5): a pin moved here, with nothing else changed, is the
+  new class `PinMoved` — local, committed like any change, but not one of `deploy_blockers()`;
+  a conflict on the pin alone resolves to the tip.
+- **Entity diff** (S2.2, `sc_sync::entity_diff`): `getSyncEntityDiff`'s payload — the base, tip
+  and live versions and the field-level changes base → tip and base → live, at readable paths
+  (`fields[status].label`; list elements matched by id, then name). A text store file gets a
+  unified line diff instead (with the `similar` crate, already in the workspace), a binary one is
+  marked binary.
+- **The planner** (S2.3, `sc_sync::plan`): `plan(live, target, base)` gives the operations that
+  turn live into the target, in §6 step 8's order (modules, roles, connections/stores/libraries
+  and store files, tables, LLM providers and MCP servers, triggers/streams/agents, analytics,
+  applications and their views/pages/library/translations, settings, then every delete in
+  reverse order, children first). Each has a stable id (`drop_field:table:tickets#status`), a §5
+  class and its default tick: safe and metadata deletes and can-fail operations ticked,
+  data-destructive ones unticked, unsupported ones blocked. Tables are `schema_edit` batches:
+  `RenameTable` alone, field renames by id as `AlterField { name }`, creates with the given table
+  and field ids, key and calculated fields after every table exists, Saltcorn-made constraints
+  added, replaced or dropped; a can-fail operation also carries its check batch, written in live's
+  names. Every other kind is a whole-entity put or delete for its save path, a name match carrying
+  live's id. Unsupported: an SQL type change (with the add, copy, drop suggestion), a primary key
+  change, a generated or calculated/stored change, a move between databases, a JSON file this
+  build does not know. Also from the trees alone: entities created with a sentinel secret
+  (`needs_secrets`), a table on a connection this instance has no password for (blocker), new git
+  stores that cannot be cloned anonymously (`needs_credentials`) and an application built from
+  one (blocker), and a newer format (blocker). With a base, a git store whose pin the target did
+  not change keeps live's pin. The digest is SHA-256 over the live, target and base tree digests,
+  so it changes exactly when one of them does.
+- **Validation** (S2.4, `sc_sync::validate`): each can-fail operation's check batch goes through
+  `schema_edit::apply` with `dry_run: true`, and a refusal becomes a blocker with schema_edit's
+  own sentence ("`tickets.status` cannot be made required: 2 rows have no value in it…"); a role
+  delete that users hold becomes data-destructive and unticked, with the count; a pin change on
+  a git store with uncommitted changes, or commits its remote does not have, is blocked naming the
+  store.
+- **The base's files** (S2.5, `sc_sync::base`): `StructureTree` has a hash-only entry,
+  `TreeEntry::Blob`, and `with_blob_hashes()`; the base keeps only each store file's blob hash.
+  `keep_base_files` records the files under `refs/feldspar/base` in the sync mirror (a local ref,
+  never pushed) so they survive a force-push and `gc`; `base_file_bytes` reads them back and
+  `discard_target` builds the tree a Discard plans.
+- **`sc-files`**: `GitRepo::new` (a repository that is no store's, for the mirror; S4.2 adds
+  credentials), `GitRepo::record_blobs` (blobs written with `--no-filters` into a scratch index,
+  `write-tree`, `commit-tree`, `update-ref`) and `GitRepo::read_blob`, all through `sc_proc::Git`.
+- **`sc-backup`**: the constraint parser moved from `restore.rs` into the codec as
+  `constraint_from_body`, shared by a restore and the planner. **`sc-auth`**: `users_with_role`
+  is public.
+- Known gaps, left for S3: `schema_edit` does not refuse adding a *required* field to a table with
+  rows before its DDL, so that case is classified can-fail but the dry run passes it, and the
+  database refuses it at apply time; field order is not planned (a field added to an existing
+  table goes last); a provided table is a whole-entity put for S3 to route to its provider.
+- Tests: unit tests for every row of §4's table, a rename by id, a name match with another id, an
+  id match taking priority, scoping by parent, the pin rules, the field-level and line diffs, and
+  per planner class, order and digest; integration tests (`crates/sc-sync/tests/plan.rs`,
+  `base.rs`) for a required field over NULLs blocking with the count, an SQL type change, the
+  definition of done's step-4 plan from a real export (a field rename, a ticked view delete, an
+  unticked drop of a table with rows), a held role, a git store with unpushed commits and with
+  uncommitted work, and Discard restoring a store file from the mirror after the remote was
+  force-pushed and garbage-collected.
+
+## Source control S1: the structure tree and its export
+
+Milestone S1 of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` §3): an installation's structure
+written as a tree of files, one canonical JSON file per entity, which the diff, planner and
+executor of S2 and S3 will build on. Nothing reads or writes git yet, and no endpoint, screen or
+command uses it yet (S5).
+
+- **New crate `sc-sync`** (layer 9, above `sc-backup`, below the server).
+  - `StructureTree` (S1.1): an ordered map from repository path to a canonical JSON value, or to
+    bytes for a store's synced files. `to_files` renders keys sorted at every depth, two-space
+    indentation and a trailing newline; `from_files` parses back, refusing a broken `.json` file
+    or a path that would escape the tree; `digest` is SHA-256 over every path and its bytes.
+    `path_segment` turns an entity's name into a safe file name (`a/b` → `a%2Fb`).
+  - `feldspar-structure.json` (S1.6): `{ format, writer }`, format 1. `from_files` refuses a tree
+    in a newer format with a sentence naming both Feldspar versions and both formats and telling
+    the operator to upgrade; a tree with no format file (an empty repository) is accepted.
+  - `export(catalog, registries)` (S1.2) writes every §3.1 kind through `sc_backup::codec`'s
+    `*_json` (roles, modules, portable settings, the users table's added fields, tables with
+    fields in column order and constraints, database connections, file stores, code libraries,
+    triggers with their current workflow inline, streams, agents, LLM providers with their
+    models, MCP servers, datasets, models, workspaces, checklists with their current steps,
+    applications with their views, pages, library and row translations). Stripped:
+    `updated_at`; a table's screen-only keys (`configured`, `rls_available`, `module_fields`, …);
+    an application's derived `source`, `builds`, `installs`, `has_views` and `targets`; a
+    trigger's `last_run_at`, `error`, `system_approval` and workflow version; an agent's `error`;
+    a module's row id; a checklist's `run_as` and `mutates`; a workspace's `created_by`. Settings
+    are the **stored** values of the portable sections only — not host pins from `feldspar.toml`,
+    not defaults. Two entities that would export to the same path are refused rather than one
+    being lost.
+  - Secrets (S1.4, `sc_sync::secrets`): every declared secret is `SECRET_SENTINEL` — database
+    connection passwords, stream, LLM provider, framework and file store settings by their specs,
+    MCP header values, trigger and workflow-step action settings, agent trait settings and module
+    settings. **Where no spec is known** (an uninstalled provider, action, trait or module), every
+    text value of that configuration is redacted, unlike the admin API, which passes it through.
+    `Registries` carries the action, stream-provider, agent-trait and module specs;
+    `Registries::builtin()` is the built-in set for callers with no server.
+  - Identity (S1.3, `ensure_overlays`): before exporting, every table and field without an overlay
+    row is given one (default access, the column's introspected kind, so a foreign-key column stays
+    a key), so a column added by raw DDL gets an id on its first export and keeps it. The users
+    table's own columns and provided tables' fields are left alone.
+  - Local store contents (S1.7, `sc_sync::stores`): `resolve` decides a store's synced directories
+    from its `sync_contents` and the structure's references — applications' framework sources
+    (code), static directories (assets), upload slots and `File` fields (content) — and
+    `walk_synced` reads them under `file-stores/<name>/files/`, leaving out `.git`,
+    `node_modules`, build output directories, content folders and what `.gitignore` ignores (with
+    the `ignore` crate, already in the lock file). Status warnings: an unclassified store, a
+    content claim covering a code or asset directory, a folderless `File` field or upload slot on
+    an `include` store, a file over 10 MB, an unreadable file.
+  - Git stores (S1.8): exported as `url`, `public_url`, `branch` and `commit` (the checked-out
+    `HEAD`), never their files, `key_path`, `public_key` or `directory`.
+- **`sc-files`**: `ATTR_SYNC_CONTENTS` and `SyncContents` (`auto` / `include` / `exclude`; a
+  missing attribute is `auto`, so stored stores need no migration), checked on save by
+  `validate_file_store_config`, which refuses `include` on a git store. A new optional git setting
+  `public_url` (`CFG_PUBLIC_URL`; additive, in the config JSON, so the form shows it with no UI
+  change). `derive_https_url` gives the anonymous HTTPS URL of a GitHub, GitLab, Bitbucket or
+  Codeberg SSH URL. `GitRepo::head_commit`.
+- **`sc-config`**: `ConfigSection::portable`, true for `localisation` only, and
+  `portable_sections()`, which adds a `maps` section over the Maps settings' internal keys
+  (`MAPS_SECTION`).
+- **`schema_edit`**: `ApplyOptions::ids` (`GivenIds`), the overlay ids a batch's created tables and
+  fields are given. A created table or field with a given id always gets its overlay row. Callers
+  that build `ApplyOptions` with `..Default::default()` are unaffected.
+- **`createApplication`** (S1.9): a local store it creates for an application's code is saved with
+  `sync_contents: include`.
+- Not exported yet, and why: an application's custom domains (no such field exists yet); the
+  `api` providers' configurations are exported as they are (none declares a secret today).
+- Tests: `sc-sync` unit tests for rendering, round trips, the digest, path segments, the format
+  check, the redaction rules, every store role and warning and the walk; integration tests
+  (`crates/sc-sync/tests/`) for a deterministic export with every kind present, nothing of §3.4
+  in it, no secret in it, only portable settings, ids for raw-DDL columns, given ids kept for
+  tables, fields, applications, views and triggers, the code/asset/upload stores, and a git
+  store's pin following `HEAD`; `sc-files` tests for the `sync_contents` check and the HTTPS
+  derivation table; `sc-config`'s `only_localisation_and_maps_are_portable`; and an assertion in
+  `git_store_api::a_new_application_can_ask_for_a_new_local_store`.
+
 ## Application settings in tabs the framework declares, saved as you edit (UX2.1, UX2.2)
 
 An application's Settings tab held its whole record: identity, framework, build targets, tables,

@@ -102,6 +102,70 @@ pub const CFG_KEY_PATH: &str = "key_path";
 /// paste it into the repository's settings.
 pub const CFG_PUBLIC_KEY: &str = "public_key";
 
+/// The `public_url` setting of the [`git`](GIT_BACKEND) backend: an anonymous
+/// HTTPS URL for the same repository, optional.
+///
+/// Not used by this store at all: it is what **another instance** clones from
+/// when it creates this store by deploying the installation's structure
+/// (APP_SYNC_PROPOSAL §3.5). That instance has none of this one's credentials,
+/// so an SSH [`CFG_URL`] is no use to it; a public HTTPS URL is what lets an
+/// open-source application be installed from its repository. Left empty, the
+/// other instance derives one from the URL for the well-known hosts
+/// ([`derive_https_url`](crate::derive_https_url)).
+pub const CFG_PUBLIC_URL: &str = "public_url";
+
+/// Attribute saying which of a store's files travel with the installation's
+/// structure when it is committed to source control (APP_SYNC_PROPOSAL §3.5):
+/// one of [`SyncContents`]'s names. Absent means [`SyncContents::Auto`], so a
+/// store saved before the attribute existed needs no migration.
+///
+/// An attribute rather than a setting because it is not the backend's: every
+/// backend's store has one, and no backend reads it.
+pub const ATTR_SYNC_CONTENTS: &str = "sync_contents";
+
+/// Which of a local store's files are committed with the structure
+/// ([`ATTR_SYNC_CONTENTS`]).
+///
+/// The repository holds code and configuration, never content, so the default
+/// works the answer out from how the structure uses the store: an
+/// application's source and static directories are synced, upload folders and
+/// `File` fields' folders are not, and a store nothing classifies syncs
+/// nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SyncContents {
+    /// Decided by how the structure uses the store (the default).
+    #[default]
+    Auto,
+    /// The whole store, less the folders uploads and `File` fields write to.
+    Include,
+    /// Nothing.
+    Exclude,
+}
+
+impl SyncContents {
+    /// The name the attribute stores.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SyncContents::Auto => "auto",
+            SyncContents::Include => "include",
+            SyncContents::Exclude => "exclude",
+        }
+    }
+
+    /// Parse a stored or submitted name.
+    pub fn parse(raw: &str) -> sc_error::Result<SyncContents> {
+        match raw.trim() {
+            "auto" => Ok(SyncContents::Auto),
+            "include" => Ok(SyncContents::Include),
+            "exclude" => Ok(SyncContents::Exclude),
+            other => Err(sc_error::Error::invalid(format!(
+                "`{other}` is not a `{ATTR_SYNC_CONTENTS}` setting; it is `auto`, `include` or \
+                 `exclude`"
+            ))),
+        }
+    }
+}
+
 /// Attribute (§9, sparse per-store values) recording **where** a git store was
 /// cloned.
 ///
@@ -224,6 +288,31 @@ impl FileStoreDef {
     /// is the convenience for the settings that are simple strings.
     pub fn setting(&self, key: &str) -> Option<&str> {
         self.config.get(key).and_then(serde_json::Value::as_str)
+    }
+
+    /// The store's [`ATTR_SYNC_CONTENTS`]: absent is [`SyncContents::Auto`].
+    ///
+    /// Fails on a value that is not one of the three names, which
+    /// [`validate_file_store_config`](crate::validate_file_store_config) refuses
+    /// on save; a row written around that check is reported, not guessed at.
+    pub fn sync_contents(&self) -> sc_error::Result<SyncContents> {
+        match self.attributes.get(ATTR_SYNC_CONTENTS) {
+            None | Some(serde_json::Value::Null) => Ok(SyncContents::Auto),
+            Some(serde_json::Value::String(raw)) => SyncContents::parse(raw),
+            Some(other) => Err(sc_error::Error::invalid(format!(
+                "file store `{}`: `{ATTR_SYNC_CONTENTS}` must be a string, not {other}",
+                self.name
+            ))),
+        }
+    }
+
+    /// Set [`ATTR_SYNC_CONTENTS`], returning `self` for chaining.
+    pub fn with_sync_contents(mut self, contents: SyncContents) -> Self {
+        self.attributes.insert(
+            ATTR_SYNC_CONTENTS.to_owned(),
+            serde_json::Value::String(contents.as_str().to_owned()),
+        );
+        self
     }
 }
 

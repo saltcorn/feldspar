@@ -2457,24 +2457,11 @@ async fn every_backup_route_is_admin_only() -> sc_error::Result<()> {
 
 /// The data directory a store restored from another machine is moved into.
 ///
-/// Set once for the whole binary, as `git_store_api`'s is: the environment is
-/// process-wide and these tests run in parallel. Only this test defines a store
-/// the restore has to place; every other one prepares its store first.
-#[allow(
-    unsafe_code,
-    reason = "the binary's data directory is set once, through the environment the server reads"
-)]
-fn data_dir() -> &'static std::path::Path {
-    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| {
-        let dir = temp_dir();
-        // SAFETY: test-only: written once per binary, under the `OnceLock`,
-        // and never changed after. A concurrent `getenv` in another test is
-        // the test-code race security review 2026-11 (F §1) records.
-        unsafe { std::env::set_var(sc_files::DATA_DIR_ENV, &dir) };
-        dir
-    })
-}
+// The binary's data directory is the shared one (`support::data_dir`): the
+// environment is process-wide and these tests run in parallel. Only this test
+// defines a store the restore has to place; every other one prepares its
+// store first.
+use crate::support::data_dir;
 
 /// A store restored onto a server where its directory does not exist goes where
 /// this server puts its stores; one whose directory does exist (a shared drive)

@@ -782,11 +782,45 @@ pub(crate) async fn upload_backup(
     jar: CookieJar,
     body: Body,
 ) -> Response {
+    upload_to(state, admin, jar, body, "uploadBackup", BACKUP_UPLOAD_ROUTE).await
+}
+
+/// Take delivery of a structure zip (see
+/// [`STRUCTURE_ZIP_UPLOAD_ROUTE`](crate::raw_routes::STRUCTURE_ZIP_UPLOAD_ROUTE)),
+/// as a backup is taken: spooled, kept, and named by the token the typed
+/// `planSyncZipDeploy` and `syncZipDeploy` take.
+pub(crate) async fn upload_structure_zip(
+    State(state): State<AppState>,
+    admin: AdminSession,
+    jar: CookieJar,
+    body: Body,
+) -> Response {
+    upload_to(
+        state,
+        admin,
+        jar,
+        body,
+        "uploadStructureZip",
+        crate::raw_routes::STRUCTURE_ZIP_UPLOAD_ROUTE,
+    )
+    .await
+}
+
+/// Spool an uploaded body to disk and hand it to the handler `name`, which
+/// answers what the file holds.
+async fn upload_to(
+    state: AppState,
+    admin: AdminSession,
+    jar: CookieJar,
+    body: Body,
+    name: &str,
+    route: &str,
+) -> Response {
     let session_token = Some(admin.token().to_owned());
-    let Some(handler) = state.handlers.get("uploadBackup").cloned() else {
+    let Some(handler) = state.handlers.get(name).cloned() else {
         return json_error(
             StatusCode::NOT_FOUND,
-            "this server has no backup handler registered",
+            format!("this server has no `{name}` handler registered"),
         );
     };
     // To disk, not to memory: a backup can be larger than this process is
@@ -814,17 +848,7 @@ pub(crate) async fn upload_backup(
         Ok(resp) => {
             apply_response(&state, jar, session_token, SessionClient::default(), resp).await
         }
-        Err(e) => {
-            error_out(
-                &state,
-                &e,
-                Audience::Admin,
-                "POST",
-                BACKUP_UPLOAD_ROUTE,
-                caller.as_ref(),
-            )
-            .await
-        }
+        Err(e) => error_out(&state, &e, Audience::Admin, "POST", route, caller.as_ref()).await,
     }
 }
 

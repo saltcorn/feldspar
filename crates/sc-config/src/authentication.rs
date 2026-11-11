@@ -76,6 +76,8 @@ pub fn authentication_section() -> ConfigSection {
         label: "Authentication",
         description: "How long a sign-in lasts, whether it is shared between applications, and \
                       the external identity providers people can sign in with",
+        // This instance's own: never in the installation's structure (§3.4).
+        portable: false,
         fields: vec![
             // Live: the next cookie the server sets is scoped by it. Saving a
             // change ends every session, the admin's own included, because a

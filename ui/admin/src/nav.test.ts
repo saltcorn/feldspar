@@ -105,7 +105,7 @@ describe("the admin sidebar", () => {
       NAV.filter((item) => item.group === group).map((item) => item.label);
     expect(members("Data")).toEqual(["All entities", "Tables", "Files", "Streams"]);
     expect(members("Automation")).toEqual(["Triggers", "Agents"]);
-    expect(members("Administration")).toEqual(["Users", "Settings"]);
+    expect(members("Administration")).toEqual(["Users", "Source control", "Settings"]);
   });
 
   /** The logo is the way home; an entry for it would only make the sidebar

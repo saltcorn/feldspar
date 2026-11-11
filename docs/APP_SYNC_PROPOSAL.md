@@ -298,8 +298,9 @@ branches belong to git, where one file per entity keeps conflicts small.
     side. Saving puts the merged version into live, and Commit then commits it over the incoming
     one.
 
-**Linking.** When an installation is linked, the base is set to the tree at the branch tip. One
-rule covers every starting point:
+**Linking.** When an installation is linked, the base is set to the tree at the branch tip, less
+each entity live does not have (which against the full tip would be a "local delete", and a
+Commit would delete it from the repository). One rule covers every starting point:
 
 | Starting point | What Status shows |
 |---|---|
@@ -392,18 +393,29 @@ Both are additive and created by the bootstrap, so no `sc-migrate` migration is 
 
 Typed, admin-only endpoints:
 
-- `getSyncLink`, `setSyncLink`, `generateSyncKey`, `testSyncLink`
+- `getSyncLink`, `setSyncLink`, `deleteSyncLink`, `generateSyncKey`, `testSyncLink`
 - `getSyncStatus`, `getSyncEntityDiff`
-- `syncPull`, `syncCommit`, `syncDiscard`, `listSyncBranches`, `switchSyncBranch`
+- `syncPull`, `syncCommit`, `planSyncDiscard`, `syncDiscard`, `listSyncBranches`,
+  `switchSyncBranch`
 - `planSyncDeploy`, `syncDeploy`, `listDeployments`
+- `planSyncZipDeploy`, `syncZipDeploy`: a structure zip (§7.4), uploaded first to the raw route
+  `/source-control/upload` (its body is the file, as a backup upload's is)
 - `listRegistry`, `getRegistryEntity`, `planRegistrySave`, `registrySave` (§7.6)
+- `getFileStoreSync`, `setFileStoreSync`: a store's `sync_contents` and what it resolves to (§3.5)
+
+They are mounted under `/api/source-control/` (the file store pair under `/api/file-stores/{id}/sync`),
+apart from an application's offline-sync endpoints.
 
 All of them are **excluded from the MCP/agent projection**, like backup and clearAll.
 
 ### 7.3 CLI
 
-`feldspar sync status | pull | commit -m MSG | discard KIND:NAME… | deploy [--plan] [--yes]
-[--allow-destructive] | branch [NAME] [--create]`
+`feldspar sync link URL [--branch B] [--subdirectory DIR] | unlink | status | pull |
+commit -m MSG [KIND:NAME…] [--keep-mine KIND:NAME]… | discard KIND:NAME… [--plan] [--yes]
+[--allow-destructive] | deploy [--from FILE.zip] [--plan] [--yes] [--allow-destructive]
+[--full-backup] | branch [NAME] [--create]`
+
+`feldspar backup --structure-only FILE|-` writes the structure zip (§7.4).
 
 `feldspar registry list [KIND] | get KIND/NAME | put KIND/NAME [--plan] [--yes]
 [--allow-destructive] | delete KIND/NAME …`. `put` reads the JSON from standard input.
@@ -419,6 +431,12 @@ FILE.zip` (also available in the UI) plans and applies it.
 With a link, the zip replaces the branch tip and the base rules apply. Without a link, there is no
 base, so the zip is applied **additively**: it creates and updates, but never deletes. That is
 restore's existing rule.
+
+As built (S6.1): the zip holds the tree's files at its root, with no timestamps, so the same tree
+is the same zip. A zip with no `feldspar-structure.json` is refused, and one that is a backup is
+told to go to restore. The additive target is live with each of the zip's entities put over the
+one it matches, keeping a table's fields and constraints that the zip's version lacks. A zip
+deployed with a link stores the next base with no commit (`base_commit` is null).
 
 ### 7.5 UI
 

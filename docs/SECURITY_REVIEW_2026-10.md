@@ -1248,6 +1248,8 @@ old `Option<&CallerContext>` with `None` silently failed closed on such a table,
 | sc-server `models.rs` | Stan: read a model's program from its store (the raw file store) |
 | sc-server `oauth.rs` | OAuth: store the tokens of a consent flow (`Unchecked::system`) |
 | sc-viewpattern `library.rs`, `store.rs` | apply library updates; write view-pattern definitions |
+| sc-sync `ledger.rs` (`INTERNAL_TABLES`) | source control: the deployment ledger (`_fd_deployments`) and the sync lock (`_fd_sync_lock`), written by a deploy or discard an administrator (or the operator) confirmed; module-private |
+| sc-sync `link.rs` (`SYNC_STATE`) | source control: the sync link, its credential (an HTTPS token sealed with the instance key; a deploy key's path and public half) and the base (`_fd_sync`), written by an administrator's link, commit or deploy; module-private |
 | sc-workflow `driver.rs` | workflow: record run state |
 | `INTERNAL_TABLES` in the `lib.rs` of sc-action, sc-agent, sc-agent-builtins, sc-analytics, sc-api, sc-app, sc-auth, sc-check, sc-config, sc-dataset, sc-llm, sc-mcp, sc-model, sc-module, sc-stream, sc-viewpattern, sc-workflow | the crate's own tables (`_fd_*`, and `users` for sc-auth and sc-check's check users; sc-analytics' demo dataset; sc-api's change-log user names for the history reader): the one `Unchecked::system` each crate's stores reach `Catalog::primary` with, crate-private (Q3.5) |
 

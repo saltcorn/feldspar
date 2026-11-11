@@ -100,12 +100,14 @@ enum Stdin {
 /// [`output`](Self::output), [`output_bounded`](Self::output_bounded),
 /// [`status`](Self::status), [`spawn`](Self::spawn), or their `_blocking`
 /// forms for synchronous code.
-#[derive(Debug)]
 pub struct HostCommand {
     program: Program,
     args: Vec<OsString>,
     separated: bool,
     env: Vec<(OsString, OsString)>,
+    /// The names in `env` whose values are credentials, which `Debug` leaves
+    /// out.
+    secret: Vec<OsString>,
     cwd: Option<PathBuf>,
     stdin: Stdin,
     stdout: Option<Stdio>,
@@ -114,6 +116,33 @@ pub struct HostCommand {
     operator: bool,
     leave_descendants: bool,
     audit: String,
+}
+
+impl std::fmt::Debug for HostCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let env: Vec<(&OsStr, &OsStr)> = self
+            .env
+            .iter()
+            .map(|(name, value)| match self.secret.contains(name) {
+                true => (name.as_os_str(), OsStr::new("<redacted>")),
+                false => (name.as_os_str(), value.as_os_str()),
+            })
+            .collect();
+        f.debug_struct("HostCommand")
+            .field("program", &self.program)
+            .field("args", &self.args)
+            .field("separated", &self.separated)
+            .field("env", &env)
+            .field("cwd", &self.cwd)
+            .field("stdin", &self.stdin)
+            .field("stdout", &self.stdout)
+            .field("stderr", &self.stderr)
+            .field("timeout", &self.timeout)
+            .field("operator", &self.operator)
+            .field("leave_descendants", &self.leave_descendants)
+            .field("audit", &self.audit)
+            .finish()
+    }
 }
 
 impl HostCommand {
@@ -128,6 +157,7 @@ impl HostCommand {
             args: Vec::new(),
             separated: false,
             env: Vec::new(),
+            secret: Vec::new(),
             cwd: None,
             stdin: Stdin::Null,
             stdout: None,
@@ -221,6 +251,13 @@ impl HostCommand {
         self.env
             .push((name.as_str().into(), value.as_ref().to_owned()));
         self
+    }
+
+    /// [`env`](Self::env) for a credential: given to the child the same way,
+    /// and never in `Debug`.
+    pub fn secret_env(&mut self, name: EnvName, value: impl AsRef<OsStr>) -> &mut Self {
+        self.secret.push(name.as_str().into());
+        self.env(name, value)
     }
 
     /// Give the child the server's own value of `name`, when it has one.
