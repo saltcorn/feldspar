@@ -510,6 +510,45 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
+    // Mail a user the password an admin just set. The recipient is the
+    // account's own stored address, never one from the request, so the
+    // endpoint cannot be pointed at anybody else; the password and the sign-in
+    // URL come from the caller because the server holds only the hash. The
+    // transport's error is returned verbatim, as the test message's is.
+    reg.handle(sc_api::handler_ids::SEND_CREDENTIALS_EMAIL, {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = parse_user_id(ctx.path_param("id")?)?;
+                let obj = require_object(&ctx.body)?;
+                let password = obj.non_empty_str_field("password")?.to_owned();
+                let url = obj.non_empty_str_field("url")?.trim().to_owned();
+                let user = load_user(&catalog, id)
+                    .await?
+                    .ok_or_else(|| Error::not_found(format!("no user with id {id}")))?;
+                let to = user
+                    .get(COL_EMAIL)
+                    .and_then(sc_query::Value::as_text)
+                    .map(str::to_owned)
+                    .ok_or_else(|| Error::invalid("this user has no email address to send to"))?;
+                let settings = sc_config::EmailSettings::load(&catalog).await?.ok_or_else(|| {
+                    Error::invalid(
+                        "no SMTP server is configured: set an SMTP host in Settings → Email \
+                         before sending a password by email",
+                    )
+                })?;
+                let mailer = sc_email::SmtpMailer::new(&settings)?;
+                let mut email = sc_email::Email::new(settings.from.clone());
+                email.to = sc_email::parse_recipients(&to)?;
+                email.subject = "Your sign-in details".to_owned();
+                email.text = Some(credentials_email_text(&url, &to, &password));
+                mailer.send(&email).await?;
+                Ok(HandlerResponse::ok(json!({ "sent_to": to })))
+            }
+        }
+    });
+
     //
     // The credential the administration MCP server authenticates with. Three
     // handlers, and every decision in them is `sc_auth::tokens`'s already: the
@@ -754,4 +793,15 @@ fn credit_amount(value: Option<&Json>, key: &str) -> Result<Option<rust_decimal:
     parsed
         .map(Some)
         .ok_or_else(|| Error::invalid(format!("`{key}` must be an amount of credits, like 12.5")))
+}
+
+/// The body of the message `sendCredentialsEmail` sends: the same three lines
+/// the admin UI's dialog shows and copies (`credentialsText`), under one
+/// sentence saying what they are. Plain text only, so nothing in the password
+/// or the URL needs escaping.
+fn credentials_email_text(url: &str, email: &str, password: &str) -> String {
+    format!(
+        "A password has been set for your account. Sign in with these details:\n\n\
+         Site:     {url}\nEmail:    {email}\nPassword: {password}\n"
+    )
 }

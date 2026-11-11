@@ -610,6 +610,8 @@ mod tests {
             "createUser",
             "becomeUser",
             "setRandomPassword",
+            // Nor mailing a password, which the request carries in clear.
+            "sendCredentialsEmail",
             // And above all: a token that could mint tokens could not be
             // revoked (phase 2.4 says so in its own comment).
             "createApiToken",

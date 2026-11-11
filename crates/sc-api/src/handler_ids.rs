@@ -289,6 +289,7 @@ pub const DELETE_O_AUTH_PROVIDER: HandlerId<AdminOnly> = HandlerId::new("deleteO
 pub const GET_ADMIN_ADDRESS: HandlerId<AdminOnly> = HandlerId::new("getAdminAddress");
 pub const CREATE_ADMIN_HANDOFF: HandlerId<AdminOnly> = HandlerId::new("createAdminHandoff");
 pub const SEND_TEST_EMAIL: HandlerId<AdminOnly> = HandlerId::new("sendTestEmail");
+pub const GET_EMAIL_STATUS: HandlerId<AdminOnly> = HandlerId::new("getEmailStatus");
 pub const GET_PYTHON_STATUS: HandlerId<AdminOnly> = HandlerId::new("getPythonStatus");
 pub const GET_SYSTEM_INFO: HandlerId<AdminOnly> = HandlerId::new("getSystemInfo");
 pub const GET_CLAUDE_CODE_STATUS: HandlerId<AdminOnly> = HandlerId::new("getClaudeCodeStatus");
@@ -371,6 +372,8 @@ pub const FORCE_LOGOUT_USER: HandlerId<AdminOnly> = HandlerId::new("forceLogoutU
 pub const BECOME_USER: HandlerId<AdminOnly> = HandlerId::new("becomeUser");
 pub const RESET_USER_SECOND_FACTOR: HandlerId<AdminOnly> = HandlerId::new("resetUserSecondFactor");
 pub const SET_RANDOM_PASSWORD: HandlerId<AdminOnly> = HandlerId::new("setRandomPassword");
+pub const SEND_CREDENTIALS_EMAIL: HandlerId<AdminOnly> =
+    HandlerId::new("sendCredentialsEmail");
 pub const LIST_USER_ROLE_GRANTS: HandlerId<AdminOnly> = HandlerId::new("listUserRoleGrants");
 pub const GRANT_USER_ROLE: HandlerId<AdminOnly> = HandlerId::new("grantUserRole");
 pub const REVOKE_USER_ROLE_GRANT: HandlerId<AdminOnly> = HandlerId::new("revokeUserRoleGrant");

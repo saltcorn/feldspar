@@ -380,6 +380,20 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
+    // Whether a send would be attempted at all: the same `EmailSettings::load`
+    // the senders use, so the Users screen offers "Send by email" exactly when
+    // pressing it would get as far as the mail server.
+    reg.handle(sc_api::handler_ids::GET_EMAIL_STATUS, {
+        let catalog = catalog.clone();
+        move |_ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let configured = sc_config::EmailSettings::load(&catalog).await?.is_some();
+                Ok(HandlerResponse::ok(json!({ "configured": configured })))
+            }
+        }
+    });
+
     // What this process can do about Python, on the screen that already carries
     // the other "what is this server doing right now" readings (§7, phase 4.2).
     //

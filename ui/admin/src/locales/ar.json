@@ -1813,5 +1813,9 @@
   "{translated} of {total} messages translated into {locale} ({percent}%)": "تُرجمت {translated} من أصل {total} رسالة إلى {locale} ({percent}%)",
   "— no stream of that name exists here, so this application cannot observe it until it is removed or the stream is recreated.": "— لا يوجد هنا تدفق بهذا الاسم، لذا لا يمكن لهذا التطبيق مراقبته حتى تتم إزالته أو إعادة إنشاء التدفق.",
   "— no trigger of that name exists here, so this application will not mount until it is removed or the trigger is recreated.": "— لا يوجد هنا مشغّل بهذا الاسم، لذا لن يتمكّن هذا التطبيق من تركيبه حتى تتم إزالته أو إعادة إنشاء المشغّل.",
-  "← up": "← لأعلى"
+  "← up": "← لأعلى",
+  "Admin UI": "واجهة الإدارة",
+  "Sign in at": "تسجيل الدخول في",
+  "Send by Email": "إرسال بالبريد الإلكتروني",
+  "Sent to {address}.": "أُرسلت إلى {address}."
 }

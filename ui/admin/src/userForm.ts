@@ -168,8 +168,8 @@ export function userBody(form: UserForm): {
   };
 }
 
-/** Credentials to hand over out of band, and where they are used. */
-export type Credentials = { email: string; password: string; url: string };
+/** Credentials to hand over out of band: whose they are and what they are. */
+export type Credentials = { id: string; email: string; password: string };
 
 /**
  * The block of text the credentials dialog shows and its copy button copies.
@@ -179,8 +179,42 @@ export type Credentials = { email: string; password: string; url: string };
  * the address it belongs to — or without saying where to sign in — arrives as a
  * puzzle.
  */
-export function credentialsText({ email, password, url }: Credentials): string {
+export function credentialsText({
+  email,
+  password,
+  url,
+}: {
+  email: string;
+  password: string;
+  url: string;
+}): string {
   return `Site:     ${url}\nEmail:    ${email}\nPassword: ${password}`;
+}
+
+/** One place the credentials dialog can tell a user to sign in at. */
+export type SignInTarget = { key: string; label: string; url: string };
+
+/** The key of the admin UI's own entry in {@link signInTargets}. */
+export const ADMIN_SIGN_IN_TARGET = "__admin__";
+
+/**
+ * Where the credentials dialog can send a user to sign in: every application,
+ * alphabetically by name, then the admin UI last. The first entry is the
+ * default, because a user an admin creates is far more often somebody who will
+ * use an application than somebody who will administer the server.
+ */
+export function signInTargets(
+  apps: ReadonlyArray<{ id: string; name: string; subdomain: string }>,
+  adminUrl: string,
+  urlOf: (subdomain: string) => string,
+): SignInTarget[] {
+  const sorted = [...apps].sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+  );
+  return [
+    ...sorted.map((app) => ({ key: app.id, label: app.name, url: urlOf(app.subdomain) })),
+    { key: ADMIN_SIGN_IN_TARGET, label: "Admin UI", url: adminUrl },
+  ];
 }
 
 /** The URL to tell a new user to sign in at: this admin's own origin. */

@@ -54,6 +54,8 @@ export type ForceLogoutUserResponse = { ok: boolean };
 export type BecomeUserResponse = { id: string; email: string; role: number; email_verified: boolean; second_factor?: { token: string; setup: boolean } | null };
 export type ResetUserSecondFactorResponse = { reset: boolean };
 export type SetRandomPasswordResponse = { email: string; password: string };
+export type SendCredentialsEmailRequest = { password: string; url: string };
+export type SendCredentialsEmailResponse = { sent_to: string };
 export type ListUserRoleGrantsResponse = { base_role: number; effective_role: number; grants: Array<{ id: string; role: number; source: string; source_ref: string; starts_at: string; expires_at?: string | null; revoked_at?: string | null; note?: string | null; in_force: boolean }> };
 export type GrantUserRoleRequest = { role: number; expires_in_days?: number | null; note?: string | null };
 export type GrantUserRoleResponse = { id: string; role: number; source: string; source_ref: string; starts_at: string; expires_at?: string | null; revoked_at?: string | null; note?: string | null; in_force: boolean };
@@ -253,6 +255,7 @@ export type GetAdminAddressResponse = { base_domain?: string | null; admin_subdo
 export type CreateAdminHandoffResponse = { host: string; path: string };
 export type SendTestEmailRequest = { to?: string | null };
 export type SendTestEmailResponse = { sent_to: string };
+export type GetEmailStatusResponse = { configured: boolean };
 export type GetPythonStatusResponse = { state: string; version?: string | null; explanation: string; dir?: string | null; site_packages?: string | null; bin?: string | null; packages: Array<{ name: string; version?: string | null }>; max_inflight: number; resident: number; threads: number; stuck: number; max_stuck: number; env_error?: string | null };
 export type GetSystemInfoResponse = { version: string; version_line: string; build_time?: string | null; commit?: string | null; platform: string; pid: number; started_at: string; uptime_seconds: number; database: { product?: string | null; version?: string | null; error?: string | null }; memory?: { process_bytes?: number | null; total_bytes?: number | null; available_bytes?: number | null } | null; cpu?: { process_percent: number; system_percent: number; cores: number; load_average: Array<number> } | null; disk?: { path: string; total_bytes: number; available_bytes: number } | null };
 export type GetClaudeCodeStatusResponse = { enabled: boolean; path?: string | null; source?: string | null; version?: string | null; problem?: string | null };
@@ -612,6 +615,7 @@ export interface ApiClient {
   becomeUser(id: string): Promise<BecomeUserResponse>;
   resetUserSecondFactor(id: string): Promise<ResetUserSecondFactorResponse>;
   setRandomPassword(id: string): Promise<SetRandomPasswordResponse>;
+  sendCredentialsEmail(id: string, body: SendCredentialsEmailRequest): Promise<SendCredentialsEmailResponse>;
   listUserRoleGrants(id: string): Promise<ListUserRoleGrantsResponse>;
   grantUserRole(id: string, body: GrantUserRoleRequest): Promise<GrantUserRoleResponse>;
   revokeUserRoleGrant(id: string, grant: string): Promise<RevokeUserRoleGrantResponse>;
@@ -742,6 +746,7 @@ export interface ApiClient {
   getAdminAddress(): Promise<GetAdminAddressResponse>;
   createAdminHandoff(): Promise<CreateAdminHandoffResponse>;
   sendTestEmail(body: SendTestEmailRequest): Promise<SendTestEmailResponse>;
+  getEmailStatus(): Promise<GetEmailStatusResponse>;
   getPythonStatus(): Promise<GetPythonStatusResponse>;
   getSystemInfo(): Promise<GetSystemInfoResponse>;
   getClaudeCodeStatus(): Promise<GetClaudeCodeStatusResponse>;
@@ -1275,6 +1280,15 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("setRandomPassword", res);
       return (await res.json()) as SetRandomPasswordResponse;
+    },
+    async sendCredentialsEmail(id, body) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/credentials-email`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("sendCredentialsEmail", res);
+      return (await res.json()) as SendCredentialsEmailResponse;
     },
     async listUserRoleGrants(id) {
       const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/role-grants`, {
@@ -2431,6 +2445,14 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("sendTestEmail", res);
       return (await res.json()) as SendTestEmailResponse;
+    },
+    async getEmailStatus() {
+      const res = await doFetch(`${baseUrl}/api/settings/email/status`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getEmailStatus", res);
+      return (await res.json()) as GetEmailStatusResponse;
     },
     async getPythonStatus() {
       const res = await doFetch(`${baseUrl}/api/python`, {

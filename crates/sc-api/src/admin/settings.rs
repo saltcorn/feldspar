@@ -191,6 +191,22 @@ pub(super) fn register(set: &mut EndpointSet) {
         )])),
     );
 
+    // Whether an SMTP server is stored, so a screen can offer to send mail only
+    // when sending is possible (the Users screen's "Send by email" beside a new
+    // password). It reads the same settings `sendTestEmail` sends through, so
+    // "configured" means "a send would be attempted", not "it would arrive".
+    set.register(
+        Endpoint::new(
+            ids::GET_EMAIL_STATUS,
+            Method::Get,
+            api().lit("settings").lit("email").lit("status"),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "configured",
+            TypeSchema::bool(),
+        )])),
+    );
+
     // **Python, as this process has it** (design §15; TODO "The Python code
     // adapter" §7). Read-only, on the Development tab, and none of it is a
     // setting: "why does my Python trigger not work" has three answers — not

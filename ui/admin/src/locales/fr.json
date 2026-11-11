@@ -1735,5 +1735,9 @@
   "{translated} of {total} messages translated into {locale} ({percent}%)": "{translated} messages sur {total} traduits en {locale} ({percent} %)",
   "— no stream of that name exists here, so this application cannot observe it until it is removed or the stream is recreated.": "— aucun flux de ce nom n’existe ici ; cette application ne peut donc pas l’observer tant qu’il n’est pas supprimé ou que le flux n’est pas recréé.",
   "— no trigger of that name exists here, so this application will not mount until it is removed or the trigger is recreated.": "— aucun déclencheur de ce nom n’existe ici ; cette application ne pourra donc pas être montée tant qu’il n’est pas supprimé ou que le déclencheur n’est pas recréé.",
-  "← up": "← remonter"
+  "← up": "← remonter",
+  "Admin UI": "Interface d’administration",
+  "Sign in at": "Se connecter sur",
+  "Send by Email": "Envoyer par e-mail",
+  "Sent to {address}.": "Envoyé à {address}."
 }

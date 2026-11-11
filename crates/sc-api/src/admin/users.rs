@@ -242,6 +242,31 @@ pub(super) fn register(set: &mut EndpointSet) {
         ])),
     );
 
+    // Mail a user the password the admin has just set, through the stored
+    // email settings. The password comes from the caller because the server
+    // cannot read it back (it is stored as a hash); the recipient does not —
+    // it is always the account's own address, so this cannot be used to mail
+    // anybody else. `url` is where to sign in: the application the admin chose
+    // in the dialog, or the admin UI.
+    set.register(
+        Endpoint::new(
+            ids::SEND_CREDENTIALS_EMAIL,
+            Method::Post,
+            api()
+                .lit("users")
+                .param("id", ValueType::Uuid)
+                .lit("credentials-email"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("password", TypeSchema::text()),
+            StructField::new("url", TypeSchema::text()),
+        ]))
+        .output(TypeSchema::struct_of([StructField::new(
+            "sent_to",
+            TypeSchema::text(),
+        )])),
+    );
+
     // Role grants (TODO-payments P3.2): roles a user holds for a while beside
     // the base role `updateUser` sets — a subscription's, a trial's, or one an
     // admin gives by hand. The effective role is the most privileged of the two.

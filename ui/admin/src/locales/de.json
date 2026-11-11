@@ -1709,5 +1709,9 @@
   "{translated} of {total} messages translated into {locale} ({percent}%)": "{translated} von {total} Nachrichten in {locale} übersetzt ({percent}%)",
   "— no stream of that name exists here, so this application cannot observe it until it is removed or the stream is recreated.": "— hier gibt es keinen Stream mit diesem Namen. Daher kann diese Anwendung ihn erst überwachen, wenn er entfernt oder neu erstellt wurde.",
   "— no trigger of that name exists here, so this application will not mount until it is removed or the trigger is recreated.": "— hier gibt es keinen Trigger mit diesem Namen. Daher wird diese Anwendung erst eingebunden, wenn er entfernt oder neu erstellt wurde.",
-  "← up": "← nach oben"
+  "← up": "← nach oben",
+  "Admin UI": "Admin-Oberfläche",
+  "Sign in at": "Anmelden bei",
+  "Send by Email": "Per E-Mail senden",
+  "Sent to {address}.": "An {address} gesendet."
 }

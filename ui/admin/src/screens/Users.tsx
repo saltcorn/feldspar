@@ -59,6 +59,7 @@ import {
   type CreditGrantForm,
 } from "../credits";
 import { navigate } from "../App";
+import { appUrl } from "../adminAddress";
 import { IconDots, IconPlus } from "../icons";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
 import { isMultilingual, localeLabel, localeOptions, useLocales, type Locales } from "../locales";
@@ -74,12 +75,15 @@ import {
   type GrantForm,
 } from "../roleGrants";
 import {
+  ADMIN_SIGN_IN_TARGET,
   adminUserFields,
   credentialsText,
   displayValue,
   editUserForm,
   loginUrl,
   newUserForm,
+  signInTargets,
+  type SignInTarget,
   userBody,
   type Credentials,
   type UserForm,
@@ -187,7 +191,7 @@ export function Users() {
     }
     void act("Could not set a new password.", async () => {
       const reset = await api.setRandomPassword(user.id);
-      setCredentials({ email: reset.email, password: reset.password, url: loginUrl() });
+      setCredentials({ id: user.id, email: reset.email, password: reset.password });
     });
   };
 
@@ -448,9 +452,9 @@ function UserDialog({
         onSaved(
           created.generated_password
             ? {
+                id: created.user.id,
                 email: created.user.email,
                 password: created.generated_password,
-                url: loginUrl(),
               }
             : null,
         );
@@ -1010,12 +1014,48 @@ function CredentialsDialog({
 }) {
   const { t } = useT();
   const [copied, setCopied] = useState(false);
+  // Where to tell them to sign in, and whether mail can be sent at all. Both
+  // are read the first time the dialog opens rather than with the user list:
+  // most visits to this screen never set a password.
+  const [targets, setTargets] = useState<SignInTarget[] | null>(null);
+  const [targetKey, setTargetKey] = useState<string | null>(null);
+  const [canEmail, setCanEmail] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sentTo, setSentTo] = useState<string | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
+
+  const open = credentials !== null;
 
   useEffect(() => {
     setCopied(false);
+    setSentTo(null);
+    setSendError(null);
   }, [credentials]);
 
-  const text = credentials ? credentialsText(credentials) : "";
+  useEffect(() => {
+    if (!open || targets !== null) return;
+    let live = true;
+    void (async () => {
+      // Without the list the admin UI is still a right answer, so a failure
+      // here narrows the choice rather than blocking the dialog.
+      const apps = await api.listApplications().catch(() => []);
+      if (!live) return;
+      const list = signInTargets(apps, loginUrl(), (sub) => appUrl(sub));
+      setTargets(list);
+      setTargetKey(list[0].key);
+    })();
+    void api
+      .getEmailStatus()
+      .then((s) => live && setCanEmail(s.configured))
+      .catch(() => live && setCanEmail(false));
+    return () => {
+      live = false;
+    };
+  }, [open, targets]);
+
+  const target = targets?.find((x) => x.key === targetKey) ?? null;
+  const url = target?.url ?? loginUrl();
+  const text = credentials ? credentialsText({ ...credentials, url }) : "";
 
   const copy = async () => {
     try {
@@ -1028,8 +1068,26 @@ function CredentialsDialog({
     }
   };
 
+  const sendEmail = async () => {
+    if (!credentials) return;
+    setSending(true);
+    setSentTo(null);
+    setSendError(null);
+    try {
+      const result = await api.sendCredentialsEmail(credentials.id, {
+        password: credentials.password,
+        url,
+      });
+      setSentTo(result.sent_to);
+    } catch (err) {
+      setSendError(errorMessage(err, "Could not send the email."));
+    } finally {
+      setSending(false);
+    }
+  };
+
   return (
-    <Modal show={credentials !== null} onHide={onClose}>
+    <Modal show={open} onHide={onClose}>
       <Modal.Header closeButton>
         <Modal.Title className="h4"><T text="Password set" /></Modal.Title>
       </Modal.Header>
@@ -1040,10 +1098,46 @@ function CredentialsDialog({
             { address: credentials?.email ?? "" },
           )}
         </p>
+        {targets && (
+          <Form.Group className="mb-3" controlId="credentialsTarget">
+            <Form.Label><T text="Sign in at" /></Form.Label>
+            <Form.Select
+              value={targetKey ?? ""}
+              onChange={(e) => setTargetKey(e.target.value)}
+            >
+              {targets.map((x) => (
+                <option key={x.key} value={x.key}>
+                  {x.key === ADMIN_SIGN_IN_TARGET ? t(x.label) : x.label}
+                </option>
+              ))}
+            </Form.Select>
+          </Form.Group>
+        )}
         <pre className="border rounded p-3 mb-3 user-credentials">{text}</pre>
-        <Button variant="outline-secondary" onClick={() => void copy()}>
-          {copied ? "Copied" : "Copy"}
-        </Button>
+        {sentTo && (
+          <Alert variant="success" dismissible onClose={() => setSentTo(null)}>
+            {t("Sent to {address}.", { address: sentTo })}
+          </Alert>
+        )}
+        {sendError && (
+          <Alert variant="danger" dismissible onClose={() => setSendError(null)}>
+            {sendError}
+          </Alert>
+        )}
+        <div className="d-flex gap-2">
+          <Button variant="outline-secondary" onClick={() => void copy()}>
+            {copied ? t("Copied") : t("Copy")}
+          </Button>
+          {canEmail && (
+            <Button
+              variant="outline-secondary"
+              disabled={sending}
+              onClick={() => void sendEmail()}
+            >
+              <T text="Send by Email" />
+            </Button>
+          )}
+        </div>
       </Modal.Body>
       <Modal.Footer>
         <Button onClick={onClose}><T text="Done" /></Button>

@@ -2,6 +2,28 @@
 
 Changes in reverse chronological order.
 
+## "Password set" dialog: choose the application, send by email
+
+The dialog shown after adding a user (or setting a random password) told them to sign in at the
+admin UI's own address, which is rarely where a new user is meant to go.
+
+- **A "Sign in at" dropdown** (`ui/admin` `Users.tsx`, `CredentialsDialog`). It lists the
+  applications alphabetically, then "Admin UI" last, so the default is the first application
+  (`signInTargets` in `userForm.ts`). Changing it changes the `Site:` line of the text to copy.
+  Application URLs come from `appUrl`, as the app links elsewhere do. `Credentials` now carries
+  the user's id instead of a URL; the URL is chosen in the dialog.
+- **A "Send by Email" button beside Copy**, shown only when SMTP is configured. Two new admin-only
+  endpoints: `getEmailStatus` (`GET /api/settings/email/status` → `{configured}`, the same
+  `EmailSettings::load` the senders use) and `sendCredentialsEmail`
+  (`POST /api/users/{id}/credentials-email`, body `{password, url}`). The recipient is always the
+  account's stored address, never one from the request. The message is plain text with the same
+  three lines as the dialog. The transport's error is shown verbatim, as the test email's is.
+  `sendCredentialsEmail` is tier 3 (not an MCP tool), like `setRandomPassword`.
+- Tests: `signInTargets` ordering (`userForm.test.ts`), and
+  `credentials_are_mailed_to_the_account_through_the_stored_settings` (`settings_admin_api.rs`,
+  a real SMTP conversation on loopback, plus the status flag and the admin-only check). Clients
+  regenerated; new strings added to the five locales.
+
 ## Backups include local modules' source
 
 A module installed from a local directory was backed up as its row alone: source `local` and a

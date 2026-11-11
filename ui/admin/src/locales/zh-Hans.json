@@ -1683,5 +1683,9 @@
   "{translated} of {total} messages translated into {locale} ({percent}%)": "已将 {translated}/{total} 条消息翻译成 {locale}（{percent}%）",
   "— no stream of that name exists here, so this application cannot observe it until it is removed or the stream is recreated.": "——此处不存在该名称的流，因此在将其移除或重新创建该流之前，此应用无法观测它。",
   "— no trigger of that name exists here, so this application will not mount until it is removed or the trigger is recreated.": "——此处不存在该名称的触发器，因此在将其移除或重新创建该触发器之前，此应用不会挂载。",
-  "← up": "← 向上"
+  "← up": "← 向上",
+  "Admin UI": "管理界面",
+  "Sign in at": "登录地址",
+  "Send by Email": "通过电子邮件发送",
+  "Sent to {address}.": "已发送至 {address}。"
 }
