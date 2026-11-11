@@ -32,7 +32,7 @@ import { IconArrowLeft } from "../icons";
 import { PageBody, PageHeader } from "../layout";
 import { ALL_WRITES, canSubmit, formOffered, writesOf, type TableWrites } from "../tableWrites";
 import type { BrowseFilesResponse, ListFieldsResponse, ListTablesResponse } from "../client";
-import { T } from "../i18n";
+import { T, useT } from "../i18n";
 import { DeletedRows } from "./DeletedRows";
 import { RowHistory } from "./RowHistory";
 
@@ -56,6 +56,7 @@ function parseInput(raw: string): unknown {
 }
 
 export function TableData({ table }: { table: string }) {
+  const { t } = useT();
   const [fields, setFields] = useState<ListFieldsResponse | null>(null);
   const [label, setLabel] = useState<string>(table);
   // What may be written to it: all three for a table in a database, and whatever
@@ -103,6 +104,7 @@ export function TableData({ table }: { table: string }) {
       <PageHeader
         pretitle="Table data"
         title={label}
+        docTitle={t("{table} data", { table: label })}
         actions={
           <>
             {history && (

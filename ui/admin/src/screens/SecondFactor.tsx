@@ -141,7 +141,7 @@ export function SecondFactorSignIn({
   };
 
   return (
-    <CenteredPage>
+    <CenteredPage title={t("Two-factor authentication")}>
       <Card className="card-md">
         <Card.Body>
           <Card.Title as="h1" className="h3 text-center mb-4">

@@ -183,7 +183,8 @@ pub const BUNDLES: [Bundle; 5] = [
         subdir: "ui/admin",
         env_var: "SC_ADMIN_BUNDLE_DIR",
         label: "admin UI",
-        inputs: &["src", "vite.config.ts", "index.html"],
+        // `public` holds the favicon, copied as-is to the bundle root.
+        inputs: &["src", "public", "vite.config.ts", "index.html"],
         marker: "index.html",
     },
     Bundle {

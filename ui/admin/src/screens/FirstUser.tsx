@@ -18,7 +18,7 @@ import Form from "react-bootstrap/Form";
 import { api } from "../api";
 import { SaltcornLogo } from "../icons";
 import { CenteredPage } from "../layout";
-import { T } from "../i18n";
+import { T, useT } from "../i18n";
 
 /** The setup link's token, if the address carries one. */
 function tokenFromAddress(): string | undefined {
@@ -33,6 +33,7 @@ export function FirstUser({
   tokenRequired: boolean;
   onCreated: () => void;
 }) {
+  const { t } = useT();
   const [token] = useState(tokenFromAddress);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -57,7 +58,7 @@ export function FirstUser({
   };
 
   return (
-    <CenteredPage>
+    <CenteredPage title={t("Welcome to Saltcorn")}>
       <div className="text-center mb-4">
         <span className="navbar-brand d-inline-flex align-items-center gap-2">
           <SaltcornLogo className="h-6" />

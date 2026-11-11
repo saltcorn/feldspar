@@ -12,30 +12,67 @@
 // `CenteredPage` is the other Tabler page shape: the signed-out one, a narrow
 // column centred in the viewport, used by the login and first-user screens.
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { documentTitle } from "./documentTitle";
 import { T, useT } from "./i18n";
+
+/** Set the browser tab's text to `screen` (see `documentTitle`) while the
+ * calling screen is mounted. For the screens that have no `PageHeader` — the
+ * agent chat, the signed-out pages — which would otherwise keep the title of
+ * the screen before them. `undefined` leaves the tab alone: what a component
+ * passes when it is not the screen (a chat popped out over another one). */
+export function useDocumentTitle(screen: string | undefined): void {
+  useEffect(() => {
+    if (screen !== undefined) document.title = documentTitle(screen);
+  }, [screen]);
+}
 
 /** The page header: pre-title, title, and the screen's primary actions.
  *
  * `actions` land in Tabler's `.btn-list`, which handles the spacing between
- * buttons — so a screen passes bare buttons, not a hand-spaced `<div>`. */
+ * buttons — so a screen passes bare buttons, not a hand-spaced `<div>`.
+ *
+ * The header also names the browser tab. By default the tab says what the
+ * title says, read from the rendered heading rather than from `title` itself:
+ * a title is a `ReactNode` (a translated `<T>`, a name beside a badge), and the
+ * text the admin sees is the one thing every such title has. An observer keeps
+ * the tab current when the heading changes without this component rendering
+ * again (a translation arriving, a record loading inside a child). A screen
+ * whose heading alone is ambiguous in a row of tabs — a table's page is titled
+ * with just the table's name — passes `docTitle` to say more. */
 export function PageHeader({
   title,
   pretitle,
   actions,
+  docTitle,
 }: {
   title: ReactNode;
   pretitle?: ReactNode;
   actions?: ReactNode;
+  docTitle?: string;
 }) {
   const { t } = useT();
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    const el = heading.current;
+    const apply = () => {
+      document.title = documentTitle(docTitle ?? el?.textContent);
+    };
+    apply();
+    if (docTitle !== undefined || !el || typeof MutationObserver === "undefined") return;
+    const observer = new MutationObserver(apply);
+    observer.observe(el, { childList: true, subtree: true, characterData: true });
+    return () => observer.disconnect();
+  }, [docTitle]);
   return (
     <div className="page-header d-print-none" aria-label={t("Page header")}>
       <div className="container-xl">
         <div className="row g-2 align-items-center">
           <div className="col">
             {pretitle && <div className="page-pretitle">{pretitle}</div>}
-            <h2 className="page-title">{title}</h2>
+            <h2 className="page-title" ref={heading}>
+              {title}
+            </h2>
           </div>
           {actions && (
             <div className="col-auto ms-auto d-print-none">
@@ -162,8 +199,10 @@ export function NoticeToast({
   );
 }
 
-/** The signed-out page shape: a narrow, vertically centred column. */
-export function CenteredPage({ children }: { children: ReactNode }) {
+/** The signed-out page shape: a narrow, vertically centred column. `title`
+ * names the browser tab, as a `PageHeader` does on the signed-in screens. */
+export function CenteredPage({ title, children }: { title?: string; children: ReactNode }) {
+  useDocumentTitle(title);
   return (
     <div className="page page-center">
       <div className="container container-tight py-4">{children}</div>

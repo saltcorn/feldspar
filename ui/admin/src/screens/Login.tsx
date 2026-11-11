@@ -97,7 +97,7 @@ export function Login({
   }
 
   return (
-    <CenteredPage>
+    <CenteredPage title={t("Sign in")}>
       <div className="text-center mb-4">
         <span className="navbar-brand d-inline-flex align-items-center gap-2">
           <SaltcornLogo className="h-6" />

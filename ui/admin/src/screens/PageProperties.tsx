@@ -109,6 +109,7 @@ export function PageProperties({ appId, name }: { appId: string; name: string | 
     <PageHeader
       pretitle={app ? `${app.name} · page` : "Page"}
       title={name ?? "New page"}
+      docTitle={name == null ? t("New page") : t("{name} page", { name })}
       actions={
         <>
           {page && builderAvailable && (

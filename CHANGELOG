@@ -2,6 +2,23 @@
 
 Changes in reverse chronological order.
 
+## Admin UI: a favicon, and a tab title per screen
+
+- **Favicon.** The Saltcorn logo from `ui/logo` is now the admin UI's icon: `logo.svg` as
+  `ui/admin/public/favicon.svg`, with the 32×32 `favicon.png` beside it for browsers that do not
+  take an SVG icon. Vite copies `public/` to the bundle root, where the server already serves any
+  file the bundle has; `index.html` links both. `public` is now one of the admin bundle's inputs in
+  `crates/sc-cli/build.rs`, so a changed icon rebuilds it.
+- **The tab says where you are**: `Tables · Saltcorn`, `books table · Saltcorn`, `Settings ·
+  Saltcorn`, instead of `Saltcorn` everywhere. `PageHeader` names the tab from its rendered heading
+  (an observer keeps it current as a record loads or a translation arrives), so every screen with a
+  header gets it with no change of its own. A screen whose heading is just a name says more with
+  the new `docTitle` prop: a table (`{table} table`), its data (`{table} data`), a view
+  (`{name} view`) and a page (`{name} page`), translated in the five catalogues. The screens with
+  no header use the new `useDocumentTitle` hook: the agent chat (`Chat with {agent}`; a popped-out
+  chat leaves the tab alone) and, through `CenteredPage`'s new `title`, sign-in, first-user setup
+  and two-factor. The text is composed in `src/documentTitle.ts`, tested in `documentTitle.test.ts`.
+
 ## Source control S6: the zip transport, documentation, the definition of done
 
 Milestone S6 of `TODO-app-sync.md` (`docs/APP_SYNC_PROPOSAL.md` §7.4). With it, every item of the

@@ -119,7 +119,7 @@ import {
   IconTrash,
   IconX,
 } from "../icons";
-import { StatusBadge, type Tone } from "../layout";
+import { StatusBadge, useDocumentTitle, type Tone } from "../layout";
 import { RunBar } from "./RunPanel";
 import { T, useT } from "../i18n";
 
@@ -191,6 +191,8 @@ export function AgentChat({
   frame?: ChatFrame;
 }) {
   const { t } = useT();
+  // A popped-out chat is a window over another screen, which keeps the tab.
+  useDocumentTitle(frame ? undefined : t("Chat with {agent}", { agent }));
   const [chat, setChat] = useState<ChatState>(emptyChat());
   const [runs, setRuns] = useState<RunItem[]>([]);
   const [viewing, setViewing] = useState<{ run: RunItem; entries: Entry[] } | null>(null);
