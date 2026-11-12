@@ -3638,6 +3638,13 @@ pub fn resolve_field_type(name: &str) -> Result<(TypeRef, Option<String>)> {
     }
     // Also accept a raw SQL alias (e.g. `int8`, `varchar`) for the basic case.
     match BasicType::from_sql_type(name) {
+        // Read and written like a vector, but only ever a column the database
+        // already has (`ApplyOptions::database_types`, a restore): a field made
+        // here is a `vector`, the one the picker offers.
+        BasicType::HalfVector(_) => Err(Error::invalid(format!(
+            "`{name}` is not a field type this creates; a half-precision vector column is \
+             only read and written. Create a `vector` field instead"
+        ))),
         BasicType::Other(_) => Err(Error::invalid(format!(
             "unknown field type `{name}`; it is neither a basic type nor a registered \
              rich type. The types are {}",
@@ -3714,7 +3721,10 @@ fn check_spatial(catalog: &Catalog, database: &DbId, field: &DataField) -> Resul
 /// A vector field needs pgvector in a Postgres database (TODO-agent-skills
 /// AS2.2); refused with the sentence naming the package when it is not there.
 fn check_vector(catalog: &Catalog, database: &DbId, field: &DataField) -> Result<()> {
-    if !matches!(field.base.type_, TypeRef::Basic(BasicType::Vector(_))) {
+    if !matches!(
+        field.base.type_,
+        TypeRef::Basic(BasicType::Vector(_) | BasicType::HalfVector(_))
+    ) {
         return Ok(());
     }
     catalog
@@ -3958,8 +3968,13 @@ mod tests {
 
     #[test]
     fn a_database_type_is_taken_as_spelled_and_nothing_else_reaches_the_ddl() {
+        // A half vector is a known type once read, but only made this way.
+        assert_eq!(
+            database_type("f", "halfvec(1024)").unwrap(),
+            TypeRef::Basic(BasicType::HalfVector(1024))
+        );
+        assert!(resolve_field_type("halfvec(1024)").is_err());
         for name in [
-            "halfvec(1024)",
             "sparsevec(5)",
             "interval",
             "_int4",

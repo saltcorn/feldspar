@@ -273,6 +273,7 @@ pub fn json_to_value(basic: &BasicType, json: &Json) -> Result<Value> {
         // A vector is an array of numbers of the field's length; a form or a
         // CSV cell sends the array's text.
         BasicType::Vector(dimensions) => crate::vector::vector_value(*dimensions, json),
+        BasicType::HalfVector(dimensions) => crate::vector::half_vector_value(*dimensions, json),
         BasicType::Geometry(kind) => match json {
             Json::String(s) => {
                 let parsed: Json = serde_json::from_str(s).map_err(|_| {

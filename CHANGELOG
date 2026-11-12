@@ -2,6 +2,57 @@
 
 Changes in reverse chronological order.
 
+## `halfvec` is a vector field, and backups write vectors compactly (BK1.5, BK1.6)
+
+Follows the entry below. pgvector's `halfvec(n)` now decodes as a vector instead of text, and a
+backup no longer writes vectors as decimal text.
+
+- **`BasicType::HalfVector(n)`** (`sc-types`): spelled `halfvec(n)`, a JSON array of numbers
+  above the driver, like `Vector(n)`. Its values are checked by
+  `vector::half_vector_value`, which refuses an element past ±65504 (`HALF_MAX`). Callers asking
+  "is this a vector field?" use `BasicType::vector_dimensions()`, which answers for both
+  precisions: nearest reads (`sc-access`), the REST `nearest` parameter, GraphQL, MCP,
+  `similar_rows` and `embed_from`.
+- **Not in the type picker.** `basic_field_types()` is unchanged. `resolve_field_type` refuses
+  `halfvec(n)` with a sentence saying to create a `vector` field, so only a restore
+  (`ApplyOptions::database_types`) makes such a column.
+- **Driver** (`sc-db-postgres`): the `halfvec` binary form (16-bit dimension count, unused
+  word, big-endian IEEE 754 halves) is decoded and encoded with the `half` crate (2.7, already
+  in the lock file). An element reads as the shortest `f32` for its half, which is what Postgres
+  prints (`0.1` reads back as `0.099975586`). A number past the half range is refused, not
+  stored as infinity.
+- **Nearest:** `VectorDistance` has a `half` flag (`#[serde(default)]`, so statements
+  serialised before it still read), and a `halfvec` column is compared with
+  `CAST($1 AS halfvec)`. A vector index on a `halfvec` field is created with
+  `halfvec_cosine_ops`. Because introspection already reads any one-column HNSW index as a
+  vector index, the HNSW index the bug report's app made on its `halfvec` column now restores
+  too (BK1.4). It is recreated with the cosine operator class, whatever class it had.
+- **Compact backups** (`sc_types::vector_pack`, `sc-backup` `values::packed_row_to_json`):
+  table rows write `vector` values as `f32le:<base64>`, `halfvec` as `f16le:<base64>` and
+  `sparsevec` as `sparse:<n>:<base64 of indices then values>`. The tag says what the bytes are,
+  so a value isn't read by guessing from its length. The packing is chosen once per page of
+  rows. Measured on 2,000 random `halfvec(1024)` rows: 12,694 → 2,741 bytes a row raw, and
+  4,091 → 2,006 after deflate. For the 29,011-row `mail_embed` table that is about 370 MB →
+  80 MB of NDJSON, and 120 MB → 58 MB in the zip.
+- **Restore** reads the packed spelling only for a column of the matching type: a text column
+  holding `f32le:…` stays text. It still reads the older spellings, an array of numbers for a
+  vector and the text for a `sparsevec`, so every existing backup restores as before. The
+  format version stays 2, because bumping it would make this server refuse every existing
+  backup. The one incompatibility is a downgrade: a feldspar older than this refuses a packed
+  vector value row by row.
+- **Compatibility with phase 1:** both land in the same release, so `halfvec` columns go from
+  failing to arrays without ever having been text in a release. A `vector` column reads exactly
+  as before.
+- Docs: `OPERATIONS.md` §11.3 "Columns an app made itself" (the old §11.3 is now §11.4).
+- Tests: `sc-db-postgres` `a_halfvec_column_is_read_and_written_as_a_vector` (array round
+  trip, half rounding, the text Postgres prints, the out-of-range refusal, nearest with
+  `half: true`, introspection). `sc-types` `vector_pack` (both precisions, sparse text, what is
+  left alone or refused). `sc-backup` `vectors_are_packed_and_read_back_whichever_spelling_the_file_has`.
+  `backup_api` `pgvector_halfvec_and_sparsevec_columns_travel_in_a_backup` (the report's table
+  made with raw SQL plus its HNSW index: REST arrays and nearest, refusal of a `halfvec` field,
+  packed rows, restored types, values, index and nearest). The existing vector backup test now
+  asserts the packed spelling.
+
 ## Backups no longer abort on a column of a type feldspar does not know (BK1)
 
 Bug report: `feldspar backup` failed every night with `unsupported column type `halfvec` for
@@ -15,7 +66,7 @@ the table through REST or a view failed too, and so did writing a text value to 
 - **Reads** (`sc-db-postgres` `exec::run_query`): a statement is prepared first, which is what
   running it from a string did anyway, so there is no extra round trip. If one of its result
   columns has a type `value::decodes` does not cover, it is prepared again wrapped as
-  `WITH "_sc_q" AS (<sql>) SELECT …, "_sc_q"."vec"::text AS "vec" FROM "_sc_q"`. The column
+  `WITH "_fd_q" AS (<sql>) SELECT …, "_fd_q"."vec"::text AS "vec" FROM "_fd_q"`. The column
   names and order stay the same, and so does the row order: an inner `ORDER BY` keeps the query
   from being flattened. A CTE also wraps an `UPDATE … RETURNING`. The value is `Value::Text` in
   Postgres's own spelling (`[1,0.5,-2]`, `{1:1.5,4:2}/5`, `1 day 02:00:00`), which is what the
@@ -35,10 +86,6 @@ the table through REST or a view failed too, and so did writing a text value to 
   and `[]`, with no spaces. If the target database lacks the type (no pgvector there), that
   column's line in the restore report says so. The schema editor still refuses an unknown type
   for a field an admin or agent creates.
-- **Known limit:** an index the app made with its own SQL on such a column (an HNSW index with
-  `halfvec_cosine_ops`) is backed up as an index of its method and columns, without the
-  operator class, so restoring it fails with Postgres's own message and the report shows it.
-  The column and its rows are unaffected.
 - No migration is needed: nothing stored changes, and the columns this reads as text failed
   before.
 - Tests: `sc-db-postgres` `unknown_types` (built-in types: `SELECT *` paged in order, values

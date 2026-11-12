@@ -76,6 +76,7 @@ async fn a_vector_column_round_trips_and_orders_by_cosine_distance() -> sc_error
     let distance = Expr::VectorDistance(Box::new(VectorDistance {
         column: Expr::col("embedding"),
         to: vec![1.0, 0.0, 0.0],
+        half: false,
     }));
     let mut select = Select::from(Source::table("doc"))
         .columns(vec![

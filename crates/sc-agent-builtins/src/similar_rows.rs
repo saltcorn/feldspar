@@ -405,9 +405,13 @@ impl Plan {
             .filter(|name| allowed.is_empty() || allowed.contains(name))
             .filter(|name| !hidden.contains(name))
             .filter(|name| {
-                !documents
-                    .field(name)
-                    .is_some_and(|f| matches!(f.base.type_.as_basic(), Some(BasicType::Vector(_))))
+                !documents.field(name).is_some_and(|f| {
+                    f.base
+                        .type_
+                        .as_basic()
+                        .and_then(BasicType::vector_dimensions)
+                        .is_some()
+                })
             })
             .collect();
         let limit = match config.get(CFG_LIMIT) {

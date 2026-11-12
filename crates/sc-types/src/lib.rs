@@ -51,6 +51,7 @@ mod rich_types;
 mod role;
 mod type_ref;
 pub mod vector;
+pub mod vector_pack;
 
 pub use args::ArgsExt;
 pub use attrs::Attrs;

@@ -1728,11 +1728,13 @@ fn list_query_params(table: &Table) -> Vec<QueryParam> {
         // the best match comes first.
         QueryParam::new("search", ValueType::Text),
     ];
-    if table
-        .fields
-        .iter()
-        .any(|f| matches!(f.base.type_.as_basic(), Some(BasicType::Vector(n)) if *n > 0))
-    {
+    if table.fields.iter().any(|f| {
+        f.base
+            .type_
+            .as_basic()
+            .and_then(BasicType::vector_dimensions)
+            .is_some_and(|n| n > 0)
+    }) {
         params.push(QueryParam::new(
             crate::query_string::KEY_NEAREST,
             ValueType::Text,

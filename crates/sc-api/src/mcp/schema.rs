@@ -1372,13 +1372,15 @@ fn check_attributes(catalog: &Catalog, operations: &[Operation]) -> Result<()> {
                         .map(|a| a.base.name.clone())
                         .collect::<Vec<_>>(),
                 ),
-                Some(TypeRef::Basic(BasicType::Vector(n))) => (
-                    format!("vector({n})"),
-                    sc_types::vector::vector_attributes()
-                        .into_iter()
-                        .map(|a| a.base.name)
-                        .collect(),
-                ),
+                Some(TypeRef::Basic(basic @ (BasicType::Vector(_) | BasicType::HalfVector(_)))) => {
+                    (
+                        basic.name().to_owned(),
+                        sc_types::vector::vector_attributes()
+                            .into_iter()
+                            .map(|a| a.base.name)
+                            .collect(),
+                    )
+                }
                 Some(TypeRef::Basic(basic)) => (basic.name().to_owned(), Vec::new()),
                 // An unknown type is the schema editor's to name.
                 None => continue,

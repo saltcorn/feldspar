@@ -569,6 +569,8 @@ rcgen = "0.13"
 # rather than special-casing binary routes, so file contents ride in JSON as
 # base64 (with a UTF-8 `text` shortcut for editing text files).
 base64 = "0.22"
+# IEEE 754 half precision, the element of pgvector's `halfvec`.
+half = "2.7"
 # Secret fields (TODO-imap M2): a value is sealed with AES-256-GCM under the
 # instance key before it reaches its column. 0.10 is the version `deno_crypto`
 # already brings, so this adds no crate to the tree; `getrandom` is left off

@@ -146,7 +146,7 @@ pub(crate) async fn run_query(
 
 /// `sql` wrapped so that each of its result `columns` of a type [`decodes`] does
 /// not cover comes back as text, in the same order and under the same name:
-/// `WITH "_sc_q" AS (<sql>) SELECT "_sc_q"."id", "_sc_q"."vec"::text AS "vec" FROM "_sc_q"`.
+/// `WITH "_fd_q" AS (<sql>) SELECT "_fd_q"."id", "_fd_q"."vec"::text AS "vec" FROM "_fd_q"`.
 ///
 /// A CTE rather than a subquery, so a data-modifying statement with `RETURNING`
 /// wraps too (Postgres allows one in a top-level `WITH`). The rows keep their
@@ -160,7 +160,7 @@ fn read_as_text(
     sql: &str,
     columns: &[tokio_postgres::Column],
 ) -> Result<String> {
-    const INNER: &str = "_sc_q";
+    const INNER: &str = "_fd_q";
     let inner = dialect.quote_ident(INNER);
     let mut list = Vec::with_capacity(columns.len());
     for (i, column) in columns.iter().enumerate() {

@@ -707,7 +707,11 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
         self.expr(&d.column)?;
         self.push(" <=> CAST(");
         self.bind(Value::Json(crate::vector::vector_json(&d.to)))?;
-        self.push(" AS vector))");
+        self.push(if d.half {
+            " AS halfvec))"
+        } else {
+            " AS vector))"
+        });
         Ok(())
     }
 

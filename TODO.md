@@ -991,8 +991,14 @@ column: the Postgres driver decodes only the types it knows, so `SELECT *` faile
   does `vector`.
 - [x] **BK1.3** A restore recreates a column of such a type as it was (`ApplyOptions::database_types`),
   and its rows go back in. Test: a round trip of `halfvec`, `sparsevec` and `interval`.
-- [ ] **BK1.4** Carry an index's operator class in a backup, so a raw-SQL HNSW index on a
-  `halfvec` column (`halfvec_cosine_ops`) restores too.
+- [x] **BK1.4** A raw-SQL HNSW index on a `halfvec` column restores too: introspected as a vector
+  index, recreated with `halfvec_cosine_ops` (BK1.5). Its own operator class is not carried, so
+  an L2 or inner-product HNSW index comes back as a cosine one.
+- [x] **BK1.5** `halfvec(n)` is a vector (`BasicType::HalfVector`): read and written as a JSON
+  array, `nearest` and embeddings work on it, a vector index uses `halfvec_cosine_ops`. Not
+  offered in the type picker, and not created by an admin or agent (only restored).
+- [x] **BK1.6** A backup writes vector, half-vector and sparse-vector values compactly (base64 of
+  their binary form, tagged), and a restore reads both that and the older spellings.
 
 ---
 

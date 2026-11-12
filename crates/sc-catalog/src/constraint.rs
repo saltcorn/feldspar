@@ -503,15 +503,21 @@ fn vector_index_sql(
             table.name
         )));
     };
-    if !matches!(found.base.type_.as_basic(), Some(BasicType::Vector(n)) if *n > 0) {
-        return Err(Error::invalid(format!(
-            "a vector index is over a vector field, and `{}.{field}` is a {}",
-            table.name,
-            found.base.type_.name()
-        )));
-    }
+    // The operator class is the column's precision: pgvector indexes a
+    // `halfvec` with its own (`halfvec_cosine_ops`).
+    let ops = match found.base.type_.as_basic() {
+        Some(BasicType::Vector(n)) if *n > 0 => "vector_cosine_ops",
+        Some(BasicType::HalfVector(n)) if *n > 0 => "halfvec_cosine_ops",
+        _ => {
+            return Err(Error::invalid(format!(
+                "a vector index is over a vector field, and `{}.{field}` is a {}",
+                table.name,
+                found.base.type_.name()
+            )));
+        }
+    };
     Ok(format!(
-        "CREATE INDEX {} ON {} USING {VECTOR_INDEX_METHOD} ({} vector_cosine_ops);\n",
+        "CREATE INDEX {} ON {} USING {VECTOR_INDEX_METHOD} ({} {ops});\n",
         dialect.quote_ident(name),
         dialect.quote_ident(&table.name),
         dialect.quote_ident(field),

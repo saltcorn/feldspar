@@ -987,7 +987,7 @@ Only relevant on a development machine (README §11).
 | `DATABASE_URL` | the maintenance connection per-test databases are created and dropped from. Overrides the `test` environment in `feldspar.toml` |
 | `SC_TEST_TEMPLATE` | the template each per-test database is cloned from; it must be **empty**, since every test inherits whatever is in it. Overrides `test_template` in the file. Leave it unset to use Postgres's `template1`; set it on a machine whose `template1` has a stale collation version |
 | `SC_TEST_POSTGIS_TEMPLATE` | the database a **PostGIS** test database is cloned from (default `feldspar_postgis_template`, §10.3). A test that needs PostGIS skips with a message when it does not exist |
-| `SC_TEST_PGVECTOR_TEMPLATE` | the database a **pgvector** test database is cloned from (default `feldspar_pgvector_template`, §11.3). A test that needs pgvector skips with a message when it does not exist |
+| `SC_TEST_PGVECTOR_TEMPLATE` | the database a **pgvector** test database is cloned from (default `feldspar_pgvector_template`, §11.4). A test that needs pgvector skips with a message when it does not exist |
 | `SC_TSC` | path to a TypeScript compiler for the generated-client type-check tests |
 | `SC_TEST_NPM`, `SC_TEST_MQTT_BROKER` | opt in to the tests that need a real npm registry and a real MQTT broker |
 | `SC_PRINT_SKILL` | print the generated `SKILL.md` during its test, for reading it |
@@ -2305,7 +2305,26 @@ by the **`embed_rows`** action — run it once from a trigger after adding the f
 schedule. The field's dimensions must be the model's output size (1536 for
 `text-embedding-3-small`).
 
-### 11.3 For the test suite
+### 11.3 Columns an app made itself: `halfvec`, `sparsevec`
+
+An app may make its own pgvector columns with SQL. Feldspar reads them as fields:
+
+- **`halfvec(n)`** (16-bit elements, half the storage of `vector(n)`) is a vector field like any
+  other: an array of numbers through REST and GraphQL, ordered by `nearest`, embedded from
+  `embed_from` when it has one, and indexed with `halfvec_cosine_ops`. Values are rounded to
+  the nearest half-precision number when they are stored, and a number past ±65504 is refused.
+  It is not offered in the type picker: a field made in feldspar is a `vector`.
+- **`sparsevec(n)`** is read and written as the text Postgres prints (`{1:1.5,4:2}/5`).
+- Any other type feldspar has no codec for (`interval`, `inet`, arrays, …) is read and written
+  as its text too.
+
+A backup writes vector, `halfvec` and `sparsevec` values compactly, as base64 of their binary
+form tagged with what it is (`f32le:…`, `f16le:…`, `sparse:5:…`): about a fifth of the size of
+their decimal text, half of it after compression. A restore reads that and the older spellings
+(an array of numbers, the `sparsevec` text) and recreates the columns with their types. A
+backup with vector values cannot be restored by a feldspar older than 0.1.1.
+
+### 11.4 For the test suite
 
 The tests that need pgvector clone their database from a template that already has it:
 

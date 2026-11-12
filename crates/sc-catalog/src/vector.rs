@@ -28,14 +28,18 @@ pub async fn bootstrap_vector(catalog: &Catalog) -> Result<VectorSupport> {
 }
 
 /// The expression a value is written to `field` as: the value itself, except
-/// for a vector, which is cast to the column's `vector(n)` — a cast on
+/// for a vector, which is cast to the column's `vector(n)` (or `halfvec(n)`) — a cast on
 /// Postgres, and on SQLite the driver's function that makes the stored blob.
 pub fn write_expr(field: Option<&DataField>, value: Value) -> Expr {
     match field.and_then(|f| f.base.type_.as_basic()) {
-        Some(ty @ BasicType::Vector(n)) if *n > 0 && !value.is_null() => Expr::Cast {
-            expr: Box::new(Expr::lit(value)),
-            type_name: ty.sql_type().to_owned(),
-        },
+        Some(ty @ (BasicType::Vector(n) | BasicType::HalfVector(n)))
+            if *n > 0 && !value.is_null() =>
+        {
+            Expr::Cast {
+                expr: Box::new(Expr::lit(value)),
+                type_name: ty.sql_type().to_owned(),
+            }
+        }
         _ => Expr::lit(value),
     }
 }

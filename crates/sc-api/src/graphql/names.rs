@@ -276,10 +276,11 @@ impl TableNames {
             fields: Vec::new(),
             relations: Vec::new(),
             nearest: table.fields.iter().any(|f| {
-                matches!(
-                    f.base.type_.as_basic(),
-                    Some(sc_types::BasicType::Vector(n)) if *n > 0
-                )
+                f.base
+                    .type_
+                    .as_basic()
+                    .and_then(sc_types::BasicType::vector_dimensions)
+                    .is_some_and(|n| n > 0)
             }),
         })
     }

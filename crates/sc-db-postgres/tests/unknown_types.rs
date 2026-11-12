@@ -1,6 +1,7 @@
-//! Columns of types the driver has no binary codec for — pgvector's `halfvec`
-//! and `sparsevec`, `interval`, `inet`, an array — travel as their text (bug
-//! report: `feldspar backup` aborted on an app's `halfvec` column).
+//! Columns of types the driver has no binary codec for — pgvector's
+//! `sparsevec`, `interval`, `inet`, an array — travel as their text (bug
+//! report: `feldspar backup` aborted on an app's `halfvec` column, which is now
+//! decoded as a vector; see the last test).
 //!
 //! A read of such a column is rerun with it cast to text, keeping the row order
 //! and the column names; a text value written to one is sent in Postgres's text
@@ -17,11 +18,8 @@ const BUILT_IN: &[(&str, &str, &str)] = &[
     ("tags", "int4[]", "{1,2,3}"),
 ];
 
-/// pgvector's types this system does not know.
-const PGVECTOR: &[(&str, &str, &str)] = &[
-    ("half", "halfvec(3)", "[1,0.5,-2]"),
-    ("sparse", "sparsevec(5)", "{1:1.5,4:2}/5"),
-];
+/// pgvector's type this system does not know.
+const PGVECTOR: &[(&str, &str, &str)] = &[("sparse", "sparsevec(5)", "{1:1.5,4:2}/5")];
 
 fn text(s: &str) -> Expr {
     Expr::lit(Value::Text(s.to_owned()))
@@ -144,7 +142,7 @@ async fn built_in_types_without_a_codec_are_read_and_written_as_text() -> sc_err
 }
 
 #[tokio::test]
-async fn pgvector_halfvec_and_sparsevec_are_read_and_written_as_text() -> sc_error::Result<()> {
+async fn pgvector_sparsevec_is_read_and_written_as_text() -> sc_error::Result<()> {
     let Some(db) = TestDb::with_pgvector().await? else {
         return Ok(());
     };
@@ -163,5 +161,91 @@ async fn pgvector_halfvec_and_sparsevec_are_read_and_written_as_text() -> sc_err
             .expect(column);
         assert_eq!(found.sql_type, *sql_type);
     }
+    Ok(())
+}
+
+/// `halfvec(n)` is a vector: read as the JSON array of numbers a `vector(n)`
+/// is, written from one (or from its text), rounded to half precision by the
+/// column, refused past the half range, and ordered by cosine distance against
+/// a `halfvec` — the only precision pgvector compares it with.
+#[tokio::test]
+async fn a_halfvec_column_is_read_and_written_as_a_vector() -> sc_error::Result<()> {
+    use sc_query::VectorDistance;
+    use serde_json::json;
+    let Some(db) = TestDb::with_pgvector().await? else {
+        return Ok(());
+    };
+    let driver = PgDriver::from_pool(db.pool().clone());
+    rows(
+        &driver,
+        raw("CREATE TABLE doc (id int8 PRIMARY KEY, e halfvec(3))"),
+    )
+    .await?;
+    let half = |v: serde_json::Value| Expr::Cast {
+        expr: Box::new(Expr::lit(Value::Json(v))),
+        type_name: "halfvec(3)".into(),
+    };
+    let columns = vec!["id".to_owned(), "e".to_owned()];
+    for (id, value) in [
+        (1_i64, half(json!([1, 0, 0]))),
+        (2, half(json!([0.1, 1, 0]))),
+        (3, half(json!([0.9, 0.1, 0]))),
+        // A form's text of the array.
+        (4, text("[0, 0, 1]")),
+    ] {
+        rows(
+            &driver,
+            Statement::from(Insert::row(
+                "doc",
+                columns.clone(),
+                vec![Expr::lit(id), value],
+            )),
+        )
+        .await?;
+    }
+    let all = rows(&driver, raw("SELECT * FROM doc ORDER BY id")).await?;
+    assert_eq!(all[0].get("e"), Some(&Value::Json(json!([1.0, 0.0, 0.0]))));
+    // 0.1 is not a half: the column keeps the nearest one, 0.0999755859375,
+    // read as the shortest `f32` for it — what Postgres prints.
+    assert_eq!(
+        all[1].get("e"),
+        Some(&Value::Json(json!([0.099975586, 1.0, 0.0])))
+    );
+    assert_eq!(all[3].get("e"), Some(&Value::Json(json!([0.0, 0.0, 1.0]))));
+    let printed = rows(&driver, raw("SELECT e::text AS t FROM doc WHERE id = 2")).await?;
+    assert_eq!(text_of(&printed[0], "t"), "[0.099975586,1,0]");
+
+    // Past the half range: refused, never stored as infinity.
+    let err = match driver
+        .query(&Statement::from(Insert::row(
+            "doc",
+            columns.clone(),
+            vec![Expr::lit(5_i64), half(json!([70000, 0, 0]))],
+        )))
+        .await
+    {
+        Ok(stream) => stream.try_collect().await.map(|_| ()).unwrap_err(),
+        Err(e) => e,
+    };
+    assert!(err.to_string().contains("half-precision"), "{err}");
+
+    // Nearest by cosine distance, the query vector cast to a halfvec.
+    let distance = Expr::VectorDistance(Box::new(VectorDistance {
+        column: Expr::col("e"),
+        to: vec![1.0, 0.0, 0.0],
+        half: true,
+    }));
+    let mut select = Select::from(Source::table("doc"))
+        .columns(vec![Projection::expr(Expr::col("id"))])
+        .limit(2);
+    select.order = vec![OrderBy::asc(distance)];
+    let nearest = rows(&driver, Statement::from(select)).await?;
+    let ids: Vec<_> = nearest.iter().map(|r| r.get("id").cloned()).collect();
+    assert_eq!(ids, vec![Some(Value::Int(1)), Some(Value::Int(3))]);
+
+    let tables = driver.introspect().await?;
+    let doc = tables.iter().find(|t| t.name == "doc").expect("doc");
+    let e = doc.columns.iter().find(|c| c.name == "e").expect("e");
+    assert_eq!(e.sql_type, "halfvec(3)");
     Ok(())
 }

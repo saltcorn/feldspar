@@ -67,6 +67,17 @@ pub fn vector_attributes() -> Vec<FormField> {
     ]
 }
 
+/// pgvector's half-precision vector, `halfvec(n)`: 16-bit floats, half the
+/// size of a `vector(n)`. A field is one only when the database already has
+/// such a column (an app made it with its own SQL, or a restore recreates it):
+/// it is not offered in the type picker, and the schema editor does not create
+/// one. Above the driver it is the same JSON array of numbers as a vector.
+pub const HALFVEC_TYPE_NAME: &str = "halfvec";
+
+/// The largest magnitude a half-precision element holds (IEEE 754 binary16);
+/// pgvector refuses anything past it.
+pub const HALF_MAX: f32 = 65_504.0;
+
 /// The interned `vector(n)` spelling, which is both the type's name and its SQL
 /// type. [`BasicType::name`] and [`BasicType::sql_type`] lend out a `&str`, and
 /// a field's dimensions are only known at run time, so each spelling is made
@@ -87,20 +98,49 @@ pub(crate) fn spelling(dimensions: u32) -> &'static str {
         .or_insert_with(|| Box::leak(format!("vector({dimensions})").into_boxed_str()))
 }
 
-/// The dimensions a SQL type or field type name spells: `vector(3)` (any case,
-/// spaces allowed) is `Some(3)`, and the bare `vector` of the type picker is
-/// `Some(0)`. `None` for anything else.
-pub fn of_sql_type(sql_type: &str) -> Option<u32> {
+/// The interned `halfvec(n)` spelling, as [`spelling`] is `vector(n)`'s.
+pub(crate) fn half_spelling(dimensions: u32) -> &'static str {
+    static SPELLINGS: LazyLock<Mutex<BTreeMap<u32, &'static str>>> =
+        LazyLock::new(|| Mutex::new(BTreeMap::new()));
+    if dimensions == 0 {
+        return HALFVEC_TYPE_NAME;
+    }
+    let mut spellings = match SPELLINGS.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    spellings
+        .entry(dimensions)
+        .or_insert_with(|| Box::leak(format!("halfvec({dimensions})").into_boxed_str()))
+}
+
+/// The dimensions a `halfvec(n)` SQL type spells, as [`of_sql_type`] reads
+/// `vector(n)`: `Some(0)` for a bare `halfvec` (a column of no fixed length).
+pub fn of_half_sql_type(sql_type: &str) -> Option<u32> {
+    of_type_named(sql_type, HALFVEC_TYPE_NAME)
+}
+
+fn of_type_named(sql_type: &str, type_name: &str) -> Option<u32> {
     let compact: String = sql_type
         .chars()
         .filter(|c| !c.is_whitespace())
         .collect::<String>()
         .to_ascii_lowercase();
-    if compact == VECTOR_TYPE_NAME {
+    if compact == type_name {
         return Some(0);
     }
-    let n = compact.strip_prefix("vector(")?.strip_suffix(')')?;
+    let n = compact
+        .strip_prefix(type_name)?
+        .strip_prefix('(')?
+        .strip_suffix(')')?;
     n.parse::<u32>().ok().filter(|n| *n > 0)
+}
+
+/// The dimensions a SQL type or field type name spells: `vector(3)` (any case,
+/// spaces allowed) is `Some(3)`, and the bare `vector` of the type picker is
+/// `Some(0)`. `None` for anything else.
+pub fn of_sql_type(sql_type: &str) -> Option<u32> {
+    of_type_named(sql_type, VECTOR_TYPE_NAME)
 }
 
 /// Refuse a dimension count a column cannot have.
@@ -163,6 +203,26 @@ pub fn vector_value(dimensions: u32, json: &Json) -> Result<Value> {
     let values = floats(json)?;
     check_length(dimensions, values.len())?;
     Ok(Value::Json(to_json(&values)))
+}
+
+/// A JSON value as the [`Value`] a `halfvec(dimensions)` column holds: what
+/// [`vector_value`] takes, with every element within [`HALF_MAX`]. The value
+/// is not rounded here; the column rounds it to half precision when it stores
+/// it, so a read gives back the nearest half-precision number.
+pub fn half_vector_value(dimensions: u32, json: &Json) -> Result<Value> {
+    let value = vector_value(dimensions, json)?;
+    if let Value::Json(Json::Array(items)) = &value
+        && let Some((i, x)) = items
+            .iter()
+            .enumerate()
+            .find(|(_, x)| x.as_f64().is_some_and(|x| x.abs() > f64::from(HALF_MAX)))
+    {
+        return Err(Error::invalid(format!(
+            "element {i} of this vector is {x}, and a half-precision vector holds numbers \
+             between -{HALF_MAX} and {HALF_MAX}"
+        )));
+    }
+    Ok(value)
 }
 
 /// Refuse a vector of `len` numbers for a field of `dimensions`.
@@ -253,6 +313,11 @@ mod tests {
         assert_eq!(of_sql_type("vector(0)"), None);
         assert_eq!(of_sql_type("vector(x)"), None);
         assert_eq!(of_sql_type("halfvec(3)"), None);
+        assert_eq!(of_half_sql_type("halfvec(3)"), Some(3));
+        assert_eq!(of_half_sql_type("halfvec"), Some(0));
+        assert_eq!(of_half_sql_type("vector(3)"), None);
+        assert_eq!(of_half_sql_type("halfvec(0)"), None);
+        assert_eq!(half_spelling(1024), "halfvec(1024)");
         assert_eq!(spelling(3), "vector(3)");
         assert!(std::ptr::eq(spelling(3), spelling(3)), "interned once");
         assert!(check_dimensions(0).is_err());

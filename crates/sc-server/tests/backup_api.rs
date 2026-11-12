@@ -2225,7 +2225,9 @@ async fn a_vector_field_its_values_and_its_index_travel_in_a_backup() -> sc_erro
     }
     let archive = backup_everything(&mut source).await;
     let rows = entry(&archive, "tables/docs/rows.ndjson");
-    assert!(rows.contains("[0.0,0.5,0.25]"), "{rows}");
+    // Packed (`sc_types::vector_pack`), not decimal text.
+    assert!(rows.contains("\"f32le:"), "{rows}");
+    assert!(!rows.contains("0.25"), "{rows}");
 
     let Some(db) = TestDb::with_pgvector().await? else {
         return Ok(());
@@ -2347,9 +2349,13 @@ async fn columns_of_types_the_system_does_not_know_travel_in_a_backup() -> sc_er
     .await
 }
 
-/// The bug report's case: pgvector's `halfvec` (and `sparsevec`), which this
-/// system does not know, unlike its `vector`.
+/// The bug report's case: an app's own `halfvec` column (with the HNSW index it
+/// made for it) and a `sparsevec` one. The half vector is a vector here — an
+/// array on the wire, ordered nearest by — and both are written compactly in
+/// the backup (`f16le:…`, `sparse:5:…`), restored with their types, values and
+/// index. A field of the half type is still not one an admin creates.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn pgvector_halfvec_and_sparsevec_columns_travel_in_a_backup() -> sc_error::Result<()> {
     let (Some(from), Some(to)) = (
         TestDb::with_pgvector().await?,
@@ -2357,15 +2363,139 @@ async fn pgvector_halfvec_and_sparsevec_columns_travel_in_a_backup() -> sc_error
     ) else {
         return Ok(());
     };
-    database_types_round_trip(
-        setup_in(from).await?,
-        setup_in(to).await?,
-        &[
-            ("half", "halfvec(3)", "[1,0.5,-2]"),
-            ("sparse", "sparsevec(5)", "{1:1.5,4:2}/5"),
-        ],
-    )
-    .await
+    let mut source = setup_in(from).await?;
+    source
+        .db
+        .client()
+        .await?
+        .batch_execute(
+            "CREATE TABLE mail_embed (id bigint primary key, vec halfvec(3), sparse sparsevec(5)); \
+             CREATE INDEX mail_embed_vec ON mail_embed USING hnsw (vec halfvec_cosine_ops); \
+             INSERT INTO mail_embed VALUES \
+               (1, '[1,0,0]', '{1:1.5,4:2}/5'), \
+               (2, '[0.1,1,0]', '{2:-1}/5'), \
+               (3, '[0.9,0.1,0]', '{}/5'), \
+               (4, NULL, NULL);",
+        )
+        .await
+        .map_err(db_error)?;
+    source.catalog.reload().await?;
+
+    let read = |rows: &Value| -> Vec<(Value, Value)> {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (r["vec"].clone(), r["sparse"].clone()))
+            .collect()
+    };
+    let expected = vec![
+        (json!([1.0, 0.0, 0.0]), json!("{1:1.5,4:2}/5")),
+        // The column's nearest half to 0.1.
+        (json!([0.099975586, 1.0, 0.0]), json!("{2:-1}/5")),
+        (json!([0.89990234, 0.099975586, 0.0]), json!("{}/5")),
+        (Value::Null, Value::Null),
+    ];
+    let (status, rows) = source
+        .client
+        .send("GET", "/api/tables/mail_embed/rows?order=id", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{rows}");
+    assert_eq!(read(&rows), expected, "{rows}");
+
+    // Written through the API as an array, and ordered nearest by.
+    let (status, body) = source
+        .client
+        .send(
+            "POST",
+            "/api/tables/mail_embed/rows",
+            Some(json!({ "id": 5, "vec": [0, 0, 1] })),
+        )
+        .await;
+    assert!(status.is_success(), "{body}");
+    let (status, nearest) = source
+        .client
+        .send(
+            "GET",
+            "/api/tables/mail_embed/rows?nearest=vec.[1,0,0]&limit=2",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{nearest}");
+    let ids: Vec<&Value> = nearest
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| &r["id"])
+        .collect();
+    assert_eq!(ids, vec![&json!(1), &json!(3)], "{nearest}");
+
+    // Not a type a field is made with.
+    let (status, body) = source
+        .client
+        .send(
+            "POST",
+            "/api/tables/mail_embed/fields",
+            Some(json!({ "name": "other", "type": "halfvec(3)" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.to_string().contains("Create a `vector` field"),
+        "{body}"
+    );
+
+    let archive = backup_everything(&mut source).await;
+    let backed_up = entry(&archive, "tables/mail_embed/rows.ndjson");
+    assert!(backed_up.contains("\"f16le:"), "{backed_up}");
+    assert!(backed_up.contains("\"sparse:5:"), "{backed_up}");
+    assert!(!backed_up.contains("0.099975586"), "{backed_up}");
+
+    let mut target = setup_in(to).await?;
+    let report = restore_everything(&mut target, &archive).await;
+    let restored = target
+        .catalog
+        .require("mail_embed")
+        .map_err(|e| sc_error::Error::msg(format!("{e}; {report}")))?;
+    let type_of = |name: &str| {
+        restored
+            .field(name)
+            .map(|f| f.base.type_.sql_type().to_owned())
+    };
+    assert_eq!(type_of("vec").as_deref(), Some("halfvec(3)"), "{report}");
+    assert_eq!(
+        type_of("sparse").as_deref(),
+        Some("sparsevec(5)"),
+        "{report}"
+    );
+    assert!(
+        sc_catalog::vector_index(&restored, "vec").is_some(),
+        "the HNSW index: {report}"
+    );
+    let (status, rows) = target
+        .client
+        .send("GET", "/api/tables/mail_embed/rows?order=id", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{rows}");
+    let mut with_new = expected.clone();
+    with_new.push((json!([0.0, 0.0, 1.0]), Value::Null));
+    assert_eq!(read(&rows), with_new, "{rows} {report}");
+    let (status, nearest) = target
+        .client
+        .send(
+            "GET",
+            "/api/tables/mail_embed/rows?nearest=vec.[1,0,0]&limit=2",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{nearest}");
+    let ids: Vec<&Value> = nearest
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| &r["id"])
+        .collect();
+    assert_eq!(ids, vec![&json!(1), &json!(3)], "{nearest}");
+    Ok(())
 }
 
 #[tokio::test]

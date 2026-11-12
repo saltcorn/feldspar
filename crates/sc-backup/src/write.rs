@@ -1167,8 +1167,12 @@ async fn write_table_rows<W: Write + Seek>(
             started = true;
         }
         let mut bytes: u64 = 0;
+        let packings = page
+            .first()
+            .map(|row| values::packings(table, row.columns()))
+            .unwrap_or_default();
         for row in &page {
-            bytes += zip.row(&values::row_to_json(row))?;
+            bytes += zip.row(&values::packed_row_to_json(&packings, row))?;
             count += 1;
         }
         let Some(pk) = &pk else {

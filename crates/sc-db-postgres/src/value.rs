@@ -12,7 +12,7 @@
 //! - **Result column → [`Value`]**: [`decode`] reads one column of a
 //!   [`tokio_postgres::Row`] according to its Postgres type, handling `NULL`.
 //!
-//! A type outside both lists — an extension's (`halfvec`, `sparsevec`),
+//! A type outside both lists — an extension's (`sparsevec`),
 //! `interval`, `inet`, an array — travels as **its text**: `run_query` reads such
 //! a column as `col::text`, and a text value bound to such a parameter is sent in
 //! Postgres's text format (`encode_format`). That is the same value the type
@@ -88,10 +88,15 @@ impl PgParam<'_> {
             // A vector travels as a JSON array and pgvector takes its own
             // binary form; a form may send the array's text.
             Value::Json(v) if ty.name() == VECTOR_TYPE => encode_vector(v, out),
-            Value::Text(v) if ty.name() == VECTOR_TYPE => {
+            Value::Json(v) if ty.name() == HALFVEC_TYPE => encode_half_vector(v, out),
+            Value::Text(v) if ty.name() == VECTOR_TYPE || ty.name() == HALFVEC_TYPE => {
                 let json: serde_json::Value = serde_json::from_str(v)
                     .map_err(|_| BoxError::from(format!("{v:?} is not a vector")))?;
-                encode_vector(&json, out)
+                if ty.name() == HALFVEC_TYPE {
+                    encode_half_vector(&json, out)
+                } else {
+                    encode_vector(&json, out)
+                }
             }
             Value::Text(v) if crate::geometry::is_geometry_type(ty.name()) => {
                 let json: serde_json::Value = serde_json::from_str(v)
@@ -223,6 +228,10 @@ fn encode_geometry(
 /// itself: an extension's type has no fixed OID.
 pub(crate) const VECTOR_TYPE: &str = "vector";
 
+/// pgvector's half-precision vector, read and written like [`VECTOR_TYPE`]
+/// with 16-bit elements.
+pub(crate) const HALFVEC_TYPE: &str = "halfvec";
+
 /// `v` rounded to the single precision a `float4` column (and a vector
 /// element) holds, as Postgres itself rounds a `float8` assigned to one. A value
 /// past `f32`'s range becomes infinite.
@@ -261,23 +270,70 @@ fn encode_vector(
     Ok(IsNull::No)
 }
 
+/// A JSON array of numbers as pgvector's `halfvec` binary form
+/// (`halfvec_recv`): the header as for a vector, then each element as a
+/// big-endian IEEE 754 half, rounded to the nearest one. A number past the
+/// half range is refused rather than stored as infinity, as pgvector refuses it.
+fn encode_half_vector(
+    json: &serde_json::Value,
+    out: &mut BytesMut,
+) -> std::result::Result<IsNull, BoxError> {
+    let serde_json::Value::Array(items) = json else {
+        return Err(BoxError::from(format!(
+            "a vector is an array of numbers, not {json}"
+        )));
+    };
+    let dimensions = i16::try_from(items.len())
+        .map_err(|_| BoxError::from(format!("a vector of {} dimensions", items.len())))?;
+    out.extend_from_slice(&dimensions.to_be_bytes());
+    out.extend_from_slice(&0_i16.to_be_bytes());
+    for item in items {
+        let x = item
+            .as_f64()
+            .map(half::f16::from_f64)
+            .filter(|x| x.is_finite())
+            .ok_or_else(|| {
+                BoxError::from(format!("{item} is not a number of a half-precision vector"))
+            })?;
+        out.extend_from_slice(&x.to_be_bytes());
+    }
+    Ok(IsNull::No)
+}
+
 /// pgvector's binary form as the JSON array a vector is above the driver.
 fn decode_vector(raw: &[u8]) -> std::result::Result<serde_json::Value, String> {
+    decode_elements(raw, 4, |c| f32::from_be_bytes([c[0], c[1], c[2], c[3]]))
+}
+
+/// pgvector's `halfvec` binary form as the same JSON array: each half widened
+/// to the `f32` it is exactly, and printed as that `f32` is.
+fn decode_half_vector(raw: &[u8]) -> std::result::Result<serde_json::Value, String> {
+    decode_elements(raw, 2, |c| half::f16::from_be_bytes([c[0], c[1]]).to_f32())
+}
+
+/// A vector's binary form — a 16-bit dimension count, an unused word, then
+/// the elements of `width` bytes each — as a JSON array of numbers.
+fn decode_elements(
+    raw: &[u8],
+    width: usize,
+    element: impl Fn(&[u8]) -> f32,
+) -> std::result::Result<serde_json::Value, String> {
     let header = raw.get(..4).ok_or("a vector shorter than its header")?;
     let dimensions = i16::from_be_bytes([header[0], header[1]]);
     let body = &raw[4..];
-    if dimensions < 0 || body.len() != dimensions as usize * 4 {
+    if dimensions < 0 || body.len() != dimensions as usize * width {
         return Err(format!(
             "a vector of {dimensions} dimensions in {} bytes",
             body.len()
         ));
     }
     Ok(serde_json::Value::Array(
-        body.chunks_exact(4)
+        body.chunks_exact(width)
             .map(|c| {
-                let x = f32::from_be_bytes([c[0], c[1], c[2], c[3]]);
+                let x = element(c);
                 // The shortest decimal that reads back as the same `f32`, so
-                // 0.1 written is 0.1 read.
+                // 0.1 written is 0.1 read (and a half reads as Postgres prints
+                // it).
                 format!("{x}")
                     .parse::<f64>()
                     .ok()
@@ -297,7 +353,7 @@ impl<'a> FromSql<'a> for RawVector<'a> {
     }
 
     fn accepts(ty: &Type) -> bool {
-        ty.name() == VECTOR_TYPE
+        ty.name() == VECTOR_TYPE || ty.name() == HALFVEC_TYPE
     }
 }
 
@@ -352,7 +408,7 @@ impl ToSql for PgParam<'_> {
 /// Whether a text value bound to a parameter of type `ty` is sent as its text
 /// (Postgres's text format) rather than in binary: for a type that neither
 /// `String` binds nor [`PgParam::encode`] parses text into — an extension's type
-/// (`halfvec`, `sparsevec`, `ltree` aside, which `String` takes), `interval`,
+/// (`sparsevec`; `ltree` aside, which `String` takes), `interval`,
 /// `inet`, an array. Such a column reads back as text ([`decodes`] is false for
 /// it), so this is what writes that text back.
 fn sends_text_format(ty: &Type) -> bool {
@@ -387,6 +443,7 @@ pub(crate) fn decodes(ty: &Type) -> bool {
     .contains(ty)
         || crate::geometry::is_geometry_type(ty.name())
         || ty.name() == VECTOR_TYPE
+        || ty.name() == HALFVEC_TYPE
 }
 
 /// Read one column of `row` as a [`Value`], mapping the Postgres type to a basic
@@ -443,11 +500,16 @@ pub fn decode(row: &PgRow, idx: usize) -> Result<Value> {
                     .map_err(|e| Error::database(format!("column `{}`: {e}", column.name())))?,
             ),
         }
-    } else if ty.name() == VECTOR_TYPE {
+    } else if ty.name() == VECTOR_TYPE || ty.name() == HALFVEC_TYPE {
+        let decode = if ty.name() == HALFVEC_TYPE {
+            decode_half_vector
+        } else {
+            decode_vector
+        };
         match get::<Option<RawVector<'_>>>(row, idx)? {
             None => Value::Null,
             Some(RawVector(bytes)) => Value::Json(
-                decode_vector(bytes)
+                decode(bytes)
                     .map_err(|e| Error::database(format!("column `{}`: {e}", column.name())))?,
             ),
         }
