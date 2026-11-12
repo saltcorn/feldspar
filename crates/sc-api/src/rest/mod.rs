@@ -2451,6 +2451,7 @@ fn resource_model(table: &Table, exposed: &std::collections::HashSet<&str>) -> R
         // (`rows::reject_calc_writes`), so it belongs in a row and in no write.
         rf.read_only = matches!(field.kind, DataFieldKind::Calc { .. });
         rf.write_only = field.is_secret();
+        rf.options = allowed_values(field);
         if let DataFieldKind::Key { target_table, .. } = &field.kind
             && exposed.contains(target_table.as_str())
         {
@@ -2460,6 +2461,17 @@ fn resource_model(table: &Table, exposed: &std::collections::HashSet<&str>) -> R
     }
     model.synced = table.sync_enabled();
     model
+}
+
+/// A `string` field's allowed values, read as validation reads them, or `None`
+/// when it has none (or they cannot be read, which validation reports).
+fn allowed_values(field: &sc_catalog::DataField) -> Option<Vec<String>> {
+    let rich = field.base.type_.as_rich()?;
+    if rich.name() != sc_types::StringType::NAME {
+        return None;
+    }
+    let options = sc_types::parse_string_options(field.base.attributes.get("options")?).ok()?;
+    (!options.is_empty()).then_some(options)
 }
 
 /// The endpoint (and generated client method) name for an operation on a table:

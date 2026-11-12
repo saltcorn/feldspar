@@ -256,7 +256,8 @@ argument (the new values) and `.delete()` takes none; without a `.where()` both 
 than touch every row. To read one row by id, use `db.t.get(id)`.
 
 Conditions (`.where()`, `.having()`): an object — `{ status: "open", pages: { gte: 100 },
-id: { in: [1, 2] } }`, operators `eq ne gt gte lt lte in nin like ilike is_null`, nested with
+id: { in: [1, 2] }, due: { gte: start, lt: end } }`, operators `eq ne gt gte lt lte in nin like
+ilike is_null` (several on one field must all hold, so two make a range), nested with
 `{ or: [...] }`, `{ and: [...] }`, `{ not: {...} }` — or a formula string,
 `'status === "open" && pages > 100'`.
 

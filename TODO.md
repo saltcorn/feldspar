@@ -8,6 +8,7 @@ served through `static_dirs`. Earlier lists are archived in
 [TODO-analytics.md](./TODO-analytics.md), [docs/TODO-mvp.md](./docs/TODO-mvp.md) and
 `docs/TODO-post-mvp-1.md` … [docs/TODO-post-mvp-31.md](./docs/TODO-post-mvp-31.md).
 Claude Code in the IDE has its own list, [TODO-claude-terminal.md](./TODO-claude-terminal.md).
+The App Constructor has its own list, [TODO-app-constructor.md](./TODO-app-constructor.md).
 Type-level hardening from the November 2026 security review has its own list,
 [TODO-type-hardening.md](./TODO-type-hardening.md).
 

@@ -2,6 +2,295 @@
 
 Changes in reverse chronological order.
 
+## Generated clients: a field's allowed values are its type and a list to offer
+
+A `string` field with allowed values now appears in an application's generated client as their
+union, `muscle_group: "Chest" | "Back" | … | null`, and each table with such fields exports the
+lists, `MachinesOptions.muscle_group`, for a form's select. The application's `SKILL.md` tells
+the coding agent to build such a field as a select of that list, never free text and never
+suggestions gathered from the rows. Before, the client typed the field as `string`, so a generated
+form offered values taken from the data, among them one the field no longer allowed, and the save
+was refused.
+
+## App Constructor: safer runs, Stop, Retry and Skip, and saving new phases
+
+A run a trigger started or an application's page sent is offered none of the construction agent's
+tools and is refused any it calls. Before, only the data-model tools were withheld, so a prompt
+somebody else wrote could still replace the plan with `save_phases` or `save_tasks`, which the
+runner then builds with the admin's rights.
+
+Retry and Skip are refused while the construction runs; stop it first. Before, they could write the
+same task as the runner, losing the skip or marking a running task skipped. While a construction
+runs, `save_tasks` only plans a phase that has no tasks yet (what the runner does when it reaches
+one) and refuses to replace a phase's tasks the runner may already have picked.
+
+The runner now gives up its place before it writes the final status. So a construction that reads
+stopped or failed never has a runner still finishing behind it. Before, a Run or Retry in that
+moment marked it `running` with no runner, and it stayed so until stopped.
+
+Stopping a construction that no runner drives (after a restart, before it was resumed) now aborts
+the interrupted task's run too, which used to stay `running` in the run history.
+
+After saving phases that include a new one, the Phases card takes the saved list, with the new
+phase's id. Before, it stayed marked as having unsaved changes, kept Run disabled, and each save
+replaced the new phase again.
+
+A construction is driven by one server process: running several instances against one database
+is not supported yet for constructions, and the runner's docs say why.
+
+## Filters: several operators on one field make a range
+
+A filter object may now give one field several operators, all of which must hold:
+`db.sets.where({ performed_at: { gte: start, lt: end } })` in code, and
+`{"due": {"gte": "2026-01-01", "lt": "2026-02-01"}}` in an agent's `where`. Before, only an
+object with a single operator was read as a comparison, and two were taken as a value to match
+exactly, which failed with "… is not a valid timestamp". An object with any key that is not an
+operator is still a value, so filtering a JSON field on an object works as before. The code API
+reference and the agent tools' filter help say so.
+
+## Runs: a failed tool call says why on the run's page, and `search_files` explains a miss
+
+A run's page now lists, under each step's tools and in a lightly tinted box headed "Calls
+with errors", one aligned row per failed call: a soft "retried" pill (green, the next call to the tool
+worked) or "failed" pill (red), the tool, and the reason on one line,
+taking in the line after when the first only introduces it ("… do not match its schema:
+`/features/0/notes`: expected a string, got an array"). A tool's chip is red only when its last
+call failed; one whose retry worked stays plain and says "×2 · 1 failed" with only the count in
+red. Clicking a tool's chip opens its calls under the chips, laid out to read. Several calls get a
+tab each ("Call 1 · progress-overview · OK", "Call 2 · … · FAILED"), one shown at a time. A call
+shows its arguments as name/value rows: lists of files as tags; notes as bullets, the first four
+shown; long text cut to three lines; a list of objects folded to one line each, named by its id
+and title, that opens on click. Then its result as wrapping text previewed to 12 lines, an error
+in red without its `error:` prefix, and its screenshots. The transcript shows the reason under a failed call without opening it, and its folded
+groups follow the same rule. Before, a failed call was only a red badge, which read the same
+whether the retry worked or not.
+
+`search_files` given a file as its `dir` now says it needs a directory and how to search the file,
+instead of failing with "listing … in store". A literal search that finds nothing for a pattern
+that reads as a regular expression (`a|b`, `\s`, `.*`) now says that it searched literal text and
+that `regex: true` searches the pattern as an expression. Agents read such a miss as "the name is
+not there" and went looking elsewhere.
+
+## App Constructor: fewer tokens per step and fewer tasks
+
+Every step of an agent sends the whole conversation again, tools and instructions included, so
+what a run carries at its start is paid for on every step after it.
+
+**The construction agent carries only the tools a construction uses.** It used to be given the
+whole admin copilot: 31 tools, among them triggers, streams, translations, checklists, file
+stores, creating and publishing applications and delegating code, plus the copilot's "Building
+an application" playbook and its list of coding agents. Construction runs used none of those.
+The `app_constructor` trait now builds the data model itself: it offers the twelve
+administrative tools a construction needs (`DATA_MODEL_TOOLS`: the schema, the application's
+tables, queries and code libraries, the code API's reference and the documentation), the same
+ones the copilot and the MCP server offer, with create and edit allowed and drop and access
+changes not, and a construction agent is made with that trait alone. The planning request
+measured in the test went from about 21,500 tokens to about 13,300. The admin copilot itself is
+unchanged.
+
+**Phases are planned as fewer, bigger tasks.** Each task starts a fresh session that reads the
+schema and the code again, so the planner is now told to plan one to three sizeable tasks per
+phase (the tables in one, their queries in one, a whole screen or flow in one), and never a
+task that only builds, checks, tests, publishes or reviews: the runner builds and checks the
+application after every feature task anyway. A phase's page says so above its tasks.
+
+Tests: `constructions_api::the_construction_agent_is_offered_only_the_tools_a_construction_needs`
+and
+`constructions_api::a_construction_is_created_with_its_agent_and_read_back_with_its_phases`
+(sc-server).
+
+## Agents: a long answer is no longer cut off at 4096 tokens, and a cut-off one says so
+
+An agent on an Anthropic model that sets no max tokens of its own used to get a cap of 4096
+tokens per answer, thinking included. A long tool call — a feature plan, a whole file — was cut
+off half-written and arrived with empty arguments, the model was told only that a field was
+missing, wrote the same long call again, and after three tries the run ended "stuck": an App
+Constructor task failed this way, at a minute and a full context read per try. Claude 3.7, 4 and
+later now get 32,000 (`default_max_tokens`; older and unrecognised models keep 4096). Only the
+tokens generated are billed, so the higher cap costs nothing by itself.
+
+When an answer does use its whole cap, the agent loop now says so: each malformed call in it
+comes back with "Your answer was cut off… split the work into several smaller calls", and a run
+that ends stuck on such calls gives that as its reason ("…cut off at the N-token output limit,
+so the call was incomplete; raise the agent's max tokens"). A provider reports the cap it
+actually sends (`LlmProvider::output_cap`), since an agent that sets none still gets one.
+
+Tests: `loop_control::a_call_cut_off_at_the_output_limit_is_called_so`,
+`loop_control::a_malformed_call_under_the_output_limit_says_nothing_of_it` (sc-agent);
+`anthropic::tests::a_modern_claude_may_write_a_long_answer_and_an_old_or_unknown_one_keeps_the_small_cap`
+(sc-llm).
+
+## Admin UI: Plan & build restyled, a page per phase, and an agent run's page restyled
+
+**Plan & build.** The three steps' tabs have round numbers. *Specification* is a roomy writing
+area that grows with its text, with a word count, an "Unsaved changes" marker, "Plan phases"
+with an icon (a spinner while planning), and beside it a short list of what a good
+specification says. *Phases* run down a timeline: a numbered marker per phase (a tick once it is
+done), joined by a line, each phase a card whose marker and left edge take its status's colour.
+The title reads as a heading and the description as text, each showing its border only when
+hovered or edited. Requirements are a list under a "Requirements" label with their count, the
+priority a coloured pill (Must red, Should yellow, Could grey). Move and delete are quiet icon
+buttons, and "Add phase" is a dashed slot at the end of the timeline. *Progress* uses the same
+timeline with a meter of the phases done; each phase lists its tasks with a status dot, its
+kind, "n of m tasks", its runs as small links and Retry / Skip. A task's summary shows three
+lines until "Show more", and backticked names in titles and summaries are set as code.
+
+**A page per phase** (`#/applications/{id}/construct/phases/{phase}`), opened with "Details" on
+each saved phase or from a phase's title on *Progress*. It is about the phase's tasks, each a
+compact row edged in its status colour: its title, kind, status and runs (with Retry / Skip),
+one line of what came of it (the first sentence of its summary, else of its brief), what it runs
+after, and what it created as small chips — each table (linking to it) and each custom query. A task's brief
+and summary in full are on its run's page (what it was asked, and what it answered); only a task
+not run yet shows its brief here. A line under the heading says the tasks are planned by the
+construction agent from the phase's requirements, each making one thing; the description and
+requirements are folded under the tasks, to check against.
+"All phases" goes back to the Phases tab, which `…/construct/phases` now opens directly.
+
+**What a task created is read from its runs, and includes its queries.** The runner used to
+compare the tables before and after a task's run, which counted a table anyone made meanwhile —
+for any application — and missed what a run made before a restart. It now reads the task's runs'
+own tool results: each table an applied `edit_schema` created and each custom query
+`save_api_query` saved as new, less what the same runs dropped or deleted, with renames
+followed. A query is `{kind: "query", name}` beside `{kind: "table", name}` in the task's
+`created`. Tasks that ran before keep what was recorded for them.
+
+**Plan & build opens on the specification, and the LLM provider is an application setting.**
+An application without a construction now opens straight on the empty *Specification*; the
+construction is made when the specification is first saved or planned. The provider picker
+that used to come first moved to the application's form, as "LLM provider for Plan & build"
+(React applications only; stored as the `constructor_provider` attribute). Left empty, it is
+the builder agent's provider, else the default, as before. A change applies the next time the
+construction plans or runs: the construction agent is switched to the chosen provider and its
+default model. `createConstruction`'s `provider` still wins when a request names one.
+
+**A running construction says what it is on.** *Progress* starts with a line saying what the run
+is doing: planning the tasks of the phase it reached (which takes a minute or two, and used to
+show only empty phases), or working on a task, with a link to watch its run. The phase being
+planned shows a spinner where its tasks will appear, on *Progress* and on its own page. A
+spinner sits beside the status badge in the header while the construction runs or plans. On
+*Phases*, the phase the run is on has a ring turning around its number, a Running badge (also
+while its tasks are being planned), and what it is doing beside it.
+
+A phase's "Run up to here" is now **Run**, on the Phases tab and on the phase's page. It still
+runs the phases before it first, so when any of them is not done a dialog asks before anything
+starts, naming those phases with their status ("Run 2 phases" / Cancel); when they are all done
+it runs at once.
+
+Once a build is under way, Plan & build opens on *Phases* rather than *Progress*: the plan is what
+an admin comes back to. The tabs still mark *Progress* as the current step, and starting a run
+with the screen open still switches to it.
+
+**An agent run's page** (`#/runs/…`). Its cost, model calls, input tokens (with the share
+cached), output tokens, tool calls (with how many failed), duration and start are a strip of
+tiles instead of one line of text, and backticked names in its title are set as code. Its header
+has **Back** (to wherever the run was opened from; the agent's runs when opened on its own) and
+Refresh, in place of "Chat with …" and "All runs". The
+transcript is retold so it can be scanned: *What it was asked* (three lines until opened), *What
+it did* — a numbered list of steps, each the first sentence of what the agent said with the tools
+it then called as chips (repeats counted, failures in red), opening onto all it said — and *What
+it answered*, edged in the run's status colour. The full transcript and the stored loop state
+("Context") are folded under these until opened.
+
+New strings are translated in the five shipped locales.
+
+Tests: `ui/admin/src/screens/Construct.test.tsx`, `ui/admin/src/screens/RunPanel.test.tsx`,
+`ui/admin/src/construction.test.ts`, `ui/admin/src/inlineCode.test.ts`,
+`ui/admin/src/runInfo.test.ts`, `ui/admin/src/runStory.test.ts`;
+`constructions_api::a_task_records_the_tables_and_queries_its_run_made`,
+`constructions_api::the_application_settings_choose_the_provider_and_a_change_applies_on_planning` and
+`construction_runner::tests::what_a_task_created_is_read_from_its_runs_tool_results` (sc-server).
+
+## React apps: a custom query named like a table operation no longer breaks the build
+
+A React application with a connected table whose row API is off, and its own query named like
+one of the table's operations (`listMachines` for a `machines` table), failed to build: the
+generated `hooks.ts` used `api.machines` and `MachinesRow`, which the client did not have.
+The generated hooks, stores and pages now ask the table's own API description which
+operations it has, as the client does, so a custom query no longer counts as one.
+
+Tests: `crates/sc-app/src/scaffold/files.rs`
+(`a_custom_query_named_like_a_table_op_gets_no_table_hooks`).
+
+## App Constructor: the Plan & build screen
+
+A React application now has **Plan & build** in its sidebar, right after "Application link"
+(TODO-app-constructor AC4). In three numbered tabs (Specification, Phases, Progress), which
+open on the current step and lock the ones not reached yet, an admin:
+- **starts** a construction, choosing the LLM provider;
+- writes the **specification** and has the agent plan the phases from it;
+- **edits the phases** before anything runs: titles, descriptions, order, requirements and
+  their priority. A phase that has tasks cannot be deleted;
+- **runs** all phases or up to one, and follows the **progress**: each phase's tasks with their
+  status, summary and links to their runs, with Stop, Retry and Skip.
+
+While the construction runs or is being planned, the page refreshes itself every two seconds,
+and stops once it is done, failed or stopped. Edits that are not saved yet are not overwritten
+by a refresh. When planning fails (a rejected API key, the agent running out of steps or
+saving no phases), the specification step says why, with a link to the planning run; planning
+again clears it. Applications in other frameworks get no link, and the page explains why. The
+strings are translated into every shipped locale.
+
+Tests: `ui/admin/src/construction.test.ts`, `ui/admin/src/screens/Construct.test.tsx`,
+`ui/admin/src/appNav.test.ts`, `crates/sc-server/tests/constructions_api.rs`
+(`a_failed_plan_says_why_on_the_construction`).
+
+## App Constructor: phases run as tasks
+
+A construction now builds its application (TODO-app-constructor AC3).
+- **Run** (`runConstruction`): all phases, or up to a chosen one. The runner works on the
+  server, so closing the page does not stop it, and a server restart carries on where it was:
+  a task that was running has its run continued, never started twice.
+- **Tasks are planned when their phase is reached.** The construction agent plans them with
+  the new `save_tasks` tool, told which tables exist and what earlier tasks made, so a feature
+  is written against what was actually built. Each task makes one thing and can wait for
+  earlier tasks of its phase.
+- **A data-model task** is run by the construction agent; **a feature task** by the
+  application's builder agent, and it counts as done only when the application builds
+  afterwards. Each task keeps its runs, its summary and the tables it created.
+- **A failed task stops the construction**, with the reason. `retryTask` runs it again,
+  `skipTask` sets it aside, and either carries on. `stopConstruction` aborts the task being
+  run and puts it back.
+- The runner works as the admin who started it, and stops before the next task when that
+  person is no longer an admin.
+
+Tests: `crates/sc-construct/src/tasks.rs`, `crates/sc-server/tests/constructions_api.rs`.
+
+## App Constructor: from a specification to phases
+
+The construction agent now plans (TODO-app-constructor AC2).
+- **Plan phases** (`planConstruction`): the agent reads the specification and the existing
+  data model and saves the phases, the first always the data model, each with requirements
+  marked must, should or could. Planning runs on the server, so closing the page does not stop
+  it; the run's transcript is in the agent's history.
+- **Edit phases** (`savePhases`): retitle, reword, reorder, delete or add phases and
+  requirements before anything runs.
+- The agent and the admin go through the same checks: at least one phase, at most twelve,
+  each with a title, and requirements with text. A refused list changes nothing and says why.
+- A phase that already has tasks is kept when a new plan leaves it out, even when the task
+  arrives while the plan is being saved; a task for a phase the plan has just deleted is refused.
+- The construction agent has a new `app_constructor` trait for this; chatting with the agent
+  starts from the specification and the current phases.
+
+Tests: `crates/sc-construct/tests/phases.rs`, `crates/sc-server/tests/constructions_api.rs`.
+
+## App Constructor: constructions and their state
+
+The first part of the App Constructor (TODO-app-constructor AC1). A React application can now
+have a **construction**: its specification, its phases with their requirements, and each
+phase's tasks. Saltcorn keeps this state in three new tables and creates them at startup.
+- Creating a construction also creates the agent that will plan it and build its data model,
+  `construct-<subdomain>`. That agent has the copilot's tools to create and change tables, but
+  not to drop them or change access. It uses the LLM provider named for it, otherwise the
+  builder agent's, otherwise the installation's default.
+- A phase's status (not planned, planned, running, failed, done) comes from its tasks. A phase
+  that has tasks cannot be deleted.
+- Deleting the application, or the construction, deletes its phases and tasks along with the
+  agent made for it.
+- Other frameworks are refused with a reason. Planning, running and the screen come in the next
+  milestones.
+
+Tests: `crates/sc-construct/tests/store.rs`, `crates/sc-server/tests/constructions_api.rs`.
+
 ## Claude Code is found without a PATH, and can be named in Settings
 
 A server started by systemd or another service manager has a short `PATH`, so Claude Code

@@ -1249,7 +1249,7 @@ old `Option<&CallerContext>` with `None` silently failed closed on such a table,
 | sc-server `oauth.rs` | OAuth: store the tokens of a consent flow (`Unchecked::system`) |
 | sc-viewpattern `library.rs`, `store.rs` | apply library updates; write view-pattern definitions |
 | sc-workflow `driver.rs` | workflow: record run state |
-| `INTERNAL_TABLES` in the `lib.rs` of sc-action, sc-agent, sc-agent-builtins, sc-analytics, sc-api, sc-app, sc-auth, sc-check, sc-config, sc-dataset, sc-llm, sc-mcp, sc-model, sc-module, sc-stream, sc-viewpattern, sc-workflow | the crate's own tables (`_fd_*`, and `users` for sc-auth and sc-check's check users; sc-analytics' demo dataset; sc-api's change-log user names for the history reader): the one `Unchecked::system` each crate's stores reach `Catalog::primary` with, crate-private (Q3.5) |
+| `INTERNAL_TABLES` in the `lib.rs` of sc-action, sc-agent, sc-agent-builtins, sc-analytics, sc-api, sc-app, sc-auth, sc-check, sc-config, sc-construct, sc-dataset, sc-llm, sc-mcp, sc-model, sc-module, sc-stream, sc-viewpattern, sc-workflow | the crate's own tables (`_fd_*`, and `users` for sc-auth and sc-check's check users; sc-analytics' demo dataset; sc-api's change-log user names for the history reader): the one `Unchecked::system` each crate's stores reach `Catalog::primary` with, crate-private (Q3.5) |
 
 **Admin principals.** These run as role 1 but carry a user, for attribution, or are their own
 caller type. They are not yet `Authority::System`:

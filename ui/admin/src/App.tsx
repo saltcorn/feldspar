@@ -60,6 +60,8 @@ import { ApplicationViews } from "./screens/ApplicationViews";
 import { ChecklistDetail } from "./screens/ChecklistDetail";
 import { ChecklistRun } from "./screens/ChecklistRun";
 import { Checklists } from "./screens/Checklists";
+import { Construct } from "./screens/Construct";
+import { constructRoute } from "./construction";
 import { PageProperties } from "./screens/PageProperties";
 import { ViewEditor } from "./screens/ViewEditor";
 import { DbConnections } from "./screens/DbConnections";
@@ -773,6 +775,19 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   if (translationsMatch) {
     return (
       <ApplicationTranslations appId={decodeURIComponent(translationsMatch[1])} />
+    );
+  }
+  // Plan & build (TODO-app-constructor AC4): the application's construction.
+  // Its Phases tab, and one phase's own page, are routes under it.
+  const constructAt = constructRoute(path);
+  if (constructAt) {
+    return (
+      <Construct
+        key={path}
+        appId={constructAt.appId}
+        tab={constructAt.tab}
+        phaseId={constructAt.phaseId}
+      />
     );
   }
   // An application's checklists (TODO-checklists C1.16) live under its own

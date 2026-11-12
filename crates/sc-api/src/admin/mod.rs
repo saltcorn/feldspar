@@ -57,6 +57,7 @@ mod backup;
 mod checklists;
 mod code_libraries;
 mod connections;
+mod constructions;
 mod entities;
 mod fields;
 mod file_stores;
@@ -102,6 +103,7 @@ pub fn admin_endpoints() -> EndpointSet {
     files::register(&mut set);
     settings::register(&mut set);
     applications::register(&mut set);
+    constructions::register(&mut set);
     views::register(&mut set);
     translations::register(&mut set);
     triggers::register(&mut set);

@@ -161,6 +161,11 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
     sc_check::bootstrap_checklists(&catalog)
         .await
         .context("ensuring the checklist tables exist")?;
+    // The App Constructor (TODO-app-constructor AC1.1): an application's
+    // construction, its phases and its tasks.
+    sc_construct::bootstrap_constructions(&catalog)
+        .await
+        .context("ensuring the construction tables exist")?;
     // The Analytics UI's datasets and workspaces (analytics TODO A1). Models
     // bootstrap the datasets table too, because a model's dataset is a row of
     // it; this is for a server whose models are never installed.

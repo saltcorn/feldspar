@@ -10,6 +10,7 @@
 
 import { claudeUrl, ideUrl } from "./App";
 import { appUrl } from "./adminAddress";
+import { constructPath, constructible } from "./construction";
 import type { ListAgentsResponse, ListApplicationsResponse } from "./client";
 
 type AppItem = ListApplicationsResponse[number];
@@ -24,6 +25,7 @@ const BUILD_TRAIT_APPLICATION = "application";
 export type AppNavLink = {
   id:
   | "app-link"
+  | "construct"
   | "edit-code"
   | "claude"
   | "build"
@@ -105,6 +107,9 @@ export function builderAgentFor(
  *
  * - **The application itself comes first**, on its own subdomain, in a new
  *   tab: it is what all the other links are for.
+ * - A **React** application gets **Plan & build** right after it: building
+ *   it from a description (TODO-app-constructor AC4). The constructor builds
+ *   React applications only.
  * - An application that is **built** from a source tree (React, code) gets the
  *   loop an admin works in: edit the code, build. A build rewrites the
  *   generated client first, so there is no separate link for that. One with no
@@ -131,7 +136,7 @@ export function appNavLinks(
     | "targets"
     | "claude"
     | "attributes"
-  >,
+  > & { framework: { name: string } },
   agent: string | null,
   admin: AdminLocation,
 ): AppNavLink[] {
@@ -145,6 +150,15 @@ export function appNavLinks(
       matches: [],
     },
   ];
+  if (constructible(app)) {
+    const construct = constructPath(app.id);
+    links.push({
+      id: "construct",
+      label: "Plan & build",
+      href: `#${construct}`,
+      matches: [construct],
+    });
+  }
   // Any application with a directory of its own — built from it, or (with no
   // framework) serving it as it is — can have it opened in the IDE.
   if (app.source) {

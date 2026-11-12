@@ -41,10 +41,10 @@ pub const ARG_WHERE: &str = "where";
 /// One text, so the vocabulary a model picks up from one tool is the one the
 /// next accepts.
 pub const WHERE_HELP: &str = "In `where`, each entry is a field name against \
-     either a value to match exactly or an object with one operator key: `eq`, \
+     either a value to match exactly or an object of operator keys: `eq`, \
      `ne`, `gt`, `gte`, `lt`, `lte`, `like`, `ilike` (text patterns, `%` matches \
      any run of characters), `in` (a list), `nin` (a list) or `is_null` (true or \
-     false). All the entries must hold at once, and `and`, `or` and `not` take \
+     false); several keys must all hold, so `{\"gte\": a, \"lt\": b}` is a range. All the entries must hold at once, and `and`, `or` and `not` take \
      filters of the same shape when that is not what you mean.";
 
 // --- the configuration ------------------------------------------------------

@@ -77,6 +77,10 @@ impl LlmProvider for LoggedProvider {
         self.inner.model()
     }
 
+    fn output_cap(&self, requested: Option<u32>) -> Option<u32> {
+        self.inner.output_cap(requested)
+    }
+
     async fn stream(&self, req: LlmRequest) -> Result<LlmStream> {
         // Nothing below Info: no line, no clone, no accumulation.
         if !sc_log::enabled(Verbosity::Info) {

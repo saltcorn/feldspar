@@ -218,6 +218,8 @@ pub fn admin_handlers_with(
     crate::agent_memory::register(&mut reg, catalog.clone());
     // --- checklists ----------------------------------
     crate::checklists::register(&mut reg, catalog.clone(), apps.clone());
+    // --- the App Constructor (TODO-app-constructor) ---------------------------
+    crate::constructions::register(&mut reg, catalog.clone(), apps.clone());
 
     reg
 }

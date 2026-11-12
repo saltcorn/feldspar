@@ -388,9 +388,9 @@ fn combined(
 
 /// One condition, on the column or aggregate the [`Operand`] names.
 ///
-/// A JSON object whose single key is one of [`OPERATORS`] is that comparison;
-/// **anything else is a literal to match exactly**, including an object destined
-/// for a `Json` column. The rule is stated that way round — and in the agent
+/// A JSON object whose keys are all [`OPERATORS`] is those comparisons, all of
+/// them holding (`{"gte": a, "lt": b}` is a range); **anything else is a literal
+/// to match exactly**, including an object destined for a `Json` column. The rule is stated that way round — and in the agent
 /// tools' own descriptions — because the alternative (an object is always an
 /// operator) makes a `Json` column unfilterable, and a caller that means equality
 /// can always say `{"eq": …}`.
@@ -404,18 +404,29 @@ pub fn condition_on(on: &Operand, column: Expr, condition: &Json) -> Result<Expr
     let col = || column.clone();
     let name = on.name();
     if let Json::Object(map) = condition
-        && map.len() == 1
-        && let Some((op, operand)) = map.iter().next()
-        && OPERATORS.contains(&op.as_str())
+        && !map.is_empty()
+        && map.keys().all(|op| OPERATORS.contains(&op.as_str()))
     {
-        return match (op.as_str(), operand) {
-            ("eq", Json::Null) => Ok(Expr::unary(UnOp::IsNull, col())),
-            ("ne", Json::Null) => Ok(Expr::unary(UnOp::IsNotNull, col())),
-            ("in" | "nin", Json::Array(items)) if items.is_empty() => Err(Error::invalid(format!(
-                "`{name}`: `{op}` needs at least one value"
-            ))),
-            (op, operand) => comparison_on(on, col(), op, operand),
-        };
+        let mut all: Option<Expr> = None;
+        for (op, operand) in map {
+            let part = match (op.as_str(), operand) {
+                ("eq", Json::Null) => Expr::unary(UnOp::IsNull, col()),
+                ("ne", Json::Null) => Expr::unary(UnOp::IsNotNull, col()),
+                ("in" | "nin", Json::Array(items)) if items.is_empty() => {
+                    return Err(Error::invalid(format!(
+                        "`{name}`: `{op}` needs at least one value"
+                    )));
+                }
+                (op, operand) => comparison_on(on, col(), op, operand)?,
+            };
+            all = Some(match all {
+                Some(so_far) => Expr::and(so_far, part),
+                None => part,
+            });
+        }
+        if let Some(all) = all {
+            return Ok(all);
+        }
     }
     Ok(match condition {
         Json::Null => Expr::unary(UnOp::IsNull, col()),
@@ -552,6 +563,30 @@ mod tests {
             matches!(binds.as_slice(), [Value::Date(_)]),
             "expected a bound date, got {binds:?}"
         );
+    }
+
+    #[test]
+    fn several_operators_on_one_field_all_hold_and_any_other_key_is_a_value() {
+        let table = tasks();
+        let on = Operand::Column {
+            table: &table,
+            column: "due",
+        };
+        let range = serde_json::json!({"gte": "2026-11-10", "lt": "2026-11-11"});
+        let (sql, binds) = rendered(&condition_on(&on, Expr::col("due"), &range).expect("lowers"));
+        assert_eq!(sql, "((\"due\" >= $1) AND (\"due\" < $2))");
+        assert!(
+            matches!(binds.as_slice(), [Value::Date(_), Value::Date(_)]),
+            "{binds:?}"
+        );
+
+        // A key that is not an operator makes the object a value, as before.
+        let mixed = serde_json::json!({"gte": 1, "note": "x"});
+        let on = Operand::Column {
+            table: &table,
+            column: "priority",
+        };
+        assert!(condition_on(&on, Expr::col("priority"), &mixed).is_err());
     }
 
     #[test]

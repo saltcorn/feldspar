@@ -104,6 +104,8 @@ feldspar/
 │  │                              #    stage shapes and grain, reading a stage, the snapshot a
 │  │                              #    fit records, `_fd_datasets`, and reading as the caller
 │  │                              #    (`access.rs`: `Caller`, `Reader::guard`, `Sharing`, §14.9)
+│  ├─ sc-construct/               # 5. the App Constructor's state (§11.6): `_fd_construction*`,
+│  │                              #    phase and task validation, and what the runner does next
 │  ├─ sc-action/                  # 6. Action trait + registry, Event/Trigger model, `_fd_triggers`
 │  │                              #    storage & validation, the live set, dispatch, scheduler
 │  ├─ sc-llm/                     # 6. object-safe LlmProvider seam over a provider crate
@@ -243,6 +245,8 @@ graph TD
   coretraits --> repomap["sc-repomap"]
   coretraits --> mcp["sc-mcp"]
   coretraits --> check["sc-check"]
+  coretraits --> construct["sc-construct"]
+  construct --> catalog
   check --> agent
   check --> app
   mcp --> net["sc-net"]
@@ -350,6 +354,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-model` | `sc-catalog` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-analytics` | `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-db-sqlite` `sc-error` `sc-model` `sc-query` `sc-types` |
 | `sc-stream` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
+| `sc-construct` | `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
 | `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-types` |
 | `sc-agent` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-workflow` | `sc-action` `sc-agent` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
@@ -361,10 +366,10 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-module` | `sc-access` `sc-action` `sc-action-builtins` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
 | `sc-python` | `sc-action` `sc-action-builtins` `sc-catalog` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
 | `sc-check` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-types` `sc-viewpattern` |
-| `sc-agent-builtins` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-query` `sc-repomap` `sc-types` |
+| `sc-agent-builtins` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-construct` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-query` `sc-repomap` `sc-types` |
 | `sc-backup` | `sc-access` `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
+| `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-construct` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-construct` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 
 Four things the graph is worth reading for:
 
@@ -2164,6 +2169,38 @@ erDiagram
     text reason
     text author "agent:<run id>"
   }
+  CONSTRUCTIONS["_fd_constructions"] {
+    uuid id PK
+    uuid application UK "-> _fd_applications.id; one construction per application"
+    text specification
+    text status "draft | planned | running | stopped | done | failed"
+    text agent "the construction agent, by name"
+    uuid started_by "-> users.id, by value: who last ran it"
+    uuid plan_run "the run that planned the phases"
+    text error "why it failed or stopped"
+    uuid until_phase "run up to and including this phase; null runs all"
+  }
+  CONSTRUCTIONPHASES["_fd_construction_phases"] {
+    uuid id PK
+    uuid construction "-> _fd_constructions.id"
+    float position
+    text title
+    text description
+    json requirements "[{text, priority}]; no status: it follows from the tasks"
+  }
+  CONSTRUCTIONTASKS["_fd_construction_tasks"] {
+    uuid id PK
+    uuid phase "-> _fd_construction_phases.id"
+    float position
+    text kind "data_model | feature"
+    text title
+    text brief
+    json depends_on "task ids of the same phase"
+    text status "todo | running | done | failed | skipped"
+    json runs "the run id of each attempt"
+    text summary
+    json created "the tables it made"
+  }
   MODELS["_fd_models"] {
     uuid id PK
     text name UK
@@ -2540,6 +2577,9 @@ erDiagram
   CHECKLISTS ||--o{ CHECKLISTSTEPS : "checklist"
   CHECKLISTS ||--o{ CHECKLISTRUNS : "checklist -- by value"
   CHECKLISTS ||--o{ CHECKLISTPROPOSALS : "checklist"
+  APPS ||--o| CONSTRUCTIONS : "application -- deleted with it"
+  CONSTRUCTIONS ||--o{ CONSTRUCTIONPHASES : "construction"
+  CONSTRUCTIONPHASES ||--o{ CONSTRUCTIONTASKS : "phase"
   USERS |o--o{ CHECKLISTS : "run_as -- by value, nullable"
   USERS |o--o{ AGENTMEMORY : "user_id -- by value, nullable"
   RUNS |o--o{ AGENTMEMORY : "run_id -- by value, nullable"
@@ -5358,6 +5398,100 @@ staged **AppConstructor** (describe → clarify → research → requirements �
 feedback → self-heal). For users who prefer an external coding agent, the copilot can emit a
 `SKILL.md` describing the app.
 
+#### The App Constructor
+
+Plan: [TODO-app-constructor.md](../TODO-app-constructor.md). The first version covers
+specification → phases → tasks → run, for **React applications**. Clarifying questions,
+research, feedback and self-healing come later.
+
+**An orchestration over the tools that exist, not a second tool set.** v1's constructor had to
+generate builder layouts and untyped view configurations, so most of its code repaired and
+validated what the model wrote. Feldspar already has typed tools for every part: `edit_schema`
+and the copilot for the data model, and the builder agent with its plan, check and commit loop
+for the code. The constructor decides **what** to build and in what order, and leaves the
+**how** to the agents that already build.
+
+**One construction per application.** A construction exists to build one application, so it
+belongs to the application: it has a link in the application's sidebar section, is deleted with
+the application, and does not become an entity kind or a sidebar entry of its own. Home reports
+on it as it reports on checklists: a failed construction needs attention, and a running one
+shows its progress.
+
+**Typed tables, not a metadata store.** v1 kept its constructor state as JSON in `_sc_metadata`
+rows keyed by a string. Here the construction, its phases and its tasks are each a table, as
+checklists, their steps and their runs are:
+- **Deletion:** deleting the application deletes its construction, phases and tasks, as it
+  deletes its views. A row keyed by a string would be left behind.
+- **Resume:** at startup the runner finds running constructions with a query on a column.
+- **Concurrent writes:** the runner updates one task while the admin edits phases. With
+  everything in one document, the two writes could overwrite each other.
+
+A phase stores no status of its own. Its status follows from its tasks, so the two cannot drift
+apart, and a phase's tasks are also what protect it from being deleted.
+
+**Phases first, tasks just in time.** The specification becomes phases with requirements, which
+the admin edits before anything runs. A phase's tasks are planned only when that phase starts,
+so a feature task is written against the tables the data-model task actually created, not the
+ones the plan expected. The first phase is always the data model. Each task makes one artefact
+and is briefed with what exists already, which is v1's defence against the model recreating
+what is there.
+
+**Two kinds of task, two agents.**
+- A `data_model` task runs the construction's own agent, which has the copilot's tools.
+- A `feature` task is delegated to the application's builder agent. Its own check decides
+  whether the feature works, and a green build decides whether the task is done. The model saying
+  so does not count.
+
+The planning tools belong to a trait on the construction's agent (`app_constructor`), so
+planning is an ordinary agent run with a transcript, not a hidden call.
+- The phase list is saved whole, as `save_plan` saves a plan, through one validation that the
+  admin's edits use too. A phase that has tasks survives a list that leaves it out, so a
+  re-plan cannot erase the record of what was built.
+- A plan run is driven in a server task, not in the request, and its id is kept on the
+  construction. Whether it is still being planned is what this process is driving, not the
+  run's stored state, so a run interrupted by a restart does not block the next plan.
+
+**A server-side runner.** A chat run ends when its socket closes, and a construction runs for
+much longer than anyone watches it. The runner is therefore a server task that owns the
+construction until it is done, failed or stopped.
+- Its state is written to the construction's tables after every task, and every agent run
+  writes its own steps (§11.2).
+- After a restart, a construction that was running resumes, and a task's run is continued, never
+  started twice.
+- It runs as the admin who started it. That admin's role is checked again before each task, as
+  the chat socket checks its session before each turn.
+- A failed task stops the whole construction. Later tasks depend on it, and a run that continued
+  past it would build on a gap.
+
+How the runner is built (`sc-server`'s `construction_runner`):
+- **What comes next is a pure function** (`sc_construct::next_step`) of the phases and their
+  tasks: plan the first phase without tasks, else run the first `todo` task whose dependencies
+  are done (a `running` one first, after a restart), else stop on a failed task, else finish.
+  A skipped task counts as done for the tasks after it.
+- **`depends_on` names earlier tasks of the same list by number**, so a phase's tasks cannot
+  wait on each other in a circle. Earlier phases are done before a phase starts.
+- **A feature task is a run of the builder agent**, not a `DelegateRequest`: delegation hangs a
+  child run off a parent run, and the runner is a server task, not a run. The builder starts in
+  `plan` mode, as in its chat, and plans and implements the feature with `save_plan` and
+  `implement_feature`. A task's run id is written on the task before the run is driven; after a
+  restart the runner loads that run and drives it on, and `implement_feature` continues its own
+  sessions in the same way.
+- **What a task made** is the tables that exist after it and did not before. The change-log
+  records row data, not schema changes, so it cannot say this.
+- **Stopping** races the run's drive against a stop signal; the run that loses is aborted with
+  the sessions it delegated to, and its task goes back to `todo`.
+- **One server process for now.** Whether a construction is being planned or run, and its stop
+  signal, are kept in the process's memory, so two server nodes on one database do not see each
+  other's. Several nodes will need a lease on the construction row, claimed with a conditional
+  `UPDATE` as the workflow queue claims runs (TODO-app-constructor AC3.6).
+
+**The Plan & build screen** (`ui/admin`, `#/applications/<id>/construct`) shows the
+specification, the phases and the progress as numbered tabs, and opens the step the status
+points to. It polls `getConstruction` every two seconds while the construction runs or is being
+planned, rather than listening to a stream: one admin watches it, and the runner already writes
+every change to the tables. The phases are edited as a draft and saved whole through
+`savePhases`, so a poll replaces them only while the draft has no unsaved edits.
+
 ### 11.7 Agents in an application's pages
 
 An application's React pages talk to agents in two ways. A **chat** is a multi-turn conversation
@@ -5978,8 +6112,17 @@ shape:
   installation and does not mix with the login of the operator's own Unix account. When an LLM
   provider of the Anthropic type is configured, its key is passed as `ANTHROPIC_API_KEY` and
   nothing is asked. Otherwise the first session shows the CLI's own `/login`, once.
-- **Executable**: `ServerConfig::claude_cli`, defaulting to `claude` on `PATH`, like
-  `language_server`.
+- **Executable** (`terminal::find_claude`), in this order: `--claude-cli`
+  (`ServerConfig::claude_cli`); Settings → Development's "Claude Code executable"
+  (`claude_code_path`, an absolute path to an executable file, checked on save); `claude` on
+  the server's `PATH`; then the usual install locations under the home directory
+  (`~/.local/bin`, `~/.claude/local`, `~/.npm-global/bin`, `~/.bun/bin`, `~/.volta/bin`, and the
+  newest Node under nvm). A path given by the option or the setting is used or refused, never
+  replaced by another `claude`. The lookup matters because a server started by a service
+  manager gets a short `PATH`. The program starts with its own directory first on its `PATH`,
+  so an npm-installed `claude` (`#!/usr/bin/env node`) finds the `node` beside it. The
+  Development tab shows which executable was found, how, and what its `--version` prints
+  (`getClaudeCodeStatus`).
 - **Bound**: a fixed number of concurrent sessions across the installation, for the language
   server's reason, and lower than its bound because each session can run a build.
 - **Lifetime**: one program per socket, ended with everything it started when the socket closes.

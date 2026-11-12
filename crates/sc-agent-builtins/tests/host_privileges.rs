@@ -265,3 +265,42 @@ async fn a_triggered_run_has_no_admin_copilot_and_builds_nothing() -> Result<()>
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn the_constructors_tools_are_neither_offered_to_nor_run_for_a_run_of_untrusted_origin()
+-> Result<()> {
+    // Its plan tools decide what the runner later builds with the admin's
+    // rights, so a prompt somebody else wrote must not reach them either.
+    let env = Env::new().await?;
+    let cfg = sc_agent_builtins::app_constructor_config("shop");
+    let admin = offered_to(&env, "app_constructor", &cfg, &RunCaller::system());
+    for tool in [
+        sc_agent_builtins::TOOL_SAVE_PHASES,
+        sc_agent_builtins::TOOL_SAVE_TASKS,
+        sc_api::mcp::TOOL_EDIT,
+    ] {
+        assert!(
+            admin.iter().any(|t| t == tool),
+            "{tool} for an admin: {admin:?}"
+        );
+    }
+    for caller in [RunCaller::triggered(), exposed_admin()] {
+        let offered = offered_to(&env, "app_constructor", &cfg, &caller);
+        assert!(offered.is_empty(), "offered {offered:?}");
+        let err = env
+            .call_tool(
+                "app_constructor",
+                &cfg,
+                sc_agent_builtins::TOOL_SAVE_PHASES,
+                json!({"phases": []}),
+                &caller,
+            )
+            .await
+            .expect_err("refused");
+        assert!(
+            err.to_string().contains("only for an admin's own runs"),
+            "{err}"
+        );
+    }
+    Ok(())
+}

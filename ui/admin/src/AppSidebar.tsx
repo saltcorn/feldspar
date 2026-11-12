@@ -49,6 +49,7 @@ import {
   IconMessagePlus,
   IconSettings,
   IconSparkles,
+  IconTool,
 } from "./icons";
 import { useT } from "./i18n";
 
@@ -59,6 +60,7 @@ const CURRENT_APP_KEY = "saltcorn-admin-application";
 
 const LINK_ICONS: Record<AppNavLink["id"], ReactNode> = {
   "app-link": <IconExternalLink />,
+  construct: <IconTool />,
   "edit-code": <IconCode />,
   claude: <IconSparkles />,
   build: <IconHammer />,

@@ -296,6 +296,51 @@ async fn three_malformed_calls_in_a_row_end_the_run_stuck() -> Result<()> {
 }
 
 #[tokio::test]
+async fn a_call_cut_off_at_the_output_limit_is_called_so() -> Result<()> {
+    // The fake model writes 5 tokens an answer, so a cap of 5 is reached by
+    // every answer: each call it makes was cut off.
+    let agent = editor_agent().attribute(sc_agent::ATTR_MAX_TOKENS, 5);
+    let world = world(&agent).await?;
+    let executor = Arc::new(FakeProvider::new([
+        Reply::calls("edit", json!({})),
+        Reply::calls("edit", json!({})),
+        Reply::calls("edit", json!({})),
+    ]));
+    let strong = Arc::new(FakeProvider::new([]));
+    let (run, conclusion) = run_scripted(&world, &agent, &executor, &strong, "edit").await?;
+
+    // The model is told why, on each result.
+    for result in stored_results(&run) {
+        assert!(
+            result.contains("cut off: it reached the 5-token output limit"),
+            "{result}"
+        );
+    }
+    // And so is whoever reads why the run stopped.
+    let Conclusion::Stuck { reason } = &conclusion else {
+        panic!("expected stuck, got {conclusion:?}");
+    };
+    assert!(reason.starts_with("3 malformed tool calls in a row"), "{reason}");
+    assert!(reason.contains("cut off at the 5-token output limit"), "{reason}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_malformed_call_under_the_output_limit_says_nothing_of_it() -> Result<()> {
+    let agent = editor_agent().attribute(sc_agent::ATTR_MAX_TOKENS, 4096);
+    let world = world(&agent).await?;
+    let executor = Arc::new(FakeProvider::new([
+        Reply::calls("edit", json!({})),
+        Reply::says("done"),
+    ]));
+    let strong = Arc::new(FakeProvider::new([]));
+    let (run, _) = run_scripted(&world, &agent, &executor, &strong, "edit").await?;
+    let results = stored_results(&run);
+    assert!(!results[0].contains("cut off"), "{}", results[0]);
+    Ok(())
+}
+
+#[tokio::test]
 async fn each_rung_of_the_ladder_is_answered_by_the_right_role() -> Result<()> {
     let agent = editor_agent();
     let world = world(&agent).await?;

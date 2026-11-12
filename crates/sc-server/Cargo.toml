@@ -100,6 +100,7 @@ sc-agent-builtins.workspace = true
 # Checklists (TODO-checklists C1): the admin API, the MCP tools and the runner
 # with this server's application router.
 sc-check.workspace = true
+sc-construct.workspace = true
 sc-db.workspace = true
 # Clear all keeps the migration record (`sc_migrate::MIGRATIONS_TABLE`).
 sc-migrate.workspace = true

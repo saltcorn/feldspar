@@ -60,6 +60,11 @@ pub struct ResourceField {
     /// its row type is `string | null` whatever the column's nullability.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub write_only: bool,
+    /// The values the column allows, when its type fixes a list (a `string`
+    /// field's `options`): a write of anything else is refused, so its type is
+    /// the union of them and a form offers exactly them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<String>>,
 }
 
 impl ResourceField {
@@ -74,6 +79,7 @@ impl ResourceField {
             read_only: false,
             references: None,
             write_only: false,
+            options: None,
         }
     }
 

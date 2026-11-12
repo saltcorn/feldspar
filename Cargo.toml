@@ -140,6 +140,9 @@ members = [
     # builds an application and sends requests through `AppRequester`), below
     # the copilot and the server, which both offer its tools.
     "crates/sc-check",
+    # The App Constructor (TODO-app-constructor): an application's
+    # construction, its phases and its tasks. Below the server, which runs it.
+    "crates/sc-construct",
     "crates/sc-agent-builtins",
     "crates/sc-backup",
     "crates/sc-server",
@@ -213,6 +216,7 @@ sc-api = { path = "crates/sc-api" }
 sc-app = { path = "crates/sc-app" }
 sc-viewpattern = { path = "crates/sc-viewpattern" }
 sc-check = { path = "crates/sc-check" }
+sc-construct = { path = "crates/sc-construct" }
 sc-action-builtins = { path = "crates/sc-action-builtins" }
 sc-agent-builtins = { path = "crates/sc-agent-builtins" }
 sc-backup = { path = "crates/sc-backup" }

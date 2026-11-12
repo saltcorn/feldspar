@@ -5,7 +5,16 @@
 
 import { describe, expect, it } from "vitest";
 
-import { diffLines, featureMark, planProgress, runTotals, scopeLabel, totalsLabel } from "./runInfo";
+import {
+  compactCount,
+  diffLines,
+  elapsedLabel,
+  featureMark,
+  planProgress,
+  runTotals,
+  scopeLabel,
+  totalsLabel,
+} from "./runInfo";
 
 const usage = (input: number, output: number, cached = 0) => ({
   input_tokens: input,
@@ -93,5 +102,25 @@ describe("a run's diff", () => {
     expect(scopeLabel({ store: "apps", root: "todo", files: [], moves: [], stat: "", unified: "" })).toBe(
       "apps/todo",
     );
+  });
+});
+
+describe("a run's stat tiles", () => {
+  it("shortens token counts", () => {
+    expect(compactCount(812)).toBe("812");
+    expect(compactCount(3824)).toBe("3.8k");
+    expect(compactCount(20_000)).toBe("20k");
+    expect(compactCount(219_080)).toBe("219k");
+    expect(compactCount(1_250_000)).toBe("1.3M");
+  });
+
+  it("says how long a run took in its two largest units", () => {
+    const at = (s: number) => new Date(Date.UTC(2026, 0, 1) + s * 1000).toISOString();
+    expect(elapsedLabel(at(0), at(42))).toBe("42 s");
+    expect(elapsedLabel(at(0), at(185))).toBe("3 min 5 s");
+    expect(elapsedLabel(at(0), at(180))).toBe("3 min");
+    expect(elapsedLabel(at(0), at(4320))).toBe("1 h 12 min");
+    expect(elapsedLabel(at(10), at(0))).toBe("");
+    expect(elapsedLabel("never", at(0))).toBe("");
   });
 });

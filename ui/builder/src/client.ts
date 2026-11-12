@@ -283,6 +283,21 @@ export type CreateBuildHostResponse = { host: { id: string; name: string; target
 export type UpdateBuildHostRequest = { name: string; targets: Array<string> };
 export type UpdateBuildHostResponse = { id: string; name: string; targets: Array<string>; created_at: string; last_seen_at?: string | null; online: boolean; report?: unknown | null };
 export type DeleteBuildHostResponse = { deleted: boolean };
+export type ListConstructionsResponse = Array<{ id: string; application: string; status: string; agent?: string | null; phases: number; phases_done: number }>;
+export type GetConstructionResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown> }> }> };
+export type CreateConstructionRequest = { provider?: string | null };
+export type CreateConstructionResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown> }> }> };
+export type SaveConstructionSpecificationRequest = { specification: string };
+export type SaveConstructionSpecificationResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown> }> }> };
+export type PlanConstructionResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown> }> }> };
+export type SavePhasesRequest = { phases: Array<{ id?: string | null; title: string; description: string; requirements: Array<{ text: string; priority: string }> }> };
+export type SavePhasesResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown> }> }> };
+export type RunConstructionRequest = { until_phase?: string | null };
+export type RunConstructionResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown> }> }> };
+export type StopConstructionResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown> }> }> };
+export type RetryTaskResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown> }> }> };
+export type SkipTaskResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown> }> }> };
+export type DeleteConstructionResponse = { deleted: boolean; agent?: string | null };
 export type ListViewsResponse = Array<{ id: string; name: string; description: string; viewpattern: string; table_name?: string | null; configuration: unknown; min_role: number; slug?: unknown | null; attributes: unknown }>;
 export type GetViewResponse = { id: string; name: string; description: string; viewpattern: string; table_name?: string | null; configuration: unknown; min_role: number; slug?: unknown | null; attributes: unknown };
 export type SaveViewRequest = { name: string; description: string; viewpattern: string; table_name?: string | null; configuration: unknown; min_role: number; slug?: unknown | null; attributes: unknown };
@@ -717,6 +732,17 @@ export interface ApiClient {
   createBuildHost(body: CreateBuildHostRequest): Promise<CreateBuildHostResponse>;
   updateBuildHost(id: string, body: UpdateBuildHostRequest): Promise<UpdateBuildHostResponse>;
   deleteBuildHost(id: string): Promise<DeleteBuildHostResponse>;
+  listConstructions(): Promise<ListConstructionsResponse>;
+  getConstruction(id: string): Promise<GetConstructionResponse>;
+  createConstruction(id: string, body: CreateConstructionRequest): Promise<CreateConstructionResponse>;
+  saveConstructionSpecification(id: string, body: SaveConstructionSpecificationRequest): Promise<SaveConstructionSpecificationResponse>;
+  planConstruction(id: string): Promise<PlanConstructionResponse>;
+  savePhases(id: string, body: SavePhasesRequest): Promise<SavePhasesResponse>;
+  runConstruction(id: string, body: RunConstructionRequest): Promise<RunConstructionResponse>;
+  stopConstruction(id: string): Promise<StopConstructionResponse>;
+  retryTask(id: string, task: string): Promise<RetryTaskResponse>;
+  skipTask(id: string, task: string): Promise<SkipTaskResponse>;
+  deleteConstruction(id: string): Promise<DeleteConstructionResponse>;
   listViews(id: string): Promise<ListViewsResponse>;
   getView(id: string, name: string): Promise<GetViewResponse>;
   saveView(id: string, name: string, body: SaveViewRequest): Promise<SaveViewResponse>;
@@ -2542,6 +2568,98 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("deleteBuildHost", res);
       return (await res.json()) as DeleteBuildHostResponse;
+    },
+    async listConstructions() {
+      const res = await doFetch(`${baseUrl}/api/constructions`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listConstructions", res);
+      return (await res.json()) as ListConstructionsResponse;
+    },
+    async getConstruction(id) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getConstruction", res);
+      return (await res.json()) as GetConstructionResponse;
+    },
+    async createConstruction(id, body) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("createConstruction", res);
+      return (await res.json()) as CreateConstructionResponse;
+    },
+    async saveConstructionSpecification(id, body) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/specification`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("saveConstructionSpecification", res);
+      return (await res.json()) as SaveConstructionSpecificationResponse;
+    },
+    async planConstruction(id) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/plan`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("planConstruction", res);
+      return (await res.json()) as PlanConstructionResponse;
+    },
+    async savePhases(id, body) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/phases`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("savePhases", res);
+      return (await res.json()) as SavePhasesResponse;
+    },
+    async runConstruction(id, body) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/run`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("runConstruction", res);
+      return (await res.json()) as RunConstructionResponse;
+    },
+    async stopConstruction(id) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/stop`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("stopConstruction", res);
+      return (await res.json()) as StopConstructionResponse;
+    },
+    async retryTask(id, task) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/tasks/${encodeURIComponent(task)}/retry`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("retryTask", res);
+      return (await res.json()) as RetryTaskResponse;
+    },
+    async skipTask(id, task) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/tasks/${encodeURIComponent(task)}/skip`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("skipTask", res);
+      return (await res.json()) as SkipTaskResponse;
+    },
+    async deleteConstruction(id) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction`, {
+        method: "DELETE",
+        headers: requestHeaders("DELETE", false),
+      });
+      if (!res.ok) throw await clientError("deleteConstruction", res);
+      return (await res.json()) as DeleteConstructionResponse;
     },
     async listViews(id) {
       const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/views`, {

@@ -240,6 +240,7 @@ pub fn generate_skill(catalog: &Catalog, app: &Application, client_file: &str) -
          a correction is one key. Keep every `{{placeholder}}` name exactly; a \
          translation that changes one is refused.\n\
          \n\
+         {allowed_values}\
          ## Whether you have the tools\n\
          \n\
          They arrive from an MCP server this project may or may not be connected \
@@ -322,5 +323,23 @@ pub fn generate_skill(catalog: &Catalog, app: &Application, client_file: &str) -
         applications = render(&applications),
         triggers_area = Area::Triggers.key(),
         applications_area = Area::Applications.key(),
+        allowed_values = allowed_values_section(client_file),
+    )
+}
+
+/// The section on fields with allowed values: they are a select of the list
+/// the generated client exports, never free text.
+fn allowed_values_section(client_file: &str) -> String {
+    format!(
+        "## A field with allowed values is a select of them\n\
+         \n\
+         A field whose type fixes a list of allowed values refuses a write of \
+         anything else, case and spacing included. `{client_file}` exports the \
+         list as `<Table>Options` (`MachinesOptions.muscle_group`), and the row \
+         type is their union. Offer exactly those, as a `<select>` filled from \
+         that constant (with an empty choice when the field may be empty); never \
+         free text, and never suggestions gathered from the rows, which may hold \
+         a value the list no longer allows.\n\
+         \n"
     )
 }

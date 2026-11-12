@@ -255,6 +255,10 @@ export function ApplicationForm({
   const [guestDays, setGuestDays] = useState("30");
   // Run the application's checklists after each build (TODO-checklists C4.3).
   const [checkAfterBuild, setCheckAfterBuild] = useState(false);
+  // The LLM provider Plan & build works with, by name; empty for the builder
+  // agent's, else the default.
+  const [constructorProvider, setConstructorProvider] = useState("");
+  const [llmProviders, setLlmProviders] = useState<string[]>([]);
   // Which coding agent the sidebar's "Coding agent" link opens (UX1.5): always
   // a named one, starting on the one the link opens now; `null` when neither
   // can be chosen.
@@ -297,6 +301,10 @@ export function ApplicationForm({
         // and an application that already exposes one keeps it.
         const agentList = await api.listAgents().catch(() => []);
         const agentNames = agentList.map((a) => a.name);
+        const llmProviderNames = await api
+          .listLlmProviders()
+          .then((list) => list.map((p) => p.name))
+          .catch(() => [] as string[]);
         let existing: AppItem | undefined;
         if (appId) {
           existing = (await api.listApplications()).find((a) => a.id === appId);
@@ -314,6 +322,7 @@ export function ApplicationForm({
         setAllFileStores(stores);
         setCspSuggestions(suggestions);
         setAllAgents(agentNames);
+        setLlmProviders(llmProviderNames);
         if (existing) {
           setStored(existing);
           setName(existing.name);
@@ -341,6 +350,11 @@ export function ApplicationForm({
           const attributes = attributesOf(existing.attributes);
           setGuestSessions(attributes.guest_sessions === true);
           setCheckAfterBuild(attributes.check_after_build === true);
+          setConstructorProvider(
+            typeof attributes.constructor_provider === "string"
+              ? attributes.constructor_provider
+              : "",
+          );
           const builder = builderAgentFor(existing, agentList);
           setBuilderAgent(builder);
           setCodingAgent(selectedCodingAgent(existing, builder));
@@ -453,6 +467,7 @@ export function ApplicationForm({
             guest_sessions: guestSessions,
             guest_session_days: Number.parseInt(guestDays, 10) || 30,
             check_after_build: checkAfterBuild,
+            constructor_provider: constructorProvider || undefined,
           },
           codingAgent,
         ),
@@ -1270,6 +1285,31 @@ export function ApplicationForm({
                   {!claudeAvailable(stored) && stored.claude.reason && (
                     <> {t("Claude Code: {reason}.", { reason: stored.claude.reason })}</>
                   )}
+                </Form.Text>
+              </Form.Group>
+            )}
+
+            {frameworkName === "react" && (
+              <Form.Group className="mb-3" controlId="appConstructorProvider">
+                <Form.Label>{t("LLM provider for Plan & build")}</Form.Label>
+                <Form.Select
+                  value={constructorProvider}
+                  onChange={(e) => setConstructorProvider(e.target.value)}
+                >
+                  <option value="">{t("The builder agent's, else the default")}</option>
+                  {/* A stored name that no longer exists stays visible, so
+                    saving the form does not quietly drop it. */}
+                  {constructorProvider && !llmProviders.includes(constructorProvider) && (
+                    <option value={constructorProvider}>{constructorProvider}</option>
+                  )}
+                  {llmProviders.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </Form.Select>
+                <Form.Text muted>
+                  <T text="The provider the agent that plans the application and builds its data model talks to. A change applies the next time it plans or runs." />
                 </Form.Text>
               </Form.Group>
             )}

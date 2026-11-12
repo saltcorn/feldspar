@@ -233,6 +233,10 @@ impl LlmProvider for WithRequestDefaults {
         self.defaults.apply(&mut req);
         self.inner.stream(req).await
     }
+
+    fn output_cap(&self, requested: Option<u32>) -> Option<u32> {
+        self.inner.output_cap(requested)
+    }
 }
 
 #[cfg(test)]

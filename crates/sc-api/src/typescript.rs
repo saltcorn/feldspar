@@ -2380,6 +2380,33 @@ impl TableClient<'_> {
         let p = &self.pascal;
         let mut out = format!("// --- {name} ---\n\n");
 
+        // The columns with a fixed list of allowed values, as a constant a
+        // form fills its select from: a write of anything else is refused.
+        let listed: Vec<&ResourceField> = self
+            .model
+            .fields
+            .iter()
+            .filter(|f| f.options.is_some())
+            .collect();
+        if !listed.is_empty() {
+            let _ = writeln!(
+                out,
+                "/**\n * The values each of these columns of `{name}` allows; a write of anything\n \
+                 * else is refused. Offer exactly these, e.g. as a select's options.\n */"
+            );
+            let _ = writeln!(out, "export const {p}Options = {{");
+            for f in &listed {
+                let values = f.options.as_deref().unwrap_or_default();
+                let _ = writeln!(
+                    out,
+                    "  {}: [{}],",
+                    f.name,
+                    string_literals(values).join(", ")
+                );
+            }
+            out.push_str("} as const;\n\n");
+        }
+
         let _ = writeln!(out, "/** A row of `{name}`, as its columns are today. */");
         let _ = writeln!(out, "export interface {p}Row {{");
         for f in &self.model.fields {
@@ -2720,12 +2747,24 @@ impl TableClient<'_> {
 /// `?`-optional — a missing property and a null one are different questions, and
 /// only the second one a read can answer.
 fn row_field_type(f: &ResourceField) -> String {
-    let base = f.ty.ts_type();
+    // A column with allowed values holds one of them: their union.
+    let base = match f.options.as_deref() {
+        Some(values) if !values.is_empty() => string_literals(values).join(" | "),
+        _ => f.ty.ts_type().to_owned(),
+    };
     if f.required && !f.write_only {
-        base.to_owned()
+        base
     } else {
         format!("{base} | null")
     }
+}
+
+/// Values as TypeScript string literals (JSON's quoting is TypeScript's).
+fn string_literals(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "\"\"".to_owned()))
+        .collect()
 }
 
 /// A set of column names as a TypeScript key union — `"title" | "author"`, or
