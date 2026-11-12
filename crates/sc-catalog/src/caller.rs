@@ -363,6 +363,29 @@ impl Cause {
         }
     }
 
+    /// A named user at `role` with `user`'s fields, as this cause would act as
+    /// them: unchanged unless they are the cause's own user, who is held to the
+    /// role the cause was served at when that is less privileged — the role in
+    /// their fields included, since that is the `user.role` a formula and the
+    /// `sc.user` setting read.
+    fn as_served(&self, role: Role, user: Option<Json>) -> (Role, Option<Json>) {
+        let CauseKind::Caller { role: served, .. } = &self.0 else {
+            return (role, user);
+        };
+        let named_id = user.as_ref().and_then(|u| u.get("id")).and_then(Json::as_str);
+        if self.user_id().is_none() || self.user_id() != named_id {
+            return (role, user);
+        }
+        let role = role.least_privileged(*served);
+        let user = user.map(|mut fields| {
+            if let Json::Object(map) = &mut fields {
+                map.insert("role".to_owned(), json!(i64::from(role)));
+            }
+            fields
+        });
+        (role, user)
+    }
+
     /// A short phrase naming the cause, for an error message.
     pub fn describe(&self) -> String {
         match &self.0 {
@@ -470,11 +493,20 @@ impl Principal {
     /// Refused, on every table, when the named user holds more authority than
     /// the cause: only the system or an administrator may name somebody else,
     /// and a role-80 caller may name only themselves.
+    ///
+    /// **Naming oneself is never an elevation.** `role` and `user` are the
+    /// named user as stored, while the cause is the role it was served at —
+    /// which an application's `max_role` (or an unverified address) may have
+    /// lowered. When the named user *is* the cause, they act at the less
+    /// privileged of the two, and their fields say so: an admin served at 30
+    /// by an application acts as themselves at 30 there, which is what
+    /// `asUser()` without an argument would be.
     pub fn narrowed(
         cause: &Principal,
         role: Role,
         user: Option<Json>,
     ) -> sc_error::Result<Principal> {
+        let (role, user) = cause.cause.as_served(role, user);
         let named = Principal::build(role, user);
         if !cause.cause.admits(role, named.user_id()) {
             return Err(sc_error::Error::auth(format!(
@@ -1130,6 +1162,48 @@ mod tests {
         // What `spawn_scoped` is for: a bare spawn starts outside every scope.
         assert_eq!(bare.0, Origin::default());
         assert!(bare.1.is_none());
+    }
+
+    /// An administrator served at 30 by an application (`max_role`) who names
+    /// themselves acts as themselves at 30: the stored role 1 is two views of
+    /// one person, not an elevation (bug report: `asUser(user.id)` in a
+    /// clamped application).
+    #[test]
+    fn naming_oneself_acts_at_the_role_one_was_served_at() {
+        let served = Principal::recorded(
+            Role::of(30),
+            Some(json!({ "id": "u-1", "role": 30, "email": "root@example.com" })),
+        );
+        let stored = json!({ "id": "u-1", "role": 1, "email": "root@example.com" });
+        let me = Principal::narrowed(&served, Role::ADMIN, Some(stored)).unwrap();
+        assert_eq!(me.role(), Role::of(30));
+        assert_eq!(me.user_id(), Some("u-1"));
+        assert_eq!(me.user().unwrap()["role"], json!(30));
+        assert_eq!(me.user().unwrap()["email"], json!("root@example.com"));
+        assert_eq!(me.cause.role(), Role::of(30));
+
+        // A user stored at a *less* privileged role than they were served at
+        // (demoted since signing in) acts at the stored one: never more.
+        let demoted = json!({ "id": "u-1", "role": 80 });
+        let me = Principal::narrowed(&served, Role::of(80), Some(demoted)).unwrap();
+        assert_eq!(me.role(), Role::of(80));
+        assert_eq!(me.user().unwrap()["role"], json!(80));
+    }
+
+    /// The same clamped caller still may not name anybody else, at any role.
+    #[test]
+    fn a_clamped_caller_still_may_not_name_somebody_else() {
+        let served = Principal::recorded(Role::of(30), Some(json!({ "id": "u-1", "role": 30 })));
+        for role in [Role::ADMIN, Role::of(30), Role::of(80)] {
+            let other = json!({ "id": "u-2", "role": i64::from(role) });
+            let refused = Principal::narrowed(&served, role, Some(other)).unwrap_err();
+            assert!(refused.to_string().contains("may not act as"), "{refused}");
+        }
+        // And the system names anyone, at their stored role.
+        let system = Principal::system();
+        let named = Principal::narrowed(&system, Role::ADMIN, Some(json!({ "id": "u-2", "role": 1 })))
+            .unwrap();
+        assert_eq!(named.role(), Role::ADMIN);
     }
 
     #[test]

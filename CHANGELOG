@@ -2,6 +2,42 @@
 
 Changes in reverse chronological order.
 
+## Naming oneself with `asUser(id)` in an application that lowers one's role (AU1.1, AU1.2)
+
+Bug report: a global administrator (stored role 1) in an application with `max_role: 30` could
+not act as themselves. `asUser(user.id)`, `asUser(user)` and `db.<t>.asUser(user.id)` were refused
+with "user `X` (role 30) may not act as user `X` (role 1)", and every `@feldspar/imap` action that
+names its caller answered 422 there (mark read, move, fetch body, sync now).
+
+- **Cause.** `Principal::narrowed` compared the cause's role, as the application served it
+  (lowered to `max_role`), with the named user's role as stored on their row. For a caller naming
+  themselves those are two views of one person, and the check failed whenever the application
+  lowered them.
+- **Fix** (`sc-catalog` `Cause::as_served`): a caller naming their own id acts at the less
+  privileged of the two roles, and the `role` in their fields is set to it, so policies and
+  ownership formulas see 30 too. Without that, the fields would have carried the stored role 1:
+  naming oneself would have been an elevation. A user demoted since signing in acts at the new,
+  lower role. Naming anybody else is unchanged: only the system or an administrator (as served)
+  may. The `User` an actor carries for formulas (`code_host/mod.rs`, `triggers.rs`) is held to
+  the narrowed role with `capped_at`.
+- **A refusal stays a refusal through a module** (`sc-module`). A host call's failure crossed into
+  the module's JavaScript as a plain `Error`, so a module that let it propagate failed with
+  `module_error`, a configuration error: 422 "configuration error: auth error: …". Now the server
+  marks an ask's answer that is an auth refusal (`Control::Answer::refused`, `__scAnswer`'s fourth
+  argument). The host script keeps the errors it made for those in a `WeakSet` no module can reach,
+  and when a call fails with one of them, `__scFail` says so and the call fails with
+  `module_refusal`, an `Error::auth`: 403 for a signed-in caller, "auth error" said once. A module
+  that throws its own `Error("auth error: …")` is still a module error.
+- **Tests.** `caller::tests::naming_oneself_acts_at_the_role_one_was_served_at` and
+  `a_clamped_caller_still_may_not_name_somebody_else`; the report's case A through the real
+  engine, `code_host_rls_boundary::an_admin_served_at_a_lower_role_may_name_themselves_and_stays_at_it`
+  (it fails with the report's message without the fix); `v1_table::a_refusal_a_module_lets_propagate_is_still_a_refusal`
+  and `host::tests::a_refusal_the_module_rethrew_stays_a_refusal`.
+- **Docs.** TECHNICAL_DESIGN §7.3a "Acting as a named user": naming oneself.
+- **Not changed.** A named user other than oneself is not lowered to the application's
+  `max_role` (the reporter's suggestion 2): that changes what the system and administrators see,
+  and is a policy decision, not this fix. The report's related `count()` observation is AU1.3.
+
 ## `halfvec` is a vector field, and backups write vectors compactly (BK1.5, BK1.6)
 
 Follows the entry below. pgvector's `halfvec(n)` now decodes as a vector instead of text, and a

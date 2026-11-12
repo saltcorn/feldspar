@@ -1000,6 +1000,22 @@ column: the Postgres driver decodes only the types it knows, so `SELECT *` faile
 - [x] **BK1.6** A backup writes vector, half-vector and sparse-vector values compactly (base64 of
   their binary form, tagged), and a restore reads both that and the older spellings.
 
+## AU1 — `asUser(<own id>)` in an application that lowers the caller's role (bug report)
+
+An administrator (stored role 1) in an application with `max_role: 30` could not act as
+themselves: `asUser(user.id)` compared the served role (30) with the stored one (1) and refused.
+Every `@feldspar/imap` action that names its caller answered 422 there.
+
+- [x] **AU1.1** `Principal::narrowed`: a caller naming their own id acts at the less privileged of
+  the served and stored roles, with that role in their fields; naming anybody else is unchanged.
+  The loaded `User` an actor carries is held to the same role. Tests: `sc-catalog` unit tests,
+  and the report's case A through the real engine (`code_host_rls_boundary`).
+- [x] **AU1.2** A refusal of the caller's authority that a module lets propagate stays an auth
+  error (403 for a signed-in caller), not "configuration error" (422). Test: `v1_table`.
+- [ ] **AU1.3** The report's "related observation": `db.asUser().<t>.count()` on a table with
+  floors 1/1 and an ownership formula is refused for a caller served below the floor, where
+  reading rows may be granted by the formula. Waiting on the reporter's repro.
+
 ---
 
 ## Open questions

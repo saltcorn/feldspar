@@ -807,6 +807,23 @@ pub(crate) fn module_error(message: &str) -> Error {
     })
 }
 
+/// This server's refusal of the caller's authority, answered to a module's ask
+/// and thrown on by the module: the same [`Error::auth`] it was, so a signed-in
+/// caller is told they are forbidden (403) rather than that the module is
+/// misconfigured (422). `message` is the refusal as the module saw it, which is
+/// its display (`auth error: …`); the prefix is the kind, so it is not repeated.
+#[cfg_attr(
+    not(any(feature = "deno-host", test)),
+    expect(dead_code, reason = "no runtime for a module to throw on")
+)]
+pub(crate) fn module_refusal(message: &str) -> Error {
+    let message = message.strip_prefix("auth error: ").unwrap_or(message);
+    if message.is_empty() {
+        return module_error(message);
+    }
+    Error::auth(message)
+}
+
 /// The module host: the worker pool a module's JavaScript runs on, and the four
 /// calls the rest of the server makes of it.
 ///
@@ -1537,6 +1554,15 @@ mod tests {
         // The module's fault, not the server's: it is the admin who installed it
         // who can fix it (§16's split).
         assert_eq!(err.kind(), sc_error::ErrorKind::Application);
+    }
+
+    /// A refusal a module let propagate is still a refusal, said once.
+    #[test]
+    fn a_refusal_the_module_rethrew_stays_a_refusal() {
+        let err = module_refusal("auth error: user `u` (role 30) may not act as user `v` (role 1)");
+        assert_eq!(err.auth_message(), Some("user `u` (role 30) may not act as user `v` (role 1)"));
+        assert_eq!(err.to_string().matches("auth error").count(), 1, "{err}");
+        assert!(module_refusal("").to_string().contains("without saying why"));
     }
 
     #[test]

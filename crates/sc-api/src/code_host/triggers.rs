@@ -207,6 +207,7 @@ impl<'a> TriggerRunHost<'a> {
                 let user = super::load_named_user(self.catalog, id).await?;
                 let caller =
                     Principal::narrowed(&self.caller, user.role(), Some(user.fields_json()))?;
+                let user = user.capped_at(caller.role());
                 (caller, Some(user))
             }
         };

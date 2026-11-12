@@ -498,6 +498,9 @@ impl<'a> TableHost<'a> {
                 let user = load_named_user(self.catalog, &id).await?;
                 let principal =
                     Principal::narrowed(&self.caller, user.role(), Some(user.fields_json()))?;
+                // Held to the role the narrowing settled on: naming oneself in
+                // an application that serves one at a lower role is that role.
+                let user = user.capped_at(principal.role());
                 Ok(Actor::Caller {
                     principal,
                     user: Some(user),

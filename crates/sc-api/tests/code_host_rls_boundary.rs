@@ -365,3 +365,46 @@ async fn a_role_80_callers_as_user_of_an_admin_is_refused_on_every_surface() -> 
     assert_eq!(out["own"], json!("ran"), "{out}");
     Ok(())
 }
+
+/// The bug report's case A: an administrator an application serves at role 30
+/// (`max_role`) names **themselves** — `asUser(user.id)`, `asUser(user)`, and
+/// on a table. That is two views of one person, not an elevation, so it runs,
+/// and runs at 30: `notes` (the admin's floors) is refused by its floor, not by
+/// the narrowing, and the role a formula reads is 30.
+#[tokio::test]
+async fn an_admin_served_at_a_lower_role_may_name_themselves_and_stays_at_it() -> Result<()> {
+    let w = setup().await?;
+    let served = w.admin.clone().capped_at(Role::of(30));
+    let caller = Principal::recorded(served.role(), Some(served.fields_json()));
+    let host = TableHost::new(&w.cat).for_caller(&caller);
+    let code = format!(
+        r#"const said = async (f) => {{ try {{ return await f(); }} catch (e) {{ return "ERR " + e.message; }} }};
+           const me = "{me}";
+           return {{
+             by_id: await said(() => db.asUser(me).books.count()),
+             by_row: await said(() => db.asUser({{ id: me }}).books.count()),
+             on_table: await said(() => db.books.asUser(me).count()),
+             sql_role: await said(async () =>
+               (await db.asUser(me).sql("select current_setting('sc.role') as r"))[0].r),
+             notes: await said(() => db.notes.asUser(me).count()),
+             other: await said(() => db.books.asUser("{bob}").count()),
+           }};"#,
+        me = w.admin.id(),
+        bob = w.bob.id(),
+    );
+    let out = run_js(&w.cat, &host, &caller, &code).await?;
+    // The admin owns no books, so each of the three is the policies' zero.
+    for key in ["by_id", "by_row", "on_table"] {
+        assert_eq!(out[key], json!(0), "{key}: {out}");
+    }
+    assert_eq!(out["sql_role"], json!("30"), "{out}");
+    let notes = out["notes"].as_str().unwrap_or_default();
+    assert!(
+        notes.starts_with("ERR") && !notes.contains("may not act as"),
+        "the floor refuses at 30, the narrowing does not: {out}"
+    );
+    // Served at 30, they are not an administrator here: nobody else.
+    let other = out["other"].as_str().unwrap_or_default();
+    assert!(other.contains("may not act as"), "{out}");
+    Ok(())
+}

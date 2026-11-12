@@ -2153,6 +2153,12 @@ for (const u of await db.users.where({ wants_reminders: true }).rows()) {
   as high a number, and the cause is an admin, the system, or that same user. Otherwise it is
   refused, on every table, not only RLS ones. System authority may therefore name anyone; a
   role-80 caller may name only themselves.
+- **Naming oneself.** The cause is the role the caller was *served* at, which an application's
+  `max_role` (or an unverified address) may have lowered below the role stored on their user row.
+  A caller who names their own id is not elevated by that difference: they act at the less
+  privileged of the two, and the `user.role` their fields carry says so — the same as `asUser()`
+  without an argument. An admin served at 30 by an application is at 30 there, and may name
+  nobody else.
 - **Enforcement.** The named user's principal keeps the cause (`Principal::elevated`'s
   counterpart, `Principal::narrowed(&cause, user)`), and `set_caller_context` writes the named
   user's role and user. Postgres sees exactly that user.

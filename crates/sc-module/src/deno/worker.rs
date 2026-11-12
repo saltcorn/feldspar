@@ -19,7 +19,7 @@
 //! | | |
 //! |---|---|
 //! | `__scDone(id, jsonText)` | the call answered; the text is `JSON.stringify`'s |
-//! | `__scFail(id, message, stack)` | the call threw |
+//! | `__scFail(id, message, stack, refused)` | the call threw (`refused`: with this server's refusal) |
 //! | `__scLog(level, module, message)` | one `console.*` line, into [`sc_log`] |
 //! | `__scAsk(callId, askId, requestJson)` | the module is asking this server something |
 //!
@@ -29,7 +29,7 @@
 //! because that is where a `CodeHosts` is borrowed on somebody's stack, and the
 //! answer comes back as a [`Control::Answer`] on the channel this worker
 //! already selects on — which the worker hands to the isolate by calling
-//! `globalThis.__scAnswer(askId, ok, text)`, the one function the *host script*
+//! `globalThis.__scAnswer(askId, ok, text, refused)`, the one function the *host script*
 //! installs rather than this file.
 //!
 //! The bounds are unchanged and it is worth saying why: an ask is served on the
@@ -66,7 +66,7 @@ use sc_error::{Error, Result};
 use serde_json::{Value as Json, json};
 use tokio::sync::oneshot;
 
-use crate::host::{HOST_SCRIPT_NAME, host_script, module_error};
+use crate::host::{HOST_SCRIPT_NAME, host_script, module_error, module_refusal};
 use crate::permissions::ModulePermissions;
 
 /// How often the worker thread comes round its loop when nothing else wakes it.
@@ -131,12 +131,20 @@ pub enum Control {
     /// Run this call.
     Job(Box<Job>),
     /// One ask, answered. `ok` says which of the two `text` is: the answer's
-    /// JSON, or the sentence it failed with.
+    /// JSON, or the sentence it failed with. `refused` marks a failure that was
+    /// a refusal of the caller's authority ([`sc_error::Error::auth`]), so a
+    /// module that lets it propagate fails with a refusal too, rather than with
+    /// its own (configuration) error.
     ///
     /// On the **control** channel rather than one of its own, because that is
     /// the channel the worker already selects on and an answer is a message to
     /// a worker like any other.
-    Answer { ask: u64, ok: bool, text: String },
+    Answer {
+        ask: u64,
+        ok: bool,
+        text: String,
+        refused: bool,
+    },
     /// Drop this module from the replay table — it has been uninstalled, and a
     /// restarted worker must not reload a package that is no longer there.
     Forget(String),
@@ -371,16 +379,25 @@ fn host_done(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv:
     settle(scope, id, Ok(value));
 }
 
-/// `__scFail(id, message, stack)` — the module threw.
+/// `__scFail(id, message, stack, refused)` — the module threw.
 ///
 /// The stack is taken but not carried: it is the module's own JavaScript, which
 /// belongs in the log rather than in the sentence an admin is shown. The message
 /// is [`module_error`]'s, so a module's throw is an **Application** error, as it
-/// was over the pipe.
+/// was over the pipe — unless `refused` says what it threw is this server's own
+/// refusal of the caller's authority, answered to one of its asks, which stays
+/// that refusal ([`module_refusal`]). Only the host script can say so: it keeps
+/// the errors it made for refusals where no module can reach.
 fn host_fail(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let id = args.get(0).to_rust_string_lossy(scope);
     let message = args.get(1).to_rust_string_lossy(scope);
-    settle(scope, id, Err(module_error(&message)));
+    let refused = args.get(3).is_true();
+    let error = if refused {
+        module_refusal(&message)
+    } else {
+        module_error(&message)
+    };
+    settle(scope, id, Err(error));
 }
 
 /// `__scAsk(callId, askId, requestJson)` — the module is asking this server
@@ -596,14 +613,14 @@ impl Host {
         })
     }
 
-    /// Hand one ask's answer to the isolate: `__scAnswer(askId, ok, text)`.
+    /// Hand one ask's answer to the isolate: `__scAnswer(askId, ok, text, refused)`.
     ///
     /// Best effort by design. The promise this settles may be gone — the module
     /// that was awaiting it threw, or its call was given up on — and the host
     /// script drops an answer nobody is waiting on, so there is nothing here to
     /// report. What is *not* dropped is a termination: an isolate the watchdog
     /// has stopped is noticed by the tick, as everywhere else in this file.
-    fn answer_ask(&mut self, ask: u64, ok: bool, text: &str) {
+    fn answer_ask(&mut self, ask: u64, ok: bool, text: &str, refused: bool) {
         // Nothing to settle on an isolate that is going away, and one good
         // reason not to try: a `TryCatch` entered while execution is terminating
         // is a chance to swallow the termination, and the call this ask belongs
@@ -629,7 +646,8 @@ impl Host {
             // fails rather than hanging.
             None => v8::undefined(scope).into(),
         };
-        answer.call(scope, receiver, &[id, ok, text]);
+        let refused: v8::Local<v8::Value> = v8::Boolean::new(scope, refused).into();
+        answer.call(scope, receiver, &[id, ok, text, refused]);
     }
 
     /// Call `__scModuleHost(id, request)`.
@@ -900,9 +918,14 @@ async fn serve(config: WorkerConfig, mut rx: tokio::sync::mpsc::UnboundedReceive
                 // Settling a promise queues microtasks, so the event loop has
                 // work again — exactly as submitting a job does, and for the
                 // same reason it clears `resting` there.
-                Woke::Control(Some(Control::Answer { ask, ok, text })) => {
+                Woke::Control(Some(Control::Answer {
+                    ask,
+                    ok,
+                    text,
+                    refused,
+                })) => {
                     resting = false;
-                    host.answer_ask(ask, ok, &text);
+                    host.answer_ask(ask, ok, &text, refused);
                 }
                 Woke::Settled(None) => break End::Silent,
                 Woke::Settled(Some(answer)) => dispatch(&mut pending, &mut loads, answer),
@@ -1106,6 +1129,7 @@ fn route(host: &mut Host, pending: &HashMap<CallToken, Pending>, asked: Asked) {
         asked.ask,
         false,
         &format!("this module asked this server for something, and {refused}"),
+        false,
     );
 }
 
