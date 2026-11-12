@@ -2266,6 +2266,108 @@ async fn a_vector_field_its_values_and_its_index_travel_in_a_backup() -> sc_erro
     Ok(())
 }
 
+/// A table an app made with its own SQL, with columns of types this system does
+/// not know — `(column, type, a value as Postgres prints it)` — backed up from
+/// `source` and restored into `target`: the backup no longer aborts on them
+/// (bug report: `halfvec`), the columns come back with the same types and the
+/// values as they were.
+async fn database_types_round_trip(
+    mut source: Server,
+    mut target: Server,
+    columns: &[(&str, &str, &str)],
+) -> sc_error::Result<()> {
+    let ddl: Vec<String> = columns.iter().map(|(c, t, _)| format!("{c} {t}")).collect();
+    let names: Vec<&str> = columns.iter().map(|(c, _, _)| *c).collect();
+    let values: Vec<String> = columns.iter().map(|(_, _, v)| format!("'{v}'")).collect();
+    source
+        .db
+        .client()
+        .await?
+        .batch_execute(&format!(
+            "CREATE TABLE odd (id bigint primary key, {}); \
+             INSERT INTO odd (id, {names}) VALUES (1, {values}), (2, {values}); \
+             INSERT INTO odd (id) VALUES (3);",
+            ddl.join(", "),
+            names = names.join(", "),
+            values = values.join(", "),
+        ))
+        .await
+        .map_err(db_error)?;
+    source.catalog.reload().await?;
+
+    // Read through the API as text, the value the type layer has for them.
+    let (status, rows) = source
+        .client
+        .send("GET", "/api/tables/odd/rows?order=id", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{rows}");
+    for (column, _, value) in columns {
+        assert_eq!(rows[0][column], json!(value), "{rows}");
+    }
+
+    let archive = backup_everything(&mut source).await;
+    let backed_up = entry(&archive, "tables/odd/rows.ndjson");
+    assert_eq!(backed_up.lines().count(), 3, "{backed_up}");
+
+    let report = restore_everything(&mut target, &archive).await;
+    let introspected = target
+        .catalog
+        .require("odd")
+        .map_err(|e| sc_error::Error::msg(format!("{e}; {report}")))?;
+    for (column, sql_type, _) in columns {
+        let field = introspected
+            .field(column)
+            .unwrap_or_else(|| panic!("`{column}` restored: {report}"));
+        assert_eq!(field.base.type_.sql_type(), *sql_type, "{report}");
+    }
+    let (status, rows) = target
+        .client
+        .send("GET", "/api/tables/odd/rows?order=id", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{rows}");
+    assert_eq!(rows.as_array().map(Vec::len), Some(3), "{rows} {report}");
+    for (column, _, value) in columns {
+        assert_eq!(rows[1][column], json!(value), "{rows}");
+        assert_eq!(rows[2][column], Value::Null, "{rows}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn columns_of_types_the_system_does_not_know_travel_in_a_backup() -> sc_error::Result<()> {
+    database_types_round_trip(
+        setup().await?,
+        setup().await?,
+        &[
+            ("span", "interval", "1 day 02:00:00"),
+            ("addr", "inet", "10.0.0.0/24"),
+            ("tags", "_int4", "{1,2,3}"),
+        ],
+    )
+    .await
+}
+
+/// The bug report's case: pgvector's `halfvec` (and `sparsevec`), which this
+/// system does not know, unlike its `vector`.
+#[tokio::test]
+async fn pgvector_halfvec_and_sparsevec_columns_travel_in_a_backup() -> sc_error::Result<()> {
+    let (Some(from), Some(to)) = (
+        TestDb::with_pgvector().await?,
+        TestDb::with_pgvector().await?,
+    ) else {
+        return Ok(());
+    };
+    database_types_round_trip(
+        setup_in(from).await?,
+        setup_in(to).await?,
+        &[
+            ("half", "halfvec(3)", "[1,0.5,-2]"),
+            ("sparse", "sparsevec(5)", "{1:1.5,4:2}/5"),
+        ],
+    )
+    .await
+}
+
 #[tokio::test]
 async fn rows_are_never_backed_up_without_their_table() -> sc_error::Result<()> {
     let mut server = setup().await?;

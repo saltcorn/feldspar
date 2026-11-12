@@ -25,5 +25,7 @@ mod pkey_names;
 mod query;
 #[path = "transaction.rs"]
 mod transaction;
+#[path = "unknown_types.rs"]
+mod unknown_types;
 #[path = "vector.rs"]
 mod vector;

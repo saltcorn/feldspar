@@ -11,6 +11,12 @@
 //!   for *any* column type — unlike `Option::<T>::None`, which only accepts one.
 //! - **Result column → [`Value`]**: [`decode`] reads one column of a
 //!   [`tokio_postgres::Row`] according to its Postgres type, handling `NULL`.
+//!
+//! A type outside both lists — an extension's (`halfvec`, `sparsevec`),
+//! `interval`, `inet`, an array — travels as **its text**: `run_query` reads such
+//! a column as `col::text`, and a text value bound to such a parameter is sent in
+//! Postgres's text format (`encode_format`). That is the same value the type
+//! layer has for it (`BasicType::Other` holds text), and what a backup writes.
 
 use bytes::BytesMut;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
@@ -18,7 +24,7 @@ use rust_decimal::Decimal;
 use sc_error::{Error, Result};
 use sc_query::Value;
 use tokio_postgres::Row as PgRow;
-use tokio_postgres::types::{FromSql, IsNull, ToSql, Type};
+use tokio_postgres::types::{Format, FromSql, IsNull, ToSql, Type};
 use uuid::Uuid;
 
 /// The boxed error type tokio-postgres' `ToSql` methods return.
@@ -140,6 +146,13 @@ impl PgParam<'_> {
             .to_sql_checked(ty, out),
             Value::Text(v) if *ty == Type::BOOL => {
                 parse_text(v, ty, parse_bool)?.to_sql_checked(ty, out)
+            }
+            // A type this driver has no binary form for (`halfvec`, `interval`,
+            // `inet`, …): `encode_format` sent the parameter in text format, so
+            // its bytes are the text, which the type's own input function reads.
+            Value::Text(v) if sends_text_format(ty) => {
+                out.extend_from_slice(v.as_bytes());
+                Ok(IsNull::No)
             }
             Value::Text(v) => v.to_sql_checked(ty, out),
             Value::Bytes(v) => v.to_sql_checked(ty, out),
@@ -325,13 +338,62 @@ impl ToSql for PgParam<'_> {
     ) -> std::result::Result<IsNull, BoxError> {
         self.encode(ty, out)
     }
+
+    // Text bound to a type this driver cannot encode goes in Postgres's text
+    // format, which every type has; everything else stays binary.
+    fn encode_format(&self, ty: &Type) -> Format {
+        match self.0 {
+            Value::Text(_) if sends_text_format(ty) => Format::Text,
+            _ => Format::Binary,
+        }
+    }
+}
+
+/// Whether a text value bound to a parameter of type `ty` is sent as its text
+/// (Postgres's text format) rather than in binary: for a type that neither
+/// `String` binds nor [`PgParam::encode`] parses text into — an extension's type
+/// (`halfvec`, `sparsevec`, `ltree` aside, which `String` takes), `interval`,
+/// `inet`, an array. Such a column reads back as text ([`decodes`] is false for
+/// it), so this is what writes that text back.
+fn sends_text_format(ty: &Type) -> bool {
+    !<String as ToSql>::accepts(ty) && !decodes(ty)
+}
+
+/// Whether [`decode`] reads a column of type `ty`. A query whose result has a
+/// column it does not is rerun with that column read as text (see
+/// `exec::run_query`), so this and `decode` must agree.
+pub(crate) fn decodes(ty: &Type) -> bool {
+    [
+        Type::BOOL,
+        Type::INT2,
+        Type::INT4,
+        Type::INT8,
+        Type::FLOAT4,
+        Type::FLOAT8,
+        Type::TEXT,
+        Type::VARCHAR,
+        Type::BPCHAR,
+        Type::NAME,
+        Type::BYTEA,
+        Type::UUID,
+        Type::JSON,
+        Type::JSONB,
+        Type::DATE,
+        Type::TIME,
+        Type::TIMESTAMPTZ,
+        Type::TIMESTAMP,
+        Type::NUMERIC,
+    ]
+    .contains(ty)
+        || crate::geometry::is_geometry_type(ty.name())
+        || ty.name() == VECTOR_TYPE
 }
 
 /// Read one column of `row` as a [`Value`], mapping the Postgres type to a basic
 /// `Value` variant and turning SQL `NULL` into [`Value::Null`].
 ///
-/// Unmapped types are an explicit error rather than a silent coercion — this
-/// milestone deliberately covers only the basic types.
+/// A type [`decodes`] does not cover is an error here rather than a silent
+/// coercion; `run_query` reads those as text before they reach this.
 pub fn decode(row: &PgRow, idx: usize) -> Result<Value> {
     let column = row
         .columns()
@@ -390,8 +452,12 @@ pub fn decode(row: &PgRow, idx: usize) -> Result<Value> {
             ),
         }
     } else {
+        // `run_query` reads such a column as text, so only a caller decoding
+        // rows it did not get through there arrives here.
         return Err(Error::database(format!(
-            "unsupported column type `{ty}` for column `{}` (basic types only this milestone)",
+            "column `{}` is of type `{ty}`, which this driver cannot read; select it as \
+             text (`{}::text`)",
+            column.name(),
             column.name()
         )));
     };

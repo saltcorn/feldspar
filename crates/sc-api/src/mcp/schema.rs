@@ -865,6 +865,7 @@ async fn edit(catalog: &Catalog, grants: &Grants, args: &Json) -> Result<Json> {
             // (TODO-type-hardening H8.5).
             editor: sc_catalog::Editor::Delegated(EDIT_SCHEMA_EDITOR),
             ids: schema_edit::GivenIds::default(),
+            database_types: false,
         },
     )
     .await?;

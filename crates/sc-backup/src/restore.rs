@@ -1255,7 +1255,12 @@ async fn add_field(catalog: &Catalog, table: &str, field: &Map<String, Json>) ->
             table: table.to_owned(),
             field: spec,
         }],
-        &schema_edit::ApplyOptions::default(),
+        // A column of a type of the database's own (pgvector's `halfvec`, an
+        // `interval`) that an app made with its own SQL is recreated as it was.
+        &schema_edit::ApplyOptions {
+            database_types: true,
+            ..schema_edit::ApplyOptions::default()
+        },
     )
     .await?;
     Ok(String::new())

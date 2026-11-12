@@ -2,6 +2,54 @@
 
 Changes in reverse chronological order.
 
+## Backups no longer abort on a column of a type feldspar does not know (BK1)
+
+Bug report: `feldspar backup` failed every night with `unsupported column type `halfvec` for
+column `vec`` on an instance where an app had made a table with its own SQL holding a pgvector
+`halfvec` column. The catalog is built by introspection, so such a column is a
+`BasicType::Other` field. The Postgres driver could decode only the basic types, PostGIS and
+pgvector's `vector`, so every `SELECT *` over the table failed, the backup's included. The same
+was true of `sparsevec`, `interval`, `inet`, arrays and any other type without a codec. Reading
+the table through REST or a view failed too, and so did writing a text value to it.
+
+- **Reads** (`sc-db-postgres` `exec::run_query`): a statement is prepared first, which is what
+  running it from a string did anyway, so there is no extra round trip. If one of its result
+  columns has a type `value::decodes` does not cover, it is prepared again wrapped as
+  `WITH "_sc_q" AS (<sql>) SELECT …, "_sc_q"."vec"::text AS "vec" FROM "_sc_q"`. The column
+  names and order stay the same, and so does the row order: an inner `ORDER BY` keeps the query
+  from being flattened. A CTE also wraps an `UPDATE … RETURNING`. The value is `Value::Text` in
+  Postgres's own spelling (`[1,0.5,-2]`, `{1:1.5,4:2}/5`, `1 day 02:00:00`), which is what the
+  type layer already takes for an `Other` field. Two result columns with the same name can't
+  be told apart from outside the CTE, so such a statement is refused with a sentence.
+  Statements whose columns all decode run exactly as before.
+- **Writes** (`value::PgParam::encode_format`): a text value bound to a parameter of such a
+  type is sent in Postgres's text format, which the type's own input function reads. Before,
+  it was refused as the wrong type.
+- **Introspection** spells `halfvec` and `sparsevec` with their dimensions (`halfvec(1024)`),
+  as it did `vector`, so a restore makes the same column. Only these two type names change
+  spelling.
+- **Restore** (`schema_edit::ApplyOptions::database_types`, set only by `sc-backup`'s
+  `add_field`): a field whose type is neither basic nor rich is created with the type as
+  spelled. The spelling is checked against a strict grammar first, because it goes into the
+  DDL as written: an identifier, optionally schema-qualified, then an optional numeric modifier
+  and `[]`, with no spaces. If the target database lacks the type (no pgvector there), that
+  column's line in the restore report says so. The schema editor still refuses an unknown type
+  for a field an admin or agent creates.
+- **Known limit:** an index the app made with its own SQL on such a column (an HNSW index with
+  `halfvec_cosine_ops`) is backed up as an index of its method and columns, without the
+  operator class, so restoring it fails with Postgres's own message and the report shows it.
+  The column and its rows are unaffected.
+- No migration is needed: nothing stored changes, and the columns this reads as text failed
+  before.
+- Tests: `sc-db-postgres` `unknown_types` (built-in types: `SELECT *` paged in order, values
+  written back as read, `RETURNING`, NULLs, the refusal of two columns with one name; with
+  pgvector, `halfvec`/`sparsevec` and their introspected dimensions). `backup_api`
+  `columns_of_types_the_system_does_not_know_travel_in_a_backup` (`interval`, `inet`, `_int4`:
+  read through REST, backed up, restored with the same types and values) and
+  `pgvector_halfvec_and_sparsevec_columns_travel_in_a_backup`. `schema_edit`
+  `a_database_type_is_taken_as_spelled_and_nothing_else_reaches_the_ddl`. The pgvector tests
+  skip unless `feldspar_pgvector_template` has the `vector` extension.
+
 ## Applications on an unknown framework are kept, not served
 
 An upgrade can leave an application stored on a framework this server no longer has: the

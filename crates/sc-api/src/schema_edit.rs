@@ -271,6 +271,14 @@ pub struct ApplyOptions {
     /// The ids the tables and fields this batch creates are given, rather than
     /// fresh ones.
     pub ids: GivenIds,
+    /// Accept a field type that is neither a basic nor a rich type but a type of
+    /// the database itself — pgvector's `halfvec(1024)`, `interval`, `inet` — and
+    /// create the column with it as it is spelled (`BasicType::Other`, whose
+    /// values are text). For a **restore**, which recreates a column an app made
+    /// with its own SQL; a field an admin or agent creates is still refused an
+    /// unknown type (§3.3). Whether the database has the type is its own answer,
+    /// when the column is made.
+    pub database_types: bool,
 }
 
 impl Default for ApplyOptions {
@@ -280,6 +288,7 @@ impl Default for ApplyOptions {
             dry_run: false,
             editor: Editor::default(),
             ids: GivenIds::default(),
+            database_types: false,
         }
     }
 }
@@ -708,6 +717,7 @@ pub async fn apply(
     }
     let mut plan = Plan::new(catalog).await?;
     plan.ids = options.ids.clone();
+    plan.database_types = options.database_types;
     for (index, op) in operations.iter().enumerate() {
         refuse_on_provided(catalog, op).map_err(|e| at(index, op, e))?;
         refuse_on_module_table(catalog, op).map_err(|e| at(index, op, e))?;
@@ -1096,6 +1106,8 @@ struct Plan {
     database: Option<DbId>,
     /// The ids the tables and fields this batch creates are given.
     ids: GivenIds,
+    /// [`ApplyOptions::database_types`].
+    database_types: bool,
     applied: Applied,
 }
 
@@ -1131,6 +1143,7 @@ impl Plan {
             changes: Vec::new(),
             database: None,
             ids: GivenIds::default(),
+            database_types: false,
             applied: Applied::default(),
         })
     }
@@ -2746,7 +2759,10 @@ impl Plan {
                 }
             }
         } else {
-            resolve_field_type(type_name)?
+            match resolve_field_type(type_name) {
+                Err(_) if self.database_types => (database_type(name, type_name)?, None),
+                resolved => resolved?,
+            }
         };
         let storage = match storage {
             TypeRef::Basic(BasicType::Vector(n)) => {
@@ -3631,6 +3647,50 @@ pub fn resolve_field_type(name: &str) -> Result<(TypeRef, Option<String>)> {
     }
 }
 
+/// A type name that is the database's own, for [`ApplyOptions::database_types`]:
+/// it goes into the column's DDL as it is, so only the shapes introspection
+/// spells such a type in get through — an identifier, perhaps schema-qualified,
+/// then perhaps a numeric modifier and array brackets: `halfvec(1024)`,
+/// `_int4`, `public.mood`, `numeric(10,2)[]`. No spaces, so nothing can follow
+/// the type in the column's definition (`int4 DEFAULT 1`).
+fn database_type(field: &str, type_name: &str) -> Result<TypeRef> {
+    fn identifier(s: &str) -> bool {
+        s.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    }
+    let plausible = || {
+        let mut rest = type_name;
+        while let Some(stripped) = rest.strip_suffix("[]") {
+            rest = stripped;
+        }
+        if let Some(open) = rest.find('(') {
+            let modifier = rest[open..].strip_prefix('(')?.strip_suffix(')')?;
+            if !modifier
+                .split(',')
+                .all(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+            {
+                return None;
+            }
+            rest = &rest[..open];
+        }
+        let mut parts = rest.split('.');
+        let ok = match (parts.next(), parts.next(), parts.next()) {
+            (Some(name), None, None) => identifier(name),
+            (Some(schema), Some(name), None) => identifier(schema) && identifier(name),
+            _ => false,
+        };
+        ok.then_some(())
+    };
+    if plausible().is_none() {
+        return Err(Error::invalid(format!(
+            "field `{field}` has the type `{type_name}`, which is not a type name"
+        )));
+    }
+    Ok(TypeRef::Basic(BasicType::from_sql_type(type_name)))
+}
+
 // --- small shared checks ------------------------------------------------------
 
 /// A geometry field needs PostGIS in the database its table is in (analytics
@@ -3894,6 +3954,40 @@ mod tests {
                 .unwrap_or_else(|e| panic!("`{name}` is offered but does not resolve: {e}"));
         }
         assert!(resolve_field_type("varchar(255)").is_err());
+    }
+
+    #[test]
+    fn a_database_type_is_taken_as_spelled_and_nothing_else_reaches_the_ddl() {
+        for name in [
+            "halfvec(1024)",
+            "sparsevec(5)",
+            "interval",
+            "_int4",
+            "int4[]",
+            "public.mood",
+            "numeric(10,2)[]",
+        ] {
+            assert_eq!(
+                database_type("f", name).unwrap(),
+                TypeRef::Basic(BasicType::Other(name.to_owned())),
+                "{name}"
+            );
+        }
+        for name in [
+            "text); DROP TABLE users; --",
+            "halfvec(3) DEFAULT '1'",
+            "int4 DEFAULT 1",
+            "int4 NOT NULL",
+            "halfvec(3)(4)",
+            "halfvec(a)",
+            "a.b.c",
+            "\"quoted\"",
+            "int4 /* x */",
+            "(1)",
+            "",
+        ] {
+            assert!(database_type("f", name).is_err(), "{name}");
+        }
     }
 
     #[test]

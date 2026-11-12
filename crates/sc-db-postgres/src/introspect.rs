@@ -52,10 +52,12 @@ const TABLES_SQL: &str = "\
 /// A PostGIS column is the exception: `udt_name` says only `geometry`, and the
 /// kind and coordinate system are in its type modifier, so `format_type` spells
 /// it out (`geometry(Point,4326)`) — what `apply_schema` emits for one
-/// (analytics TODO A5.1).
+/// (analytics TODO A5.1). The same for pgvector's types, whose dimensions are
+/// their modifier: `vector(3)`, and `halfvec(1024)` / `sparsevec(5)`, which this
+/// system does not know (`BasicType::Other`) but a restore recreates by name.
 const COLUMNS_SQL: &str = "\
     SELECT c.table_schema, c.table_name, c.column_name, \
-           CASE WHEN c.udt_name IN ('geometry', 'vector') THEN ( \
+           CASE WHEN c.udt_name IN ('geometry', 'vector', 'halfvec', 'sparsevec') THEN ( \
              SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a \
              JOIN pg_class t ON t.oid = a.attrelid \
              JOIN pg_namespace n ON n.oid = t.relnamespace \

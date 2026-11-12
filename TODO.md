@@ -980,6 +980,20 @@ The manual is docs/OPERATIONS.md §13.1.
   newer release is out.
 - [ ] **R1.5** Channels other than latest (`beta`, …), under names of their own.
 
+## BK1 — Back up columns of database types feldspar does not know (bug report: `halfvec`)
+
+`feldspar backup` aborted on a table an app made with raw SQL holding a pgvector `halfvec`
+column: the Postgres driver decodes only the types it knows, so `SELECT *` failed.
+
+- [x] **BK1.1** The Postgres driver reads a result column of a type it cannot decode as its text
+  (`col::text`), and sends a text value to a parameter of such a type in Postgres's text format.
+- [x] **BK1.2** Introspection spells `halfvec` and `sparsevec` with their type modifier, as it
+  does `vector`.
+- [x] **BK1.3** A restore recreates a column of such a type as it was (`ApplyOptions::database_types`),
+  and its rows go back in. Test: a round trip of `halfvec`, `sparsevec` and `interval`.
+- [ ] **BK1.4** Carry an index's operator class in a backup, so a raw-SQL HNSW index on a
+  `halfvec` column (`halfvec_cosine_ops`) restores too.
+
 ---
 
 ## Open questions
