@@ -51,6 +51,9 @@ fn construction_fields() -> Vec<DataField> {
         // Why it stopped or failed last, and the phase a run ends after (AC3).
         DataField::plain("error", BasicType::Text),
         DataField::plain("until_phase", BasicType::Uuid),
+        // A run that only plans `until_phase`'s tasks, and what it is told.
+        DataField::plain("plan_only", BasicType::Bool),
+        DataField::plain("plan_note", BasicType::Text),
         sc_catalog::updated_at_field(),
     ]
 }
@@ -127,6 +130,8 @@ pub async fn create_construction(
         plan_run: None,
         error: None,
         until_phase: None,
+        plan_only: false,
+        plan_note: None,
         updated_at: None,
     };
     let inserted = insert(
@@ -285,6 +290,39 @@ pub async fn mark_running(
                 Expr::Lit(until_phase.map_or(Value::Null, Value::Uuid)),
             ),
             Assignment::new("error", Expr::Lit(Value::Null)),
+            Assignment::new("plan_only", Expr::Lit(Value::Bool(false))),
+            Assignment::new("plan_note", Expr::Lit(Value::Null)),
+        ],
+    )
+    .await?;
+    require_construction(catalog, application).await
+}
+
+/// Mark the construction of `application` as running for `user` to plan the
+/// tasks of `phase` only, the planning run told `note` besides the phase.
+/// The runner stops once they are planned, leaving them for the admin to
+/// review before they run.
+pub async fn mark_planning(
+    catalog: &Catalog,
+    application: Uuid,
+    user: Uuid,
+    phase: Uuid,
+    note: Option<&str>,
+) -> Result<Construction> {
+    let construction = require_construction(catalog, application).await?;
+    update_construction(
+        catalog,
+        construction.id,
+        vec![
+            Assignment::new(
+                "status",
+                Expr::Lit(Value::Text(spelling(ConstructionStatus::Running))),
+            ),
+            Assignment::new("started_by", Expr::Lit(Value::Uuid(user))),
+            Assignment::new("until_phase", Expr::Lit(Value::Uuid(phase))),
+            Assignment::new("error", Expr::Lit(Value::Null)),
+            Assignment::new("plan_only", Expr::Lit(Value::Bool(true))),
+            Assignment::new("plan_note", Expr::Lit(opt_text_value(note))),
         ],
     )
     .await?;
@@ -646,6 +684,9 @@ fn construction_from_row(row: &Row) -> Result<Construction> {
         plan_run: opt_uuid(row, t, "plan_run")?,
         error: opt_text(row, t, "error")?,
         until_phase: opt_uuid(row, t, "until_phase")?,
+        // Absent (NULL) on rows written before the column: an ordinary run.
+        plan_only: opt_bool(row, t, "plan_only")?.unwrap_or(false),
+        plan_note: opt_text(row, t, "plan_note")?,
         updated_at: match row.get(sc_catalog::COL_UPDATED_AT) {
             Some(Value::Timestamp(at)) => Some(*at),
             Some(Value::Null) | None => None,
@@ -729,6 +770,14 @@ fn opt_text(row: &Row, table: &str, column: &str) -> Result<Option<String>> {
         Some(Value::Text(t)) => Ok(Some(t.clone())),
         Some(Value::Null) | None => Ok(None),
         other => Err(bad(table, column, "text", other)),
+    }
+}
+
+fn opt_bool(row: &Row, table: &str, column: &str) -> Result<Option<bool>> {
+    match row.get(column) {
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(Value::Null) | None => Ok(None),
+        other => Err(bad(table, column, "a boolean", other)),
     }
 }
 

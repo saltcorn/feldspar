@@ -144,19 +144,25 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
   for Saltcorn UI; polling starts and stops with the status; Stop / Retry / Skip call their
   endpoints.
 
+- [x] AC4.5 Review a phase's tasks before they run: on the phase's page, "Plan tasks" plans the
+  next phase's tasks and stops (`planPhaseTasks`, `plan_only` on the construction); "Plan again"
+  replaces tasks none of which has started, the planning run told the old list and the admin's
+  note (`plan_note`). Only the phase the runner reaches next: a later one is planned against what
+  the phases before it make.
+
 ## AC5 — Entry points
 
-- [ ] AC5.1 Home's Create menu (`ui/admin/src/screens/Home.tsx`): "Application from a
+- [x] AC5.1 Home's Create menu (`ui/admin/src/screens/Home.tsx`): "Application from a
   description". It asks for a name and an LLM provider, creates a React application and its
   construction, and opens Plan & build. The empty Applications card offers the same when an LLM
   provider exists.
-- [ ] AC5.2 Home's "Needs attention" (`ui/admin/src/home.ts`): a `failed` construction, linking
+- [x] AC5.2 Home's "Needs attention" (`ui/admin/src/home.ts`): a `failed` construction, linking
   to its Plan & build screen; `listConstructions` joins the checks `uncheckedChecks` reports.
   The Applications card shows a running construction's progress ("phase 2/4") beside the
   framework badge.
-- [ ] AC5.3 Onboarding's Generative AI path ends on "Application from a description" rather
-  than the copilot chat (`ui/admin/src/onboarding/script.ts`).
-- [ ] AC5.4 Tests: the attention item and its link; the progress badge; the onboarding path's
+- [x] AC5.3 Onboarding's Generative AI path offers "Application from a description" beside
+  the copilot chat (`ui/admin/src/onboarding/script.ts`).
+- [x] AC5.4 Tests: the attention item and its link; the progress badge; the onboarding path's
   last step.
 
 ## AC6 — Running tasks on a Claude subscription

@@ -11,7 +11,7 @@ import type { CreateApplicationRequest } from "../client";
 import { NEW_LOCAL_FILE_STORE } from "../newFileStore";
 import { buildConfig, initialValues } from "../settings";
 import { subdomainFor, unusedName } from "./naming";
-import type { OnboardingFx } from "./script";
+import { REACT, type OnboardingFx } from "./script";
 
 /** The trait that makes an agent the admin copilot. */
 export const ADMIN_COPILOT_TRAIT = "admin_copilot";
@@ -110,6 +110,20 @@ export const onboardingEffects: OnboardingFx = {
       name: created.name,
       ide: created.source ? ideUrl(created.source.store) : null,
     };
+  },
+
+  async constructApplication({ name, provider }) {
+    const app = await onboardingEffects.createApplication({ name, framework: REACT });
+    try {
+      await api.createConstruction(app.id, { provider });
+    } catch (err) {
+      // An application with no construction is not what was asked for, and
+      // left behind it would be a second one after the corrected attempt.
+      await api.deleteApplication(app.id).catch(() => {});
+      noteApplicationsChanged();
+      throw err;
+    }
+    return { id: app.id, name: app.name };
   },
 
   show: (path) => navigate(path),

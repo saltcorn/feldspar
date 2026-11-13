@@ -24,6 +24,7 @@ import {
   followedDrafts,
   movePhase,
   phaseDeletable,
+  phasePlanning,
   phasePath,
   phaseProgress,
   phasesPath,
@@ -84,6 +85,7 @@ function construction(status: string, extra: Partial<Construction> = {}): Constr
     planning: false,
     error: null,
     until_phase: null,
+    plan_only: false,
     updated_at: null,
     phases: [],
     ...extra,
@@ -333,6 +335,7 @@ describe("what the buttons call", () => {
       stopConstruction: answer("stopConstruction"),
       retryTask: answer("retryTask"),
       skipTask: answer("skipTask"),
+      planPhaseTasks: answer("planPhaseTasks"),
     };
     return { client, calls };
   }
@@ -347,6 +350,17 @@ describe("what the buttons call", () => {
       ["stopConstruction", "a1"],
       ["retryTask", "a1", "t1"],
       ["skipTask", "a1", "t2"],
+    ]);
+  });
+
+  it("plans one phase's tasks, with or without a note", async () => {
+    const { client, calls } = recording();
+    const buttons = constructionCalls(client, "a1");
+    await buttons.planTasks("p1", null);
+    await buttons.planTasks("p1", "no admin screen");
+    expect(calls).toEqual([
+      ["planPhaseTasks", "a1", "p1", { note: null }],
+      ["planPhaseTasks", "a1", "p1", { note: "no admin screen" }],
     ]);
   });
 
@@ -499,3 +513,44 @@ describe("the drafts after the server's phases change", () => {
   });
 });
 
+
+describe("phasePlanning", () => {
+  const done = phase("p1", [task("done")], "done");
+
+  it("plans the next phase, and plans again one whose tasks have not started", () => {
+    const fresh = phase("p2");
+    expect(phasePlanning(construction("planned", { phases: [done, fresh] }), fresh)).toBe("plan");
+    const planned = phase("p2", [task("todo")], "planned");
+    expect(phasePlanning(construction("planned", { phases: [done, planned] }), planned)).toBe(
+      "replan",
+    );
+  });
+
+  it("offers nothing for a later phase, one that has started, or while it runs", () => {
+    const first = phase("p1");
+    const second = phase("p2");
+    // Planned against what the first makes: not before it is done.
+    expect(phasePlanning(construction("planned", { phases: [first, second] }), second)).toBeNull();
+    // A task stopped back to todo has run.
+    const stopped = phase("p2", [task("todo", { runs: ["r1"] })], "planned");
+    expect(phasePlanning(construction("stopped", { phases: [done, stopped] }), stopped)).toBeNull();
+    const failed = phase("p2", [task("failed")], "failed");
+    expect(phasePlanning(construction("failed", { phases: [done, failed] }), failed)).toBeNull();
+    expect(phasePlanning(construction("running", { phases: [done, second] }), second)).toBeNull();
+    expect(
+      phasePlanning(construction("planned", { phases: [done, second], planning: true }), second),
+    ).toBeNull();
+  });
+});
+
+describe("currentWork while only planning", () => {
+  it("is planning the chosen phase, even once its tasks are saved", () => {
+    const planned = phase("p2", [task("todo")], "planned");
+    const c = construction("running", {
+      plan_only: true,
+      until_phase: "p2",
+      phases: [phase("p1", [task("done")], "done"), planned],
+    });
+    expect(currentWork(c)).toMatchObject({ kind: "planning", phase: { id: "p2" } });
+  });
+});

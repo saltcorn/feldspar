@@ -811,7 +811,8 @@ The design is TECHNICAL_DESIGN §5.3. The registry starts empty: nothing from
   dialog language in the admin UI (`ui/admin/src/onboarding/flow.ts`: `ask`, `say`, `form`,
   `run`, `finish`). The script (`onboarding/script.ts`) asks how to build: **Generative AI**
   uses the provider already there or sets one up in a form here, then makes an `admin_copilot`
-  agent and opens its chat; **Point and click** creates a Saltcorn UI application, selects it
+  agent and opens its chat, or (TODO-app-constructor AC5.3) creates a React application with a
+  construction and opens Plan & build; **Point and click** creates a Saltcorn UI application, selects it
   and points at Tables; **Write code** goes to the MCP settings, or creates a React application
   and opens the IDE. `authStatus.onboarding_pending` / `finishOnboarding` keep it to once.
 - [ ] **O1.2** A way to run it again (a link under Settings, or `#/onboarding`).

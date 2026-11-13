@@ -1305,3 +1305,117 @@ async fn a_task_records_the_tables_and_queries_its_run_made() -> sc_error::Resul
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_phase_is_planned_on_its_own_then_again_with_a_note_and_runs_when_asked()
+-> sc_error::Result<()> {
+    let tmp = TempDir::new("plan-only");
+    let mut c = constructing(&tmp, &["Data model", "Contacts"]).await?;
+    let model = Arc::new(FakeProvider::new([
+        Reply::calls(
+            "save_tasks",
+            json!({ "phase": c.phases[0], "tasks": [
+                task("data_model", "Tables", &[]),
+                task("data_model", "Audit log", &[]),
+            ] }),
+        ),
+        Reply::says("Planned."),
+        Reply::calls(
+            "save_tasks",
+            json!({ "phase": c.phases[0], "tasks": [task("data_model", "Contacts table", &[])] }),
+        ),
+        Reply::says("Planned again."),
+        Reply::says("Made the contacts table."),
+    ]));
+    c.switch.set(model.clone());
+    let plan = |phase: &str| format!("{}/phases/{phase}/plan", c.path);
+
+    // Only an admin plans, and only the phase the runner reaches next: the
+    // second is planned against what the first makes.
+    let (status, _) = c
+        .anonymous
+        .send("POST", &plan(&c.phases[0]), Some(json!({})))
+        .await;
+    assert!(status.is_client_error(), "{status}");
+    let (status, body) = c
+        .admin
+        .send("POST", &plan(&c.phases[1]), Some(json!({})))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("Data model"), "{body}");
+    // A phase id that is malformed or names no phase of this construction is
+    // not found, as a task's is.
+    for phase in ["not-a-uuid", "00000000-0000-0000-0000-000000000000"] {
+        let (status, body) = c.admin.send("POST", &plan(phase), Some(json!({}))).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{phase}: {body}");
+    }
+
+    // Planned on its own: the run stops before any task runs.
+    let (status, started) = c
+        .admin
+        .send("POST", &plan(&c.phases[0]), Some(json!({})))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    assert_eq!(started["plan_only"], json!(true));
+    let read = settled(&mut c.admin, &c.path).await;
+    assert_eq!(read["status"], json!("planned"), "{read}");
+    let tasks = read["phases"][0]["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 2);
+    assert!(
+        tasks
+            .iter()
+            .all(|t| t["status"] == json!("todo") && t["runs"] == json!([]))
+    );
+    assert_eq!(model.requests().len(), 2);
+
+    // Planned again with a note: the run is told the old plan and the note,
+    // and its tasks replace the old ones.
+    let (status, body) = c
+        .admin
+        .send(
+            "POST",
+            &plan(&c.phases[0]),
+            Some(json!({ "note": "One table for contacts; no audit log." })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let read = settled(&mut c.admin, &c.path).await;
+    assert_eq!(read["status"], json!("planned"), "{read}");
+    let tasks = read["phases"][0]["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0]["title"], json!("Contacts table"));
+    let asked = asked(&model);
+    assert!(asked[2].contains("planned before"), "{}", asked[2]);
+    assert!(asked[2].contains("Make Audit log."), "{}", asked[2]);
+    assert!(asked[2].contains("no audit log"), "{}", asked[2]);
+
+    // A run then runs the reviewed tasks, and is an ordinary run again.
+    let (status, started) = c
+        .admin
+        .send(
+            "POST",
+            &format!("{}/run", c.path),
+            Some(json!({ "until_phase": c.phases[0] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    assert_eq!(started["plan_only"], json!(false));
+    let read = settled(&mut c.admin, &c.path).await;
+    assert_eq!(read["status"], json!("planned"), "{read}");
+    assert_eq!(read["phases"][0]["status"], json!("done"), "{read}");
+    assert!(read["phases"][1]["tasks"].as_array().unwrap().is_empty());
+
+    // A phase that has run is not planned again.
+    let (status, body) = c
+        .admin
+        .send(
+            "POST",
+            &plan(&c.phases[0]),
+            Some(json!({ "note": "again" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("has started"), "{body}");
+    assert_eq!(model.remaining(), 0);
+    Ok(())
+}

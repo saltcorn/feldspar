@@ -5436,6 +5436,15 @@ ones the plan expected. The first phase is always the data model. Each task make
 and is briefed with what exists already, which is v1's defence against the model recreating
 what is there.
 
+**Tasks reviewed before they run, when the admin wants.** Planning a phase's tasks is one short
+run; running them is many, each with a build. So the phase the runner reaches next can be
+planned on its own (`planPhaseTasks`): the run plans it and ends `planned` before a task runs.
+Only that phase, because a later one would be planned against tables that do not exist yet. Its
+tasks can then be planned again, with a note, as long as none has started: they are deleted,
+and the planning run is told the old list and the note (the construction's `plan_note`). The
+flag and the note are columns of the construction, so a restart in the middle resumes the same
+planning run, and an ordinary run clears them.
+
 **Two kinds of task, two agents.**
 - A `data_model` task runs the construction's own agent, which has the copilot's tools.
 - A `feature` task is delegated to the application's builder agent. Its own check decides

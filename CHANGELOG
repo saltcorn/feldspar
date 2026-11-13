@@ -2,6 +2,25 @@
 
 Changes in reverse chronological order.
 
+## Plan & build: review a phase's tasks before they run
+
+A phase's page now has "Plan tasks" for the phase the construction reaches next: the
+construction agent plans its tasks and stops, so they can be read before anything is built.
+Tasks that have not started yet can be planned again with a note on what to change ("one task
+for both list screens; no admin screen"); the agent is shown the old tasks and the note. A run
+then builds the reviewed tasks. Before, a phase's tasks were planned and run in one go, and the
+first look at them was while they were already being built.
+
+## Plan & build from Home and the onboarding
+
+Home's Create menu has "Application from a description": give a name and an LLM provider, and
+Saltcorn creates a React application with its construction and opens Plan & build, where the
+description is written. The empty Applications card offers the same once an LLM provider exists.
+A construction that failed is listed under "Needs attention" and links to its Plan & build
+screen, and a running one shows its phase beside the application ("phase 2/4"). The onboarding's
+Generative AI path, once the LLM provider is set up, now asks whether to chat with the admin
+copilot, as before, or to build an application from a description.
+
 ## Generated clients: a field's allowed values are its type and a list to offer
 
 A `string` field with allowed values now appears in an application's generated client as their

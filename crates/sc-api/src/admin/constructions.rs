@@ -89,6 +89,27 @@ pub(super) fn register(set: &mut EndpointSet) {
             .output(construction_schema())
             .auth(AuthRequirement::admin()),
     );
+    // Plans the tasks of one phase and stops before they run, so the admin
+    // reviews them first: the phase the runner reaches next, every phase
+    // before it done. A phase planned already whose tasks have not started is
+    // planned again, the planning run told the old plan and `note`. Answers
+    // at once (202), `running` with `plan_only`; it ends `planned`.
+    set.register(
+        Endpoint::new(
+            "planPhaseTasks",
+            Method::Post,
+            construction()
+                .lit("phases")
+                .param("phase", ValueType::Uuid)
+                .lit("plan"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "note",
+            TypeSchema::optional(TypeSchema::text()),
+        )]))
+        .output(construction_schema())
+        .auth(AuthRequirement::admin()),
+    );
     // Stops the runner: the task being run is aborted and goes back to `todo`,
     // and the construction becomes `stopped` once the runner has stopped.
     set.register(
@@ -151,6 +172,8 @@ fn construction_schema() -> TypeSchema {
         StructField::new("error", TypeSchema::optional(TypeSchema::text())),
         // The phase the run ends after; all of them when absent.
         StructField::new("until_phase", TypeSchema::optional(TypeSchema::uuid())),
+        // The run only plans `until_phase`'s tasks (`planPhaseTasks`).
+        StructField::new("plan_only", TypeSchema::bool()),
         StructField::new("updated_at", TypeSchema::optional(TypeSchema::timestamp())),
         StructField::new("phases", TypeSchema::array(phase_schema())),
     ]))

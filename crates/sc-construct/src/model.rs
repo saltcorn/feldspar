@@ -85,6 +85,12 @@ pub struct Construction {
     pub error: Option<String>,
     /// The phase a run stops after, or `None` to run them all.
     pub until_phase: Option<Uuid>,
+    /// The run only plans the tasks of `until_phase` and stops, so the admin
+    /// reviews them before they run.
+    pub plan_only: bool,
+    /// What the run that plans `until_phase`'s tasks is told besides the
+    /// phase: the plan it replaces and the admin's note on it.
+    pub plan_note: Option<String>,
     pub updated_at: Option<DateTime<Utc>>,
 }
 

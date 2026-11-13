@@ -91,6 +91,7 @@ export function blankConstruction(appId: string): Construction {
     status: "draft",
     specification: "",
     planning: false,
+    plan_only: false,
     phases: [],
   };
 }
@@ -190,6 +191,24 @@ export function phasesEditable(construction: Construction): boolean {
   return !construction.planning && construction.status !== "running";
 }
 
+/** Whether `phase`'s tasks can be planned on their own, before a run, as the
+ * server's `planPhaseTasks` allows: `"plan"` when it has none yet, `"replan"`
+ * when none of them has started, `null` otherwise. Only the phase the runner
+ * reaches next (every phase before it done), since its tasks are planned
+ * against what those made; never while the construction runs or its phases
+ * are planned. */
+export function phasePlanning(
+  construction: Construction,
+  phase: ConstructionPhase,
+): "plan" | "replan" | null {
+  if (construction.planning || construction.status === "running") return null;
+  const index = construction.phases.findIndex((p) => p.id === phase.id);
+  if (index < 0) return null;
+  if (construction.phases.slice(0, index).some((p) => p.status !== "done")) return null;
+  if (phase.tasks.some((t) => t.status !== "todo" || t.runs.length > 0)) return null;
+  return phase.tasks.length === 0 ? "plan" : "replan";
+}
+
 /** The buttons a task offers, as the server allows them: Retry for a failed
  * task, Skip for a waiting or failed one. Neither while the construction runs,
  * since the runner may be about to start the task. */
@@ -215,6 +234,12 @@ export type CurrentWork =
 
 export function currentWork(construction: Construction): CurrentWork | null {
   if (construction.status !== "running") return null;
+  // Planning one phase only: that is all the run does, and it stops before a
+  // task starts.
+  if (construction.plan_only) {
+    const phase = construction.phases.find((p) => p.id === construction.until_phase);
+    return phase ? { kind: "planning", phase } : null;
+  }
   for (const phase of construction.phases) {
     const task = phase.tasks.find((t) => t.status === "running");
     if (task) return { kind: "task", phase, task };
@@ -286,6 +311,7 @@ export type ConstructionClient = Pick<
   | "stopConstruction"
   | "retryTask"
   | "skipTask"
+  | "planPhaseTasks"
 >;
 
 /** What the screen's buttons do, each answering the construction as the
@@ -307,6 +333,9 @@ export function constructionCalls(client: ConstructionClient, appId: string) {
     stop: () => client.stopConstruction(appId),
     retry: (task: string) => client.retryTask(appId, task),
     skip: (task: string) => client.skipTask(appId, task),
+    /** Plan one phase's tasks (again, told `note`) and stop before they run. */
+    planTasks: (phase: string, note: string | null) =>
+      client.planPhaseTasks(appId, phase, { note }),
   };
 }
 

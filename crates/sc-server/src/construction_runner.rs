@@ -20,6 +20,11 @@
 //! - nothing left: `done`, or `planned` when the run ended after a chosen
 //!   phase.
 //!
+//! **Planning only** (`plan_only`, from `planPhaseTasks`): the run plans the
+//! tasks of `until_phase` and ends `planned` before any of them runs, so the
+//! admin reviews them first. The planning run is told the construction's
+//! `plan_note` too: the plan it replaces and the admin's note on it.
+//!
 //! **One run per attempt.** A task's run id is recorded on the task before the
 //! run is driven. After a restart, a task still `running` has its last run
 //! driven on from where it stopped, never a second one started.
@@ -207,7 +212,14 @@ impl ConstructionRunner {
                 }
             };
             let phases = store::phases_with_tasks(&self.catalog, construction.id).await?;
-            let step = match sc_construct::next_step(&phases, construction.until_phase) {
+            let next = sc_construct::next_step(&phases, construction.until_phase);
+            // Planning only: plan that one phase, and stop before anything runs.
+            if construction.plan_only
+                && !matches!(&next, Next::PlanTasks(p) if Some(p.id) == construction.until_phase)
+            {
+                return self.finish(ConstructionStatus::Planned, None).await;
+            }
+            let step = match next {
                 Next::Finished => {
                     let all_done = phases.iter().all(|p| p.status() == PhaseStatus::Done);
                     let status = if all_done {
@@ -234,7 +246,11 @@ impl ConstructionRunner {
                     return self.finish(ConstructionStatus::Failed, Some(&reason)).await;
                 }
                 Next::PlanTasks(phase) => {
-                    self.plan_tasks(&app, &construction, &phase, &phases, caller)
+                    let note = construction
+                        .plan_only
+                        .then_some(construction.plan_note.as_deref())
+                        .flatten();
+                    self.plan_tasks(&app, &construction, &phase, &phases, note, caller)
                         .await?
                 }
                 Next::RunTask(task) => self.run_task(&app, &construction, task, caller).await?,
@@ -276,11 +292,12 @@ impl ConstructionRunner {
         construction: &Construction,
         phase: &Phase,
         phases: &[PhaseWithTasks],
+        note: Option<&str>,
         caller: RunCaller,
     ) -> Result<Step> {
         let agent = construction_agent(construction)?;
         let driver = AgentDriver::load(&self.catalog, &self.apps, &agent, caller).await?;
-        let message = plan_tasks_message(&self.catalog, app, phase, phases)?;
+        let message = plan_tasks_message(&self.catalog, app, phase, phases, note)?;
         let mut run = driver.new_run(&message, &format!("Plan the tasks of `{}`", phase.title))?;
         sc_agent::save_run(&self.catalog, &run).await?;
         let Some(conclusion) = driver.drive(&mut run, &mut self.stopped).await? else {
@@ -541,7 +558,9 @@ fn plan_tasks_message(
     app: &Application,
     phase: &Phase,
     phases: &[PhaseWithTasks],
+    note: Option<&str>,
 ) -> Result<String> {
+    let note = note.map_or_else(String::new, |n| format!("{}\n\n", n.trim_end()));
     let requirements: String = phase
         .requirements
         .iter()
@@ -559,6 +578,7 @@ fn plan_tasks_message(
     Ok(format!(
         "The construction of `{}` has reached the phase `{}` (id {}).\n\n{}\n\nRequirements:\n{}\n\
          {}\n\
+         {}\
          Plan this phase's tasks now with `{}`, giving the phase id above: few tasks, each a \
          sizeable piece of work, and none that only builds or checks. Only plan in this \
          conversation: the tasks run afterwards.",
@@ -568,6 +588,7 @@ fn plan_tasks_message(
         phase.description,
         requirements,
         exists_already(catalog, phases)?,
+        note,
         sc_agent_builtins::TOOL_SAVE_TASKS,
     ))
 }

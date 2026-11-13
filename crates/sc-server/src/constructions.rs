@@ -13,6 +13,8 @@
 //! ([`crate::construction_runner`]), a server task that plans each phase's
 //! tasks when it reaches the phase and runs them. `stopConstruction` stops it;
 //! `retryTask` and `skipTask` deal with a failed task and carry on.
+//! `planPhaseTasks` plans one phase's tasks, or plans them again with a note,
+//! and stops before they run.
 //!
 //! **React applications only** for now: a feature task is delegated to the
 //! application's builder agent, and the other frameworks' builders are not what
@@ -231,6 +233,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
 
 /// The runner's endpoints (AC3.4): run, stop, and retry or skip a task.
 fn register_runner(reg: &mut HandlerRegistry, catalog: &Arc<Catalog>, apps: &Arc<AppMounts>) {
+    register_phase_planning(reg, catalog, apps);
     reg.register_admin("runConstruction", {
         let catalog = catalog.clone();
         let apps = apps.clone();
@@ -388,6 +391,71 @@ fn register_runner(reg: &mut HandlerRegistry, catalog: &Arc<Catalog>, apps: &Arc
             }
         });
     }
+}
+
+/// `planPhaseTasks`: plan one phase's tasks, or plan them again with a note,
+/// and stop before they run.
+fn register_phase_planning(
+    reg: &mut HandlerRegistry,
+    catalog: &Arc<Catalog>,
+    apps: &Arc<AppMounts>,
+) {
+    reg.register_admin("planPhaseTasks", {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let app = require_app(&catalog, ctx.path_param("id")?).await?;
+                let user = ctx
+                    .user()
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("planning needs a signed-in admin"))?;
+                let construction = store::require_construction(&catalog, app.id.0).await?;
+                if planning(construction.id) {
+                    return Err(Error::invalid(
+                        "the construction agent is planning the phases; wait for it to finish",
+                    ));
+                }
+                if construction.status == ConstructionStatus::Running {
+                    return Err(Error::invalid(
+                        "the construction is running; stop it before you plan a phase's tasks",
+                    ));
+                }
+                crate::construction_runner::require_idle(construction.id)?;
+                let phase = parse_phase_id(ctx.path_param("phase")?)?;
+                let note = match ctx.body.get("note") {
+                    None | Some(Json::Null) => None,
+                    Some(Json::String(note)) => Some(note.as_str()),
+                    Some(other) => {
+                        return Err(Error::invalid(format!("`note` must be text, got {other}")));
+                    }
+                };
+                // Checked before anything changes; `clear_tasks` checks again
+                // under the phases' lock.
+                let phases = store::phases_with_tasks(&catalog, construction.id).await?;
+                let planned = !sc_construct::require_plannable(&phases, phase)?
+                    .tasks
+                    .is_empty();
+                use_chosen_provider(&catalog, &apps, &app, &construction).await?;
+                let previous = if planned {
+                    sc_construct::clear_tasks(&catalog, app.id.0, phase).await?
+                } else {
+                    Vec::new()
+                };
+                let note = sc_construct::replan_note(&previous, note);
+                let construction =
+                    store::mark_planning(&catalog, app.id.0, user.id(), phase, note.as_deref())
+                        .await?;
+                crate::construction_runner::start(catalog.clone(), apps, &construction);
+                Ok(
+                    HandlerResponse::ok(construction_json(&catalog, &construction).await?)
+                        .with_status(202),
+                )
+            }
+        }
+    });
 }
 
 /// Stop a construction no runner in this process drives: put its running
@@ -753,6 +821,13 @@ async fn require_task(catalog: &Catalog, construction: &Construction, raw: &str)
     }
 }
 
+/// The phase id a path names. A malformed one answers 404, as an id of no
+/// phase of the construction does (`require_plannable`), like a task's.
+fn parse_phase_id(raw: &str) -> Result<uuid::Uuid> {
+    uuid::Uuid::parse_str(raw)
+        .map_err(|_| Error::not_found(format!("no phase {raw} in this construction")))
+}
+
 fn status_json(construction: &Construction) -> Json {
     json!({
         "id": construction.id,
@@ -784,6 +859,7 @@ async fn construction_json(catalog: &Catalog, construction: &Construction) -> Re
     out["planning"] = json!(planning(construction.id));
     out["error"] = json!(construction.error);
     out["until_phase"] = json!(construction.until_phase);
+    out["plan_only"] = json!(construction.plan_only);
     out["updated_at"] = json!(construction.updated_at.map(|at| at.to_rfc3339()));
     out["phases"] = Json::Array(phases);
     Ok(out)

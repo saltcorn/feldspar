@@ -128,6 +128,98 @@ async fn write_tasks(
     Ok(tasks)
 }
 
+/// The phase `phase`, if its tasks may be planned (again) on their own, before
+/// a run; else why not. Refused unless every phase before it is done, since its
+/// tasks are planned against what those made, and unless none of its tasks has
+/// started, since what ran stays recorded. The phase comes with the tasks a new
+/// plan replaces (none when it has not been planned yet).
+pub fn require_plannable(phases: &[PhaseWithTasks], phase: Uuid) -> Result<&PhaseWithTasks> {
+    let Some(index) = phases.iter().position(|p| p.phase.id == phase) else {
+        return Err(Error::not_found(format!(
+            "no phase {phase} in this construction"
+        )));
+    };
+    let target = &phases[index];
+    if let Some(before) = phases[..index]
+        .iter()
+        .find(|p| p.status() != crate::PhaseStatus::Done)
+    {
+        return Err(Error::invalid(format!(
+            "phase `{}` is not done yet, and `{}`'s tasks are planned against what the phases \
+             before it made; run up to `{}` first",
+            before.phase.title, target.phase.title, before.phase.title
+        )));
+    }
+    if target
+        .tasks
+        .iter()
+        .any(|t| t.status != TaskStatus::Todo || !t.runs.is_empty())
+    {
+        return Err(Error::invalid(format!(
+            "phase `{}` has started, so its tasks cannot be planned again",
+            target.phase.title
+        )));
+    }
+    Ok(target)
+}
+
+/// What the run that plans a phase's tasks again is told besides the phase:
+/// the plan it replaces, and the admin's `note` on it. `None` when there is
+/// neither.
+pub fn replan_note(previous: &[Task], note: Option<&str>) -> Option<String> {
+    let note = note.map(str::trim).filter(|n| !n.is_empty());
+    let mut out = String::new();
+    if !previous.is_empty() {
+        out.push_str("This phase was planned before, as:\n");
+        for (i, task) in previous.iter().enumerate() {
+            out.push_str(&format!(
+                "{}. ({}) {}: {}\n",
+                i + 1,
+                spelling(task.kind),
+                task.title,
+                task.brief
+            ));
+        }
+        out.push_str(
+            "The admin asked for the tasks to be planned again, so that plan is gone. \
+             Plan the phase anew; keep what was right in it.\n",
+        );
+    }
+    if let Some(note) = note {
+        out.push_str(&format!(
+            "The admin's note on how to plan this phase: {note}\n"
+        ));
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// Delete the tasks of `phase`, a phase of `application`'s construction, so
+/// they can be planned again. Answers the deleted tasks. In one transaction
+/// that checks [`require_plannable`] again under the phases' lock, so a task that
+/// started in between is never deleted.
+pub async fn clear_tasks(catalog: &Catalog, application: Uuid, phase: Uuid) -> Result<Vec<Task>> {
+    let construction = require_construction(catalog, application).await?;
+    sc_db::with_tx(
+        catalog.primary(crate::INTERNAL_TABLES).as_ref(),
+        move |tx| {
+            Box::pin(async move {
+                let phases = lock_phases(tx, construction.id).await?;
+                let mut with_tasks = Vec::with_capacity(phases.len());
+                for p in phases {
+                    let tasks = tasks_in(tx, p.id).await?;
+                    with_tasks.push(PhaseWithTasks { phase: p, tasks });
+                }
+                let target = require_plannable(&with_tasks, phase)?;
+                let delete =
+                    Delete::from(TASKS_TABLE).filter(Expr::col("phase").eq(Expr::lit(phase)));
+                tx_run(tx, &Statement::from(delete)).await?;
+                Ok(target.tasks.clone())
+            })
+        },
+    )
+    .await
+}
+
 /// Check `inputs` and turn them into tasks of `phase`, numbered in order.
 fn build_tasks(phase: Uuid, inputs: &[TaskInput]) -> Result<Vec<Task>> {
     if inputs.is_empty() {
@@ -381,5 +473,60 @@ mod tests {
         stuck.depends_on = vec![later];
         let plan = vec![with(&p, vec![stuck])];
         assert_eq!(next_step(&plan, None), Next::Blocked(p));
+    }
+
+    #[test]
+    fn only_the_next_phase_whose_tasks_have_not_started_is_plannable() {
+        let (first, second) = (phase("Data model"), phase("Contacts"));
+        let tasks = build_tasks(first.id, &[input("Tables", &[])]).unwrap();
+        // Nothing planned: the first phase is, the second waits on it.
+        let fresh = [with(&first, Vec::new()), with(&second, Vec::new())];
+        assert!(
+            require_plannable(&fresh, first.id)
+                .unwrap()
+                .tasks
+                .is_empty()
+        );
+        let refused = require_plannable(&fresh, second.id)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("`Data model` is not done yet"),
+            "{refused}"
+        );
+        // Planned, nothing started: planned again, answering the old tasks.
+        let planned = [with(&first, tasks.clone()), with(&second, Vec::new())];
+        assert_eq!(require_plannable(&planned, first.id).unwrap().tasks, tasks);
+        // A task that ran (even one put back to todo by a stop) has started.
+        let mut stopped = tasks[0].clone();
+        stopped.runs.push(Uuid::new_v4());
+        let refused = require_plannable(&[with(&first, vec![stopped])], first.id).unwrap_err();
+        assert!(refused.to_string().contains("has started"), "{refused}");
+        // The first done (a skipped task counts): the second is next.
+        let done = [
+            with(
+                &first,
+                vec![with_status(tasks[0].clone(), TaskStatus::Skipped)],
+            ),
+            with(&second, Vec::new()),
+        ];
+        assert!(require_plannable(&done, second.id).is_ok());
+        assert!(require_plannable(&done, Uuid::new_v4()).is_err());
+    }
+
+    #[test]
+    fn a_replan_is_told_the_old_plan_and_the_note() {
+        let tasks = build_tasks(Uuid::new_v4(), &[input("Tables", &[])]).unwrap();
+        let note = replan_note(&tasks, Some("  no audit log ")).unwrap();
+        assert!(note.contains("planned before"), "{note}");
+        assert!(note.contains("1. (feature) Tables: Make Tables"), "{note}");
+        assert!(
+            note.contains("note on how to plan this phase: no audit log\n"),
+            "{note}"
+        );
+        let first = replan_note(&[], Some("contacts only")).unwrap();
+        assert!(!first.contains("planned before"), "{first}");
+        assert_eq!(replan_note(&[], Some("  ")), None);
+        assert_eq!(replan_note(&[], None), None);
     }
 }

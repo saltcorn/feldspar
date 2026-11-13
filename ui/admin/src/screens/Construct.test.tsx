@@ -26,6 +26,7 @@ function construction(status: string, taskStatus: string): Construction {
     planning: false,
     error: status === "failed" ? "task `Books list` failed: the build is red" : null,
     until_phase: null,
+    plan_only: false,
     updated_at: null,
     phases: [
       {
@@ -226,7 +227,7 @@ describe("a phase's own page", () => {
       ],
     };
     const html = renderToStaticMarkup(
-      <PhaseDetail construction={c} phase={phase} busy={false} onRetry={noop} onSkip={noop} />,
+      <PhaseDetail construction={c} phase={phase} busy={false} onRetry={noop} onSkip={noop} onPlan={noop} />,
     );
     expect(html).toContain("run shows what it was told and what it answered.");
     // The requirements are there to check against, folded under the tasks.
@@ -255,8 +256,34 @@ describe("a phase's own page", () => {
   it("says when a phase's tasks are not planned yet", () => {
     const c = construction("planned", "todo");
     const html = renderToStaticMarkup(
-      <PhaseDetail construction={c} phase={c.phases[1]} busy={false} onRetry={noop} onSkip={noop} />,
+      <PhaseDetail construction={c} phase={c.phases[1]} busy={false} onRetry={noop} onSkip={noop} onPlan={noop} />,
     );
     expect(html).toContain("Not planned yet");
+    // Planned against what the phase before it makes, so not before that.
+    expect(html).not.toContain("Plan tasks");
+  });
+
+  it("offers to plan the next phase's tasks, and to plan them again before they run", () => {
+    const c = construction("planned", "todo");
+    const next = { ...c, phases: [c.phases[1]] };
+    const html = renderToStaticMarkup(
+      <PhaseDetail construction={next} phase={next.phases[0]} busy={false} onRetry={noop} onSkip={noop} onPlan={noop} />,
+    );
+    expect(html).toContain("Plan tasks");
+    expect(html).toContain("stops before they run");
+
+    const planned = {
+      ...c,
+      phases: [{ ...c.phases[0], status: "planned", tasks: [{ ...c.phases[0].tasks[0], runs: [] }] }],
+    };
+    const again = renderToStaticMarkup(
+      <PhaseDetail construction={planned} phase={planned.phases[0]} busy={false} onRetry={noop} onSkip={noop} onPlan={noop} />,
+    );
+    expect(again).toContain("Plan again");
+    // Not once a task has run: what ran stays recorded.
+    const ran = renderToStaticMarkup(
+      <PhaseDetail construction={c} phase={c.phases[0]} busy={false} onRetry={noop} onSkip={noop} onPlan={noop} />,
+    );
+    expect(ran).not.toContain("Plan again");
   });
 });

@@ -38,6 +38,7 @@ import {
   movePhase,
   phaseDeletable,
   phasePath,
+  phasePlanning,
   phaseProgress,
   phasesEditable,
   phasesPath,
@@ -73,7 +74,9 @@ import {
   IconArrowUp,
   IconCheck,
   IconCode,
+  IconListCheck,
   IconPlayerPlay,
+  IconRefresh,
   IconPlayerStop,
   IconPlus,
   IconSparkles,
@@ -366,6 +369,9 @@ export function Construct({
               }
               onSkip={(task) =>
                 void act(() => calls.skip(task.id), t("Could not skip the task."))
+              }
+              onPlan={(note) =>
+                void act(() => calls.planTasks(phase.id, note), t("Could not plan the tasks."))
               }
             />
           )}
@@ -1149,15 +1155,20 @@ export function PhaseDetail({
   busy,
   onRetry,
   onSkip,
+  onPlan,
 }: {
   construction: Construction;
   phase: ConstructionPhase;
   busy: boolean;
   onRetry: (task: ConstructionTask) => void;
   onSkip: (task: ConstructionTask) => void;
+  /** Plan the phase's tasks (again, told the note) and stop before they run. */
+  onPlan: (note: string | null) => void;
 }) {
   const { t } = useT();
   const tasks = phaseProgress(phase);
+  const planning = phasePlanning(construction, phase);
+  const [replanning, setReplanning] = useState(false);
   return (
     <>
       <Card className="mb-3">
@@ -1171,8 +1182,20 @@ export function PhaseDetail({
             </div>
           </div>
           {tasks.total > 0 && (
-            <div className="card-actions text-secondary small text-nowrap">
+            <div className="card-actions d-flex align-items-center gap-2 text-secondary small text-nowrap">
               {t("{done} of {total} tasks", tasks)}
+              {planning === "replan" && (
+                <Button
+                  size="sm"
+                  variant="outline-secondary"
+                  disabled={busy}
+                  title={t("Throw these tasks away and have the construction agent plan the phase again, told what to change.")}
+                  onClick={() => setReplanning(true)}
+                >
+                  <IconRefresh className="icon-2" />
+                  <T text="Plan again" />
+                </Button>
+              )}
             </div>
           )}
         </Card.Header>
@@ -1185,7 +1208,20 @@ export function PhaseDetail({
                   <T text="Planning its tasks…" />
                 </>
               ) : (
-                <T text="Not planned yet: the construction agent plans this phase's tasks from its requirements when the run reaches it." />
+                <>
+                  <T text="Not planned yet: the construction agent plans this phase's tasks from its requirements when the run reaches it." />
+                  {planning === "plan" && (
+                    <div className="mt-3">
+                      <Button size="sm" variant="outline-primary" disabled={busy} onClick={() => onPlan(null)}>
+                        <IconListCheck className="icon-2" />
+                        <T text="Plan tasks" />
+                      </Button>
+                      <div className="small mt-1">
+                        <T text="Plans the tasks now and stops before they run, so you can review them first." />
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           ) : (
@@ -1206,6 +1242,16 @@ export function PhaseDetail({
           )}
         </Card.Body>
       </Card>
+      {replanning && (
+        <PlanAgainModal
+          phase={phase}
+          onCancel={() => setReplanning(false)}
+          onPlan={(note) => {
+            setReplanning(false);
+            onPlan(note);
+          }}
+        />
+      )}
       {/* What the phase was asked for: there to check against, not to read
           beside the tasks — they do not match one to one. */}
       <details className="card run-context">
@@ -1234,6 +1280,55 @@ export function PhaseDetail({
         </div>
       </details>
     </>
+  );
+}
+
+/** Plan a phase's tasks again: what to change, for the construction agent,
+ * which is told the old tasks too. */
+function PlanAgainModal({
+  phase,
+  onCancel,
+  onPlan,
+}: {
+  phase: ConstructionPhase;
+  onCancel: () => void;
+  onPlan: (note: string | null) => void;
+}) {
+  const { t } = useT();
+  const [note, setNote] = useState("");
+  return (
+    <Modal show onHide={onCancel} centered>
+      <Modal.Header closeButton>
+        <Modal.Title>{t("Plan “{phase}” again", { phase: phase.title })}</Modal.Title>
+      </Modal.Header>
+      <Modal.Body>
+        <p className="text-secondary">
+          <T text="These tasks are thrown away and the construction agent plans the phase again. It is shown the old tasks and your note, and stops before the new tasks run." />
+        </p>
+        <Form.Group controlId="plan-again-note">
+          <Form.Label>
+            <T text="What should change?" />
+          </Form.Label>
+          <Form.Control
+            as="textarea"
+            rows={4}
+            autoFocus
+            value={note}
+            placeholder={t("For example: one task for both list screens; no admin screen.")}
+            onChange={(e) => setNote(e.target.value)}
+          />
+        </Form.Group>
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="outline-secondary" onClick={onCancel}>
+          <T text="Cancel" />
+        </Button>
+        <Button onClick={() => onPlan(note.trim() === "" ? null : note.trim())}>
+          <IconRefresh className="icon-2" />
+          <T text="Plan again" />
+        </Button>
+      </Modal.Footer>
+    </Modal>
   );
 }
 
