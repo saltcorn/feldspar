@@ -580,6 +580,15 @@ div.navbar-brand>a:hover {
   font-variant-numeric: tabular-nums;
 }
 
+/* A failed call's reason, under its badge while the call is folded. */
+.chat-tool-error {
+  margin-top: 0.25rem;
+  padding-left: 0.625rem;
+  color: var(--tblr-danger);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
 /* The calls of a group, each its own badge, indented under the one that
    counts them. */
 .chat-tool-group {
@@ -2234,6 +2243,1415 @@ div.navbar-brand>a:hover {
 .second-factor-codes {
   columns: 2;
   font-size: 1.05rem;
+}
+
+/* Plan & build → Phases (screens/Construct.tsx). The plan reads as a timeline:
+ * a numbered marker per phase down the left, joined by a line, each phase a
+ * card whose marker and edge take its status's colour. The inputs keep their
+ * borders only where they are being edited, so the plan reads as text first. */
+.phase-list {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+}
+.phase {
+  --phase-tone: var(--tblr-secondary);
+  position: relative;
+  display: flex;
+  gap: 1rem;
+  padding-bottom: 1.25rem;
+}
+.phase-done {
+  --phase-tone: var(--tblr-green);
+}
+.phase-running {
+  --phase-tone: var(--tblr-blue);
+}
+.phase-failed {
+  --phase-tone: var(--tblr-red);
+}
+.phase-stopped {
+  --phase-tone: var(--tblr-yellow);
+}
+.phase-new {
+  --phase-tone: var(--tblr-primary);
+}
+
+/* The line joining one marker to the next. */
+.phase:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: 1rem;
+  top: 2.25rem;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-50%);
+  background: var(--tblr-border-color);
+}
+[dir="rtl"] .phase:not(:last-child)::before {
+  transform: translateX(50%);
+}
+.phase-done:not(:last-child)::before {
+  background: color-mix(in srgb, var(--tblr-green) 45%, var(--tblr-border-color));
+}
+
+.phase-marker {
+  flex: 0 0 2rem;
+  width: 2rem;
+  height: 2rem;
+  margin-top: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: var(--phase-tone);
+  background: var(--tblr-bg-surface);
+  border: 2px solid var(--phase-tone);
+  position: relative;
+  z-index: 1;
+}
+.phase-done .phase-marker,
+.phase-running .phase-marker,
+.phase-failed .phase-marker {
+  color: #fff;
+  background: var(--phase-tone);
+}
+.phase-running .phase-marker {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--tblr-blue) 22%, transparent);
+}
+
+.phase-card {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.75rem 1rem 0.875rem;
+  border: 1px solid var(--tblr-border-color);
+  border-inline-start: 3px solid var(--phase-tone);
+  border-radius: var(--tblr-border-radius-lg, 8px);
+  background: var(--tblr-bg-surface);
+  box-shadow: var(--tblr-shadow-card, 0 1px 2px rgba(0, 0, 0, 0.04));
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.phase-card:hover,
+.phase-card:focus-within {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.07);
+}
+
+.phase-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.375rem;
+}
+
+/* The inputs: no border until hovered or edited. */
+.phase-title,
+.phase-description,
+.phase-req-text {
+  border-color: transparent;
+  background-color: transparent;
+  box-shadow: none;
+}
+.phase-title:hover:not(:disabled),
+.phase-description:hover:not(:disabled),
+.phase-req-text:hover:not(:disabled) {
+  border-color: var(--tblr-border-color);
+}
+.phase-title:focus,
+.phase-description:focus,
+.phase-req-text:focus {
+  background-color: var(--tblr-bg-forms, var(--tblr-bg-surface));
+}
+.phase-title:disabled,
+.phase-description:disabled,
+.phase-req-text:disabled {
+  background-color: transparent;
+  color: inherit;
+  opacity: 1;
+}
+
+.phase-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  padding-inline: 0.5rem;
+}
+.phase-description {
+  color: var(--tblr-secondary);
+  line-height: 1.55;
+  resize: vertical;
+  padding-inline: 0.5rem;
+  /* As tall as its text, where the browser can measure it; `rows` otherwise. */
+  field-sizing: content;
+}
+textarea.form-control.phase-description {
+  min-height: 2lh;
+}
+
+.phase-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  flex-shrink: 0;
+}
+/* A quiet square icon button: the reorder and delete controls. */
+.phase-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.875rem;
+  height: 1.875rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--tblr-border-radius);
+  background: transparent;
+  color: var(--tblr-secondary);
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.phase-icon-btn:hover:not(:disabled),
+.phase-icon-btn:focus-visible {
+  background: var(--tblr-bg-surface-secondary, rgba(0, 0, 0, 0.05));
+  color: var(--tblr-body-color);
+}
+.phase-icon-btn-danger:hover:not(:disabled),
+.phase-icon-btn-danger:focus-visible {
+  background: color-mix(in srgb, var(--tblr-red) 12%, transparent);
+  color: var(--tblr-red);
+}
+.phase-icon-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.phase-section-label {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin: 0.75rem 0.5rem 0.375rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--tblr-secondary);
+}
+.phase-count {
+  padding: 0 0.375rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  letter-spacing: 0;
+  background: var(--tblr-bg-surface-secondary, rgba(0, 0, 0, 0.05));
+}
+
+.phase-reqs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.phase-req {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.125rem 0 0.125rem 0.5rem;
+  border-radius: var(--tblr-border-radius);
+}
+.phase-req:hover {
+  background: var(--tblr-bg-surface-secondary, rgba(0, 0, 0, 0.03));
+}
+.phase-req-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* The delete button shows on the row being pointed at or edited. */
+.phase-req-remove {
+  opacity: 0;
+}
+.phase-req:hover .phase-req-remove,
+.phase-req:focus-within .phase-req-remove {
+  opacity: 1;
+}
+@media (hover: none) {
+  .phase-req-remove {
+    opacity: 1;
+  }
+}
+
+/* The priority, a coloured pill: must red, should yellow, could grey. */
+.phase-priority {
+  --pill: var(--tblr-secondary);
+  flex: 0 0 auto;
+  width: 6.5rem;
+  border: 0;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--pill);
+  background-color: color-mix(in srgb, var(--pill) 13%, transparent);
+  background-size: 12px 10px;
+  padding-block: 0.125rem;
+  padding-inline: 0.625rem 1.5rem;
+}
+.phase-priority-must {
+  --pill: var(--tblr-red);
+}
+.phase-priority-should {
+  --pill: var(--tblr-yellow);
+}
+.phase-priority:disabled {
+  color: var(--pill);
+  background-color: color-mix(in srgb, var(--pill) 13%, transparent);
+  background-image: none;
+  opacity: 1;
+}
+
+.phase-add-req,
+.phase-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 0;
+  background: transparent;
+  color: var(--tblr-primary);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  border-radius: var(--tblr-border-radius);
+}
+.phase-add-req {
+  margin: 0.25rem 0 0 0.25rem;
+  padding: 0.25rem 0.375rem;
+}
+.phase-add-req:hover,
+.phase-add-req:focus-visible {
+  background: color-mix(in srgb, var(--tblr-primary) 8%, transparent);
+}
+/* "Add phase": a dashed slot at the end of the timeline, where the next phase
+ * would go. */
+.phase-add {
+  justify-content: center;
+  width: calc(100% - 3rem);
+  margin-inline-start: 3rem;
+  padding: 0.75rem;
+  border: 1px dashed var(--tblr-border-color);
+  border-radius: var(--tblr-border-radius-lg, 8px);
+}
+.phase-add:hover,
+.phase-add:focus-visible {
+  border-color: var(--tblr-primary);
+  background: color-mix(in srgb, var(--tblr-primary) 5%, transparent);
+}
+
+@media (max-width: 575.98px) {
+  .phase {
+    gap: 0.5rem;
+  }
+  .phase-head {
+    flex-wrap: wrap;
+  }
+  .phase-title {
+    flex-basis: 100%;
+  }
+  .phase-add {
+    width: calc(100% - 2.5rem);
+    margin-inline-start: 2.5rem;
+  }
+}
+
+/* Plan & build's step tabs: the numbers as round markers. */
+.construct-steps .nav-link .badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.375rem;
+  height: 1.375rem;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 0.75rem;
+}
+.construct-steps .nav-link.active {
+  font-weight: 600;
+}
+
+/* Plan & build → Specification: the text as a document being written, with
+ * what makes a good one beside it. */
+.spec-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16rem;
+  gap: 1.5rem;
+  align-items: start;
+}
+@media (max-width: 991.98px) {
+  .spec-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.spec-editor {
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  padding: 1rem 1.25rem;
+  border-radius: var(--tblr-border-radius-lg, 8px);
+  background-color: var(--tblr-bg-surface-secondary, var(--tblr-bg-surface));
+  field-sizing: content;
+  resize: vertical;
+}
+/* Bootstrap's `textarea.form-control` min-height outranks a single class. */
+textarea.form-control.spec-editor {
+  min-height: 14lh;
+}
+.spec-editor:focus {
+  background-color: var(--tblr-bg-surface);
+}
+.spec-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+.spec-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--tblr-secondary);
+}
+.spec-dirty {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--tblr-yellow);
+  font-weight: 500;
+}
+.spec-dirty::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+.spec-note {
+  margin-top: 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--tblr-secondary);
+  text-align: end;
+}
+.spec-tips {
+  padding: 1rem 1.125rem;
+  border-radius: var(--tblr-border-radius-lg, 8px);
+  background: color-mix(in srgb, var(--tblr-primary) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tblr-primary) 18%, transparent);
+  font-size: 0.8125rem;
+}
+.spec-tips-title {
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: var(--tblr-primary);
+}
+.spec-tips ul {
+  margin: 0;
+  padding-inline-start: 1.1rem;
+  color: var(--tblr-secondary);
+}
+.spec-tips li + li {
+  margin-top: 0.375rem;
+}
+
+/* Plan & build → Progress: the same timeline as the phases, each phase's
+ * tasks a list, and a meter under the header for the phases done. */
+.build-meter {
+  height: 3px;
+  background: var(--tblr-border-color);
+}
+.build-meter > div {
+  height: 100%;
+  background: var(--tblr-green);
+  transition: width 0.4s ease;
+}
+.build-phase-head {
+  padding-inline-start: 0.5rem;
+}
+.build-phase-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-inline-end: auto;
+  min-width: 0;
+}
+.build-phase-count {
+  font-size: 0.8125rem;
+  color: var(--tblr-secondary);
+  white-space: nowrap;
+}
+.build-empty {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--tblr-secondary);
+}
+.build-tasks {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+.build-task {
+  --task-tone: var(--tblr-secondary);
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.75rem 0.5rem;
+  border-top: 1px solid var(--tblr-border-color);
+}
+.build-task-done {
+  --task-tone: var(--tblr-green);
+}
+.build-task-running {
+  --task-tone: var(--tblr-blue);
+}
+.build-task-failed {
+  --task-tone: var(--tblr-red);
+}
+.build-task-stopped {
+  --task-tone: var(--tblr-yellow);
+}
+.build-task-dot {
+  flex: 0 0 0.75rem;
+  width: 0.75rem;
+  height: 0.75rem;
+  margin-top: 0.375rem;
+  border-radius: 50%;
+  background: var(--task-tone);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.build-task-todo .build-task-dot,
+.build-task-skipped .build-task-dot {
+  background: transparent;
+  border: 2px solid var(--task-tone);
+}
+.build-task-running .build-task-dot {
+  background: transparent;
+  color: var(--task-tone);
+}
+.build-task-running .build-task-dot .spinner-border {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-width: 2px;
+}
+.build-task-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.build-task-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.build-task-title {
+  font-weight: 600;
+}
+.build-task-title code {
+  font-size: 0.8125rem;
+  padding: 0.0625rem 0.3125rem;
+  border-radius: 4px;
+  background: var(--tblr-bg-surface-secondary, rgba(0, 0, 0, 0.05));
+}
+.build-task-kind {
+  padding: 0 0.5rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  color: var(--tblr-secondary);
+  background: var(--tblr-bg-surface-secondary, rgba(0, 0, 0, 0.05));
+}
+.build-task-runs {
+  display: inline-flex;
+  gap: 0.25rem;
+}
+.build-run-link {
+  padding: 0 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+  border: 1px solid color-mix(in srgb, var(--tblr-primary) 35%, transparent);
+  text-decoration: none;
+}
+.build-run-link:hover {
+  background: color-mix(in srgb, var(--tblr-primary) 8%, transparent);
+  text-decoration: none;
+}
+.build-task-summary {
+  margin-top: 0.375rem;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--tblr-secondary);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+.build-task-summary code {
+  font-size: 0.75rem;
+  padding: 0.0625rem 0.3125rem;
+  border-radius: 4px;
+  color: var(--tblr-body-color);
+  background: var(--tblr-bg-surface-secondary, rgba(0, 0, 0, 0.05));
+  white-space: normal;
+}
+/* `ClampedText` closed: its first lines only, flowing as one paragraph so the
+ * lines shown are text, not the blank lines between its paragraphs. */
+div.clamp-closed {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--clamp, 3);
+  line-clamp: var(--clamp, 3);
+  overflow: hidden;
+}
+.build-more {
+  margin-top: 0.125rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--tblr-primary);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+.build-more:hover {
+  text-decoration: underline;
+}
+
+/* A run's own page (screens/RunPanel.tsx, `AgentRunDetail`): its figures as a
+ * strip of tiles, its sections as cards, and the stored loop state folded. */
+.run-title code {
+  font-size: 0.85em;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 6px;
+  background: var(--tblr-bg-surface-secondary, rgba(0, 0, 0, 0.05));
+}
+.run-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.run-stat {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--tblr-border-color);
+  border-radius: var(--tblr-border-radius-lg, 8px);
+  background: var(--tblr-bg-surface);
+  min-width: 0;
+}
+.run-stat-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--tblr-secondary);
+}
+.run-stat-value {
+  margin-top: 0.125rem;
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.run-stat-note {
+  font-size: 0.75rem;
+  color: var(--tblr-secondary);
+}
+.run-empty {
+  margin: 0;
+  color: var(--tblr-secondary);
+  font-size: 0.875rem;
+}
+.run-context > summary {
+  cursor: pointer;
+  list-style: none;
+  border-bottom: 0;
+}
+.run-context > summary::-webkit-details-marker {
+  display: none;
+}
+.run-context > summary::before {
+  content: "";
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-inline-end: 0.625rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+  color: var(--tblr-secondary);
+}
+[dir="rtl"] .run-context > summary::before {
+  transform: rotate(135deg);
+}
+.run-context[open] > summary {
+  border-bottom: 1px solid var(--tblr-border-color);
+}
+.run-context[open] > summary::before {
+  transform: rotate(45deg);
+}
+.run-context pre {
+  max-height: 40rem;
+  overflow: auto;
+}
+
+/* Plan & build → one phase's own page (`PhaseDetail`): its tasks, in full,
+ * and folded under them what the phase was asked for. */
+.pd-description {
+  white-space: pre-line;
+  line-height: 1.6;
+  color: var(--tblr-secondary);
+}
+.pd-reqs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.pd-reqs li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.625rem;
+  padding: 0.5rem 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+.pd-reqs li + li {
+  border-top: 1px solid var(--tblr-border-color);
+}
+.pd-reqs code,
+.pd-task code {
+  font-size: 0.8125em;
+  padding: 0.0625rem 0.3125rem;
+  border-radius: 4px;
+  color: var(--tblr-body-color);
+  background: var(--tblr-bg-surface-secondary, rgba(0, 0, 0, 0.05));
+}
+/* A priority as a read-only pill, coloured as on the Phases tab. */
+.req-pill {
+  --pill: var(--tblr-secondary);
+  flex: 0 0 4rem;
+  text-align: center;
+  padding: 0.0625rem 0;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--pill);
+  background: color-mix(in srgb, var(--pill) 13%, transparent);
+}
+.req-pill.phase-priority-must {
+  --pill: var(--tblr-red);
+}
+.req-pill.phase-priority-should {
+  --pill: var(--tblr-yellow);
+}
+
+.pd-tasks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+/* The status colours come from `.build-task-{status}` above; the default is
+ * the grey for a task not run yet, set where it cannot override them. */
+.pd-task {
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--tblr-border-color);
+  border-inline-start: 3px solid var(--task-tone, var(--tblr-secondary));
+  border-radius: var(--tblr-border-radius-lg, 8px);
+}
+.pd-task + .pd-task {
+  margin-top: 0.5rem;
+}
+.pd-task-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.pd-task-n {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.375rem;
+  height: 1.375rem;
+  border-radius: 50%;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--task-tone, var(--tblr-secondary));
+  border: 2px solid var(--task-tone, var(--tblr-secondary));
+}
+.build-task-done .pd-task-n {
+  color: #fff;
+  background: var(--task-tone);
+}
+.pd-task-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-inline-start: auto;
+}
+/* Indented under the title, past the number. */
+.pd-task-gist,
+.pd-task-meta,
+.pd-created-row,
+.pd-brief {
+  margin-inline-start: 1.875rem;
+}
+.pd-task-gist {
+  margin-top: 0.25rem;
+  font-size: 0.8125rem;
+  color: var(--tblr-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pd-task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+  margin-top: 0.375rem;
+}
+.pd-waits {
+  font-size: 0.75rem;
+  color: var(--tblr-secondary);
+}
+.pd-toggle {
+  margin-top: 0;
+  margin-inline-start: auto;
+  font-size: 0.75rem;
+}
+.pd-task-text {
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--tblr-secondary);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+.pd-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  align-items: center;
+}
+
+/* A phase's title on the Progress tab opens its page. */
+a.build-phase-title {
+  color: inherit;
+}
+a.build-phase-title:hover {
+  color: var(--tblr-primary);
+  text-decoration: none;
+}
+
+/* A run's page, retold (`runStory.ts`): what it was asked, a numbered outline
+ * of what it did — each remark with the tools it then called — and what it
+ * answered. The full transcript is folded under these. */
+.story-task,
+.story-answer {
+  white-space: pre-line;
+  line-height: 1.6;
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+.story-task {
+  color: var(--tblr-secondary);
+}
+.story-task code,
+.story-answer code,
+.story-line code,
+.story-text code {
+  font-size: 0.8125em;
+  padding: 0.0625rem 0.3125rem;
+  border-radius: 4px;
+  color: var(--tblr-body-color);
+  background: var(--tblr-bg-surface-secondary, rgba(0, 0, 0, 0.05));
+  white-space: normal;
+}
+.story-outcome {
+  --outcome: var(--tblr-secondary);
+  border-inline-start: 3px solid var(--outcome);
+}
+.story-outcome-green {
+  --outcome: var(--tblr-green);
+}
+.story-outcome-red {
+  --outcome: var(--tblr-red);
+}
+.story-outcome-yellow {
+  --outcome: var(--tblr-yellow);
+}
+.story-outcome-blue {
+  --outcome: var(--tblr-blue);
+}
+
+.story-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.story-step {
+  position: relative;
+  display: flex;
+  gap: 0.875rem;
+  padding-bottom: 1rem;
+}
+.story-step:last-child {
+  padding-bottom: 0;
+}
+/* The line down the numbers. */
+.story-step:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: 0.75rem;
+  top: 1.75rem;
+  bottom: 0.25rem;
+  width: 2px;
+  transform: translateX(-50%);
+  background: var(--tblr-border-color);
+}
+[dir="rtl"] .story-step:not(:last-child)::before {
+  transform: translateX(50%);
+}
+.story-n {
+  flex: 0 0 1.5rem;
+  width: 1.5rem;
+  height: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--tblr-secondary);
+  background: var(--tblr-bg-surface-secondary, rgba(0, 0, 0, 0.05));
+}
+.story-person .story-n {
+  color: var(--tblr-primary);
+  background: color-mix(in srgb, var(--tblr-primary) 12%, transparent);
+}
+.story-problem .story-n {
+  color: #fff;
+  background: var(--tblr-red);
+}
+.story-problem .story-line {
+  color: var(--tblr-red);
+}
+.story-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-top: 0.125rem;
+}
+.story-who {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--tblr-primary);
+}
+.story-line {
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+.story-text {
+  margin-top: 0.375rem;
+  padding: 0.625rem 0.75rem;
+  border-radius: var(--tblr-border-radius);
+  background: var(--tblr-bg-surface-secondary, rgba(0, 0, 0, 0.03));
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--tblr-secondary);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+.story-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin-top: 0.375rem;
+}
+.story-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0 0.5rem;
+  border-radius: 999px;
+  font-family: var(--tblr-font-monospace);
+  font-size: 0.75rem;
+  line-height: 1.375rem;
+  color: var(--tblr-secondary);
+  border: 1px solid var(--tblr-border-color);
+}
+.story-tool-count {
+  font-family: var(--tblr-font-sans-serif);
+  font-weight: 600;
+}
+/* A chip opens its calls. */
+button.story-tool {
+  background: none;
+  cursor: pointer;
+}
+button.story-tool:hover,
+.story-tool-open {
+  color: var(--tblr-body-color);
+  border-color: var(--tblr-secondary);
+}
+
+/* The calls behind an opened chip, under the chips: each a light card with
+   a header (number, tool, outcome), its arguments as name/value rows, and
+   its result as wrapping text. */
+.story-calls {
+  display: grid;
+  gap: 0.625rem;
+  margin-top: 0.625rem;
+}
+.story-call {
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--tblr-border-color);
+  border-radius: var(--tblr-border-radius);
+  background: var(--tblr-bg-surface);
+}
+.story-call-failed {
+  border-color: color-mix(in srgb, var(--tblr-red) 30%, transparent);
+}
+.story-call-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.8125rem;
+}
+.story-call-head code {
+  background: none;
+  padding: 0;
+  font-weight: 600;
+  color: var(--tblr-body-color);
+}
+.story-call-n {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 999px;
+  background: var(--tblr-bg-surface-secondary);
+  color: var(--tblr-secondary);
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+.story-call-outcome {
+  margin-left: auto;
+  padding: 0 0.4375rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.125rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--tblr-green);
+  background: color-mix(in srgb, var(--tblr-green) 12%, transparent);
+}
+.story-call-outcome.is-failed {
+  color: var(--tblr-red);
+  background: color-mix(in srgb, var(--tblr-red) 12%, transparent);
+}
+.story-call-args {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 0.75rem;
+  row-gap: 0.375rem;
+  margin: 0 0 0.5rem;
+  font-size: 0.8125rem;
+}
+.story-call-arg {
+  display: contents;
+}
+.story-call-arg dt,
+.story-call-label {
+  color: var(--tblr-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+.story-call-arg dt {
+  font-family: var(--tblr-font-monospace);
+  padding-top: 0.0625rem;
+}
+.story-call-arg dd {
+  margin: 0;
+  min-width: 0;
+}
+/* Several calls behind one chip: a tab each, "Call 1 · failed", one shown. */
+.story-call-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-bottom: -1px;
+  position: relative;
+}
+.story-call-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.75rem;
+  border: 1px solid var(--tblr-border-color);
+  border-bottom-color: transparent;
+  border-radius: var(--tblr-border-radius) var(--tblr-border-radius) 0 0;
+  background: var(--tblr-bg-surface-secondary);
+  color: var(--tblr-secondary);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+.story-call-tab.is-current {
+  background: var(--tblr-bg-surface);
+  color: var(--tblr-body-color);
+  border-bottom-color: var(--tblr-bg-surface);
+}
+.story-call-tab-key {
+  max-width: 14rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+.story-call-tab-outcome {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--tblr-secondary);
+}
+.story-call-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--tblr-green);
+}
+.story-call-dot.is-failed {
+  background: var(--tblr-red);
+}
+.story-call-tabs + .story-call {
+  border-top-left-radius: 0;
+}
+
+/* A list of objects: one folded line each, naming it. */
+.story-call-objects {
+  list-style: none;
+}
+.story-call-object + .story-call-object {
+  margin-top: 0.25rem;
+}
+.story-call-object-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--tblr-border-color);
+  border-radius: var(--tblr-border-radius-sm);
+  background: var(--tblr-bg-surface);
+  color: var(--tblr-body-color);
+  text-align: left;
+}
+.story-call-object-head:hover {
+  border-color: var(--tblr-secondary);
+}
+.story-call-object-head code {
+  background: none;
+  padding: 0;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.story-call-object-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--tblr-secondary);
+}
+.story-call-caret {
+  margin-left: auto;
+  transition: transform 0.15s ease;
+}
+.story-call-object.is-open .story-call-caret {
+  transform: rotate(180deg);
+}
+.story-call-object.is-open > .story-call-nested {
+  margin-top: 0.25rem;
+}
+
+.story-call-nested {
+  padding: 0.375rem 0.5rem;
+  border-left: 2px solid var(--tblr-border-color);
+  background: color-mix(in srgb, var(--tblr-bg-surface-secondary) 60%, transparent);
+  border-radius: 0 var(--tblr-border-radius-sm) var(--tblr-border-radius-sm) 0;
+}
+.story-call-nested .story-call-args {
+  margin: 0;
+}
+.story-call-objects {
+  margin: 0;
+  padding: 0;
+}
+.story-call-objects > li::marker {
+  color: var(--tblr-secondary);
+  font-size: 0.75rem;
+}
+.story-call-list {
+  margin: 0;
+  padding-left: 1rem;
+}
+.story-call-list li + li {
+  margin-top: 0.125rem;
+}
+.story-call-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.story-call-tag {
+  display: inline-block;
+  margin: 0 0.25rem 0.25rem 0;
+  padding: 0 0.375rem;
+  border-radius: var(--tblr-border-radius-sm);
+  background: var(--tblr-bg-surface-secondary);
+  color: var(--tblr-body-color);
+  font-size: 0.75rem;
+}
+.story-call-json,
+.story-call-result pre {
+  margin: 0;
+  padding: 0.5rem 0.625rem;
+  border-radius: var(--tblr-border-radius);
+  background: var(--tblr-bg-surface-secondary);
+  color: var(--tblr-body-color);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 28rem;
+  overflow: auto;
+}
+.story-call-result .story-call-label {
+  margin-bottom: 0.25rem;
+}
+.story-call-failed .story-call-result pre {
+  color: var(--tblr-red);
+  background: color-mix(in srgb, var(--tblr-red) 6%, transparent);
+}
+.story-call-image {
+  display: block;
+  max-width: min(100%, 28rem);
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--tblr-border-color);
+  border-radius: var(--tblr-border-radius);
+}
+
+.story-tool-error {
+  color: var(--tblr-red);
+  border-color: color-mix(in srgb, var(--tblr-red) 45%, transparent);
+  background: color-mix(in srgb, var(--tblr-red) 7%, transparent);
+}
+
+/* Why a step's failed calls failed, under its tools: a lightly tinted box with
+   a small heading, one aligned row per call — whether a retry fixed it, the
+   tool, the reason on one line (in full on hover) — so the column of statuses
+   is what the eye runs down. */
+.story-failures-box {
+  margin-top: 0.5rem;
+  padding: 0.375rem 0.625rem 0.5rem;
+  border-radius: var(--tblr-border-radius);
+  background: color-mix(in srgb, var(--tblr-red) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tblr-red) 14%, transparent);
+}
+
+.story-failures-head {
+  margin-bottom: 0.25rem;
+  color: var(--tblr-secondary);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.story-failures {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 0.625rem;
+  row-gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8125rem;
+  line-height: 1.375rem;
+}
+
+.story-failures li {
+  display: contents;
+}
+
+/* The status as a soft pill: green-tinted when the retry worked, red when
+   the call is still failing. */
+.story-failure-status {
+  justify-self: start;
+  padding: 0 0.4375rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.125rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--tblr-red);
+  background: color-mix(in srgb, var(--tblr-red) 12%, transparent);
+}
+
+.story-failure-retried .story-failure-status {
+  color: var(--tblr-green);
+  background: color-mix(in srgb, var(--tblr-green) 12%, transparent);
+}
+
+.story-failures code {
+  color: var(--tblr-body-color);
+  background: none;
+  padding: 0;
+  font-weight: 600;
+}
+
+.story-failure-why {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--tblr-red);
+}
+
+.story-failure-retried .story-failure-why {
+  color: var(--tblr-secondary);
+}
+
+/* The phases a phase's Run would run first, in the dialog that asks. */
+.run-confirm-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.run-confirm-list li {
+  padding: 0.25rem 0;
+}
+.run-confirm-list li > span:first-child {
+  margin-inline-end: 0.5rem;
+  font-weight: 500;
+}
+
+/* What a task created — its tables and queries — as quiet chips: the name,
+ * with a green icon for "new". A table's chip opens it. */
+.pd-created-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin-top: 0.375rem;
+}
+.pd-created {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0 0.5rem 0 0.375rem;
+  border-radius: 999px;
+  font-family: var(--tblr-font-monospace);
+  font-size: 0.75rem;
+  line-height: 1.375rem;
+  color: var(--tblr-body-color);
+  background: var(--tblr-bg-surface-secondary, rgba(0, 0, 0, 0.04));
+  border: 1px solid var(--tblr-border-color);
+  text-decoration: none;
+}
+.pd-created .icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  color: var(--tblr-green);
+}
+a.pd-created:hover {
+  color: var(--tblr-body-color);
+  border-color: color-mix(in srgb, var(--tblr-green) 45%, var(--tblr-border-color));
+  text-decoration: none;
+}
+.pd-brief {
+  margin-top: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--tblr-border-radius);
+  background: var(--tblr-bg-surface-secondary, rgba(0, 0, 0, 0.03));
+}
+
+/* Plan & build progress: what the run is on right now. */
+.build-now {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-bottom: 1rem;
+  padding: 0.625rem 0.875rem;
+  border-radius: var(--tblr-border-radius);
+  background: var(--tblr-primary-lt);
+  color: var(--tblr-body-color);
+  font-size: 0.875rem;
+}
+.build-now .spinner-border {
+  color: var(--tblr-primary);
+  flex: none;
+}
+.build-now-text {
+  flex: 1;
+  min-width: 0;
+}
+.build-now-link {
+  white-space: nowrap;
+}
+
+/* The phase a run is on: a ring turning around its marker, and what it is
+   doing beside its status. */
+.phase-working .phase-marker {
+  position: relative;
+}
+.phase-working .phase-marker::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--tblr-blue);
+  border-right-color: var(--tblr-blue);
+  animation: phase-turn 0.9s linear infinite;
+}
+@keyframes phase-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .phase-working .phase-marker::after {
+    animation-duration: 3s;
+  }
+}
+.phase-now {
+  max-width: 40%;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+  font-size: 0.8125rem;
+  color: var(--tblr-blue);
+}
+.phase-now .spinner-border {
+  flex: none;
+  width: 0.875rem;
+  height: 0.875rem;
+  border-width: 0.15em;
+}
+.phase-now-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Custom queries (Application settings → APIs): the list's name column keeps

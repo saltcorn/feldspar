@@ -110,6 +110,7 @@ pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> = sc_catalog::U
 );
 
 mod admin_copilot;
+mod app_constructor;
 mod ask_user;
 mod build_application;
 mod coding;
@@ -153,6 +154,10 @@ pub use files::{CFG_ROOT, CFG_STORE, FileScope, configured_scope, slugify};
 pub use admin_copilot::{
     AdminCopilot, CFG_ALLOW_ACCESS, CFG_ALLOW_APPLICATIONS, CFG_ALLOW_CREATE, CFG_ALLOW_DROP,
     CFG_ALLOW_EDIT, CFG_ALLOW_TRIGGERS,
+};
+pub use app_constructor::{
+    AppConstructor, CFG_CONSTRUCTED_APPLICATION, DATA_MODEL_TOOLS, TOOL_SAVE_PHASES,
+    TOOL_SAVE_TASKS, app_constructor_config,
 };
 pub use ask_user::{
     AskUser, CFG_ANSWER_PROMPT, CFG_ASK_PROMPT, CFG_ASK_TOOL_NAME, CFG_DISCUSS_LABEL,
@@ -325,6 +330,7 @@ pub fn register_agent_actions(
 
 pub fn register_builtin_traits(registry: &mut AgentRegistry) -> Result<()> {
     registry.register(Arc::new(AdminCopilot))?;
+    registry.register(Arc::new(AppConstructor))?;
     registry.register(Arc::new(QueryTable))?;
     registry.register(Arc::new(EditTableRows))?;
     registry.register(Arc::new(PreviewPane))?;
@@ -364,6 +370,7 @@ mod tests {
             registry.names(),
             vec![
                 "admin_copilot",
+                "app_constructor",
                 "ask_user",
                 "build_application",
                 "coding",

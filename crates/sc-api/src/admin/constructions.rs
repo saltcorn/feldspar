@@ -1,0 +1,221 @@
+//! The admin API's endpoints: the App Constructor (TODO-app-constructor AC1.3,
+//! AC2.2, AC2.3, AC3.4).
+//!
+//! An application has one construction at most, so a construction is
+//! addressed by its application's id. Their handlers are registered by
+//! `sc-server`'s `constructions` module.
+
+use super::*;
+
+/// Declare this domain's endpoints on `set`.
+pub(super) fn register(set: &mut EndpointSet) {
+    let construction = || {
+        api()
+            .lit("applications")
+            .param("id", ValueType::Uuid)
+            .lit("construction")
+    };
+    // One line per construction, for the Home screen.
+    set.register(
+        Endpoint::new(
+            ids::LIST_CONSTRUCTIONS,
+            Method::Get,
+            api().lit("constructions"),
+        )
+        .output(TypeSchema::array(construction_summary_schema())),
+    );
+    set.register(
+        Endpoint::new(ids::GET_CONSTRUCTION, Method::Get, construction())
+            .output(construction_schema()),
+    );
+    // Starts a construction for a React application, with the agent that plans
+    // and builds its data model on `provider`. Without it: the provider the
+    // application's settings choose, else the builder agent's, else the
+    // default.
+    set.register(
+        Endpoint::new(ids::CREATE_CONSTRUCTION, Method::Post, construction())
+            .input(TypeSchema::struct_of([StructField::new(
+                "provider",
+                TypeSchema::optional(TypeSchema::text()),
+            )]))
+            .output(construction_schema()),
+    );
+    set.register(
+        Endpoint::new(
+            ids::SAVE_CONSTRUCTION_SPECIFICATION,
+            Method::Put,
+            construction().lit("specification"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "specification",
+            TypeSchema::text(),
+        )]))
+        .output(construction_schema()),
+    );
+    // Starts the run that plans the phases from the specification, and answers
+    // at once (202) with `plan_run` set and `planning` true; the run saves the
+    // phases as it goes. Poll `getConstruction` until `planning` is false.
+    set.register(
+        Endpoint::new(
+            ids::PLAN_CONSTRUCTION,
+            Method::Post,
+            construction().lit("plan"),
+        )
+        .output(construction_schema()),
+    );
+    // Replaces the phases, in order; the validation the agent's `save_phases`
+    // goes through. A phase named by `id` is updated in place, and one with
+    // tasks that the list leaves out is kept.
+    set.register(
+        Endpoint::new(ids::SAVE_PHASES, Method::Put, construction().lit("phases"))
+            .input(TypeSchema::struct_of([StructField::new(
+                "phases",
+                TypeSchema::array(TypeSchema::struct_of([
+                    StructField::new("id", TypeSchema::optional(TypeSchema::uuid())),
+                    StructField::new("title", TypeSchema::text()),
+                    StructField::new("description", TypeSchema::text()),
+                    StructField::new("requirements", TypeSchema::array(requirement_schema())),
+                ])),
+            )]))
+            .output(construction_schema()),
+    );
+    // Starts the runner (202): it plans each phase's tasks when it reaches the
+    // phase and runs them, until every phase is done, or `until_phase` is. Poll
+    // `getConstruction` while `status` is `running`.
+    set.register(
+        Endpoint::new(
+            ids::RUN_CONSTRUCTION,
+            Method::Post,
+            construction().lit("run"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "until_phase",
+            TypeSchema::optional(TypeSchema::uuid()),
+        )]))
+        .output(construction_schema()),
+    );
+    // Plans the tasks of one phase and stops before they run, so the admin
+    // reviews them first: the phase the runner reaches next, every phase
+    // before it done. A phase planned already whose tasks have not started is
+    // planned again, the planning run told the old plan and `note`. Answers
+    // at once (202), `running` with `plan_only`; it ends `planned`.
+    set.register(
+        Endpoint::new(
+            ids::PLAN_PHASE_TASKS,
+            Method::Post,
+            construction()
+                .lit("phases")
+                .param("phase", ValueType::Uuid)
+                .lit("plan"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "note",
+            TypeSchema::optional(TypeSchema::text()),
+        )]))
+        .output(construction_schema()),
+    );
+    // Stops the runner: the task being run is aborted and goes back to `todo`,
+    // and the construction becomes `stopped` once the runner has stopped.
+    set.register(
+        Endpoint::new(
+            ids::STOP_CONSTRUCTION,
+            Method::Post,
+            construction().lit("stop"),
+        )
+        .output(construction_schema()),
+    );
+    let task = || construction().lit("tasks").param("task", ValueType::Uuid);
+    // A failed task back to `todo`; a failed construction carries on.
+    set.register(
+        Endpoint::new(ids::RETRY_TASK, Method::Post, task().lit("retry"))
+            .output(construction_schema()),
+    );
+    // A waiting or failed task set aside: the tasks after it run as if it were
+    // done. A failed construction carries on.
+    set.register(
+        Endpoint::new(ids::SKIP_TASK, Method::Post, task().lit("skip"))
+            .output(construction_schema()),
+    );
+    // Deletes the construction, its phases and tasks, and the agent made for
+    // it. What it built stays. Refused while it runs.
+    set.register(
+        Endpoint::new(ids::DELETE_CONSTRUCTION, Method::Delete, construction()).output(
+            TypeSchema::struct_of([
+                StructField::new("deleted", TypeSchema::bool()),
+                StructField::new("agent", TypeSchema::optional(TypeSchema::text())),
+            ]),
+        ),
+    );
+}
+
+fn status_fields() -> [StructField; 4] {
+    [
+        StructField::new("id", TypeSchema::uuid()),
+        StructField::new("application", TypeSchema::uuid()),
+        // draft | planned | running | stopped | done | failed
+        StructField::new("status", TypeSchema::text()),
+        StructField::new("agent", TypeSchema::optional(TypeSchema::text())),
+    ]
+}
+
+fn construction_summary_schema() -> TypeSchema {
+    TypeSchema::struct_of(status_fields().into_iter().chain([
+        StructField::new("phases", TypeSchema::int()),
+        StructField::new("phases_done", TypeSchema::int()),
+    ]))
+}
+
+fn construction_schema() -> TypeSchema {
+    TypeSchema::struct_of(status_fields().into_iter().chain([
+        StructField::new("specification", TypeSchema::text()),
+        StructField::new("started_by", TypeSchema::optional(TypeSchema::uuid())),
+        // The run that planned the phases last, in the agent's run history.
+        StructField::new("plan_run", TypeSchema::optional(TypeSchema::uuid())),
+        // Whether that run is being driven now.
+        StructField::new("planning", TypeSchema::bool()),
+        // Why it stopped or failed last.
+        StructField::new("error", TypeSchema::optional(TypeSchema::text())),
+        // The phase the run ends after; all of them when absent.
+        StructField::new("until_phase", TypeSchema::optional(TypeSchema::uuid())),
+        // The run only plans `until_phase`'s tasks (`planPhaseTasks`).
+        StructField::new("plan_only", TypeSchema::bool()),
+        StructField::new("updated_at", TypeSchema::optional(TypeSchema::timestamp())),
+        StructField::new("phases", TypeSchema::array(phase_schema())),
+    ]))
+}
+
+fn phase_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::uuid()),
+        StructField::new("title", TypeSchema::text()),
+        StructField::new("description", TypeSchema::text()),
+        StructField::new("requirements", TypeSchema::array(requirement_schema())),
+        // unplanned | planned | running | failed | done: from the tasks.
+        StructField::new("status", TypeSchema::text()),
+        StructField::new("tasks", TypeSchema::array(task_schema())),
+    ])
+}
+
+fn requirement_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("text", TypeSchema::text()),
+        // must | should | could
+        StructField::new("priority", TypeSchema::text()),
+    ])
+}
+
+fn task_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::uuid()),
+        // data_model | feature
+        StructField::new("kind", TypeSchema::text()),
+        StructField::new("title", TypeSchema::text()),
+        StructField::new("brief", TypeSchema::text()),
+        StructField::new("depends_on", TypeSchema::array(TypeSchema::uuid())),
+        // todo | running | done | failed | skipped
+        StructField::new("status", TypeSchema::text()),
+        StructField::new("runs", TypeSchema::array(TypeSchema::uuid())),
+        StructField::new("summary", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("created", TypeSchema::array(TypeSchema::json())),
+    ])
+}

@@ -13,6 +13,8 @@
 
 #[path = "admin_client_sync.rs"]
 mod admin_client_sync;
+#[path = "allowed_values.rs"]
+mod allowed_values;
 #[path = "calc_after_read.rs"]
 mod calc_after_read;
 #[path = "calc_fields.rs"]

@@ -1,0 +1,36 @@
+[package]
+name = "sc-construct"
+description = "The App Constructor: an application's construction, its phases and its tasks (layer 9)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+# One integration-test binary, as everywhere in this workspace.
+autotests = false
+
+[dependencies]
+sc-error.workspace = true
+sc-types.workspace = true
+# The three `_fd_construction*` tables are stored metadata, read and written
+# through the query language like `_fd_checklists`.
+sc-catalog.workspace = true
+sc-query.workspace = true
+sc-db.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+sc-db-postgres.workspace = true
+sc-test-harness.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

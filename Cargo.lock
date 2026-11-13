@@ -9088,6 +9088,7 @@ dependencies = [
  "sc-auth",
  "sc-catalog",
  "sc-check",
+ "sc-construct",
  "sc-db",
  "sc-db-postgres",
  "sc-docs",
@@ -9372,6 +9373,7 @@ dependencies = [
  "sc-check",
  "sc-config",
  "sc-config-file",
+ "sc-construct",
  "sc-dataset",
  "sc-db",
  "sc-db-postgres",
@@ -9434,6 +9436,24 @@ dependencies = [
  "sc-error",
  "serde",
  "toml",
+]
+
+[[package]]
+name = "sc-construct"
+version = "0.1.1-dev"
+dependencies = [
+ "chrono",
+ "sc-catalog",
+ "sc-db",
+ "sc-db-postgres",
+ "sc-error",
+ "sc-query",
+ "sc-test-harness",
+ "sc-types",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -9914,6 +9934,7 @@ dependencies = [
  "sc-catalog",
  "sc-check",
  "sc-config",
+ "sc-construct",
  "sc-dataset",
  "sc-db",
  "sc-db-postgres",

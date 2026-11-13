@@ -122,6 +122,7 @@ import {
 import { StatusBadge, useDocumentTitle, type Tone } from "../layout";
 import { RunBar } from "./RunPanel";
 import { T, useT } from "../i18n";
+import { failureLine } from "../runStory";
 
 type RunItem = ListRunsResponse[number];
 
@@ -1569,9 +1570,13 @@ function CodeBlock({ language, text }: { language: string; text: string }) {
 /** Consecutive calls to one tool: one badge with a count, opening onto each
  * call as its own badge. */
 function ToolGroup({ name, calls }: { name: string; calls: ToolCall[] }) {
+  const { t } = useT();
   const [open, setOpen] = useState(false);
   const running = calls.some((call) => call.result === null);
-  const failed = calls.some((call) => call.isError);
+  const failed = calls.filter((call) => call.isError).length;
+  // Red only while the last call failed: a failure a retry fixed is counted,
+  // not flagged.
+  const stillFailing = calls[calls.length - 1]?.isError ?? false;
 
   return (
     <div className="chat-tool">
@@ -1581,13 +1586,16 @@ function ToolGroup({ name, calls }: { name: string; calls: ToolCall[] }) {
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
       >
-        {failed ? (
+        {stillFailing ? (
           <IconAlertTriangle className="icon-2 text-danger flex-shrink-0" />
         ) : (
           <IconTool className="icon-2 flex-shrink-0" />
         )}
         <span className="chat-tool-name">{name}</span>
-        <span className="chat-tool-count">({calls.length})</span>
+        <span className="chat-tool-count">
+          ({calls.length}
+          {failed > 0 && <span className="text-danger">, {t("{n} failed", { n: failed })}</span>})
+        </span>
         {running && <RunningDots />}
         <IconChevronDown className="icon-2 chat-tool-caret flex-shrink-0" />
       </button>
@@ -1621,7 +1629,6 @@ function ToolImage({ src, name }: { src: string; name: string }) {
 
 /** A tool call: the line, and what it opens onto. */
 function ToolEntry({ entry }: { entry: ToolCall }) {
-  const { t } = useT();
   const [open, setOpen] = useState(false);
   const running = entry.result === null;
 
@@ -1642,23 +1649,33 @@ function ToolEntry({ entry }: { entry: ToolCall }) {
         {running && <RunningDots />}
         <IconChevronDown className="icon-2 chat-tool-caret flex-shrink-0" />
       </button>
+      {/* Why it failed, readable without opening the call. */}
+      {entry.isError && !open && <div className="chat-tool-error">{failureLine(entry.result)}</div>}
       {/* A screenshot is what the agent saw: shown, not folded away with the
           snapshot text (TODO §7b). */}
       {entry.images?.map((src, index) => (
         <ToolImage key={index} src={src} name={entry.name} />
       ))}
-      {open && (
-        <div className="chat-tool-body">
-          <Labelled label={t("Arguments")}>
-            <pre>{pretty(entry.args)}</pre>
-          </Labelled>
-          <Labelled label={t("Result")}>
-            <pre className={entry.isError ? "text-danger" : undefined}>
-              {running ? "(still running)" : pretty(entry.result)}
-            </pre>
-          </Labelled>
-        </div>
-      )}
+      {open && <ToolCallBody entry={entry} />}
+    </div>
+  );
+}
+
+/** A tool call's arguments and result, as the transcript shows them when the
+ * call is opened (and a run's step list when its chip is). */
+export function ToolCallBody({ entry }: { entry: ToolCall }) {
+  const { t } = useT();
+  const running = entry.result === null;
+  return (
+    <div className="chat-tool-body">
+      <Labelled label={t("Arguments")}>
+        <pre>{pretty(entry.args)}</pre>
+      </Labelled>
+      <Labelled label={t("Result")}>
+        <pre className={entry.isError ? "text-danger" : undefined}>
+          {running ? "(still running)" : pretty(entry.result)}
+        </pre>
+      </Labelled>
     </div>
   );
 }

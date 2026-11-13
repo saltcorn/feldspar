@@ -53,6 +53,12 @@ async fn the_skill_names_every_tool_the_mcp_server_offers() -> Result<()> {
     let db = TestDb::new().await?;
     let cat = catalog(&db).await?;
     let skill = generate_skill(&cat, &blog(), "client.ts");
+    // A field with allowed values is a select of the client's list.
+    assert!(
+        skill.contains("## A field with allowed values is a select of them")
+            && skill.contains("`client.ts` exports the list as `<Table>Options`"),
+        "{skill}"
+    );
 
     // The whole surface, both tiers: the nine composite tools the copilot and the
     // MCP server share, and every endpoint carrying an `.mcp()` tag.

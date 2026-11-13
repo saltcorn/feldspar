@@ -10,6 +10,7 @@ import type { Entity } from "./entities";
 import {
   attention,
   backupFailing,
+  buildingPhase,
   entityCounts,
   gettingStarted,
   stillStarting,
@@ -54,7 +55,7 @@ describe("backupFailing", () => {
 });
 
 describe("attention", () => {
-  const none = { triggers: [], schedules: [], checklists: [], system: null };
+  const none = { triggers: [], schedules: [], checklists: [], system: null, constructions: [] };
 
   it("lists an enabled trigger with a problem, linking to its form", () => {
     const items = attention({
@@ -86,8 +87,32 @@ describe("attention", () => {
     expect(items[1].href).toBe("#/settings/system");
   });
 
+  it("links a failed construction to its Plan & build screen, named by its application", () => {
+    const construction = (id: string, application: string, status: string) => ({
+      id,
+      application,
+      status,
+      phases: 3,
+      phases_done: 1,
+    });
+    const items = attention({
+      ...none,
+      constructions: [construction("k1", "a1", "failed"), construction("k2", "a2", "running")],
+      applications: [{ id: "a1", name: "Gym log" }] as never,
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      key: "construction:k1",
+      tone: "red",
+      title: "Plan & build of Gym log failed",
+      href: "#/applications/a1/construct",
+    });
+  });
+
   it("reports nothing for lists that did not load", () => {
-    expect(attention({ triggers: null, schedules: null, checklists: null, system: null })).toEqual([]);
+    expect(
+      attention({ triggers: null, schedules: null, checklists: null, system: null, constructions: null }),
+    ).toEqual([]);
   });
 });
 
@@ -133,13 +158,12 @@ describe("gettingStarted", () => {
 
 describe("uncheckedChecks", () => {
   it("names each check whose list did not load, so silence is not read as all clear", () => {
-    expect(uncheckedChecks({ triggers: null, schedules: [], checklists: [], system: null })).toEqual([
-      "triggers",
-      "disk",
-    ]);
-    expect(uncheckedChecks({ triggers: [], schedules: [], checklists: [], system: {} as never })).toEqual(
-      [],
-    );
+    expect(
+      uncheckedChecks({ triggers: null, schedules: [], checklists: [], system: null, constructions: null }),
+    ).toEqual(["triggers", "constructions", "disk"]);
+    expect(
+      uncheckedChecks({ triggers: [], schedules: [], checklists: [], system: {} as never, constructions: [] }),
+    ).toEqual([]);
   });
 
   it("says which checks did not run, and nothing when all ran", () => {
@@ -147,5 +171,27 @@ describe("uncheckedChecks", () => {
       "Could not check triggers, scheduled backups: the server did not answer. Reload to try again.",
     );
     expect(uncheckedMessage([])).toBeNull();
+  });
+});
+
+describe("buildingPhase", () => {
+  const construction = (status: string, phases: number, phases_done: number) => ({
+    id: "k",
+    application: "a",
+    status,
+    phases,
+    phases_done,
+  });
+
+  it("is the phase being built while the construction runs", () => {
+    expect(buildingPhase(construction("running", 4, 1))).toEqual({ phase: 2, phases: 4 });
+    // Every phase done but the run not closed yet: never past the last.
+    expect(buildingPhase(construction("running", 4, 4))).toEqual({ phase: 4, phases: 4 });
+  });
+
+  it("is nothing for a construction that is not running, has no phases, or is missing", () => {
+    expect(buildingPhase(construction("failed", 4, 1))).toBeNull();
+    expect(buildingPhase(construction("running", 0, 0))).toBeNull();
+    expect(buildingPhase(undefined)).toBeNull();
   });
 });
