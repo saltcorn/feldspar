@@ -517,7 +517,7 @@ function Shell({
             className={`navbar-brand d-flex align-items-center ${
               folded
                 ? "flex-lg-column gap-2"
-                : "justify-content-between flex-lg-fill"
+                : "justify-content-between"
             }`}
           >
             <a

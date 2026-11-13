@@ -2,6 +2,15 @@
 
 Changes in reverse chronological order.
 
+## Admin sidebar: no growing gap above the logo on a tall screen
+
+On a tall viewport the admin sidebar's logo and wordmark drifted down, with a gap above them
+that grew with the window height. The brand row had `flex-lg-fill` (`flex: 1 1 auto`), meant to
+stretch it sideways, but the vertical sidebar's container is a column, so it grew downwards
+instead, sharing the spare height with the menu and centring the logo in that space. The class
+is gone (Tabler's `align-items: stretch` already makes the row full width), and the gap is now a
+fixed 16px at any height: measured in Chromium at 1400×800 and 1400×1600.
+
 ## Naming oneself with `asUser(id)` in an application that lowers one's role (AU1.1, AU1.2)
 
 Bug report: a global administrator (stored role 1) in an application with `max_role: 30` could
