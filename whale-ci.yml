@@ -34,7 +34,7 @@ clippy:
   # tree rather than reading the build step's artifacts. `--all-targets` so the
   # tests are linted too, and `-D warnings` because the workspace is clean and
   # the way it stays clean is by failing here.
-  command: cargo clippy --workspace --all-targets -- -D warnings
+  command: cargo clippy --locked --workspace --all-targets -- -D warnings
   timeout-minutes: 45
 
 i18n:

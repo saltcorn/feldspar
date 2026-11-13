@@ -242,7 +242,7 @@ impl Env {
 async fn call_api_answers_as_the_user_it_names() -> Result<()> {
     let env = setup("as").await?;
     let alice = RunCaller::user(env.alice.clone());
-    let admin = RunCaller::user(env.admin.clone());
+    let admin = console(env.admin.clone());
     let sessions_before = env.sessions().await;
 
     // As the person chatting, by default: Alice's own row and nobody else's.
@@ -321,7 +321,7 @@ async fn call_api_answers_as_the_user_it_names() -> Result<()> {
 #[tokio::test]
 async fn call_api_writes_in_act_and_only_looks_in_plan() -> Result<()> {
     let env = setup("write").await?;
-    let admin = RunCaller::user(env.admin.clone());
+    let admin = console(env.admin.clone());
     let post = json!({
         "method": "POST",
         "path": "/api/notes",
@@ -523,4 +523,12 @@ async fn call_api_is_offered_wherever_there_is_an_application() -> Result<()> {
         .to_string();
     assert!(refused.contains("only looks"), "{refused}");
     Ok(())
+}
+
+/// An administrator's chat at the console, with the session's proof
+/// (TODO-type-hardening H3.3): what the console's chat socket makes.
+fn console(admin: sc_auth::User) -> RunCaller {
+    let proof =
+        sc_catalog::ConsoleAdmin::at_console(Some(admin.fields_json()), "test: an admin session");
+    RunCaller::console(admin, proof)
 }

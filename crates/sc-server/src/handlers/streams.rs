@@ -21,7 +21,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // triggers that name the stream, because `sc-stream` sits below `sc-action`
     // and cannot ask.
 
-    reg.register_admin("listStreamProviders", {
+    reg.handle(sc_api::handler_ids::LIST_STREAM_PROVIDERS, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -110,7 +110,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listStreams", {
+    reg.handle(sc_api::handler_ids::LIST_STREAMS, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |_ctx| {
@@ -132,7 +132,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("getStream", {
+    reg.handle(sc_api::handler_ids::GET_STREAM, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -147,11 +147,14 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("saveStream", typed(state, save_stream));
+    reg.handle(sc_api::handler_ids::SAVE_STREAM, typed(state, save_stream));
 
-    reg.register_admin("deleteStream", typed(state, delete_stream));
+    reg.handle(
+        sc_api::handler_ids::DELETE_STREAM,
+        typed(state, delete_stream),
+    );
 
-    reg.register_admin("streamStatus", {
+    reg.handle(sc_api::handler_ids::STREAM_STATUS, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {

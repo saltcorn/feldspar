@@ -6,6 +6,10 @@
 //! layers, their names, keys and features, each feature's id and the length
 //! of its geometry commands — so the test checks what MapLibre will be given
 //! rather than that bytes came back.
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 
 use std::sync::Arc;
 
@@ -164,9 +168,14 @@ fn at() -> GeometrySource {
 
 /// The GeoJSON a small layer answers, or a panic saying what came instead.
 async fn geojson(cat: &Catalog, req: &LayerRequest) -> (u64, Option<[f64; 4]>, Vec<String>, Json) {
-    match layer_data(cat, &sc_dataset::Caller::admin(), req, Limits::default())
-        .await
-        .expect("reads")
+    match layer_data(
+        cat,
+        &sc_dataset::Caller::system("test"),
+        req,
+        Limits::default(),
+    )
+    .await
+    .expect("reads")
     {
         LayerData::Geojson {
             count,
@@ -282,7 +291,7 @@ async fn a_large_layer_is_tiles_simplified_by_zoom() -> Result<()> {
     };
     match layer_data(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &request(sites_id, at()),
         small,
     )
@@ -318,7 +327,13 @@ async fn a_large_layer_is_tiles_simplified_by_zoom() -> Result<()> {
         },
     );
     assert!(matches!(
-        layer_data(&cat, &sc_dataset::Caller::admin(), &regions, few_vertices).await?,
+        layer_data(
+            &cat,
+            &sc_dataset::Caller::system("test"),
+            &regions,
+            few_vertices
+        )
+        .await?,
         LayerData::Tiles { vertices: 802, .. }
     ));
 
@@ -327,7 +342,7 @@ async fn a_large_layer_is_tiles_simplified_by_zoom() -> Result<()> {
     let tile = Tile::read(
         &layer_tile(
             &cat,
-            &sc_dataset::Caller::admin(),
+            &sc_dataset::Caller::system("test"),
             &request(sites_id, at()),
             0,
             0,
@@ -357,7 +372,7 @@ async fn a_large_layer_is_tiles_simplified_by_zoom() -> Result<()> {
     let near = Tile::read(
         &layer_tile(
             &cat,
-            &sc_dataset::Caller::admin(),
+            &sc_dataset::Caller::system("test"),
             &request(sites_id, at()),
             14,
             x,
@@ -369,7 +384,7 @@ async fn a_large_layer_is_tiles_simplified_by_zoom() -> Result<()> {
     let far = Tile::read(
         &layer_tile(
             &cat,
-            &sc_dataset::Caller::admin(),
+            &sc_dataset::Caller::system("test"),
             &request(sites_id, at()),
             14,
             0,
@@ -390,11 +405,21 @@ async fn a_large_layer_is_tiles_simplified_by_zoom() -> Result<()> {
             .unwrap_or(0)
     };
     let (x, y) = tile_of(0.015, 51.505, 12);
-    let close =
-        Tile::read(&layer_tile(&cat, &sc_dataset::Caller::admin(), &regions, 12, x, y).await?);
+    let close = Tile::read(
+        &layer_tile(
+            &cat,
+            &sc_dataset::Caller::system("test"),
+            &regions,
+            12,
+            x,
+            y,
+        )
+        .await?,
+    );
     let (x, y) = tile_of(0.015, 51.505, 5);
-    let wide =
-        Tile::read(&layer_tile(&cat, &sc_dataset::Caller::admin(), &regions, 5, x, y).await?);
+    let wide = Tile::read(
+        &layer_tile(&cat, &sc_dataset::Caller::system("test"), &regions, 5, x, y).await?,
+    );
     assert!(
         commands(&close) > 4 * commands(&wide),
         "zoom 12: {} commands, zoom 5: {}",
@@ -409,7 +434,15 @@ async fn a_layer_says_why_it_cannot_be_drawn() -> Result<()> {
     if let Some((cat, _db, sites_id, _)) = sites().await? {
         let data = |req: LayerRequest| {
             let cat = &cat;
-            async move { layer_data(cat, &sc_dataset::Caller::admin(), &req, Limits::default()).await }
+            async move {
+                layer_data(
+                    cat,
+                    &sc_dataset::Caller::system("test"),
+                    &req,
+                    Limits::default(),
+                )
+                .await
+            }
         };
         let e = refusal(
             data(request(
@@ -463,7 +496,7 @@ async fn a_layer_says_why_it_cannot_be_drawn() -> Result<()> {
         // A tile outside the grid.
         let e = layer_tile(
             &cat,
-            &sc_dataset::Caller::admin(),
+            &sc_dataset::Caller::system("test"),
             &request(sites_id, at()),
             2,
             4,
@@ -474,7 +507,7 @@ async fn a_layer_says_why_it_cannot_be_drawn() -> Result<()> {
         assert!(e.to_string().contains("no tile 4/0 at zoom 2"), "{e}");
         let e = layer_tile(
             &cat,
-            &sc_dataset::Caller::admin(),
+            &sc_dataset::Caller::system("test"),
             &request(sites_id, at()),
             30,
             0,
@@ -494,7 +527,7 @@ async fn a_layer_says_why_it_cannot_be_drawn() -> Result<()> {
         let e = refusal(
             layer_data(
                 &cat,
-                &sc_dataset::Caller::admin(),
+                &sc_dataset::Caller::system("test"),
                 &request(DatasetId::new(), at()),
                 Limits::default(),
             )

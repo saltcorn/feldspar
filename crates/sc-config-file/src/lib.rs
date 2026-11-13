@@ -46,6 +46,7 @@
 //! extra_base_domains = []          # …and also at <subdomain>.<each of these>
 //! bind = "0.0.0.0:80"
 //! https_port = 8443                # only when TLS is not on 443
+//! max_upload_bytes = "50G"         # --max-upload-bytes; default 256M
 //! secure_cookies = true
 //! ssl_mode = "letsencrypt"         # pins the TLS settings; the admin UI shows
 //! acme_contact_email = "ops@example.com" # them read-only
@@ -282,6 +283,12 @@ pub struct Environment {
     /// `--stan-summary-max-elements`: the largest generated quantity
     /// summarised when a fit finishes.
     pub stan_summary_max_elements: Option<u64>,
+    /// `--max-upload-bytes`: the largest file one upload may be — the cap on
+    /// every application upload slot, the file manager's and the backup
+    /// upload's. A number of bytes, or text with a `K`, `M` or `G` suffix as
+    /// the flag takes (`"50G"`). A property of this host, like the Stan
+    /// ceilings: how much disk and time it gives one upload.
+    pub max_upload_bytes: Option<ByteSize>,
     /// The database the integration-test harness clones each of its per-test
     /// databases from. Only the test environment has any use for it.
     ///
@@ -307,6 +314,28 @@ pub struct Environment {
     /// remove it — the reason an operator puts a key here rather than handing
     /// it to the admin of the instance.
     pub llm_provider: Option<LlmProviderSection>,
+}
+
+/// A size in bytes as the file may write it: a number, or text the matching
+/// `serve` flag parses (`"256M"`, `"50G"`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum ByteSize {
+    /// A whole number of bytes.
+    Bytes(u64),
+    /// Text with an optional `K`, `M` or `G` suffix.
+    Text(String),
+}
+
+impl ByteSize {
+    /// The size spelled as the `serve` flag's value, so the flag's parser
+    /// checks it with the flag's own sentence.
+    pub fn as_flag_value(&self) -> String {
+        match self {
+            ByteSize::Bytes(n) => n.to_string(),
+            ByteSize::Text(text) => text.clone(),
+        }
+    }
 }
 
 /// The `llm_provider` table of an environment: one provider, and the models it
@@ -708,6 +737,18 @@ fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
+/// The one `libc` call this crate makes, in a module of its own so that is
+/// the only place `unsafe` is allowed (the workspace denies it).
+#[cfg(unix)]
+#[allow(unsafe_code)]
+mod os {
+    /// The process's effective group id.
+    pub(crate) fn effective_gid() -> libc::gid_t {
+        // SAFETY: `getegid` reads one field of the calling process and cannot fail.
+        unsafe { libc::getegid() }
+    }
+}
+
 /// Warn — once, on stderr — when the file other people can read holds a password.
 ///
 /// Not an error: refusing to start over a file mode would be a bad trade for a
@@ -730,8 +771,7 @@ fn warn_if_world_readable(path: &Path) {
         return;
     };
     let mode = meta.permissions().mode();
-    // SAFETY: `getegid` reads one field of the calling process and cannot fail.
-    let own_group = unsafe { libc::getegid() };
+    let own_group = os::effective_gid();
     if reachable_by_others(mode, meta.gid(), own_group) {
         eprintln!(
             "feldspar: warning: the configuration file {} is readable by other users \
@@ -958,6 +998,26 @@ stan_summary_max_elements = 0
         assert!(parse("[environments.production]\nstan_max_proceses = 2\n").is_err());
         // A count is a number, not a string.
         assert!(parse("[environments.production]\nstan_max_processes = \"2\"\n").is_err());
+    }
+
+    /// The upload ceiling may live in the file, as a number or with a suffix.
+    #[test]
+    fn an_environment_may_carry_the_upload_ceiling() {
+        let file = parse(
+            "[environments.a]\nmax_upload_bytes = \"50G\"\n\
+             [environments.b]\nmax_upload_bytes = 1048576\n",
+        )
+        .expect("parse");
+        let size = |name: &str| {
+            file.environments[name]
+                .max_upload_bytes
+                .as_ref()
+                .map(ByteSize::as_flag_value)
+        };
+        assert_eq!(size("a").as_deref(), Some("50G"));
+        assert_eq!(size("b").as_deref(), Some("1048576"));
+        assert!(Environment::default().max_upload_bytes.is_none());
+        assert!(parse("[environments.a]\nmax_upload_byte = 1\n").is_err());
     }
 
     /// An operator-supplied LLM provider, with models whose settings are left

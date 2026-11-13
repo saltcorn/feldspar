@@ -88,10 +88,14 @@ pub use scope::{
     template_shape, typed_value,
 };
 pub use store::{
-    COL_ACTION, COL_BODY, COL_CHANNEL, COL_CONFIGURATION, COL_EVENT, COL_ONLY_IF, TRIGGERS_TABLE,
-    bootstrap_triggers, delete_trigger, list_triggers, load_trigger, load_trigger_by_name,
-    record_trigger_run, save_trigger, touch_trigger,
+    COL_ACTION, COL_BODY, COL_CHANNEL, COL_CONFIGURATION, COL_EVENT, COL_ONLY_IF,
+    COL_SYSTEM_APPROVED_AT, COL_SYSTEM_APPROVED_BY, COL_SYSTEM_APPROVED_HASH, TRIGGERS_TABLE,
+    approve_system_trigger, bootstrap_triggers, clear_system_approval, delete_trigger,
+    list_triggers, load_trigger, load_trigger_by_name, record_trigger_run, restore_system_approval,
+    save_trigger, touch_trigger,
 };
-pub use trigger::{ATTR_ENABLED, Trigger, TriggerBody, TriggerId};
+pub use trigger::{
+    ATTR_ENABLED, ATTR_RUNS_AS_SYSTEM, SystemApproval, SystemState, Trigger, TriggerBody, TriggerId,
+};
 pub use triggers::{TriggerIssue, Triggers};
 pub use validate::{trigger_shape, validate_trigger};

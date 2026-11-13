@@ -41,6 +41,11 @@
 //! compared ([`super::snapshot`]): every changed path enters the change ledger
 //! with its pre-image, the model's read of it is forgotten (so the next edit
 //! asks for a re-read), and the result lists the paths.
+//!
+//! May use `unsafe` (the workspace denies it) for the `libc` calls a shell
+//! child needs: `getuid`/`getgid`, `pipe2`, `File::from_raw_fd`,
+//! `prctl(PR_SET_PDEATHSIG)` in `pre_exec`, and `killpg`.
+#![allow(unsafe_code)]
 
 use sc_types::ArgsExt;
 use std::path::{Path, PathBuf};
@@ -60,6 +65,7 @@ use super::{CFG_MAY_USE_SHELL, may};
 use crate::files::{FileScope, config_count};
 use crate::table::config_str;
 use sc_api::mcp::arguments;
+use sc_proc::{AdminProof, EnvName, HostCommand, Operand, SystemTask, Timeout};
 
 /// The default timeout of one shell command, in seconds.
 pub const CFG_SHELL_TIMEOUT: &str = "shell_timeout";
@@ -87,15 +93,22 @@ pub const SANDBOX_CONTAINER: &str = "container";
 /// The runtime values.
 pub const RUNTIME_AUTO: &str = "auto";
 
-/// The environment every command gets on top of the server's: nothing waits
-/// for a person at a terminal.
-pub const SHELL_ENV: [(&str, &str); 5] = [
-    ("CI", "1"),
-    ("PAGER", "cat"),
-    ("GIT_PAGER", "cat"),
-    ("GIT_TERMINAL_PROMPT", "0"),
-    ("TERM", "dumb"),
+/// The environment every command gets on top of [`sc_proc::BASE_ENV`]: nothing
+/// waits for a person at a terminal. Not the server's own environment
+/// (security review 2026-11, C3): its database URL and passwords are no
+/// command's business.
+pub const SHELL_ENV: [(EnvName, &str); 5] = [
+    (EnvName::fixed("CI"), "1"),
+    (EnvName::fixed("PAGER"), "cat"),
+    (EnvName::fixed("GIT_PAGER"), "cat"),
+    (EnvName::fixed("GIT_TERMINAL_PROMPT"), "0"),
+    (EnvName::fixed("TERM"), "dumb"),
 ];
+
+/// The server's own housekeeping around the sandbox: asking which container
+/// runtime is installed, whether an image is there, removing a container it
+/// started. Every argument is the program's own or a name it generated.
+pub(crate) const SANDBOX_UPKEEP: SystemTask = SystemTask::new("container sandbox upkeep");
 
 /// The bytes of output kept from the start of a command's output.
 pub const OUTPUT_HEAD_BYTES: usize = 8_000;
@@ -178,14 +191,9 @@ impl Runtime {
 
     /// Whether the program runs here.
     fn installed(self) -> bool {
-        std::process::Command::new(self.program())
-            .arg("--version")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        let mut probe = HostCommand::new(self.program(), &SANDBOX_UPKEEP, Timeout::secs(30));
+        probe.arg("--version");
+        probe.output_blocking().is_ok_and(|o| o.status.success())
     }
 
     /// The runtime a setting names, if it is installed: `auto` prefers
@@ -289,15 +297,11 @@ pub async fn validate(catalog: &Catalog, scope: &FileScope, config: &Attrs) -> R
     }
     scope_dir(scope, catalog).await?;
     if let Sandbox::Container { runtime, image, .. } = sandbox(config)? {
-        let found = tokio::process::Command::new(runtime.program())
-            .args(["image", "inspect", &image])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false);
+        let mut inspect = HostCommand::new(runtime.program(), &SANDBOX_UPKEEP, Timeout::secs(30));
+        inspect
+            .args(["image", "inspect"])
+            .positional(Operand::new(image.as_str())?);
+        let found = inspect.output().await.is_ok_and(|o| o.status.success());
         if !found {
             return Err(Error::invalid(format!(
                 "`{}` has no image `{image}`; pull it on the server first (`{} pull {image}`)",
@@ -386,12 +390,13 @@ pub fn backgrounds(command: &str) -> bool {
     })
 }
 
-/// Run one command.
+/// Run one command, on the administrator's authority `who` (`permit_shell`).
 pub async fn call(
     scope: &FileScope,
     config: &Attrs,
     args: &Json,
     ctx: &mut TraitContext<'_>,
+    who: &AdminProof,
 ) -> Result<Json> {
     let args = arguments(args, &[ARG_COMMAND, ARG_TIMEOUT])?;
     let command = args.string_arg(ARG_COMMAND)?;
@@ -412,7 +417,7 @@ pub async fn call(
     let sandbox = sandbox(config)?;
 
     let before = Snapshot::take_async(dir.clone(), true).await;
-    let ran = run_command(&sandbox, &dir, &command, timeout).await?;
+    let ran = run_command(who, &sandbox, &dir, &command, timeout).await?;
     let after = Snapshot::take_async(dir.clone(), false).await;
 
     let mut state = CodingState::load(ctx.state());
@@ -487,8 +492,10 @@ pub struct Ran {
     pub elapsed: Duration,
 }
 
-/// Run `command` under `sandbox` in `dir`, bounded by `timeout` seconds.
+/// Run `command` under `sandbox` in `dir`, bounded by `timeout` seconds, on
+/// `who`'s authority.
 pub async fn run_command(
+    who: &AdminProof,
     sandbox: &Sandbox,
     dir: &Path,
     command: &str,
@@ -496,50 +503,47 @@ pub async fn run_command(
 ) -> Result<Ran> {
     let started = Instant::now();
     let container = format!("feldspar-sh-{}", uuid::Uuid::new_v4().simple());
-    let (program, args) = match sandbox {
-        Sandbox::None => ("bash".to_owned(), vec!["-c".to_owned(), command.to_owned()]),
+    let limit = Timeout::secs(timeout);
+    let cmd = match sandbox {
+        Sandbox::None => {
+            let mut bash = HostCommand::new("bash", who, limit);
+            bash.flag_value("-c", command);
+            bash
+        }
         Sandbox::Container {
             runtime,
             image,
             network,
         } => {
-            let mut args = container_run_args(*runtime, dir, &container, *network);
-            args.extend([
-                image.clone(),
-                "bash".to_owned(),
-                "-c".to_owned(),
-                command.to_owned(),
-            ]);
-            (runtime.program().to_owned(), args)
+            let mut run = HostCommand::new(runtime.program(), who, limit);
+            container_run(&mut run, *runtime, dir, &container, *network)?;
+            run.positional(Operand::new(image.as_str())?)
+                .arg("bash")
+                .flag_value("-c", command);
+            run
         }
     };
-    let mut child = Spawned::spawn(
-        &program,
-        &args,
-        dir,
-        Capture::new(OUTPUT_HEAD_BYTES, OUTPUT_TAIL_BYTES),
-    )?;
+    let program = cmd.command_line();
+    let program = program.split(' ').next().unwrap_or_default().to_owned();
+    let mut child = Spawned::spawn(cmd, dir, Capture::new(OUTPUT_HEAD_BYTES, OUTPUT_TAIL_BYTES))?;
     // A call dropped mid-command — the run aborted, or its drive stopped —
-    // takes the command's group with it, as a timeout does.
-    let mut dropped = KillOnDrop(child.pgid);
-    let status = tokio::time::timeout(Duration::from_secs(timeout), child.child.wait()).await;
+    // takes the command's group with it (the child's drop), as a timeout does.
+    let status = child.child.wait_bounded().await;
     // Whatever the command left in its group goes with it.
     child.kill_group();
-    dropped.0 = None;
     let exit = match status {
-        Err(_) => {
+        Ok(None) => {
             if let Sandbox::Container { runtime, .. } = sandbox {
                 remove_container(*runtime, &container).await;
             }
-            let _ = child.child.wait().await;
             Exit::TimedOut
         }
-        Ok(Err(e)) => {
+        Err(e) => {
             return Err(Error::config(format!(
                 "could not wait for `{program}`: {e}"
             )));
         }
-        Ok(Ok(status)) => status.code().map_or(Exit::Signal, Exit::Code),
+        Ok(Some(status)) => status.code().map_or(Exit::Signal, Exit::Code),
     };
     let output = child.finish(DRAIN_GRACE).await;
     Ok(Ran {
@@ -549,58 +553,65 @@ pub async fn run_command(
     })
 }
 
-/// Kills a process group when dropped, unless disarmed by clearing it.
-struct KillOnDrop(Option<i32>);
-
-impl Drop for KillOnDrop {
-    fn drop(&mut self) {
-        if let Some(pgid) = self.0 {
-            kill_group(pgid);
-        }
+/// `run` and its options for a container over `dir`, up to (not including)
+/// the image, onto `command`.
+///
+/// The scope is bind-mounted with `--mount`, whose value is `key=value` pairs,
+/// rather than `-v src:dst`: a directory whose name holds a `:` would change
+/// what a `-v` mounts. One holding a `,` (or `=`), which would do the same to
+/// `--mount`, is refused (security review 2026-11, C5).
+pub fn container_run(
+    command: &mut HostCommand,
+    runtime: Runtime,
+    dir: &Path,
+    name: &str,
+    network: bool,
+) -> Result<()> {
+    let dir = dir.to_str().ok_or_else(|| {
+        Error::config(format!(
+            "{} is not valid UTF-8, so it cannot be mounted into a container",
+            dir.display()
+        ))
+    })?;
+    if dir.contains([',', '=']) {
+        return Err(Error::config(format!(
+            "{dir} contains a `,` or `=`, so it cannot be mounted into a container safely"
+        )));
     }
-}
-
-/// `run` arguments for a container over `dir`, up to (not including) the image.
-pub fn container_run_args(runtime: Runtime, dir: &Path, name: &str, network: bool) -> Vec<String> {
-    let dir = dir.to_string_lossy().into_owned();
-    let mut args: Vec<String> = ["run", "--rm", "--pull=never", "--name", name]
-        .map(str::to_owned)
-        .to_vec();
+    command
+        .args(["run", "--rm", "--pull=never"])
+        .flag_value("--name", Operand::new(name)?.as_os_str());
     if !network {
-        args.push("--network=none".to_owned());
+        command.arg("--network=none");
     }
     // Files the command writes belong to the server's user, as the host's do.
     match runtime {
         Runtime::Docker => {
             let (uid, gid) = ids();
-            args.push(format!("--user={uid}:{gid}"));
+            command.flag_eq("--user", format!("{uid}:{gid}"));
         }
-        Runtime::Podman => args.push("--userns=keep-id".to_owned()),
+        Runtime::Podman => {
+            command.arg("--userns=keep-id");
+        }
     }
-    args.extend([
-        "-v".to_owned(),
-        format!("{dir}:{dir}"),
-        "-w".to_owned(),
-        dir,
-        "-e".to_owned(),
-        "HOME=/tmp".to_owned(),
-    ]);
+    command
+        .flag_value("--mount", format!("type=bind,src={dir},dst={dir}"))
+        .flag_value("-w", dir)
+        .flag_value("-e", "HOME=/tmp");
     for (key, value) in SHELL_ENV {
-        args.push("-e".to_owned());
-        args.push(format!("{key}={value}"));
+        command.flag_value("-e", format!("{key}={value}"));
     }
-    args
+    Ok(())
 }
 
 /// Remove a container, whatever it is doing. Best effort.
 pub async fn remove_container(runtime: Runtime, name: &str) {
-    let removed = tokio::process::Command::new(runtime.program())
-        .args(["rm", "-f", name])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    let _ = tokio::time::timeout(Duration::from_secs(30), removed).await;
+    let mut rm = HostCommand::new(runtime.program(), &SANDBOX_UPKEEP, Timeout::secs(30));
+    rm.args(["rm", "-f"]);
+    if let Ok(name) = Operand::new(name) {
+        rm.positional(name);
+        let _ = rm.output().await;
+    }
 }
 
 /// The server's user and group ids.
@@ -669,8 +680,8 @@ impl Capture {
 /// A child process in its own process group, its stdout and stderr read into
 /// one [`Capture`] by a thread of its own.
 pub struct Spawned {
-    /// The process.
-    pub child: tokio::process::Child,
+    /// The process; dropping it kills its process group.
+    pub child: sc_proc::Child,
     /// Its process group, which is its pid.
     pub pgid: Option<i32>,
     /// Its output so far.
@@ -680,10 +691,11 @@ pub struct Spawned {
 }
 
 impl Spawned {
-    /// Start `program args…` in `dir`, with [`SHELL_ENV`], stdin closed, in a
-    /// new process group, killed if the server dies.
+    /// Start `command` in `dir`, with [`SHELL_ENV`] on top of
+    /// [`sc_proc::BASE_ENV`], stdin closed, in a new process group, killed if
+    /// the server dies.
     #[cfg(unix)]
-    pub fn spawn(program: &str, args: &[String], dir: &Path, capture: Capture) -> Result<Spawned> {
+    pub fn spawn(mut command: HostCommand, dir: &Path, capture: Capture) -> Result<Spawned> {
         use std::io::Read;
         use std::os::fd::FromRawFd;
 
@@ -719,40 +731,25 @@ impl Spawned {
             }
         };
         let child = {
-            let mut command = tokio::process::Command::new(program);
+            for (name, value) in SHELL_ENV {
+                command.env(name, value);
+            }
             command
-                .args(args)
-                .current_dir(dir)
-                .envs(SHELL_ENV)
-                .stdin(std::process::Stdio::null())
+                .cwd(dir)
                 .stdout(
                     writer
                         .try_clone()
                         .map_err(|e| Error::config(format!("could not duplicate a pipe: {e}")))?,
                 )
-                .stderr(writer)
-                .process_group(0)
-                .kill_on_drop(true);
-            #[cfg(target_os = "linux")]
-            // SAFETY: `prctl` is async-signal-safe, which is all a `pre_exec`
-            // closure may call.
-            unsafe {
-                command.pre_exec(|| {
-                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-                    Ok(())
-                });
-            }
+                .stderr(writer);
             // The command, and with it this process's copies of the pipe's
-            // write end, is dropped here: the reader sees end of file once the
-            // child's copies are gone.
-            command.spawn().map_err(|e| {
-                Error::config(format!(
-                    "could not run `{program}` in {}: {e}",
-                    dir.display()
-                ))
-            })?
+            // write end, is consumed here: the reader sees end of file once
+            // the child's copies are gone.
+            command
+                .spawn()
+                .map_err(|e| Error::config(format!("{e} (in {})", dir.display())))?
         };
-        let pgid = child.id().map(|id| id as i32);
+        let pgid = child.pgid();
         let output = Arc::new(Mutex::new(capture));
         let (done, drained) = tokio::sync::oneshot::channel();
         let sink = Arc::clone(&output);
@@ -775,9 +772,10 @@ impl Spawned {
     }
 
     #[cfg(not(unix))]
-    pub fn spawn(program: &str, _: &[String], _: &Path, _: Capture) -> Result<Spawned> {
+    pub fn spawn(command: HostCommand, _: &Path, _: Capture) -> Result<Spawned> {
         Err(Error::config(format!(
-            "`{program}` cannot be run: the coding shell needs a Unix server"
+            "`{}` cannot be run: the coding shell needs a Unix server",
+            command.command_line()
         )))
     }
 
@@ -872,14 +870,26 @@ mod tests {
         assert!(requested_timeout(&args(json!({"timeout": 0})), 120, 600).is_err());
     }
 
+    fn run_line(runtime: Runtime, dir: &str, network: bool) -> Result<String> {
+        let mut cmd = HostCommand::new(runtime.program(), &SANDBOX_UPKEEP, Timeout::secs(1));
+        container_run(&mut cmd, runtime, Path::new(dir), "c1", network)?;
+        Ok(cmd.command_line())
+    }
+
     #[test]
     fn a_container_mounts_only_the_scope_and_has_no_network_by_default() {
-        let args = container_run_args(Runtime::Docker, Path::new("/srv/app"), "c1", false);
-        assert!(args.contains(&"--network=none".to_owned()), "{args:?}");
-        assert!(args.contains(&"/srv/app:/srv/app".to_owned()), "{args:?}");
-        assert_eq!(args.iter().filter(|a| *a == "-v").count(), 1);
-        let open = container_run_args(Runtime::Podman, Path::new("/srv/app"), "c1", true);
-        assert!(!open.iter().any(|a| a.starts_with("--network")), "{open:?}");
-        assert!(open.contains(&"--userns=keep-id".to_owned()), "{open:?}");
+        let line = run_line(Runtime::Docker, "/srv/app", false).unwrap();
+        assert!(line.contains(" --network=none"), "{line}");
+        assert!(
+            line.contains(" --mount type=bind,src=/srv/app,dst=/srv/app"),
+            "{line}"
+        );
+        assert_eq!(line.matches(" --mount ").count(), 1, "{line}");
+        assert!(!line.contains(" -v "), "{line}");
+        let open = run_line(Runtime::Podman, "/srv/app", true).unwrap();
+        assert!(!open.contains("--network"), "{open}");
+        assert!(open.contains(" --userns=keep-id"), "{open}");
+        // A path that would change what is mounted is refused.
+        assert!(run_line(Runtime::Docker, "/srv/a,dst=/etc", false).is_err());
     }
 }

@@ -1512,7 +1512,11 @@ fn evaluate(
                 .ok_or_else(|| internal("an index without its dimension's size"))?;
             let mut size = vec![0i64; groups];
             for p in positions {
-                size[(*p - 1) as usize] += 1;
+                let at = usize::try_from(*p - 1)
+                    .ok()
+                    .filter(|at| *at < groups)
+                    .ok_or_else(|| internal("an index position outside its dimension"))?;
+                size[at] += 1;
             }
             if matches!(binding, Binding::SegmentSize { .. }) {
                 plain(Tensor::ints(size))
@@ -1985,6 +1989,10 @@ fn element_index(shape: &[usize], mut i: usize) -> String {
     )
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+)]
 fn number_text(x: f64) -> String {
     if x.fract() == 0.0 && x.abs() < 1e15 {
         format!("{}", x as i64)

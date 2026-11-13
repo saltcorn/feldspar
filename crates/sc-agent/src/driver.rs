@@ -877,10 +877,10 @@ impl<'a> Runner<'a> {
         let Some(meter) = self.meter else {
             return Ok(None);
         };
-        if self.caller.role.is_admin() {
+        if self.caller.role().is_admin() {
             return Ok(None);
         }
-        match &self.caller.user {
+        match &self.caller.user_ref() {
             Some(user) => Ok(Some((user, meter))),
             None => Err(Error::auth(format!(
                 "agent `{}` charges LLM credits for its answers, so it needs a signed-in \
@@ -1944,7 +1944,7 @@ pub fn stable_prefix(
 /// The caller the events a credit debit raises report: the run's user, at the
 /// run's role.
 fn principal_of(caller: &RunCaller) -> sc_catalog::Principal {
-    let user = caller.user.as_ref().map(|u| {
+    let user = caller.user_ref().map(|u| {
         let mut fields: serde_json::Map<String, Json> = u
             .extra()
             .iter()
@@ -1954,7 +1954,7 @@ fn principal_of(caller: &RunCaller) -> sc_catalog::Principal {
         fields.insert("role".to_owned(), Json::from(u.role()));
         Json::Object(fields)
     });
-    sc_catalog::Principal::new(caller.role, user).in_current_origin()
+    sc_catalog::Principal::recorded(caller.role(), user).in_current_origin()
 }
 
 fn conclusion_label(conclusion: &Conclusion) -> String {

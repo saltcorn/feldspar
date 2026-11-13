@@ -25,9 +25,13 @@ name = "feldspar"
 path = "src/main.rs"
 
 [dependencies]
+# Every child process, started the one way (H4).
+sc-proc.workspace = true
 sc-error.workspace = true
 sc-log.workspace = true
 sc-server.workspace = true
+# `feldspar registry`: the registry editor's export, planner and executor.
+sc-sync.workspace = true
 # `feldspar backup` and `feldspar restore`: the archive, written and read.
 sc-backup.workspace = true
 # `CodeAdapter`: the Python adapter `serve` hands the trigger set. (Also a stub
@@ -53,6 +57,7 @@ sc-agent.workspace = true
 # The trigger dispatcher `serve` starts its schedulers with, named in the
 # service set `serve` and `restore` share.
 sc-action.workspace = true
+sc-workflow.workspace = true
 # The Analytics UI's tables and the demo data (analytics TODO A1).
 sc-dataset.workspace = true
 sc-analytics.workspace = true
@@ -81,6 +86,8 @@ sc-db-sqlite.workspace = true
 sc-migrate.workspace = true
 tokio.workspace = true
 # `build-agent` talks to its server over HTTPS (`TODO-build-hosts.md`).
+# Where its HTTP clients start (`sc_net::client_builder`: a connect timeout).
+sc-net.workspace = true
 reqwest.workspace = true
 tokio-postgres.workspace = true
 serde_json.workspace = true

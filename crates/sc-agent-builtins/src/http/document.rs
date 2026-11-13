@@ -38,6 +38,16 @@ pub const MAX_LINE_CHARS: usize = 1_000;
 /// is elsewhere on the page (or is drawn by a script), and the body is used.
 const THIN_MAIN_CHARS: usize = 200;
 
+/// How deep the page's elements may nest before what is below is kept as
+/// text (TODO-type-hardening H5.3).
+///
+/// Every walk over the tree — the converter's, and the ones here — recurses
+/// once a level, and the page is whatever a server sent: a hundred thousand
+/// nested `<span>`s parse fine and overflow the stack of the walk after them,
+/// which takes the whole server down. Blink stops nesting at 512 when it
+/// parses; a real page's content is a few dozen deep.
+const MAX_HTML_DEPTH: usize = 256;
+
 /// Elements whose content is never what a reader came for.
 const SKIP_TAGS: [&str; 16] = [
     "head", "script", "style", "noscript", "template", "svg", "canvas", "iframe", "object",
@@ -244,6 +254,7 @@ fn html_to_markdown(html: &str, base: &Url) -> Converted {
             markdown: html.to_owned(),
         };
     };
+    flatten_below(&dom, MAX_HTML_DEPTH);
     let title = find(&dom, &|n| is_element(n, "title"))
         .map(|n| collapse_whitespace(&text_of(&n)))
         .filter(|t| !t.is_empty());
@@ -256,6 +267,50 @@ fn html_to_markdown(html: &str, base: &Url) -> Converted {
         .filter(|md| md.trim().chars().count() >= THIN_MAIN_CHARS)
         .unwrap_or_else(|| converter.tree_to_markdown(&dom));
     Converted { title, markdown }
+}
+
+/// Replace each element `max` levels down by its text: its descendants go,
+/// and their text stays, as one text node. Iterative, with an explicit stack,
+/// because the tree it is for is too deep to recurse over (and the tree's own
+/// `Drop` is iterative too).
+fn flatten_below(root: &Rc<Node>, max: usize) {
+    let mut stack = vec![(Rc::clone(root), 1_usize)];
+    while let Some((node, depth)) = stack.pop() {
+        if depth < max {
+            for child in node.children.borrow().iter() {
+                stack.push((Rc::clone(child), depth + 1));
+            }
+            continue;
+        }
+        if node.children.borrow().is_empty() {
+            continue;
+        }
+        let below = std::mem::take(&mut *node.children.borrow_mut());
+        // The text below, in document order, and the first text node to hold
+        // it — reused, because a text node cannot be made here without naming
+        // the tendril type.
+        let mut text = String::new();
+        let mut holder: Option<Rc<Node>> = None;
+        let mut pending: Vec<Rc<Node>> = below.iter().rev().cloned().collect();
+        while let Some(next) = pending.pop() {
+            if let NodeData::Text { contents } = &next.data {
+                text.push_str(&contents.borrow());
+                holder.get_or_insert_with(|| Rc::clone(&next));
+            }
+            pending.extend(next.children.borrow().iter().rev().cloned());
+        }
+        drop(below);
+        if let Some(holder) = holder {
+            if let NodeData::Text { contents } = &holder.data {
+                let mut contents = contents.borrow_mut();
+                contents.clear();
+                contents.push_slice(&text);
+            }
+            holder.children.borrow_mut().clear();
+            holder.parent.set(Some(Rc::downgrade(&node)));
+            node.children.borrow_mut().push(holder);
+        }
+    }
 }
 
 /// Rewrite the tree before it is converted: links and image sources made
@@ -412,6 +467,23 @@ mod tests {
             assert!(!text.contains(gone), "`{gone}` survived: {text}");
         }
         assert!(!doc.scripted);
+    }
+
+    #[test]
+    fn a_page_nested_past_the_limit_keeps_its_text_and_does_not_overflow() {
+        let depth = 30_000;
+        let page = format!(
+            "<html><head><title>Deep</title></head><body><main><p>Top of the page, \
+             long enough to be the main content of it and not a shell around it.</p>{}\
+             the bottom{}</main></body></html>",
+            "<span>".repeat(depth),
+            "</span>".repeat(depth)
+        );
+        let doc = Document::from_response(response("text/html", &page), false);
+        let text = doc.lines.join("\n");
+        assert_eq!(doc.title.as_deref(), Some("Deep"));
+        assert!(text.contains("Top of the page"), "{text}");
+        assert!(text.contains("the bottom"), "{text}");
     }
 
     #[test]

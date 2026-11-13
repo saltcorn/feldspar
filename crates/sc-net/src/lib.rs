@@ -23,6 +23,12 @@
 //!   hands a resolver — is checked on the request and on every redirect it
 //!   follows.
 //!
+//! - [`client_builder`] is where every other HTTP client starts — one for a
+//!   host an administrator configured (an LLM endpoint, an S3 bucket, an OAuth
+//!   provider) — with a connect timeout set, so a host that does not answer
+//!   fails the request instead of holding it. `reqwest::Client::new` and
+//!   `builder` are disallowed elsewhere (`clippy.toml`).
+//!
 //! What may be reached *besides* the public internet — an agent's allow-list,
 //! an MCP server or agent whose definition opens the private network — is the
 //! caller's policy and stays with the caller; this crate only answers "public
@@ -31,6 +37,7 @@
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 
 use reqwest::Url;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
@@ -274,6 +281,105 @@ pub enum Redirects {
     Follow(usize),
 }
 
+/// How long [`client_builder`]'s clients wait for a connection to open.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A `reqwest` client builder with [`CONNECT_TIMEOUT`] set: the start of every
+/// HTTP client in the workspace. Build it directly for a host an administrator
+/// configured, or hand it to [`PublicClient::new`] for one that came from data.
+/// A caller that needs another connect timeout, or a total one, sets it on the
+/// builder.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the replacement clippy.toml names for reqwest::Client::builder"
+)]
+pub fn client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT)
+}
+
+/// How much of a response body a caller will hold (security review 2026-11
+/// F-8, TODO-type-hardening H5.1): the argument of [`read_body`], so a body is
+/// never read without one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ByteLimit(usize);
+
+impl ByteLimit {
+    /// At most `n` bytes.
+    pub const fn bytes(n: usize) -> ByteLimit {
+        ByteLimit(n)
+    }
+
+    /// At most `n` MiB.
+    pub const fn mib(n: usize) -> ByteLimit {
+        ByteLimit(n.saturating_mul(1024 * 1024))
+    }
+
+    /// The limit, in bytes.
+    pub const fn get(self) -> usize {
+        self.0
+    }
+}
+
+impl fmt::Display for ByteLimit {
+    /// Whole MiB when it is one, bytes otherwise: what an error says.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        const MIB: usize = 1024 * 1024;
+        if self.0 >= MIB && self.0 % MIB == 0 {
+            write!(f, "{} MiB", self.0 / MIB)
+        } else {
+            write!(f, "{} bytes", self.0)
+        }
+    }
+}
+
+/// Why [`read_body`] has no body to give.
+#[derive(Debug)]
+pub enum BodyError {
+    /// The connection failed (or timed out) while the body was read.
+    Transport(reqwest::Error),
+    /// The body is longer than the limit: by its `Content-Length`, or by what
+    /// arrived. Nothing past the limit was read.
+    TooLarge(ByteLimit),
+}
+
+impl fmt::Display for BodyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BodyError::Transport(e) => write!(f, "{e}"),
+            BodyError::TooLarge(limit) => write!(f, "the response is larger than {limit}"),
+        }
+    }
+}
+
+impl std::error::Error for BodyError {}
+
+/// Read a response's body, refusing one longer than `limit` — refused rather
+/// than truncated, so the caller never acts on half an answer as if it were
+/// the whole of one.
+///
+/// Chunk by chunk rather than `bytes()`: an endpoint that answers with a
+/// gigabyte is dropped while it is answering, not after the server has held
+/// it. A `Content-Length` over the limit is refused before anything is read.
+pub async fn read_body(
+    mut response: reqwest::Response,
+    limit: ByteLimit,
+) -> std::result::Result<Vec<u8>, BodyError> {
+    let declared = response
+        .content_length()
+        .map(|n| usize::try_from(n).unwrap_or(usize::MAX));
+    if declared.is_some_and(|n| n > limit.get()) {
+        return Err(BodyError::TooLarge(limit));
+    }
+    let mut body: Vec<u8> = Vec::with_capacity(declared.unwrap_or(0));
+    while let Some(chunk) = response.chunk().await.map_err(BodyError::Transport)? {
+        if body.len().saturating_add(chunk.len()) > limit.get() {
+            return Err(BodyError::TooLarge(limit));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
 /// An HTTP client that only connects to a [`PublicAddr`]: names through
 /// [`PublicResolver`], literals checked on the request
 /// ([`request`](PublicClient::request)) and on every redirect it follows.
@@ -285,7 +391,9 @@ pub struct PublicClient {
 
 impl PublicClient {
     /// The client `builder` makes, with the public-only resolver and redirect
-    /// rule installed over whatever it set for those two. `why` ends every
+    /// rule installed over whatever it set for those two, and no proxy: a
+    /// proxy (`HTTPS_PROXY`, `ALL_PROXY`, or one the builder set) resolves the
+    /// target name itself, so the resolver would never see it. `why` ends every
     /// refusal (`", which this agent may not reach"`).
     pub fn new(
         builder: reqwest::ClientBuilder,
@@ -311,6 +419,7 @@ impl PublicClient {
             }
         };
         let client = builder
+            .no_proxy()
             .dns_resolver(Arc::new(PublicResolver::new(Arc::clone(&why))))
             .redirect(policy)
             .build()
@@ -420,7 +529,7 @@ mod tests {
     #[tokio::test]
     async fn a_public_client_refuses_a_private_literal_before_sending() {
         let client = PublicClient::new(
-            reqwest::Client::builder(),
+            client_builder(),
             ", which nothing may reach",
             Redirects::None,
         )
@@ -445,5 +554,77 @@ mod tests {
                 )
                 .is_ok()
         );
+    }
+
+    /// A loopback server that answers every connection with `head` and then
+    /// `body`, and the URL to reach it.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "test code: the server's own accept loop"
+    )]
+    async fn answering(head: String, body: Vec<u8>) -> Url {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0_u8; 4096];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket.write_all(head.as_bytes()).await;
+                let _ = socket.write_all(&body).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        url
+    }
+
+    async fn fetch(url: Url, limit: ByteLimit) -> std::result::Result<Vec<u8>, BodyError> {
+        let response = client_builder()
+            .build()
+            .unwrap()
+            .get(url)
+            .send()
+            .await
+            .unwrap();
+        read_body(response, limit).await
+    }
+
+    #[tokio::test]
+    async fn a_body_up_to_the_limit_is_read_and_one_past_it_is_refused() {
+        let body = vec![b'x'; 2048];
+        let head = format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n", body.len());
+        let url = answering(head, body.clone()).await;
+        assert_eq!(
+            fetch(url.clone(), ByteLimit::bytes(2048)).await.unwrap(),
+            body
+        );
+        // Refused by the declared length, before the body is read.
+        let err = fetch(url, ByteLimit::bytes(2047)).await.unwrap_err();
+        assert!(matches!(err, BodyError::TooLarge(_)), "{err}");
+        assert_eq!(err.to_string(), "the response is larger than 2047 bytes");
+    }
+
+    #[tokio::test]
+    async fn a_body_with_no_declared_length_is_refused_as_it_arrives() {
+        // Chunked, so there is no Content-Length to refuse it by: the read
+        // itself stops at the limit.
+        let mut body = Vec::new();
+        for _ in 0..64 {
+            body.extend_from_slice(b"400\r\n");
+            body.extend_from_slice(&[b'y'; 0x400]);
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(b"0\r\n\r\n");
+        let head = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n".to_owned();
+        let url = answering(head, body).await;
+        let err = fetch(url.clone(), ByteLimit::bytes(10_000))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BodyError::TooLarge(_)), "{err}");
+        assert_eq!(
+            fetch(url, ByteLimit::mib(1)).await.unwrap().len(),
+            64 * 1024
+        );
+        assert_eq!(ByteLimit::mib(8).to_string(), "8 MiB");
     }
 }

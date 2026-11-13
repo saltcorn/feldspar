@@ -1153,6 +1153,10 @@ impl<'a> Renderer<'a> {
         })
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+    )]
     async fn summary(
         &mut self,
         plan: &LayerPlan,
@@ -1624,6 +1628,10 @@ impl<'a> Renderer<'a> {
     /// The cells grouped by `keys` (named `names`): at most
     /// [`MAX_TABLE_ROWS`] + 1 rows in key order, and how many dataset rows
     /// they summarise.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+    )]
     async fn table_part(
         &mut self,
         keys: &[Key],
@@ -1729,6 +1737,10 @@ impl<'a> Renderer<'a> {
     /// least-squares line and a correlation need, about the group's means —
     /// the means from a window over the group, so it is one query. At most
     /// [`MAX_GROUP_ROWS`] + 1 groups, in key order.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+    )]
     pub(crate) async fn linear_sums(
         &self,
         points: Select,
@@ -1808,6 +1820,10 @@ impl<'a> Renderer<'a> {
     /// `_v0` the value): how many values, the smallest, largest, mean and
     /// standard deviation, and the quantiles at `probabilities` — at most
     /// `limit` groups, in key order.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+    )]
     pub(crate) async fn percentiles(
         &self,
         points: Select,
@@ -1937,6 +1953,10 @@ impl<'a> Renderer<'a> {
         self.scalar_count(count).await
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+    )]
     async fn scalar_count(&self, select: Select) -> Step<u64> {
         let rows = self.run(select).await?;
         Ok(rows

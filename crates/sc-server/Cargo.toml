@@ -22,7 +22,12 @@ default = []
 python = ["sc-python/python-host"]
 
 [dependencies]
+# Every child process — the language server, the terminal (with the `pty`
+# feature, below), the browser probe and watchdog — started the one way (H4).
+sc-proc.workspace = true
 sc-error.workspace = true
+# A redirect target and a download name, each made by one rule (H6.3).
+sc-http.workspace = true
 sc-log.workspace = true
 # The client address and the limiter (TODO F4.2–F4.4).
 sc-ratelimit.workspace = true
@@ -129,6 +134,9 @@ tokio.workspace = true
 # Backup and restore, and the entity JSON codecs the admin handlers answer
 # with (a backup is the admin API's JSON in a zip).
 sc-backup.workspace = true
+# Source control for the structure: the registry editor's export, planner
+# and executor (APP_SYNC_PROPOSAL §7.6).
+sc-sync.workspace = true
 # Zip archives: a project handed to a build host, a model run's download.
 zip.workspace = true
 axum.workspace = true
@@ -167,6 +175,8 @@ csv.workspace = true
 # Automated backups sent off the server (`backup::destination`): an
 # S3-compatible bucket, signed by hand (`backup::s3`) with `sha2` over
 # `reqwest`, or an SFTP server through `russh` + `russh-sftp`.
+# Where its HTTP clients start (`sc_net::client_builder`: a connect timeout).
+sc-net.workspace = true
 reqwest.workspace = true
 sha2.workspace = true
 russh.workspace = true
@@ -177,11 +187,15 @@ russh-sftp.workspace = true
 # watch on its directory from `notify` (`terminal_watch.rs`). Unix only:
 # elsewhere the route refuses with a reason.
 [target.'cfg(unix)'.dependencies]
+sc-proc = { workspace = true, features = ["pty"] }
 pty-process.workspace = true
 libc.workspace = true
 notify.workspace = true
 
 [dev-dependencies]
+# Tests start sessions without a sign-in (`SessionStore::login`), which only
+# the `testing` feature offers (security review 2026-11, §2).
+sc-auth = { workspace = true, features = ["testing"] }
 # The Saltcorn UI golden-HTML test normalises what legitimately differs between
 # two renders (a user's UUID, v1's random element ids).
 regex-lite.workspace = true

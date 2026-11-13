@@ -38,10 +38,9 @@
 use base64::Engine;
 use sc_action::TriggerDispatcher;
 use sc_api::code_host::{TableHost, TriggerRunHost, schema_snapshot};
-use sc_catalog::Catalog;
+use sc_catalog::{AdminPrincipal, Catalog};
 use sc_error::{Error, Result};
 use sc_expr::{CodeHosts, TriggerHost};
-use sc_types::Role;
 use serde_json::{Map, Value as Json, json};
 
 use crate::files::{ModuleFiles, file_areas};
@@ -134,6 +133,12 @@ pub fn webhook_module<'a>(set: &'a ModuleSet, segment: &str) -> Result<Option<&'
     }
 }
 
+/// What stands behind a module webhook's admin authority: an installed
+/// module's handler, which an administrator installed, run on an unsigned
+/// request it must verify itself, its `db` confined to the module's own
+/// tables. Listed in the system-authority inventory.
+pub const MODULE_WEBHOOK: &str = "a module's webhook (sc-module webhooks.rs)";
+
 /// The user a webhook's writes carry: the module and the webhook, by name.
 fn webhook_user(module: &str, webhook: &str) -> Json {
     json!({ "module": module, "webhook": webhook })
@@ -166,16 +171,19 @@ pub async fn run_webhook(
         .with_trigger_reads(catalog, loaded)
         .await;
     let areas = file_areas(&loaded.table_declarations());
-    let user = webhook_user(module, webhook);
+    // The module's authority (§13.x "Webhooks"): the admin role, with
+    // `{ module, webhook }` as the writes' user. A named proof listed in the
+    // system-authority inventory (security review 2026-11 E5,
+    // TODO-type-hardening H3.6), confined to the module's tables below.
+    let admin = AdminPrincipal::vouched(Some(webhook_user(module, webhook)), MODULE_WEBHOOK);
     let scoped = ScopedTables {
-        inner: TableHost::new(catalog).caused_by(Role::ADMIN, Some(user.clone())),
+        inner: TableHost::new(catalog).for_admin(&admin),
         catalog,
         module,
         tables: &tables,
         kind: "webhook",
     };
-    let triggers =
-        dispatcher.map(|d| TriggerRunHost::new(d, catalog).caused_by(Role::ADMIN, Some(user)));
+    let triggers = dispatcher.map(|d| TriggerRunHost::new(d, catalog).for_admin(&admin));
     let files = ModuleFiles::new(catalog, module, &areas);
     let roles = crate::roles::ModuleRoles::new(catalog, module, loaded.module.permissions.roles);
     let credits = crate::credits::ModuleCredits::new(catalog, module);

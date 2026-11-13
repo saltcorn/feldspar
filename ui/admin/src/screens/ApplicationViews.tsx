@@ -57,6 +57,7 @@ import {
   type ViewItem,
 } from "../views";
 import { T, useT } from "../i18n";
+import { activeTabId, settingsTabLabel } from "../settingsTabs";
 
 /** The rename dialog: a view or a page, the name being typed, and what refers to
  * it — `null` while that is being found out. */
@@ -68,23 +69,32 @@ type Renaming = {
   error: string | null;
 };
 
-/** The tabs across the top of an application's screens: Settings, and Views,
- * Pages and Library for an application that has them. Links rather than state,
- * because each tab is its own route. Tabler's `.nav-pills`, as the Settings
- * screen uses, with nothing but classes doing the work under the admin's CSP. */
-export function ApplicationTabs({ app, active }: { app: AppItem; active: AppTab }) {
+/** The tabs across the top of an application's screens: its framework's
+ * settings tabs (TODO UX2.1). Links rather than state, because each tab is its
+ * own route. Tabler's `.nav-pills`, as the Settings screen uses, with nothing
+ * but classes doing the work under the admin's CSP. `active` is a tab's id or
+ * the screen showing (`translations`), which highlights the tab holding it. */
+export function ApplicationTabs({
+  app,
+  active,
+}: {
+  app: Pick<AppItem, "id" | "settings_tabs">;
+  active: AppTab;
+}) {
+  const { t } = useT();
   const tabs = appTabs(app);
   if (tabs.length < 2) return null;
+  const current = activeTabId(app.settings_tabs, active);
   return (
     <ul className="nav nav-pills mb-3">
       {tabs.map((tab) => (
         <li className="nav-item" key={tab.id}>
           <a
-            className={`nav-link${tab.id === active ? " active" : ""}`}
-            aria-current={tab.id === active ? "page" : undefined}
+            className={`nav-link${tab.id === current ? " active" : ""}`}
+            aria-current={tab.id === current ? "page" : undefined}
             href={tab.href}
           >
-            {tab.label}
+            {settingsTabLabel(tab.label, t)}
           </a>
         </li>
       ))}

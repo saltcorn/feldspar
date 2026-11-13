@@ -17,31 +17,32 @@ pub(super) fn register(set: &mut EndpointSet) {
     };
     // One line per construction, for the Home screen.
     set.register(
-        Endpoint::new("listConstructions", Method::Get, api().lit("constructions"))
-            .output(TypeSchema::array(construction_summary_schema()))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::LIST_CONSTRUCTIONS,
+            Method::Get,
+            api().lit("constructions"),
+        )
+        .output(TypeSchema::array(construction_summary_schema())),
     );
     set.register(
-        Endpoint::new("getConstruction", Method::Get, construction())
-            .output(construction_schema())
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(ids::GET_CONSTRUCTION, Method::Get, construction())
+            .output(construction_schema()),
     );
     // Starts a construction for a React application, with the agent that plans
     // and builds its data model on `provider`. Without it: the provider the
     // application's settings choose, else the builder agent's, else the
     // default.
     set.register(
-        Endpoint::new("createConstruction", Method::Post, construction())
+        Endpoint::new(ids::CREATE_CONSTRUCTION, Method::Post, construction())
             .input(TypeSchema::struct_of([StructField::new(
                 "provider",
                 TypeSchema::optional(TypeSchema::text()),
             )]))
-            .output(construction_schema())
-            .auth(AuthRequirement::admin()),
+            .output(construction_schema()),
     );
     set.register(
         Endpoint::new(
-            "saveConstructionSpecification",
+            ids::SAVE_CONSTRUCTION_SPECIFICATION,
             Method::Put,
             construction().lit("specification"),
         )
@@ -49,22 +50,24 @@ pub(super) fn register(set: &mut EndpointSet) {
             "specification",
             TypeSchema::text(),
         )]))
-        .output(construction_schema())
-        .auth(AuthRequirement::admin()),
+        .output(construction_schema()),
     );
     // Starts the run that plans the phases from the specification, and answers
     // at once (202) with `plan_run` set and `planning` true; the run saves the
     // phases as it goes. Poll `getConstruction` until `planning` is false.
     set.register(
-        Endpoint::new("planConstruction", Method::Post, construction().lit("plan"))
-            .output(construction_schema())
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::PLAN_CONSTRUCTION,
+            Method::Post,
+            construction().lit("plan"),
+        )
+        .output(construction_schema()),
     );
     // Replaces the phases, in order; the validation the agent's `save_phases`
     // goes through. A phase named by `id` is updated in place, and one with
     // tasks that the list leaves out is kept.
     set.register(
-        Endpoint::new("savePhases", Method::Put, construction().lit("phases"))
+        Endpoint::new(ids::SAVE_PHASES, Method::Put, construction().lit("phases"))
             .input(TypeSchema::struct_of([StructField::new(
                 "phases",
                 TypeSchema::array(TypeSchema::struct_of([
@@ -74,20 +77,22 @@ pub(super) fn register(set: &mut EndpointSet) {
                     StructField::new("requirements", TypeSchema::array(requirement_schema())),
                 ])),
             )]))
-            .output(construction_schema())
-            .auth(AuthRequirement::admin()),
+            .output(construction_schema()),
     );
     // Starts the runner (202): it plans each phase's tasks when it reaches the
     // phase and runs them, until every phase is done, or `until_phase` is. Poll
     // `getConstruction` while `status` is `running`.
     set.register(
-        Endpoint::new("runConstruction", Method::Post, construction().lit("run"))
-            .input(TypeSchema::struct_of([StructField::new(
-                "until_phase",
-                TypeSchema::optional(TypeSchema::uuid()),
-            )]))
-            .output(construction_schema())
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::RUN_CONSTRUCTION,
+            Method::Post,
+            construction().lit("run"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "until_phase",
+            TypeSchema::optional(TypeSchema::uuid()),
+        )]))
+        .output(construction_schema()),
     );
     // Plans the tasks of one phase and stops before they run, so the admin
     // reviews them first: the phase the runner reaches next, every phase
@@ -96,7 +101,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // at once (202), `running` with `plan_only`; it ends `planned`.
     set.register(
         Endpoint::new(
-            "planPhaseTasks",
+            ids::PLAN_PHASE_TASKS,
             Method::Post,
             construction()
                 .lit("phases")
@@ -107,39 +112,39 @@ pub(super) fn register(set: &mut EndpointSet) {
             "note",
             TypeSchema::optional(TypeSchema::text()),
         )]))
-        .output(construction_schema())
-        .auth(AuthRequirement::admin()),
+        .output(construction_schema()),
     );
     // Stops the runner: the task being run is aborted and goes back to `todo`,
     // and the construction becomes `stopped` once the runner has stopped.
     set.register(
-        Endpoint::new("stopConstruction", Method::Post, construction().lit("stop"))
-            .output(construction_schema())
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::STOP_CONSTRUCTION,
+            Method::Post,
+            construction().lit("stop"),
+        )
+        .output(construction_schema()),
     );
     let task = || construction().lit("tasks").param("task", ValueType::Uuid);
     // A failed task back to `todo`; a failed construction carries on.
     set.register(
-        Endpoint::new("retryTask", Method::Post, task().lit("retry"))
-            .output(construction_schema())
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(ids::RETRY_TASK, Method::Post, task().lit("retry"))
+            .output(construction_schema()),
     );
     // A waiting or failed task set aside: the tasks after it run as if it were
     // done. A failed construction carries on.
     set.register(
-        Endpoint::new("skipTask", Method::Post, task().lit("skip"))
-            .output(construction_schema())
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(ids::SKIP_TASK, Method::Post, task().lit("skip"))
+            .output(construction_schema()),
     );
     // Deletes the construction, its phases and tasks, and the agent made for
     // it. What it built stays. Refused while it runs.
     set.register(
-        Endpoint::new("deleteConstruction", Method::Delete, construction())
-            .output(TypeSchema::struct_of([
+        Endpoint::new(ids::DELETE_CONSTRUCTION, Method::Delete, construction()).output(
+            TypeSchema::struct_of([
                 StructField::new("deleted", TypeSchema::bool()),
                 StructField::new("agent", TypeSchema::optional(TypeSchema::text())),
-            ]))
-            .auth(AuthRequirement::admin()),
+            ]),
+        ),
     );
 }
 

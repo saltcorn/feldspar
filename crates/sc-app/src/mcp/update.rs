@@ -12,8 +12,7 @@
 //!   (list/read/create/update/delete over REST, a GraphQL type). None by
 //!   default, and discouraged: an app should read and write through custom
 //!   queries, which say exactly what each endpoint does and run as the caller.
-//!   Adding one widens what the app exposes, so it also needs
-//!   `allow_access_changes`; removing one is an edit.
+//!   Adding or removing one is an edit.
 //! - **`static_dirs`**: a file store's folder served on a URL path of the app.
 //! - **`uploads`**: upload slots, where a client uploads a large file to,
 //!   resumably (TODO F2, §2.3).
@@ -28,10 +27,9 @@
 //!   `max_role` and `access_if` (TODO F9).
 //! - **`triggers`**: the triggers it exposes as `POST {mount}/actions/<name>`
 //!   and `api.run<Name>()`. An edit like `tables`, since the trigger's own
-//!   `min_role` decides who may call it — except exposing one whose `min_role`
-//!   is public, which opens a route to signed-out callers and so also needs
-//!   `allow_access_changes`. The rule itself is [`crate::change_app_triggers`],
-//!   shared with `feldspar app triggers`.
+//!   `min_role` decides who may call it, a public one's included. The rule
+//!   itself is [`crate::change_app_triggers`], shared with `feldspar app
+//!   triggers`.
 //!
 //! ## A grant per section, checked before anything changes
 //!
@@ -41,10 +39,12 @@
 //! does not open its rows, whose own roles still decide who reads them. A static directory is an edit
 //! too, because a mount is not a grant — every file it serves goes through the
 //! same access check as the file manager, as the request's user (the router's
-//! `serve_static_dir`). A CSP **is** a security boundary — it decides what a
-//! page may load and who may frame it — so the `csp` section needs
-//! `allow_access_changes`, the grant that also guards a table's roles and a
-//! query's `min_role`. So does `access`, for the same reason.
+//! `serve_static_dir`). The `csp` and `access` sections are edits too. They
+//! needed the `allow_access_changes` grant until TODO-type-hardening H8.9
+//! retired it: grants on agents are options nobody keeps track of, and
+//! row-level security is the one lever that keeps an agent off access rules
+//! (§7.3a). A signed-out caller still meets rate and spending caps (security
+//! review #22).
 //!
 //! ## Through the admin's own update
 //!
@@ -62,7 +62,7 @@ use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::mcp::{AdminTool, Area, ToolContext, arguments, require_grant};
-use sc_api::schema_edit::{GRANT_ACCESS_CHANGES, GRANT_EDIT, Grants};
+use sc_api::schema_edit::{GRANT_EDIT, Grants};
 use sc_catalog::{Catalog, FileStoreId};
 use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
@@ -133,21 +133,13 @@ fn update_description(grants: &Grants) -> String {
         true => "",
         false => {
             " You may **not** change `tables`, `api_tables`, `static_dirs`, `uploads`, \
-             `locales`, `streams`, `triggers` or `agents`: they need `allow_edit`."
+             `csp`, `locales`, `streams`, `access`, `triggers` or `agents`: they need \
+             `allow_edit`."
         }
     };
-    let csp = match grants.access_changes {
-        true => {
-            " A CSP is a security boundary, so say plainly what you are about to \
-                 widen, and why, before you do it."
-        }
-        false => {
-            " You may **not** change `csp` or `access`, serve a table's row API, or expose \
-                  a public trigger or an agent to people who are not signed in: \
-                  they need `allow_access_changes`. Tell the person what the app needs \
-                  instead."
-        }
-    };
+    let csp = " A CSP, `access`, a table's row API, a public trigger and an agent for people \
+               who are not signed in all widen what the app exposes, so say plainly what you \
+               are about to widen, and why, before you do it.";
     format!(
         "Change an application: the tables it serves, the store folders it serves \
          as files, its Content-Security-Policy, the languages it is served in, \
@@ -169,7 +161,7 @@ fn update_description(grants: &Grants) -> String {
          person explicitly asks for generic row access to a table: a custom query \
          per thing a page does is a smaller, more deliberate surface. `{ARG_ADD}`, \
          `{ARG_REMOVE}` and `{ARG_SET}` as for tables; a table must be connected \
-         first. Adding one needs `allow_access_changes`.\n\
+         first.\n\
          - `{ARG_STATIC_DIRS}` — a store folder served at a URL path: a request for \
          `<mount>/a/b.png` is answered with `<path>/a/b.png` from the store, and a \
          folder with its `index.html`. `{ARG_ADD}` lists `{{ {ARG_MOUNT}, {ARG_STORE}, \
@@ -184,7 +176,8 @@ fn update_description(grants: &Grants) -> String {
          mime_allow, hook }}` (a name in use is replaced; a store the app was not \
          connected to is connected); `{ARG_REMOVE}` lists names. `min_role` is who \
          may upload (1 admin … 100 public; default 1), `max_bytes` 0 is the \
-         server's limit, `mime_allow` is matched on the file name's type, and \
+         server's limit (`--max-upload-bytes`), which also caps a larger value — \
+         the result's `effective_max_bytes` says what applies, `mime_allow` is matched on the file name's type, and \
          `hook` names one of the app's JavaScript or Python queries, called with \
          `body = {{ filename, size, mime, slot }}` before an upload is accepted: \
          it may `throw httpError(403, …)` to refuse, or return `{{ path, meta }}` \
@@ -225,8 +218,7 @@ fn update_description(grants: &Grants) -> String {
          which is rewritten at once. `{ARG_ADD}`, `{ARG_REMOVE}` and `{ARG_SET}` as \
          for tables. Only a trigger with no event (`when: \"none\"`) can be exposed; \
          create it with `save_trigger` first. Who may call it is the trigger's own \
-         `min_role`: one left unset is admin-only, and the answer says so. A public \
-         one (`min_role` 100) also needs `allow_access_changes`.\n\
+         `min_role`: one left unset is admin-only, and the answer says so.\n\
          - `{ARG_AGENTS}` — the **agents** its pages may talk to, as \
          `api.agents[\"<name>\"]` in the generated client: `chat(message, {{ run }})` \
          streams a turn of a conversation (events `run`, `text`, `tool_call`, \
@@ -238,8 +230,7 @@ fn update_description(grants: &Grants) -> String {
          use is replaced); `{ARG_REMOVE}` lists names. `chat` and `prompt` default \
          to true. Who may use it is the **agent's** own `min_role`, and its tools \
          run as the person using it. `anonymous: true` also lets people who are \
-         not signed in use it — the agent's `min_role` must then be 100, and it \
-         needs `allow_access_changes`. `tools` is how much of its tools the client \
+         not signed in use it — the agent's `min_role` must then be 100. `tools` is how much of its tools the client \
          sees: `none`, `names` (default) or `full` (arguments and results). \
          `prompt_template` (e.g. `\"Summarise order {{{{order}}}}\"`) makes `prompt` \
          take `{{ order: … }}` instead of free text.\n\n\
@@ -596,17 +587,13 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
     }
     if csp.is_some() {
         require_grant(
-            grants.access_changes,
+            grants.edit,
             "change an application's Content-Security-Policy",
-            GRANT_ACCESS_CHANGES,
+            GRANT_EDIT,
         )?;
     }
     if access.is_some() {
-        require_grant(
-            grants.access_changes,
-            "change who may use an application",
-            GRANT_ACCESS_CHANGES,
-        )?;
+        require_grant(grants.edit, "change who may use an application", GRANT_EDIT)?;
     }
 
     let mut app = load_app(ctx, &args).await?;
@@ -618,22 +605,7 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
     }
     if let Some(section) = &api_tables {
         was.insert(ARG_API_TABLES.to_owned(), api_tables_json(&app));
-        let before = app.api_tables.clone();
         change_api_tables(&mut app, section)?;
-        // Opening a row API widens what the app exposes; closing one does not.
-        let opened: Vec<String> = app
-            .api_tables
-            .iter()
-            .filter(|t| !before.contains(t))
-            .cloned()
-            .collect();
-        if !opened.is_empty() {
-            require_grant(
-                grants.access_changes,
-                &format!("serve the row API of {}", quoted(&opened)),
-                GRANT_ACCESS_CHANGES,
-            )?;
-        }
     }
     if let Some(dirs) = &static_dirs {
         was.insert(
@@ -681,39 +653,14 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
     if let Some(change) = &triggers {
         was.insert(ARG_TRIGGERS.to_owned(), json!(exposed_names(&app)));
         let live = ctx.require_triggers()?.triggers()?;
-        let added = crate::change_app_triggers(&mut app, change, |n| live.require(n).cloned())?;
-        let public = crate::public_triggers(&added);
-        if !public.is_empty() {
-            require_grant(
-                grants.access_changes,
-                &format!(
-                    "expose {}, which anyone may call signed out (min_role 100)",
-                    public
-                        .iter()
-                        .map(|n| format!("`{n}`"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-                GRANT_ACCESS_CHANGES,
-            )?;
-        }
+        crate::change_app_triggers(&mut app, change, |n| live.require(n).cloned())?;
     }
     if let Some(change) = &agents {
         was.insert(
             ARG_AGENTS.to_owned(),
             crate::agent_exposures_json(&app.agents),
         );
-        let signed_out = change_agents(&mut app, change)?;
-        if !signed_out.is_empty() {
-            require_grant(
-                grants.access_changes,
-                &format!(
-                    "expose {} to people who are not signed in",
-                    quoted(&signed_out)
-                ),
-                GRANT_ACCESS_CHANGES,
-            )?;
-        }
+        change_agents(&mut app, change)?;
         crate::check_exposed_agents(ctx.catalog, &app).await?;
     }
 
@@ -729,7 +676,14 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
         out[ARG_STATIC_DIRS] = static_dirs_json(&saved.static_dirs);
     }
     if uploads.is_some() {
-        out[ARG_UPLOADS] = crate::upload_slots_json(&saved.uploads);
+        let ceiling = crate::upload_ceiling(ctx.catalog);
+        out[ARG_UPLOADS] = crate::upload_slots_report(&saved.uploads, ceiling);
+        // Saved as asked, but a limit over the server's is not in effect:
+        // said, so the change does not look like it worked when it did not.
+        let warnings = crate::upload_ceiling_warnings(&saved.uploads, ceiling);
+        if !warnings.is_empty() {
+            out["warnings"] = json!(warnings);
+        }
     }
     if csp.is_some() {
         out[ARG_CSP] = csp_json(&saved.csp);
@@ -1121,8 +1075,7 @@ fn change_uploads(
 
 // --- agents -------------------------------------------------------------------
 
-/// Apply the section, returning the agents newly usable signed out — which
-/// need `allow_access_changes`, as a public trigger does.
+/// Apply the section, returning the agents newly usable signed out.
 fn change_agents(app: &mut Application, section: &Map<String, Json>) -> Result<Vec<String>> {
     let remove = names(section, ARG_REMOVE)?;
     for name in &remove {
@@ -1278,7 +1231,7 @@ async fn save(ctx: &ToolContext<'_>, app: &Application, out: &mut Json) -> Resul
         out["notes"] = json!(notes);
         return Ok(saved);
     };
-    let user = ctx.user.map(|u| u.id());
+    let user = ctx.require_admin("update_application")?;
     let listed = host.list_applications(user).await?;
     let id = app.id.to_string();
     let mut body = listed
@@ -1434,18 +1387,13 @@ mod tests {
         assert!(
             none.contains(
                 "**not** change `tables`, `api_tables`, `static_dirs`, `uploads`, \
-                 `locales`, `streams`, `triggers` or `agents`: they need `allow_edit`"
+                 `csp`, `locales`, `streams`, `access`, `triggers` or `agents`: they need \
+                 `allow_edit`"
             ),
             "{none}"
         );
-        assert!(
-            none.contains(
-                "**not** change `csp` or `access`, serve a table's row API, or expose \
-                 a public trigger or an agent to people who are not signed in: they need \
-                 `allow_access_changes`"
-            ),
-            "{none}"
-        );
+        // The retired grant is named nowhere (TODO-type-hardening H8.9).
+        assert!(!all.contains("allow_access_changes") && !none.contains("allow_access_changes"));
     }
 
     #[test]
@@ -1460,7 +1408,7 @@ mod tests {
         )
         .with_agent(AgentExposure::new("greeter").anonymous(true));
         let section = |v: Json| v.as_object().unwrap().clone();
-        // A new signed-out agent is what needs `allow_access_changes`…
+        // A new signed-out agent is reported…
         let signed_out = change_agents(
             &mut app,
             &section(json!({ "add": [

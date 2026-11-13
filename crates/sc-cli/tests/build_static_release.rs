@@ -1,13 +1,14 @@
-//! `scripts/build-static.sh --release`: the upload step that runs after the
-//! tarball is written.
+//! `scripts/build-static.sh --release X.Y.Z`: the version checks, commit and
+//! tag before the build, and the push and uploads after it.
 //!
 //! Compiling V8 to check a few `wrangler` invocations would be absurd, so the
-//! script runs inside a
-//! throwaway "repository" (itself, plus the `Cargo.toml` it reads the version
-//! from) with a `PATH` in front of it holding stubs for `cargo`, `rustup` and
-//! `npx`. The `npx` stub records its argv and keeps a copy of every file it was
-//! asked to upload, so the assertions are about what would actually have landed
-//! in the bucket: the object names, and the contents of the checksum file.
+//! script runs inside a throwaway git repository (itself, plus the
+//! `Cargo.toml` and `Cargo.lock` it versions), with a bare repository as its
+//! `origin`, and a `PATH` in front of it holding stubs for `cargo`, `rustup` and
+//! `npx`. The `npx` stub records its argv and stands in for the bucket: a
+//! directory that keeps every file it was asked to upload, and that `get`
+//! reads back, so the assertions are about what would actually have landed in
+//! the bucket: the object names, and the contents of each file.
 //!
 //! The bundle step runs for real (`scripts/lib/python-bundle.sh`)
 //! over a fake python-build-standalone tarball, with `curl`, `ldd` and
@@ -15,6 +16,10 @@
 //! commands it would have run, not CPython or the dynamic linker.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -23,6 +28,15 @@ use std::process::Command;
 
 const TARGET: &str = "x86_64-unknown-linux-gnu";
 const AARCH64: &str = "aarch64-unknown-linux-gnu";
+/// The workspace version in the throwaway checkout, whatever the real one is.
+const VERSION: &str = "0.4.0";
+/// A lock file with two workspace packages and a registry one at the same
+/// version: a bump must change the first two and leave the third.
+const LOCK: &str = "version = 4\n\n\
+[[package]]\nname = \"sc-cli\"\nversion = \"0.4.0\"\ndependencies = [\n \"sc-error\",\n \"tinyreg\",\n]\n\n\
+[[package]]\nname = \"sc-error\"\nversion = \"0.4.0\"\n\n\
+[[package]]\nname = \"tinyreg\"\nversion = \"0.4.0\"\n\
+source = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"00\"\n";
 
 fn workspace_root() -> PathBuf {
     let mut dir = Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
@@ -95,7 +109,19 @@ fn fixture(name: &str, npx_status: i32) -> Fixture {
         )
         .unwrap_or_else(|e| panic!("copy {lib}: {e}"));
     }
-    fs::copy(root.join("Cargo.toml"), repo.join("Cargo.toml")).unwrap();
+    let manifest = fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    let real = manifest
+        .lines()
+        .skip_while(|l| *l != "[workspace.package]")
+        .find(|l| l.starts_with("version = "))
+        .expect("the workspace version")
+        .to_owned();
+    fs::write(
+        repo.join("Cargo.toml"),
+        manifest.replacen(&real, &format!("version = \"{VERSION}\""), 1),
+    )
+    .unwrap();
+    fs::write(repo.join("Cargo.lock"), LOCK).unwrap();
     // And the bundled modules, which the packaging step also puts in the
     // artifact.
     let plugins = repo.join("plugins/rss");
@@ -130,17 +156,22 @@ fn fixture(name: &str, npx_status: i32) -> Fixture {
             "#!/bin/sh\n[ \"${{1:-}}\" = target ] && echo {TARGET} && echo {AARCH64}\nexit 0\n"
         ),
     );
-    // `npx wrangler r2 object put <bucket>/<key> -f <file> --remote`: record the
+    // `npx wrangler r2 object put <bucket>/<key> -f <file> ...`: record the
     // argv, then keep the file under the key it was uploaded as, so the test can
-    // look at what the bucket would hold.
+    // look at what the bucket would hold. `... get <bucket>/<key> --file <file>`
+    // answers from those files, and as wrangler does for a key that is not there.
+    // `npx_status` is what every `put` exits with.
     write_executable(
         &bin.join("npx"),
         &format!(
             "#!/bin/sh\nset -eu\n\
              printf '%s\\n' \"$*\" >> {log}\n\
-             key=\"${{5:-}}\"\n\
-             if [ \"${{6:-}}\" = -f ]; then cp \"$7\" '{uploads}'/\"$(basename \"$key\")\"; fi\n\
-             exit {npx_status}\n",
+             key=\"$(basename \"${{5:-}}\")\"\n\
+             case \"${{4:-}}\" in\n\
+             get) if [ -f '{uploads}'/\"$key\" ]; then cp '{uploads}'/\"$key\" \"$7\"; exit 0; fi\n\
+                  echo 'X [ERROR] The specified key does not exist.'; exit 1 ;;\n\
+             put) cp \"$7\" '{uploads}'/\"$key\"; exit {npx_status} ;;\n\
+             esac\n",
             log = log.display(),
             uploads = uploads.display(),
         ),
@@ -235,20 +266,28 @@ impl Fixture {
         );
 
         if pin {
-            let sha = Command::new("sha256sum").arg(&tarball).output().unwrap();
-            let sha = String::from_utf8_lossy(&sha.stdout)
-                .split_whitespace()
-                .next()
-                .unwrap()
-                .to_owned();
-            let script = self.repo.join("scripts/build-static.sh");
-            let text = fs::read_to_string(&script).unwrap();
-            let var = format!("readonly PBS_SHA256_{arch}=");
-            let pinned: Vec<&str> = text.lines().filter(|l| l.starts_with(&var)).collect();
-            assert_eq!(pinned.len(), 1, "one {arch} pin in the script");
-            let text = text.replace(pinned[0], &format!("{var}\"{sha}\""));
-            fs::write(&script, text).unwrap();
+            self.pin_python_build_standalone(arch);
         }
+    }
+
+    /// Pin the fake python-build-standalone tarball as `PBS_SHA256_<arch>`; it
+    /// is the same file for either architecture. Before the first release: the
+    /// script is then committed as it is.
+    fn pin_python_build_standalone(&self, arch: &str) {
+        let tarball = self.dir.join("pbs.tar.gz");
+        let sha = Command::new("sha256sum").arg(&tarball).output().unwrap();
+        let sha = String::from_utf8_lossy(&sha.stdout)
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_owned();
+        let script = self.repo.join("scripts/build-static.sh");
+        let text = fs::read_to_string(&script).unwrap();
+        let var = format!("readonly PBS_SHA256_{arch}=");
+        let pinned: Vec<&str> = text.lines().filter(|l| l.starts_with(&var)).collect();
+        assert_eq!(pinned.len(), 1, "one {arch} pin in the script");
+        let text = text.replace(pinned[0], &format!("{var}\"{sha}\""));
+        fs::write(&script, text).unwrap();
     }
 
     /// Make `uname -m` answer `arch`, as on a build machine of that
@@ -272,8 +311,58 @@ impl Fixture {
     fn objects(&self) -> Vec<String> {
         self.npx_calls()
             .iter()
+            .filter(|c| c.split_whitespace().nth(3) == Some("put"))
             .map(|c| c.split_whitespace().nth(4).unwrap().to_owned())
             .collect()
+    }
+
+    /// Put a file in the bucket, as an earlier release would have.
+    fn seed(&self, key: &str, contents: &str) {
+        fs::write(self.uploads.join(key), contents).unwrap();
+    }
+
+    /// What the bucket holds under `key`.
+    fn bucket(&self, key: &str) -> String {
+        fs::read_to_string(self.uploads.join(key)).unwrap_or_else(|e| panic!("{key}: {e}"))
+    }
+
+    /// `git` in the checkout (`repo`) or the remote (`remote.git`), with no
+    /// configuration but this test's.
+    fn git(&self, dir: &str, args: &[&str]) -> String {
+        let out = git_command(&self.dir.join(dir))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    /// Make the checkout a repository with everything in it committed on
+    /// `main`, pushed to a bare `origin` that `main` tracks. Once, before the
+    /// first release.
+    fn commit(&self) {
+        if self.repo.join(".git").exists() {
+            return;
+        }
+        let remote = self.dir.join("remote.git");
+        let out = git_command(&self.dir)
+            .args(["init", "--quiet", "--bare", "-b", "main"])
+            .arg(&remote)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        self.git("repo", &["init", "--quiet", "-b", "main"]);
+        self.git("repo", &["add", "-A"]);
+        self.git("repo", &["commit", "--quiet", "-m", "the checkout"]);
+        self.git(
+            "repo",
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        self.git("repo", &["push", "--quiet", "-u", "origin", "main"]);
     }
 
     /// What the `curl` and `patchelf` stubs recorded.
@@ -281,14 +370,21 @@ impl Fixture {
         fs::read_to_string(self.dir.join("tools.log")).unwrap_or_default()
     }
 
-    /// Run the script with `--release` and whatever extra options a test wants.
+    /// Run the script with `--release` of the checkout's own version and
+    /// whatever extra options a test wants.
     fn release(&self, extra: &[&str]) -> (std::process::Output, String, String) {
+        self.release_as(VERSION, extra)
+    }
+
+    /// Run the script with `--release version`, committing the checkout first.
+    fn release_as(&self, version: &str, extra: &[&str]) -> (std::process::Output, String, String) {
+        self.commit();
         let path = format!(
             "{}:{}",
             self.bin.display(),
             std::env::var("PATH").unwrap_or_default()
         );
-        let output = Command::new("bash")
+        let output = git_env(Command::new("bash"))
             .arg(self.repo.join("scripts/build-static.sh"))
             .args([
                 "--native",
@@ -296,6 +392,7 @@ impl Fixture {
                 "--no-strip",
                 "--no-verify",
                 "--release",
+                version,
             ])
             .arg("--output")
             .arg(self.dir.join("dist"))
@@ -317,26 +414,71 @@ impl Fixture {
             .collect()
     }
 
+    /// The x86_64 tarball the build wrote (named after the version and commit
+    /// it was built at, which a release has since moved on from), or a path
+    /// that is not there.
     fn tarball(&self) -> PathBuf {
-        let version = fs::read_to_string(self.repo.join("Cargo.toml"))
+        let dist = self.dir.join("dist");
+        fs::read_dir(&dist)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.to_string_lossy().ends_with(&format!("-{TARGET}.tar.gz")))
+            .unwrap_or_else(|| dist.join("no-tarball"))
+    }
+
+    /// The workspace version in the checkout's Cargo.toml.
+    fn version(&self) -> String {
+        fs::read_to_string(self.repo.join("Cargo.toml"))
             .unwrap()
             .lines()
+            .skip_while(|l| *l != "[workspace.package]")
             .find_map(|l| {
                 l.strip_prefix("version = ")
                     .map(|v| v.trim_matches('"').to_owned())
             })
-            .expect("the workspace version");
-        self.dir
-            .join("dist")
-            .join(format!("feldspar-{version}-{TARGET}.tar.gz"))
+            .expect("the workspace version")
+    }
+
+    /// Start the checkout at `version` instead of [`VERSION`] (before the
+    /// first release): Cargo.toml and the lock file's workspace packages.
+    fn start_at(&self, version: &str) {
+        let from = format!("version = \"{VERSION}\"");
+        let to = format!("version = \"{version}\"");
+        let manifest = self.repo.join("Cargo.toml");
+        let text = fs::read_to_string(&manifest)
+            .unwrap()
+            .replacen(&from, &to, 1);
+        fs::write(&manifest, text).unwrap();
+        fs::write(self.repo.join("Cargo.lock"), LOCK.replacen(&from, &to, 2)).unwrap();
     }
 }
 
-/// The x86_64 tarball goes up under its own platform name and under the name
-/// the first releases had, each with a checksum naming that object, and the
-/// installer goes up last.
+/// `cmd` with git configured by the test alone: no global or system
+/// configuration (no signing, no hooks, no default branch of the machine's),
+/// and an author for the release commit and tag.
+fn git_env(mut cmd: Command) -> Command {
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "Release Test")
+        .env("GIT_AUTHOR_EMAIL", "release@example.com")
+        .env("GIT_COMMITTER_NAME", "Release Test")
+        .env("GIT_COMMITTER_EMAIL", "release@example.com");
+    cmd
+}
+
+fn git_command(dir: &Path) -> Command {
+    let mut cmd = git_env(Command::new("git"));
+    cmd.current_dir(dir);
+    cmd
+}
+
+/// The x86_64 tarball goes up under its versioned name, then its own platform
+/// name and the name the first releases had, each with a checksum naming that
+/// object; then the list of versions, and the installer last.
 #[test]
-fn release_uploads_the_tarball_and_checksum_under_version_less_names() {
+fn release_uploads_the_tarball_and_checksum_under_versioned_and_version_less_names() {
     let f = fixture("ok", 0);
     f.fake_python_build_standalone(true);
     let (output, stdout, stderr) = f.release(&[]);
@@ -350,22 +492,55 @@ fn release_uploads_the_tarball_and_checksum_under_version_less_names() {
     assert_eq!(
         f.objects(),
         [
+            "feldspar-latest-static/feldspar-0.4.0-linux-x86_64.tar.gz",
+            "feldspar-latest-static/feldspar-0.4.0-linux-x86_64.tar.gz.sha256",
             "feldspar-latest-static/feldspar-linux-x86_64.tar.gz",
             "feldspar-latest-static/feldspar-linux-x86_64.tar.gz.sha256",
             "feldspar-latest-static/feldspar.tar.gz",
             "feldspar-latest-static/feldspar.tar.gz.sha256",
+            "feldspar-latest-static/versions.txt",
+            "feldspar-latest-static/latest.txt",
             "feldspar-latest-static/install.sh",
         ]
     );
     let calls = f.npx_calls();
     assert_eq!(
-        calls[0],
-        format!(
-            "wrangler r2 object put feldspar-latest-static/feldspar-linux-x86_64.tar.gz -f {} --remote",
+        calls.iter().find(|c| c.contains(" put ")).unwrap(),
+        &format!(
+            "wrangler r2 object put feldspar-latest-static/feldspar-0.4.0-linux-x86_64.tar.gz -f {} --remote",
             tarball.display()
         ),
     );
-    assert!(calls.iter().all(|c| c.ends_with(" --remote")), "{calls:?}");
+    // The first release of the version in Cargo.toml: no release commit, a
+    // tag on the checkout's own commit; then the next development version
+    // committed on top, and both pushed; and the version listed.
+    assert_eq!(
+        f.git("repo", &["log", "--format=%s", "-2"]),
+        "Start 0.4.1-dev\nthe checkout"
+    );
+    assert_eq!(
+        f.git("remote.git", &["rev-parse", "v0.4.0^{commit}"]),
+        f.git("repo", &["rev-parse", "HEAD~1"])
+    );
+    assert_eq!(
+        f.git("remote.git", &["rev-parse", "main"]),
+        f.git("repo", &["rev-parse", "HEAD"])
+    );
+    assert_eq!(f.version(), "0.4.1-dev");
+    assert!(
+        f.tarball().to_string_lossy().contains("/feldspar-0.4.0-"),
+        "built as 0.4.0, not as what comes after: {:?}",
+        f.tarball()
+    );
+    assert_eq!(f.bucket("versions.txt"), "0.4.0\n");
+    assert_eq!(f.bucket("latest.txt"), "0.4.0\n");
+    assert!(
+        calls
+            .iter()
+            .filter(|c| c.starts_with("wrangler r2 "))
+            .all(|c| c.ends_with(" --remote")),
+        "{calls:?}"
+    );
     // The installer that fetches it — byte for byte the checkout's.
     assert_eq!(
         fs::read(f.uploads.join("install.sh")).expect("the uploaded installer"),
@@ -381,7 +556,11 @@ fn release_uploads_the_tarball_and_checksum_under_version_less_names() {
     // either download.
     let local = fs::read_to_string(format!("{}.sha256", tarball.display())).unwrap();
     let digest = local.split_whitespace().next().unwrap();
-    for object in ["feldspar-linux-x86_64.tar.gz", "feldspar.tar.gz"] {
+    for object in [
+        "feldspar-0.4.0-linux-x86_64.tar.gz",
+        "feldspar-linux-x86_64.tar.gz",
+        "feldspar.tar.gz",
+    ] {
         assert_eq!(
             fs::read(f.uploads.join(object)).unwrap(),
             fs::read(&tarball).unwrap(),
@@ -442,11 +621,25 @@ fn bucket_overrides_the_destination() {
         "stdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
-    let calls = f.npx_calls();
+    let objects = f.objects();
+    assert_eq!(
+        objects[..4],
+        [
+            "feldspar-staging/feldspar-0.4.0-linux-x86_64.tar.gz",
+            "feldspar-staging/feldspar-0.4.0-linux-x86_64.tar.gz.sha256",
+            "feldspar-staging/feldspar-linux-x86_64.tar.gz",
+            "feldspar-staging/feldspar-linux-x86_64.tar.gz.sha256",
+        ],
+        "{objects:?}"
+    );
+    // The versions it reads are that bucket's too.
     assert!(
-        calls[0].contains("feldspar-staging/feldspar-linux-x86_64.tar.gz -f")
-            && calls[1].contains("feldspar-staging/feldspar-linux-x86_64.tar.gz.sha256 -f"),
-        "{calls:?}"
+        f.npx_calls()
+            .iter()
+            .filter(|c| c.contains(" get "))
+            .all(|c| c.contains(" feldspar-staging/")),
+        "{:?}",
+        f.npx_calls()
     );
     // A bucket somewhere else is not served at the public URL, so it is not
     // offered one: printing it would be pointing at the *last* release.
@@ -509,6 +702,7 @@ fn release_without_npx_is_refused_before_the_build() {
             "--no-strip",
             "--no-verify",
             "--release",
+            VERSION,
         ])
         .arg("--output")
         .arg(f.dir.join("dist"))
@@ -526,7 +720,7 @@ fn release_without_npx_is_refused_before_the_build() {
     // An empty bucket name is refused the same way.
     let output = Command::new("bash")
         .arg(f.repo.join("scripts/build-static.sh"))
-        .args(["--native", "--release", "--bucket", ""])
+        .args(["--native", "--release", VERSION, "--bucket", ""])
         .env("PATH", &path)
         .output()
         .unwrap();
@@ -710,7 +904,7 @@ fn a_python_download_that_does_not_match_the_pin_is_refused_before_the_build() {
     let (output, _stdout, stderr) = f.release(&[]);
     assert!(!output.status.success());
     assert!(stderr.contains("not the pinned"), "{stderr}");
-    assert!(f.npx_calls().is_empty());
+    assert!(f.objects().is_empty(), "{:?}", f.objects());
     assert!(
         !f.dir.join("cargo.log").exists(),
         "cargo ran after a bad download"
@@ -734,8 +928,12 @@ fn an_aarch64_release_publishes_only_its_own_name() {
     assert_eq!(
         f.objects(),
         [
+            "feldspar-latest-static/feldspar-0.4.0-linux-aarch64.tar.gz",
+            "feldspar-latest-static/feldspar-0.4.0-linux-aarch64.tar.gz.sha256",
             "feldspar-latest-static/feldspar-linux-aarch64.tar.gz",
             "feldspar-latest-static/feldspar-linux-aarch64.tar.gz.sha256",
+            "feldspar-latest-static/versions.txt",
+            "feldspar-latest-static/latest.txt",
             "feldspar-latest-static/install.sh",
         ]
     );
@@ -751,6 +949,352 @@ fn an_aarch64_release_publishes_only_its_own_name() {
         )),
         "{}",
         f.tool_calls()
+    );
+    fs::remove_dir_all(&f.dir).ok();
+}
+
+/// The usual release, from a development version: X.Y.Z set in Cargo.toml
+/// and in the lock file's workspace packages, committed and tagged, built;
+/// then X.Y.(Z+1)-dev committed on top, and both pushed, with the tag,
+/// before anything is uploaded; and the version added to those listed.
+#[test]
+fn a_new_version_is_committed_tagged_pushed_and_listed() {
+    let f = fixture("bump", 0);
+    f.fake_python_build_standalone(true);
+    f.start_at("0.4.1-dev");
+    f.seed("versions.txt", "0.3.9\n0.4.0\n");
+    let (output, stdout, stderr) = f.release_as("0.4.1", &[]);
+    assert!(
+        output.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    // The release commit: both files, the workspace version only, and in the
+    // lock file the workspace packages only.
+    assert_eq!(
+        f.git("repo", &["log", "--format=%s", "-1", "v0.4.1"]),
+        "Release 0.4.1"
+    );
+    assert_eq!(
+        f.git("repo", &["show", "--name-only", "--format=", "v0.4.1^{commit}"]),
+        "Cargo.lock\nCargo.toml"
+    );
+    let manifest = f.git("repo", &["show", "v0.4.1:Cargo.toml"]);
+    let workspace = manifest
+        .split("[workspace.package]")
+        .nth(1)
+        .unwrap()
+        .split("\n[")
+        .next()
+        .unwrap();
+    assert!(workspace.contains("version = \"0.4.1\""), "{workspace}");
+    assert_eq!(
+        manifest.matches("version = \"0.4.1\"").count(),
+        1,
+        "{manifest}"
+    );
+    assert_eq!(
+        format!("{}\n", f.git("repo", &["show", "v0.4.1:Cargo.lock"])),
+        LOCK.replacen("version = \"0.4.0\"", "version = \"0.4.1\"", 2),
+        "the registry package keeps its version"
+    );
+    assert!(
+        f.tarball().to_string_lossy().contains("/feldspar-0.4.1-"),
+        "{:?}",
+        f.tarball()
+    );
+
+    // Then the next development version, on top of it, in both files.
+    assert_eq!(
+        f.git("repo", &["log", "--format=%s", "-3"]),
+        "Start 0.4.2-dev\nRelease 0.4.1\nthe checkout"
+    );
+    assert_eq!(f.version(), "0.4.2-dev");
+    assert_eq!(
+        fs::read_to_string(f.repo.join("Cargo.lock")).unwrap(),
+        LOCK.replacen("version = \"0.4.0\"", "version = \"0.4.2-dev\"", 2),
+    );
+    assert_eq!(
+        f.git("repo", &["status", "--porcelain", "--untracked-files=no"]),
+        ""
+    );
+
+    // On the remote: main at the -dev commit, the annotated tag at the release.
+    assert_eq!(
+        f.git("remote.git", &["rev-parse", "main"]),
+        f.git("repo", &["rev-parse", "HEAD"])
+    );
+    assert_eq!(
+        f.git("remote.git", &["rev-parse", "v0.4.1^{commit}"]),
+        f.git("repo", &["rev-parse", "HEAD~1"])
+    );
+    assert_eq!(f.git("remote.git", &["cat-file", "-t", "v0.4.1"]), "tag");
+
+    // The push came before the first upload: the tag was on the remote by
+    // then. (The stub cannot see the remote, so the order is read from the
+    // log lines, which the script prints as it goes.)
+    let pushed = stdout
+        .find("pushing main and v0.4.1 to origin")
+        .expect(&stdout);
+    let uploaded = stdout.find("uploading").expect(&stdout);
+    assert!(pushed < uploaded, "{stdout}");
+
+    assert_eq!(
+        fs::read(f.uploads.join("feldspar-0.4.1-linux-x86_64.tar.gz")).unwrap(),
+        fs::read(f.uploads.join("feldspar-linux-x86_64.tar.gz")).unwrap()
+    );
+    assert_eq!(f.bucket("versions.txt"), "0.3.9\n0.4.0\n0.4.1\n");
+    assert_eq!(f.bucket("latest.txt"), "0.4.1\n");
+
+    // The next release from there: 0.4.1 again is older than 0.4.2-dev; a
+    // minor release, 0.5.0, is fine from it.
+    let (output, _stdout, stderr) = f.release_as("0.4.1", &[]);
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("older than the version in Cargo.toml, 0.4.2-dev"),
+        "{stderr}"
+    );
+    let (output, stdout, stderr) = f.release_as("0.5.0", &[]);
+    assert!(
+        output.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert_eq!(f.version(), "0.5.1-dev");
+    assert_eq!(f.bucket("versions.txt"), "0.3.9\n0.4.0\n0.4.1\n0.5.0\n");
+    fs::remove_dir_all(&f.dir).ok();
+}
+
+/// A push the remote refuses uploads nothing and takes the -dev commit back
+/// off; once the remote takes pushes again, the same command finishes the
+/// release from the tag it left: the build again, the -dev commit, the push.
+#[test]
+fn a_refused_push_uploads_nothing_and_the_same_command_finishes_the_release() {
+    let f = fixture("refused-push", 0);
+    f.fake_python_build_standalone(true);
+    f.start_at("0.4.1-dev");
+    f.commit();
+    let hook = f.dir.join("remote.git/hooks/pre-receive");
+    write_executable(&hook, "#!/bin/sh\necho 'refused by the test' >&2\nexit 1\n");
+
+    let (output, stdout, stderr) = f.release_as("0.4.1", &[]);
+    assert!(!output.status.success(), "{stdout}");
+    assert!(
+        stderr.contains("could not push the release to origin"),
+        "{stderr}"
+    );
+    assert!(f.objects().is_empty(), "{:?}", f.objects());
+    assert_eq!(
+        f.git("repo", &["rev-parse", "HEAD"]),
+        f.git("repo", &["rev-parse", "v0.4.1^{commit}"]),
+        "the -dev commit should be gone, HEAD at the tag"
+    );
+    assert_eq!(f.version(), "0.4.1");
+    assert_eq!(
+        f.git("remote.git", &["log", "--format=%s", "-1", "main"]),
+        "the checkout"
+    );
+
+    fs::remove_file(&hook).unwrap();
+    let (output, stdout, stderr) = f.release_as("0.4.1", &[]);
+    assert!(
+        output.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("not pushed yet: finishing the release"),
+        "{stdout}"
+    );
+    assert_eq!(
+        f.git("remote.git", &["log", "--format=%s", "-3", "main"]),
+        "Start 0.4.2-dev\nRelease 0.4.1\nthe checkout"
+    );
+    assert_eq!(f.bucket("latest.txt"), "0.4.1\n");
+    fs::remove_dir_all(&f.dir).ok();
+}
+
+/// The second architecture of a version: built at its tag, it commits and
+/// tags nothing, publishes its own names, and leaves the version listed once.
+/// The same run again is refused: a published version is not replaced.
+#[test]
+fn another_architecture_publishes_at_the_tag_and_a_version_is_never_replaced() {
+    let f = fixture("second-arch", 0);
+    f.fake_python_build_standalone(true);
+    f.pin_python_build_standalone("AARCH64");
+    let (output, stdout, stderr) = f.release_as("0.5.0", &[]);
+    assert!(
+        output.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    let tagged = f.git("repo", &["rev-parse", "v0.5.0^{commit}"]);
+    let main = f.git("repo", &["rev-parse", "HEAD"]);
+
+    // The aarch64 machine: a detached checkout of the tag.
+    f.git("repo", &["checkout", "--quiet", "v0.5.0"]);
+    f.pretend_machine("aarch64");
+    let before = f.objects().len();
+    let (output, stdout, stderr) = f.release_as("0.5.0", &["--target", AARCH64]);
+    assert!(
+        output.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(stdout.contains("v0.5.0 is this commit"), "{stdout}");
+    assert_eq!(
+        f.git("repo", &["rev-parse", "HEAD"]),
+        tagged,
+        "no new commit"
+    );
+    assert_eq!(f.version(), "0.5.0");
+    assert_eq!(
+        f.git("remote.git", &["rev-parse", "main"]),
+        main,
+        "main left at the first run's -dev commit"
+    );
+    assert_eq!(
+        f.objects()[before..],
+        [
+            "feldspar-latest-static/feldspar-0.5.0-linux-aarch64.tar.gz",
+            "feldspar-latest-static/feldspar-0.5.0-linux-aarch64.tar.gz.sha256",
+            "feldspar-latest-static/feldspar-linux-aarch64.tar.gz",
+            "feldspar-latest-static/feldspar-linux-aarch64.tar.gz.sha256",
+            "feldspar-latest-static/versions.txt",
+            "feldspar-latest-static/latest.txt",
+            "feldspar-latest-static/install.sh",
+        ]
+    );
+    assert_eq!(f.bucket("versions.txt"), "0.5.0\n");
+
+    // Again: refused before the build, and nothing uploaded.
+    let before = f.objects().len();
+    fs::remove_file(f.dir.join("cargo.log")).unwrap();
+    let (output, _stdout, stderr) = f.release_as("0.5.0", &["--target", AARCH64]);
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("feldspar-0.5.0-linux-aarch64.tar.gz is already published"),
+        "{stderr}"
+    );
+    assert_eq!(f.objects().len(), before);
+    assert!(!f.dir.join("cargo.log").exists(), "cargo ran anyway");
+    fs::remove_dir_all(&f.dir).ok();
+}
+
+/// Each version that may not be published is refused before the build, with
+/// nothing committed, tagged or uploaded.
+#[test]
+fn versions_that_may_not_be_published_are_refused_before_the_build() {
+    let refused = |name: &str, setup: &dyn Fn(&Fixture), version: &str, why: &str| {
+        let f = fixture(name, 0);
+        f.fake_python_build_standalone(true);
+        f.commit();
+        setup(&f);
+        let tags = f.git("repo", &["tag", "-l"]);
+        let (output, stdout, stderr) = f.release_as(version, &[]);
+        assert!(!output.status.success(), "{name}: was published\n{stdout}");
+        assert!(stderr.contains(why), "{name}: {stderr}");
+        assert!(!f.dir.join("cargo.log").exists(), "{name}: cargo ran");
+        assert!(f.objects().is_empty(), "{name}: {:?}", f.objects());
+        assert_eq!(f.git("repo", &["tag", "-l"]), tags, "{name}: tagged");
+        assert_eq!(
+            f.git("repo", &["log", "--format=%s", "-1"]),
+            "the checkout",
+            "{name}: committed"
+        );
+        fs::remove_dir_all(&f.dir).ok();
+    };
+    let nothing = |_: &Fixture| {};
+    refused("format", &nothing, "0.5", "X.Y.Z");
+    refused("prefix", &nothing, "v0.5.0", "X.Y.Z");
+    refused(
+        "older-than-cargo",
+        &nothing,
+        "0.3.9",
+        "older than the version in Cargo.toml, 0.4.0",
+    );
+    refused(
+        "older-than-listed",
+        &|f| f.seed("versions.txt", "0.4.0\n0.4.10\n"),
+        "0.4.9",
+        "older than the newest published release, 0.4.10",
+    );
+    refused(
+        "older-than-tag",
+        &|f| {
+            f.git("repo", &["tag", "v0.6.0"]);
+        },
+        "0.5.0",
+        "older than the newest release tag, v0.6.0",
+    );
+    refused(
+        "published",
+        &|f| f.seed("feldspar-0.4.0-linux-x86_64.tar.gz.sha256", "x"),
+        "0.4.0",
+        "is already published",
+    );
+    refused(
+        "dirty",
+        &|f| fs::write(f.repo.join("Cargo.lock"), "edited").unwrap(),
+        "0.4.1",
+        "uncommitted changes",
+    );
+    refused(
+        "tagged-elsewhere",
+        &|f| {
+            f.git("repo", &["tag", "-a", "v0.4.1", "-m", "elsewhere"]);
+            fs::write(f.repo.join("NEW"), "").unwrap();
+            f.git("repo", &["add", "NEW"]);
+            f.git("repo", &["commit", "--quiet", "-m", "the checkout"]);
+        },
+        "0.4.1",
+        "git checkout v0.4.1",
+    );
+    refused(
+        "behind",
+        &|f| {
+            // Someone else's commit on the remote's main.
+            let other = f.dir.join("other");
+            let out = git_command(&f.dir)
+                .args(["clone", "--quiet"])
+                .arg(f.dir.join("remote.git"))
+                .arg(&other)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+            fs::write(other.join("THEIRS"), "").unwrap();
+            f.git("other", &["add", "THEIRS"]);
+            f.git("other", &["commit", "--quiet", "-m", "theirs"]);
+            f.git("other", &["push", "--quiet", "origin", "main"]);
+        },
+        "0.4.1",
+        "main is behind origin/main",
+    );
+    refused(
+        "detached",
+        &|f| {
+            f.git("repo", &["checkout", "--quiet", "--detach"]);
+        },
+        "0.4.1",
+        "HEAD is detached",
+    );
+
+    // Older than a development version's release: 0.4.0 from 0.4.1-dev.
+    let f = fixture("older-than-dev", 0);
+    f.fake_python_build_standalone(true);
+    f.start_at("0.4.1-dev");
+    let (output, _stdout, stderr) = f.release_as("0.4.0", &[]);
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("0.4.0 is older than the version in Cargo.toml, 0.4.1-dev"),
+        "{stderr}"
+    );
+    assert!(f.objects().is_empty());
+    fs::remove_dir_all(&f.dir).ok();
+
+    // And with no version at all.
+    let f = fixture("no-version", 0);
+    let (output, _stdout, stderr) = f.release_as("--no-ui", &[]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr.contains("--release takes the version to publish"),
+        "{stderr}"
     );
     fs::remove_dir_all(&f.dir).ok();
 }
@@ -782,7 +1326,7 @@ fn the_release_library_publishes_for_any_build_script() {
     write_executable(
         &bin.join("npx"),
         &format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\nkey=\"${{5#*/}}\"\ncp \"$7\" '{up}'/\"$key\"\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\n[ \"${{4:-}}\" = put ] || exit 0\nkey=\"${{5#*/}}\"\ncp \"$7\" '{up}'/\"$key\"\n",
             log = log.display(),
             up = uploads.display()
         ),
@@ -836,6 +1380,7 @@ fn the_release_library_publishes_for_any_build_script() {
     let keys: Vec<String> = fs::read_to_string(&log)
         .unwrap()
         .lines()
+        .filter(|l| l.split_whitespace().nth(3) == Some("put"))
         .map(|l| l.split_whitespace().nth(4).unwrap().to_owned())
         .collect();
     assert_eq!(
@@ -859,6 +1404,23 @@ fn the_release_library_publishes_for_any_build_script() {
         );
     }
 
+    // Versions compare as numbers, field by field.
+    let out = run(
+        "release_version_ge 0.1.10 0.1.9 && release_version_ge 1.0.0 0.99.99 && \
+         release_version_ge 0.2.0 0.2.0 && ! release_version_ge 0.1.9 0.1.10 && \
+         release_version_is_valid 10.0.1 && ! release_version_is_valid 01.0.0 && \
+         ! release_version_is_valid 1.0.0-rc1 && \
+         [[ $(release_next_dev 0.1.1) == 0.1.2-dev && $(release_next_dev 1.9.99) == 1.9.100-dev ]] && \
+         [[ $(release_version_base 0.1.2-dev) == 0.1.2 && $(release_version_base 0.1.2) == 0.1.2 ]] && \
+         [[ \"$(printf '0.2.0\\njunk\\n0.10.0\\n0.9.1\\n' | release_newest)\" == 0.10.0 ]]",
+        &path,
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
     // The preflight refuses an empty bucket, and a PATH without npx.
     let out = Command::new("bash")
         .arg("-c")
@@ -875,5 +1437,103 @@ fn the_release_library_publishes_for_any_build_script() {
     let out = run("release_preflight", no_npx.to_str().unwrap());
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("needs npx"));
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// `npx wrangler` with no wrangler installed asks "Ok to proceed? (y)" before
+/// downloading it. Where the release captures wrangler's output (reading
+/// versions.txt) that question was never seen, and the release sat silent.
+/// The preflight now downloads it in view, and every call says yes in advance.
+#[test]
+fn a_wrangler_npx_must_download_is_fetched_in_view_and_never_asks() {
+    let dir = scratch("wrangler-download");
+    let repo = dir.join("repo");
+    fs::create_dir_all(repo.join("scripts/lib")).unwrap();
+    fs::copy(
+        workspace_root().join("scripts/lib/release.sh"),
+        repo.join("scripts/lib/release.sh"),
+    )
+    .unwrap();
+    fs::write(repo.join("scripts/install.sh"), "#!/bin/sh\n").unwrap();
+
+    // npx as it behaves: with wrangler absent, `npm_config_yes=false` fails,
+    // `true` downloads it, and neither asks; unset, it asks and waits for an
+    // answer (here: hangs, and says so on a file the test reads).
+    let bin = dir.join("bin");
+    let installed = dir.join("installed");
+    let asked = dir.join("asked");
+    write_executable(
+        &bin.join("npx"),
+        &format!(
+            "#!/bin/sh\n\
+             if [ ! -f '{installed}' ]; then\n\
+               case \"${{npm_config_yes:-}}\" in\n\
+               true) echo 'npm: downloading wrangler@4.0.0' >&2; touch '{installed}' ;;\n\
+               false) echo 'npm error npx canceled due to missing packages and no YES option' >&2; exit 1 ;;\n\
+               *) echo 'Ok to proceed? (y)'; touch '{asked}'; sleep 30; exit 1 ;;\n\
+               esac\n\
+             fi\n\
+             case \"$*\" in\n\
+             'wrangler --version') echo '4.0.0' ;;\n\
+             *' get '*) echo 'X [ERROR] The specified key does not exist.'; exit 1 ;;\n\
+             esac\n",
+            installed = installed.display(),
+            asked = asked.display(),
+        ),
+    );
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let run = || {
+        let started = std::time::Instant::now();
+        let out = Command::new("bash")
+            .arg("-c")
+            .arg(format!(
+                "set -euo pipefail\nREPO_ROOT='{}'\nlog() {{ echo \"==> $*\"; }}\n\
+                 source \"$REPO_ROOT/scripts/lib/release.sh\"\nR2_BUCKET=b\n\
+                 release_preflight\nrelease_published_versions '{}'",
+                repo.display(),
+                dir.display()
+            ))
+            .env("PATH", &path)
+            .env_remove("npm_config_yes")
+            .output()
+            .unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "it waited on a prompt"
+        );
+        out
+    };
+
+    let out = run();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stdout}{stderr}");
+    assert!(!asked.exists(), "npx asked to install wrangler: {stdout}");
+    // The download is announced, its output is in view, and it is over before
+    // the bucket is read.
+    let downloading = stdout
+        .find("==> wrangler is not installed: npx is downloading it")
+        .expect(&stdout);
+    let reading = stdout.find("==> reading r2://b/versions.txt").expect(&stdout);
+    assert!(downloading < reading, "{stdout}");
+    assert!(stderr.contains("npm: downloading wrangler@4.0.0"), "{stderr}");
+
+    // Installed now: the preflight names the version and downloads nothing.
+    let out = run();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    assert!(stdout.contains("==> using wrangler 4.0.0"), "{stdout}");
+    assert!(!stdout.contains("downloading"), "{stdout}");
+
+    // A wrangler that cannot be had stops the release before anything else.
+    fs::remove_file(&installed).unwrap();
+    write_executable(&bin.join("npx"), "#!/bin/sh\necho 'npm error 404' >&2\nexit 1\n");
+    let out = run();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("could not run wrangler"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     fs::remove_dir_all(&dir).ok();
 }

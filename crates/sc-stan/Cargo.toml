@@ -11,6 +11,8 @@ rust-version.workspace = true
 autotests = false
 
 [dependencies]
+# Every child process, started the one way (H4).
+sc-proc.workspace = true
 sc-error.workspace = true
 # The seam this crate implements: `ModelProvider`, and the `Interface` the
 # program parser produces for the host's binder (TODO §4).
@@ -32,6 +34,8 @@ sha2.workspace = true
 tokio = { workspace = true, features = ["fs", "process", "time", "sync", "macros", "io-util"] }
 # The release tarball and the "latest release" lookup, over the workspace's one
 # rustls reqwest.
+# Where its HTTP clients start (`sc_net::client_builder`: a connect timeout).
+sc-net.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
 # Killing `make`'s whole process group when an install is abandoned: `make -jJ`

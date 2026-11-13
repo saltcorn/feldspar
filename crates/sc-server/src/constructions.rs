@@ -21,6 +21,7 @@
 //! the constructor's prompts are written for. Saltcorn UI applications have no
 //! builder at all, and wait for view and page tools (TODO.md O1.3).
 
+use crate::construction_runner::console_caller;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -76,7 +77,7 @@ impl Drop for PlanningGuard {
 }
 
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: Arc<AppMounts>) {
-    reg.register_admin("listConstructions", {
+    reg.handle(sc_api::handler_ids::LIST_CONSTRUCTIONS, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -98,7 +99,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         }
     });
 
-    reg.register_admin("getConstruction", {
+    reg.handle(sc_api::handler_ids::GET_CONSTRUCTION, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -112,7 +113,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         }
     });
 
-    reg.register_admin("createConstruction", {
+    reg.handle(sc_api::handler_ids::CREATE_CONSTRUCTION, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -146,7 +147,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         }
     });
 
-    reg.register_admin("saveConstructionSpecification", {
+    reg.handle(sc_api::handler_ids::SAVE_CONSTRUCTION_SPECIFICATION, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -166,7 +167,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         }
     });
 
-    reg.register_admin("planConstruction", {
+    reg.handle(sc_api::handler_ids::PLAN_CONSTRUCTION, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -179,7 +180,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
                     .cloned()
                     .ok_or_else(|| Error::invalid("planning needs a signed-in admin"))?;
                 let construction =
-                    start_planning(catalog.clone(), apps, &app, RunCaller::user(user)).await?;
+                    start_planning(catalog.clone(), apps, &app, console_caller(user)).await?;
                 Ok(
                     HandlerResponse::ok(construction_json(&catalog, &construction).await?)
                         .with_status(202),
@@ -188,7 +189,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         }
     });
 
-    reg.register_admin("savePhases", {
+    reg.handle(sc_api::handler_ids::SAVE_PHASES, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -212,7 +213,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
 
     register_runner(reg, &catalog, &apps);
 
-    reg.register_admin("deleteConstruction", {
+    reg.handle(sc_api::handler_ids::DELETE_CONSTRUCTION, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -234,7 +235,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
 /// The runner's endpoints (AC3.4): run, stop, and retry or skip a task.
 fn register_runner(reg: &mut HandlerRegistry, catalog: &Arc<Catalog>, apps: &Arc<AppMounts>) {
     register_phase_planning(reg, catalog, apps);
-    reg.register_admin("runConstruction", {
+    reg.handle(sc_api::handler_ids::RUN_CONSTRUCTION, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -293,7 +294,7 @@ fn register_runner(reg: &mut HandlerRegistry, catalog: &Arc<Catalog>, apps: &Arc
         }
     });
 
-    reg.register_admin("stopConstruction", {
+    reg.handle(sc_api::handler_ids::STOP_CONSTRUCTION, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -327,10 +328,13 @@ fn register_runner(reg: &mut HandlerRegistry, catalog: &Arc<Catalog>, apps: &Arc
         }
     });
 
-    for (handler, retry) in [("retryTask", true), ("skipTask", false)] {
+    for (handler, retry) in [
+        (sc_api::handler_ids::RETRY_TASK, true),
+        (sc_api::handler_ids::SKIP_TASK, false),
+    ] {
         let catalog = catalog.clone();
         let apps = apps.clone();
-        reg.register_admin(handler, move |ctx| {
+        reg.handle(handler, move |ctx| {
             let catalog = catalog.clone();
             let apps = apps.clone();
             async move {
@@ -400,7 +404,7 @@ fn register_phase_planning(
     catalog: &Arc<Catalog>,
     apps: &Arc<AppMounts>,
 ) {
-    reg.register_admin("planPhaseTasks", {
+    reg.handle(sc_api::handler_ids::PLAN_PHASE_TASKS, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {

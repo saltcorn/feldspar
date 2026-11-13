@@ -58,7 +58,7 @@ impl McpClient {
 /// A client for `def`: no redirects, and when the private network is not
 /// allowed, public addresses only.
 pub(crate) fn client(def: &McpServerDef) -> Result<McpClient> {
-    let builder = reqwest::Client::builder()
+    let builder = sc_net::client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(15));
     if def.allow_private_network {

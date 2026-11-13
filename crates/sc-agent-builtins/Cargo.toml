@@ -13,6 +13,8 @@ rust-version.workspace = true
 autotests = false
 
 [dependencies]
+# The shell, scripts, checks, git and containers, started the one way (H4).
+sc-proc.workspace = true
 sc-error.workspace = true
 # The extension point these implement: `AgentTrait`, `AgentRegistry`, and the
 # `RunCaller` every tool executes as.

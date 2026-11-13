@@ -16,11 +16,17 @@
 //!   [`set_user_disabled`]. Writing the password hash through a bag of column
 //!   values is exactly the hole that rule closes.
 //!
-//! **Nothing here touches sessions**, deliberately. Disabling or deleting a user
-//! must also drop the credentials already handed out, but that is
-//! [`SessionStore::end_user_sessions`](crate::SessionStore::end_user_sessions)'s
-//! job: it evicts the calling node's cache as well as the rows, and only the
-//! server holds the store. Doing half of it here would look like the whole of it.
+//! **A credential change ends what the old credentials handed out**
+//! (security review 2026-11, #11, and H2.3): a new password
+//! ([`set_user_password`], or [`update_user`] with one), a role that now
+//! requires a second factor the account lacks, and disabling it raise the
+//! account's [`AuthEpoch`](crate::AuthEpoch) and delete its session rows — and
+//! a new password its outstanding reset links and sign-in challenges too —
+//! here, so that every caller (the admin UI, the CLI, an MCP tool) does it.
+//! What is left is this node's cache and live sockets: each such function
+//! returns the [`CredentialsChanged`] ([`UserChanged::credentials`]) for
+//! [`SessionStore::bump_epoch`](crate::SessionStore::bump_epoch); any other
+//! node refuses the old sessions at its next read of them.
 
 use sc_types::Role;
 use std::collections::BTreeMap;
@@ -33,6 +39,7 @@ use sc_query::{
 };
 use uuid::Uuid;
 
+use crate::epoch::{CredentialsChanged, bump_auth_epoch};
 use crate::lookup::load_base_user;
 use crate::password::hash_password;
 use crate::roles::load_role;
@@ -67,13 +74,42 @@ pub struct UserUpdate {
     pub extra: BTreeMap<String, Value>,
 }
 
+/// A user as a change left it, and the credential change it was, if it was
+/// one (module docs).
+#[must_use = "a credential change must be passed to SessionStore::bump_epoch"]
+#[derive(Debug)]
+pub struct UserChanged {
+    /// The user as it now is.
+    pub user: User,
+    /// A new password, a role that now requires a second factor the account
+    /// lacks, the account disabled: the account's epoch went up.
+    pub credentials: Option<CredentialsChanged>,
+}
+
+impl std::ops::Deref for UserChanged {
+    type Target = User;
+
+    fn deref(&self) -> &User {
+        &self.user
+    }
+}
+
+impl UserChanged {
+    fn unchanged(user: User) -> UserChanged {
+        UserChanged {
+            user,
+            credentials: None,
+        }
+    }
+}
+
 /// Apply `update` to the user with this id, returning the user as it now is.
 ///
 /// [`Error::not_found`] if there is no such user; [`Error::invalid`] if the role
 /// does not exist, the email is blank, or `extra` names a system column. An
 /// update with nothing in it is not an error — it reads the user back, because
 /// "save" on a form nobody changed should not be a failure.
-pub async fn update_user(catalog: &Catalog, id: Uuid, update: UserUpdate) -> Result<User> {
+pub async fn update_user(catalog: &Catalog, id: Uuid, update: UserUpdate) -> Result<UserChanged> {
     reject_system_columns(&update.extra)?;
 
     let mut assignments = Vec::new();
@@ -116,9 +152,37 @@ pub async fn update_user(catalog: &Catalog, id: Uuid, update: UserUpdate) -> Res
     if assignments.is_empty() {
         return load_base_user(catalog, id)
             .await?
-            .ok_or_else(|| no_such_user(id));
+            .ok_or_else(|| no_such_user(id))
+            .map(UserChanged::unchanged);
     }
-    write(catalog, id, assignments).await
+    let user = write(catalog, id, assignments).await?;
+    let credentials = if update.password.is_some() {
+        Some(password_changed(catalog, id).await?)
+    } else if let Some(role) = update.role
+        && crate::second_factor::role_requires_second_factor(catalog, role).await?
+        && !crate::second_factor::second_factor_enabled(catalog, id).await?
+    {
+        // Its sessions were started without the second factor its role now
+        // asks for.
+        Some(sessions_ended(catalog, id).await?)
+    } else {
+        None
+    };
+    Ok(UserChanged { user, credentials })
+}
+
+/// What a new password ends: the account's sessions, and the reset links and
+/// sign-in challenges issued under the old one.
+async fn password_changed(catalog: &Catalog, id: Uuid) -> Result<CredentialsChanged> {
+    crate::password_tokens::delete_password_tokens_for_user(catalog, id).await?;
+    sessions_ended(catalog, id).await
+}
+
+/// End the account's sessions: its epoch goes up, and its rows go.
+async fn sessions_ended(catalog: &Catalog, id: Uuid) -> Result<CredentialsChanged> {
+    let changed = bump_auth_epoch(catalog, id).await?;
+    crate::session::delete_sessions_for_user(catalog, id).await?;
+    Ok(changed)
 }
 
 /// Disable or re-enable an account, returning the user as it now is.
@@ -132,16 +196,21 @@ pub async fn update_user(catalog: &Catalog, id: Uuid, update: UserUpdate) -> Res
 ///
 /// Disabling the **last enabled admin** is refused ([`refuse_last_admin`]):
 /// nobody could then administer the installation from the admin UI.
-pub async fn set_user_disabled(catalog: &Catalog, id: Uuid, disabled: bool) -> Result<User> {
+pub async fn set_user_disabled(catalog: &Catalog, id: Uuid, disabled: bool) -> Result<UserChanged> {
     if disabled {
         refuse_last_admin(catalog, id, "disable").await?;
     }
-    write(
+    let user = write(
         catalog,
         id,
         vec![Assignment::new(COL_DISABLED, Expr::lit(disabled))],
     )
-    .await
+    .await?;
+    let credentials = match disabled {
+        true => Some(sessions_ended(catalog, id).await?),
+        false => None,
+    };
+    Ok(UserChanged { user, credentials })
 }
 
 /// Replace a user's password, returning the user as it now is.
@@ -149,7 +218,23 @@ pub async fn set_user_disabled(catalog: &Catalog, id: Uuid, disabled: bool) -> R
 /// The plaintext is hashed here and nowhere kept; a caller that generated it
 /// ([`random_password`](crate::random_password)) holds the only readable copy and
 /// is the one that has to show it.
-pub async fn set_user_password(catalog: &Catalog, id: Uuid, password: &str) -> Result<User> {
+pub async fn set_user_password(catalog: &Catalog, id: Uuid, password: &str) -> Result<UserChanged> {
+    let user = replace_password_hash(catalog, id, password).await?;
+    let changed = password_changed(catalog, id).await?;
+    Ok(UserChanged {
+        user,
+        credentials: Some(changed),
+    })
+}
+
+/// Store `password`'s hash for `id`, and nothing else: the same password in
+/// a better hash ([`authenticate`](crate::authenticate)'s upgrade of a legacy
+/// one), which changes no credential and so ends nothing.
+pub(crate) async fn replace_password_hash(
+    catalog: &Catalog,
+    id: Uuid,
+    password: &str,
+) -> Result<User> {
     if password.is_empty() {
         return Err(Error::invalid("password is required"));
     }
@@ -172,9 +257,9 @@ pub async fn set_user_password(catalog: &Catalog, id: Uuid, password: &str) -> R
 /// to come back goes first: the password they chose, any reset link, and every
 /// session. The address is then proven. An account whose address is not
 /// unproven is returned as it is.
-pub async fn claim_unproven_account(catalog: &Catalog, user: User) -> Result<User> {
+pub async fn claim_unproven_account(catalog: &Catalog, user: User) -> Result<UserChanged> {
     if !user.email_unproven() {
-        return Ok(user);
+        return Ok(UserChanged::unchanged(user));
     }
     let id = user.id();
     let claimed = write(
@@ -186,9 +271,11 @@ pub async fn claim_unproven_account(catalog: &Catalog, user: User) -> Result<Use
         ],
     )
     .await?;
-    crate::password_tokens::delete_password_tokens_for_user(catalog, id).await?;
-    crate::session::delete_sessions_for_user(catalog, id).await?;
-    Ok(claimed)
+    let changed = password_changed(catalog, id).await?;
+    Ok(UserChanged {
+        user: claimed,
+        credentials: Some(changed),
+    })
 }
 
 /// Delete a user, reporting whether there was one to delete.
@@ -204,7 +291,8 @@ pub async fn delete_user(catalog: &Catalog, id: Uuid) -> Result<bool> {
     crate::grants::delete_grants_for_user(catalog, id).await?;
     crate::credits::delete_credits_for_user(catalog, id).await?;
     // So is a second factor: a later account must not inherit the secret.
-    crate::second_factor::disable_second_factor(catalog, id).await?;
+    crate::second_factor::remove_second_factor(catalog, id).await?;
+    crate::epoch::delete_auth_epoch(catalog, id).await?;
     let delete = Delete {
         returning: vec![Projection::expr(Expr::col(COL_ID))],
         ..Delete::from(USERS_TABLE).filter(Expr::col(COL_ID).eq(Expr::lit(id)))
@@ -219,7 +307,7 @@ pub async fn delete_user(catalog: &Catalog, id: Uuid) -> Result<bool> {
 /// than at each door. An installation with no enabled admin can only be
 /// recovered from a terminal (`feldspar modify-user … --enabled`), and that is
 /// not a state any of those callers means to produce.
-pub async fn refuse_last_admin(catalog: &Catalog, id: Uuid, verb: &str) -> Result<()> {
+pub(crate) async fn refuse_last_admin(catalog: &Catalog, id: Uuid, verb: &str) -> Result<()> {
     let Some(user) = load_base_user(catalog, id).await? else {
         return Ok(());
     };

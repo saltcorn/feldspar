@@ -87,19 +87,19 @@ impl ListQuery {
     /// nesting happens here rather than in the database.
     ///
     /// A secret answers as its sentinel (TODO-imap M2): a client never reads one.
+    ///
+    /// Each row is an [`ApiRow`](sc_access::ApiRow) (TODO-type-hardening H3.5):
+    /// no hidden column, each secret its sentinel, whatever the shape.
     pub(crate) fn render(&self, table: &Table, rows: &[BTreeMap<String, Value>]) -> Json {
-        Json::Array(
-            rows.iter()
-                .map(|values| {
-                    let mut values = values.clone();
-                    sc_catalog::secrets::redact_values(table, &mut values);
-                    match &self.shape {
-                        None => ownership::table_row_json(table, &values),
-                        Some(nodes) => render_row(nodes, &values),
-                    }
+        sc_access::ApiRow::array(rows.iter().map(|values| match &self.shape {
+            None => sc_access::ApiRow::of_values(table, values),
+            Some(nodes) => {
+                sc_access::ApiRow::shaped(table, values, |values| match render_row(nodes, values) {
+                    Json::Object(map) => map,
+                    _ => Map::new(),
                 })
-                .collect(),
-        )
+            }
+        }))
     }
 }
 

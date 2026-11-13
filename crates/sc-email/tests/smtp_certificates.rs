@@ -17,6 +17,10 @@
 //! in this binary, so "issued by a trusted CA" is a real check against a real
 //! chain.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use std::sync::{Arc, OnceLock};
 
@@ -42,6 +46,10 @@ struct Certificates {
 
 /// The certificates, generated once, with the CA installed as the trusted root
 /// before anything in this binary can build a verifier.
+#[allow(
+    unsafe_code,
+    reason = "the test's own CA reaches the verifier through SSL_CERT_FILE"
+)]
 fn certificates() -> &'static Certificates {
     static CERTIFICATES: OnceLock<Certificates> = OnceLock::new();
     CERTIFICATES.get_or_init(|| {

@@ -465,7 +465,8 @@ async fn convert(
     let mut out = Vec::with_capacity(result.len());
     for row in result {
         let index = match row.get_index(0) {
-            Some(Value::Int(i)) => *i as usize,
+            Some(Value::Int(i)) => usize::try_from(*i)
+                .map_err(|_| Error::database("the conversion lost a feature's number"))?,
             _ => return Err(Error::database("the conversion lost a feature's number")),
         };
         match row.get_index(1) {

@@ -22,6 +22,10 @@
 //! with it — including when it fails or is cancelled — and a server that died
 //! mid-fit has its leftovers removed at the next boot
 //! ([`clean_stale_scratch`]).
+//!
+//! May use `unsafe` (the workspace denies it) for one `libc::kill(pid, 0)`, the
+//! liveness check of a run's process.
+#![allow(unsafe_code)]
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};

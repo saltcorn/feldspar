@@ -464,7 +464,7 @@ async fn write_entries<W: Write + Seek>(
         // definition and no files, rather than failing the whole backup: the
         // definition is the part that is hard to recreate by hand.
         if let Ok(store) = catalog.require_file_store(&def.name, crate::BACKUP_TASKS) {
-            for (path, size) in walk(store.as_ref()).await? {
+            for (path, size) in walk(store.as_ref(), super::is_installed_dependency).await? {
                 let written = copy_file(
                     store.as_ref(),
                     &path,
@@ -563,15 +563,26 @@ async fn write_entries<W: Write + Seek>(
 
     // --- modules -----------------------------------------------------------
     //
-    // The rows, not the packages: a restore reinstalls each from where it came,
-    // which is what an install already does, and a `node_modules` tree in a zip
-    // would be built for the machine that took the backup.
+    // The rows, not the installed packages: a restore reinstalls each from where
+    // it came, which is what an install already does, and a `node_modules` tree
+    // in a zip would be built for the machine that took the backup.
+    //
+    // **A local module's source directory goes in with it** — a module built on
+    // the server (an agent writing an integration with a legacy system, say) has
+    // no registry to come back from, and a path on this machine means nothing on
+    // the one restoring. Its dependencies are not: the install puts them back.
     if selection.modules && has_table(catalog, sc_module::MODULES_TABLE)? {
-        let modules: Vec<Json> = sc_module::list_modules(catalog)
-            .await?
-            .iter()
-            .map(backup_module_json)
-            .collect();
+        let mut modules = Vec::new();
+        for module in sc_module::list_modules(catalog).await? {
+            let mut value = backup_module_json(&module);
+            if module.source == sc_module::ModuleSource::Local
+                && let Some(package) = write_module_source(&module, zip).await?
+                && let Json::Object(obj) = &mut value
+            {
+                obj.insert("package".into(), package);
+            }
+            modules.push(value);
+        }
         contents.modules = count(modules.len());
         zip.json("modules.json", &Json::Array(modules))?;
     }
@@ -951,19 +962,66 @@ fn file_mode(_store: &dyn sc_files::FileStore, _path: &StorePath) -> Option<u32>
     None
 }
 
+/// A local module's source directory, into `modules/<id>/files/`, answering
+/// the `package` entry its `modules.json` item carries: where the files are and
+/// what each one is (`{ prefix, files: [ { path, size, mode } ] }`).
+///
+/// `None` when the directory is not there to read — the module was installed
+/// from a checkout since removed — which backs up as the row alone, as every
+/// module did before: the restore then tries the path, and says so if it fails.
+/// What is installed rather than written is left out ([`is_module_build_output`]).
+async fn write_module_source<W: Write + Seek>(
+    module: &sc_module::Module,
+    zip: &mut ZipBuilder<W>,
+) -> Result<Option<Json>> {
+    let dir = std::path::Path::new(module.location.trim());
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+    let Ok(store) = sc_files::LocalFileStore::new(format!("module {}", module.name), dir) else {
+        return Ok(None);
+    };
+    let prefix = format!("{}{}/files/", super::MODULE_SOURCES_DIR, module.id.0);
+    let mut files = Vec::new();
+    for (path, size) in walk(&store, is_module_build_output).await? {
+        let written = copy_file(&store, &path, size, zip, &format!("{prefix}{path}")).await?;
+        files.push(json!({
+            "path": path.as_str(),
+            "size": written,
+            "mode": file_mode(&store, &path),
+        }));
+    }
+    Ok(Some(json!({ "prefix": prefix, "files": files })))
+}
+
+/// What a module's source directory holds that is not its source: the
+/// dependencies an install puts back (`node_modules`, a virtual environment),
+/// compiled bytecode, and the repository history.
+fn is_module_build_output(path: &str) -> bool {
+    path.split('/').any(|part| {
+        matches!(
+            part,
+            "node_modules" | ".git" | "__pycache__" | ".venv" | "venv"
+        )
+    })
+}
+
 /// Every file in a store, depth-first, as store-relative paths with the size
 /// the listing gave (where it gave one).
 ///
 /// Directories are not recorded: an empty directory carries no information a
 /// restore could not recreate, and every non-empty one is implied by the paths of
-/// the files in it. A `node_modules` is not descended into
-/// ([`super::is_installed_dependency`]).
-async fn walk(store: &dyn sc_files::FileStore) -> Result<Vec<(StorePath, Option<u64>)>> {
+/// the files in it. A path `skip` says yes to is not descended into — for a
+/// file store, a `node_modules` ([`super::is_installed_dependency`]).
+async fn walk(
+    store: &dyn sc_files::FileStore,
+    skip: fn(&str) -> bool,
+) -> Result<Vec<(StorePath, Option<u64>)>> {
     let mut out = Vec::new();
     let mut pending = vec![StorePath::root()];
     while let Some(dir) = pending.pop() {
         for entry in store.list(&dir).await? {
-            if super::is_installed_dependency(&entry.path) {
+            if skip(&entry.path) {
                 continue;
             }
             let path = StorePath::parse(&entry.path)?;
@@ -1002,7 +1060,10 @@ impl<'a> RowSource<'a> {
                     if catalog.primary_info().capabilities().row_level_security {
                         sc_catalog::set_caller_context(
                             tx.as_mut(),
-                            &sc_catalog::Principal::anonymous(sc_types::Role::ADMIN),
+                            &sc_catalog::Authority::system(
+                                "backup: read every row of a table under row-level security",
+                            )
+                            .as_principal(),
                         )
                         .await?;
                     }
@@ -1106,8 +1167,12 @@ async fn write_table_rows<W: Write + Seek>(
             started = true;
         }
         let mut bytes: u64 = 0;
+        let packings = page
+            .first()
+            .map(|row| values::packings(table, row.columns()))
+            .unwrap_or_default();
         for row in &page {
-            bytes += zip.row(&values::row_to_json(row))?;
+            bytes += zip.row(&values::packed_row_to_json(&packings, row))?;
             count += 1;
         }
         let Some(pk) = &pk else {

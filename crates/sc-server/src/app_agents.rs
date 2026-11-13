@@ -556,6 +556,10 @@ async fn prompt(ctx: AgentCtx, body: &Bytes, stream: bool) -> Result<Response> {
 
 /// Run one turn in its own task, returning the channel its events arrive on.
 /// Dropping the receiver — the response going away — stops the agent.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "unbounded: one agent turn's events to its own response stream, which the turn's step and token limits bound"
+)]
 fn start_turn(
     ctx: AgentCtx,
     slot: TurnSlot,
@@ -1105,6 +1109,10 @@ impl RunObserver for AppObserver {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 mod tests {
     use super::*;
 

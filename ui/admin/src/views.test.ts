@@ -36,7 +36,6 @@ import {
   newViewError,
   referencesReport,
   saveViewBody,
-  settingsOnOwnTab,
   stepFormValues,
   stepTitle,
   type PageItem,
@@ -85,39 +84,19 @@ function pattern(name: string, label = name): PatternItem {
 }
 
 describe("appTabs", () => {
-  it("gives a views-and-pages application Views, Pages, Library and App settings after Settings", () => {
-    const tabs = appTabs({ id: "a1", has_views: true });
-    expect(tabs.map((t) => t.id)).toEqual([
-      "settings",
-      "translations",
-      "views",
-      "pages",
-      "library",
-      "app-settings",
-    ]);
+  it("are the framework's settings tabs, linked to their screens", () => {
+    const tabs = appTabs({
+      id: "a1",
+      settings_tabs: [
+        { id: "site", label: "Site", groups: ["identity", "framework", "settings"] },
+        { id: "views", label: "Views", groups: ["views"] },
+        { id: "advanced", label: "Advanced", groups: ["apis", "translations"] },
+      ],
+    });
+    expect(tabs.map((t) => t.id)).toEqual(["site", "views", "advanced"]);
     expect(tabs[0].href).toBe("#/applications/a1/edit");
-    expect(tabs[2].href).toBe("#/applications/a1/views");
-    expect(tabs[4].href).toBe("#/applications/a1/library");
-    expect(tabs[5].href).toBe("#/applications/a1/app-settings");
-  });
-
-  it("gives any other application Settings and Translations", () => {
-    // Every application has strings a person reads, whatever its framework
-    // writes them in, so this tab is not conditional on one.
-    const tabs = appTabs({ id: "a1", has_views: false });
-    expect(tabs.map((t) => t.id)).toEqual(["settings", "translations"]);
-    expect(tabs[1].href).toBe("#/applications/a1/translations");
-  });
-});
-
-describe("settingsOnOwnTab", () => {
-  it("moves a views-and-pages framework's settings to the App settings tab", () => {
-    expect(settingsOnOwnTab({ has_views: true })).toBe(true);
-  });
-
-  it("keeps any other framework's settings on the application form", () => {
-    expect(settingsOnOwnTab({ has_views: false })).toBe(false);
-    expect(settingsOnOwnTab(undefined)).toBe(false);
+    expect(tabs[1].href).toBe("#/applications/a1/views");
+    expect(tabs[2].href).toBe("#/applications/a1/edit/advanced");
   });
 });
 

@@ -10,6 +10,8 @@ rust-version.workspace = true
 
 [dependencies]
 sc-error.workspace = true
+# `git` and `ssh-keygen` for the git backend, started the one way (H4).
+sc-proc.workspace = true
 # `Attrs` for a store definition's backend settings, so a backend's settings use
 # the same vocabulary every other configurable extension point does (§6.2).
 sc-types.workspace = true
@@ -34,7 +36,7 @@ uuid.workspace = true
 # `process` drives the git backend: `git` and `ssh-keygen` are external
 # processes, awaited without blocking a runtime thread (the same reason a code
 # framework's build step needs it, §13.3).
-tokio = { workspace = true, features = ["fs", "rt", "process"] }
+tokio = { workspace = true, features = ["fs", "rt", "process", "io-util"] }
 # Cross-platform extended-attribute access (technical design §9/§14.1): POSIX
 # xattrs (`user.` namespace) on Linux/macOS/FreeBSD/NetBSD/Android via the
 # mature `xattr` crate, and NTFS Alternate Data Streams on Windows. This is the
@@ -43,7 +45,9 @@ tokio = { workspace = true, features = ["fs", "rt", "process"] }
 fsquirrel = "0.1"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["fs", "rt", "macros"] }
+tokio = { workspace = true, features = ["fs", "rt", "macros", "net", "sync", "io-util"] }
+# An HTTP remote's `Authorization` header, decoded by the token test.
+base64.workspace = true
 
 [lints]
 workspace = true

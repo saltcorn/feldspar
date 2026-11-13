@@ -98,7 +98,10 @@ tar -xzf feldspar-linux-x86_64.tar.gz
 sudo feldspar-*/install.sh                              # the tree at /opt/feldspar, feldspar on PATH
 ```
 
-Those URLs carry no version: they are always the latest release. It runs on the same
+Those URLs carry no version: they are always the latest release. Every release is also
+kept under its version, as `feldspar-<version>-linux-x86_64.tar.gz`; `versions.txt` beside
+them lists the versions, and the curl installer takes one with `sh -s -- --version 0.1.1`.
+It runs on the same
 distributions as the curl installer and needs no Rust, no C toolchain, no Python and no
 checkout.
 
@@ -662,7 +665,7 @@ container with a pinned toolchain, on Debian 12 (glibc 2.36), with a bundled CPy
 
 ```bash
 scripts/build-static.sh                    # dist/feldspar-<version>-<target>.tar.gz
-scripts/build-static.sh --release          # ...and publish it to the R2 bucket
+scripts/build-static.sh --release 0.1.1    # ...and publish it as release 0.1.1, tagged v0.1.1
 scripts/build-static.sh --help             # targets, install prefix, options
 ```
 

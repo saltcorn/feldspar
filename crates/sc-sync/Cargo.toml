@@ -1,0 +1,81 @@
+[package]
+name = "sc-sync"
+description = "Source control for an installation's structure: the structure tree, its export, the three-way diff, the planner and the executor (layer 9)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+# One integration-test binary, as everywhere in this workspace: every test target
+# statically links V8.
+autotests = false
+
+[dependencies]
+sc-error.workspace = true
+sc-types.workspace = true
+sc-catalog.workspace = true
+sc-files.workspace = true
+sc-auth.workspace = true
+sc-config.workspace = true
+# The entity JSON: every record in the tree is the admin API's own shape, read
+# through the codecs the admin handlers and a backup share.
+sc-backup.workspace = true
+sc-action.workspace = true
+sc-app.workspace = true
+sc-agent.workspace = true
+sc-analytics.workspace = true
+sc-check.workspace = true
+sc-dataset.workspace = true
+sc-llm.workspace = true
+sc-mcp.workspace = true
+sc-model.workspace = true
+sc-module.workspace = true
+sc-stream.workspace = true
+sc-viewpattern.workspace = true
+sc-workflow.workspace = true
+# The built-in registries a secret is recognised by when the caller has no
+# server's own to hand (`Registries::builtin`).
+sc-action-builtins.workspace = true
+sc-agent-builtins.workspace = true
+
+sc-i18n.workspace = true
+# The planner's table operations are `schema_edit` batches, and its can-fail
+# operations are dry-run through it.
+sc-api.workspace = true
+
+# The deployment ledger and the sync lock are rows of the sync's own tables.
+sc-db.workspace = true
+sc-query.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+tokio = { workspace = true, features = ["fs"] }
+
+serde.workspace = true
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+uuid.workspace = true
+# The tree's and a plan's digest.
+sha2.workspace = true
+# A store file is compared by its git blob hash, which is SHA-1.
+sha1.workspace = true
+# A text store file's line diff.
+similar.workspace = true
+# The base is kept in `_fd_sync` gzipped, with any non-JSON file it holds as
+# base64.
+flate2.workspace = true
+base64.workspace = true
+# A local store's synced directories are walked with git's own ignore rules.
+ignore = "0.4"
+# The zip transport (§7.4): a structure tree as a zip, and back.
+zip.workspace = true
+
+[dev-dependencies]
+sc-test-harness = { workspace = true, features = ["catalog"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

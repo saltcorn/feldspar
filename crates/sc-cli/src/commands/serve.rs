@@ -245,6 +245,16 @@ pub(crate) async fn serve_command(args: &[String]) -> Result<()> {
     // Everything is up — catalog, file stores, applications, triggers — and the
     // listener has not been announced yet, which is exactly what the `startup`
     // event means.
+    // The row-level-security upgrade report, on the first start of a version
+    // that makes RLS a hard boundary (TODO-type-hardening H8.6): what elevated
+    // over an RLS table and now does not, in the log and in the admin notices.
+    // Reported rather than fatal, like every other startup report.
+    if let Err(e) = sc_server::report_rls_elevation(&catalog, &triggers).await {
+        sc_log::log_error!(
+            "feldspar: the row-level-security upgrade report could not be made: {}",
+            e.chain()
+        );
+    }
     service.notify_status("running startup triggers");
     sc_server::fire_startup(&catalog, &triggers).await;
 
@@ -535,6 +545,10 @@ pub(crate) fn serving_defaults(db: &DbConfig) -> Vec<String> {
     for (flag, value) in serving.stan_flags() {
         flags.push(flag.to_owned());
         flags.push(value);
+    }
+    if let Some(size) = serving.max_upload_bytes() {
+        flags.push("--max-upload-bytes".to_owned());
+        flags.push(size);
     }
     flags
 }

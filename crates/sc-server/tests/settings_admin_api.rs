@@ -602,6 +602,65 @@ async fn a_test_message_is_sent_through_the_stored_settings() -> sc_error::Resul
     Ok(())
 }
 
+/// The Users screen's "Send by email": the status endpoint says whether to
+/// offer it, and the send goes to the account's own address — never one in the
+/// request — carrying the password and the sign-in URL the dialog chose.
+#[tokio::test]
+async fn credentials_are_mailed_to_the_account_through_the_stored_settings()
+-> sc_error::Result<()> {
+    let (mut client, _catalog, _db) = setup().await?;
+    let server = TestSmtp::start().await?;
+
+    let (_, auth) = client.send("GET", "/api/auth/status", None).await;
+    let id = auth["current_user"]["id"].as_str().unwrap().to_owned();
+    let path = format!("/api/users/{id}/credentials-email");
+    let body = json!({ "password": "s3cret-Pw", "url": "https://blog.example.com" });
+
+    // Nothing configured: the button is not offered, and the send says why.
+    let (status, st) = client.send("GET", "/api/settings/email/status", None).await;
+    assert_eq!(status, StatusCode::OK, "{st}");
+    assert_eq!(st["configured"], json!(false));
+    let (status, refused) = client.send("POST", &path, Some(body.clone())).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert!(refused["error"].as_str().unwrap().contains("Settings"), "{refused}");
+
+    let (status, saved) = client
+        .send(
+            "POST",
+            "/api/settings",
+            Some(json!({ "values": {
+                SMTP_HOST: "127.0.0.1",
+                SMTP_PORT: server.port(),
+                SMTP_SECURITY: SECURITY_NONE,
+                EMAIL_FROM: "saltcorn@example.com",
+            }})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let (_, st) = client.send("GET", "/api/settings/email/status", None).await;
+    assert_eq!(st["configured"], json!(true));
+
+    let (status, sent) = client.send("POST", &path, Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{sent}");
+    assert_eq!(sent["sent_to"], json!("admin@example.com"));
+
+    let received = server.message().await?;
+    let transcript = received.transcript();
+    assert!(transcript.contains("RCPT TO:<admin@example.com>"), "{transcript}");
+    assert!(received.body.contains("s3cret-Pw"), "{}", received.body);
+    assert!(received.body.contains("https://blog.example.com"), "{}", received.body);
+
+    // Admin only, like the test message: otherwise anyone could make the
+    // server send mail.
+    let mut anonymous = Client::new(client.router.clone());
+    anonymous.send("GET", "/api/auth/status", None).await;
+    let (status, _) = anonymous
+        .send("POST", &path, Some(json!({ "password": "x", "url": "y" })))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    Ok(())
+}
+
 /// A transport that is not there fails with the transport's own words, rather
 /// than a success the admin would believe (decision 12).
 #[tokio::test]

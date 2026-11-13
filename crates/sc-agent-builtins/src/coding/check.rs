@@ -58,6 +58,7 @@ use crate::build_application::{resolve_application, success_log};
 use crate::files::{FileScope, config_count};
 use crate::table::config_str;
 use sc_api::mcp::arguments;
+use sc_proc::AdminProof;
 
 /// The checks `check` runs: `package.json` script names, in order.
 pub const CFG_CHECKS: &str = "checks";
@@ -238,12 +239,17 @@ pub struct CheckRun {
 
 /// Run one `package.json` script as a check. Diagnostics under the project
 /// directory are made relative to it.
-pub async fn run_script(project: &Project, script: &str, timeout: u64) -> Result<CheckRun> {
+pub async fn run_script(
+    who: &AdminProof,
+    project: &Project,
+    script: &str,
+    timeout: u64,
+) -> Result<CheckRun> {
     let started = Instant::now();
     let outcome = if !project.scripts.iter().any(|s| s == script) {
         Outcome::Undeclared
     } else {
-        match npm_run(&project.dir, script, timeout).await? {
+        match npm_run(who, &project.dir, script, timeout).await? {
             Ran::TimedOut => Outcome::TimedOut(timeout),
             Ran::Finished(output) => {
                 let log = format!(
@@ -389,8 +395,9 @@ pub async fn record_baseline(
     // A scope with no runnable project has no script baseline: every script
     // is then undeclared, before and after.
     if let Ok(project) = project(scope, ctx.catalog, &crate::files::file_caller(ctx.caller)).await {
+        let who = super::host_code_proof(ctx.caller)?;
         for script in scripts {
-            let run = run_script(&project, &script, timeout).await?;
+            let run = run_script(&who, &project, &script, timeout).await?;
             if let Some(baseline) = run.outcome.baseline() {
                 state.baseline.insert(script, baseline);
             }
@@ -579,8 +586,9 @@ pub async fn run_checks(
     let mut runs: Vec<CheckRun> = Vec::new();
     if !checks.is_empty() {
         let project = project(scope, ctx.catalog, &crate::files::file_caller(ctx.caller)).await?;
+        let who = super::host_code_proof(ctx.caller)?;
         for script in &checks {
-            runs.push(run_script(&project, script, timeout).await?);
+            runs.push(run_script(&who, &project, script, timeout).await?);
         }
     }
     // Before the run has changed anything, what is there *is* the baseline —

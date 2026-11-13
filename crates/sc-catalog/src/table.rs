@@ -422,7 +422,7 @@ impl Table {
     /// [`apply_overlay`](Table::apply_overlay): `save_field_meta` refuses to write
     /// one, so this only fires on a row inserted behind the API, and the answer is
     /// to ignore it.
-    pub fn apply_field_overlay(&mut self, meta: &FieldMeta) -> Vec<FieldMergeIssue> {
+    pub(crate) fn apply_field_overlay(&mut self, meta: &FieldMeta) -> Vec<FieldMergeIssue> {
         if self.is_system() {
             return Vec::new();
         }

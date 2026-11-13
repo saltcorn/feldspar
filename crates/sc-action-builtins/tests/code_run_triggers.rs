@@ -43,7 +43,7 @@ struct World {
 impl World {
     /// Run `name` as the admin's Run button does, with a caller at `role`.
     async fn run(&self, name: &str, payload: Json, role: Role) -> Result<Json> {
-        let caller = Principal::new(role, Some(json!({ "email": "ada@example.com" })));
+        let caller = Principal::recorded(role, Some(json!({ "email": "ada@example.com" })));
         self.dispatcher
             .run_trigger(&self.catalog, name, payload, Authority::Caller(&caller))
             .await

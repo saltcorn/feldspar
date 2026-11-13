@@ -3,6 +3,10 @@
 //! makes the command exit non-zero and say which step failed; a passing one
 //! exits zero.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use sc_types::Role;
 use std::process::Command;
 

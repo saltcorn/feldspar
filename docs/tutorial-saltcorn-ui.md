@@ -90,8 +90,9 @@ Content-Security-Policy. Seven views stay seven.
 ### Step A3 — The application
 
 **Applications** now lists **BooksDB**, framework **Saltcorn UI**, and — unlike a React app — no
-Build button and no *Not built yet* badge. Open it: the tabs are **Settings**, **Views**,
-**Pages**, **Library** and **App settings**. **Views** has the seven views, each with its
+Build button and no *Not built yet* badge. Open it: the tabs are **Site**, **Views**, **Pages**,
+**Library**, **Data**, **Users & Security** and **Advanced** (where its translations are too).
+**Views** has the seven views, each with its
 pattern, table, minimum role and a link that opens it on the subdomain. **Pages** has one,
 *BooksOverview*.
 
@@ -196,10 +197,9 @@ Add a row or two from the table editor so there is something to list.
 | Name | `Library` |
 | Subdomain | `library` |
 | Framework | **Saltcorn UI** |
-| Site name | `Library` |
 | Tables | `books` |
 
-Leave the rest as it is, and the Content-Security-Policy box empty. **Create application**. There
+**Create application**. Its site name, menu and other settings are on its tabs once it exists. There
 is no banner and nothing to build: creating it mounted it, and `http://library.localhost:3032/`
 already answers, with a document saying there is nothing here yet. (If it answers with the admin
 sign-in screen instead, the application did not mount — the server log says why; see *Things that
@@ -314,7 +314,7 @@ rename first shows what refers to the page) and **Delete** for each page.
 
 ### Step B8 — A menu and a home page
 
-**Applications → Library → App settings**. Two of Saltcorn UI's settings are JSON, in v1's own
+**Applications → Library → Site**. Two of Saltcorn UI's settings are JSON, in v1's own
 shapes:
 
 **Menu** — v1's `menu_items`:
@@ -336,7 +336,8 @@ public); a `Header` entry with `subitems` makes a dropdown.
 { "1": "Home" }
 ```
 
-**Save changes.** It is live immediately. `http://library.localhost:3032/` now opens *Home* for
+There is no Save button: each change is saved as you make it (a pause after typing), and the
+header says **Saved**. It is live immediately. `http://library.localhost:3032/` now opens *Home* for
 an admin, with the menu across the top and *Logout* beside it. A role with no home page still gets
 the document naming what there is.
 

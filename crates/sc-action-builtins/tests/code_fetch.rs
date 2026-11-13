@@ -14,7 +14,10 @@
 //! request the endpoint never answers fails inside the body's own time limit and
 //! is catchable; and what a body fetches can be written to a table in the same
 //! run, which is the point of having it here rather than in an action.
-
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use sc_types::Role;

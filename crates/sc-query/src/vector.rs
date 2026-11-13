@@ -6,7 +6,8 @@
 //!
 //! - **Postgres** (pgvector): `col <=> CAST($1 AS vector)`, the operator an HNSW
 //!   index with `vector_cosine_ops` answers, so `ORDER BY` it with a `LIMIT` is
-//!   an index scan.
+//!   an index scan. A `halfvec` column is compared with `CAST($1 AS halfvec)`,
+//!   which its `halfvec_cosine_ops` index answers.
 //! - **SQLite**: `_fd_cosine_distance(col, ?1)`, a function the driver
 //!   registers, over the little-endian `f32` blobs vectors are stored as. There
 //!   is no index: a nearest read is a scan of every row, which the row layer
@@ -28,6 +29,11 @@ pub struct VectorDistance {
     pub column: Expr,
     /// The vector distances are measured to.
     pub to: Vec<f32>,
+    /// Whether the column is pgvector's `halfvec`, so `to` is cast to one:
+    /// pgvector compares only vectors of one precision. Absent (false) in a
+    /// statement serialised before half-precision vectors were read.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub half: bool,
 }
 
 /// The dimensions of a `CAST` to `vector(n)`, which SQLite renders as a
@@ -95,6 +101,7 @@ mod tests {
         let distance = Expr::VectorDistance(Box::new(VectorDistance {
             column: Expr::qcol("doc", "embedding"),
             to: vec![1.0, 0.5],
+            half: false,
         }));
         let mut select = Select::from(Source::table("doc"))
             .columns(vec![Projection::expr_as(distance.clone(), "d")])

@@ -45,7 +45,7 @@
 //! floor is not enough to overwrite or delete somebody else's upload.
 
 use crate::store::{FileMeta, FileStore};
-use crate::store_path::{AsStorePath, StorePath};
+use crate::store_path::{AsStorePath, HostCode, StorePath};
 use sc_error::{Error, Result};
 use sc_types::Role;
 
@@ -57,23 +57,33 @@ use sc_types::Role;
 /// uploaded it. `user_id` is the account's id as [`FileMeta::owner`] records it
 /// (a UUID's string form); `None` is a caller with no account — anonymous, or a
 /// system run checked at a role — who owns nothing.
+///
+/// The fields are private and there is no public constructor that takes a
+/// role (security review 2026-11 #14, TODO-type-hardening H3.2): a caller is
+/// `sc_catalog::Principal::file_caller`'s view of a principal, or
+/// [`anonymous`](FileCaller::anonymous). A store is bound to one through
+/// `Catalog::checked_file_store`, which reads the store's floor itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileCaller {
     /// The caller's role (`1` admin … `100` public).
-    pub role: Role,
+    role: Role,
     /// The caller's user id, if they are signed in.
-    pub user_id: Option<String>,
+    user_id: Option<String>,
 }
 
 impl FileCaller {
-    /// A caller at `role`, signed in as `user_id` when there is one.
-    pub fn new(role: Role, user_id: Option<String>) -> FileCaller {
+    /// The view of a principal at `role`, signed in as `user_id` when there is
+    /// one. Only `sc_catalog::Principal::file_caller` calls this (sc-files sits
+    /// below sc-catalog, so it cannot name the principal); anything else gets
+    /// a caller from a principal.
+    #[doc(hidden)]
+    pub fn of_principal(role: Role, user_id: Option<String>) -> FileCaller {
         FileCaller { role, user_id }
     }
 
-    /// A caller with no account, checked at `role` alone — anonymous at
-    /// [`Role::PUBLIC`], or a system run at whatever role it was given.
-    pub fn role(role: Role) -> FileCaller {
+    /// A caller with no account, checked at `role` alone.
+    #[cfg(test)]
+    pub(crate) fn at_role(role: Role) -> FileCaller {
         FileCaller {
             role,
             user_id: None,
@@ -82,7 +92,20 @@ impl FileCaller {
 
     /// Nobody: the public role and no account.
     pub fn anonymous() -> FileCaller {
-        FileCaller::role(Role::PUBLIC)
+        FileCaller {
+            role: Role::PUBLIC,
+            user_id: None,
+        }
+    }
+
+    /// The caller's role (`1` admin … `100` public).
+    pub fn role(&self) -> Role {
+        self.role
+    }
+
+    /// The caller's user id, if they are signed in.
+    pub fn user_id(&self) -> Option<&str> {
+        self.user_id.as_deref()
     }
 
     /// Whether this caller has admin authority, which clears every rule.
@@ -202,9 +225,11 @@ pub async fn check_access(
 /// deleting or moving every file in it, so one that holds somebody else's file
 /// is refused exactly as that file would be.
 ///
-/// Below admin, a file that decides what a build runs ([`controls_build`]) is
-/// refused whatever the floor: an admin's next build or check runs it as the
-/// server's operating-system user.
+/// Below admin, a file that becomes code the server runs
+/// ([`StorePath::host_code_kind`](crate::StorePath::host_code_kind): a build's
+/// or a package manager's instructions, git's internals, Claude Code's
+/// configuration) is refused whatever the floor: an admin's next build, check,
+/// `git` command or terminal runs it as the server's operating-system user.
 pub async fn check_write(
     store: &dyn FileStore,
     store_min_role: Option<Role>,
@@ -216,8 +241,8 @@ pub async fn check_write(
     if caller.is_admin() {
         return Ok(());
     }
-    if controls_build(path.as_str()) {
-        return Err(build_input_refused(path.as_str()));
+    if let Some(kind) = path.host_code_kind() {
+        return Err(host_code_refused(path.as_str(), kind));
     }
     let meta = store.get_meta(path).await.unwrap_or_default();
     let permitted = match &meta.owner {
@@ -235,64 +260,11 @@ pub async fn check_write(
     Ok(())
 }
 
-/// The files a JavaScript build or install reads as *instructions*, not as
-/// source: `package.json` (its scripts), lockfiles (where packages come from),
-/// the package managers' rc files (`script-shell`, registries), bundler and tool
-/// configs (`vite.config.js`, `astro.config.mjs`, `.postcssrc.js`: code the
-/// bundler runs), and anything under `node_modules` (the packages themselves,
-/// `.bin` included).
-///
-/// Whoever may write one of these decides what runs at the next `npm install`,
-/// build or check, and those run as the server's operating-system user — so
-/// below admin they are refused on every write route (security review #16).
-/// Matched on any segment, in any case, with trailing dots and spaces ignored,
-/// as [`in_git_dir`](crate::in_git_dir) is. A directory that merely *contains*
-/// one is not matched: moving it keeps the names inside, and no new file can be
-/// given one of these names below admin.
-pub fn controls_build(path: &str) -> bool {
-    const FILES: [&str; 14] = [
-        "package.json",
-        "package-lock.json",
-        "npm-shrinkwrap.json",
-        "yarn.lock",
-        "pnpm-lock.yaml",
-        "pnpm-workspace.yaml",
-        "bun.lock",
-        "bun.lockb",
-        "deno.json",
-        "deno.jsonc",
-        ".npmrc",
-        ".yarnrc",
-        ".yarnrc.yml",
-        ".pnpmfile.cjs",
-    ];
-    const CONFIG_EXTS: [&str; 7] = ["js", "cjs", "mjs", "ts", "cts", "mts", "json"];
-    let segments: Vec<String> = path
-        .split(['/', '\\'])
-        .map(|s| s.trim_end_matches(['.', ' ']).to_ascii_lowercase())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let Some(name) = segments.last() else {
-        return false;
-    };
-    if segments.iter().any(|s| s == "node_modules") || FILES.contains(&name.as_str()) {
-        return true;
-    }
-    // `<tool>.config.<ext>` and `<tool>.config.<variant>.<ext>` (`vite.config.ts`,
-    // `vite.config.prod.ts`), and a tool's rc file in code (`.postcssrc.js`).
-    let Some((stem, ext)) = name.rsplit_once('.') else {
-        return false;
-    };
-    CONFIG_EXTS.contains(&ext)
-        && (stem.split('.').skip(1).any(|part| part == "config")
-            || (stem.starts_with('.') && stem.ends_with("rc")))
-}
-
-/// The refusal [`check_write`] gives a build input.
-fn build_input_refused(path: &str) -> Error {
+/// The refusal [`check_write`] gives a path that becomes code the server runs.
+fn host_code_refused(path: &str, kind: HostCode) -> Error {
     Error::auth(format!(
-        "only an administrator may write {path:?}: it decides what a build or install \
-         runs on the server"
+        "only an administrator may write {path:?}: it decides {}",
+        kind.decides()
     ))
 }
 
@@ -404,7 +376,7 @@ pub async fn list_visible(
 /// so this only consults each child's own metadata — the ancestors are common to
 /// every entry and re-reading them per child would be one `get_meta` per level
 /// per file.
-pub async fn filter_visible(
+pub(crate) async fn filter_visible(
     store: &dyn FileStore,
     dir_floor: Option<Role>,
     entries: Vec<crate::Entry>,
@@ -436,7 +408,7 @@ pub struct VisibleEntry {
 /// see it, and a caller that then wants to *show* the rule — a file manager with
 /// an access column — would otherwise read all of it a second time. Same walk,
 /// same rule, one `get_meta` per entry.
-pub async fn visible_entries(
+pub(crate) async fn visible_entries(
     store: &dyn FileStore,
     dir_floor: Option<Role>,
     entries: Vec<crate::Entry>,

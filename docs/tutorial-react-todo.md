@@ -75,10 +75,11 @@ Go to **Applications → New application** and fill in:
 | **File store** | `apps` |
 | **Project directory** | `todo` |
 | Tables | `tasks` |
-| APIs (Provider / Mount) | `rest` / `/api` |
 
-Two settings for the framework — the store, and a name. Leave the Content-Security-Policy box
-empty: React apps get a policy fitted to what their bundler emits.
+Two settings for the framework — the store, and a name. That is all a new application asks for:
+its other settings are on its tabs once it exists, at their defaults until then. A new
+application serves a REST API at `/api` (the **API** tab), and its Content-Security-Policy is one
+fitted to what its bundler emits (the **Security** tab).
 
 Press **Create application**. The banner on the applications list says:
 

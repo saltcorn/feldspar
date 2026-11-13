@@ -1167,6 +1167,10 @@ fn describe(value: &Json) -> String {
 /// evaluator and how "wait until the order's due date" is written. Anything else
 /// is the formula being wrong, and saying so is better than waking immediately or
 /// never.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a delay in milliseconds clamped to the i64 range first"
+)]
 fn deadline(value: &Json, now: DateTime<Utc>) -> Result<DateTime<Utc>> {
     match value {
         Json::Number(n) => {
@@ -1202,6 +1206,10 @@ fn deadline(value: &Json, now: DateTime<Utc>) -> Result<DateTime<Utc>> {
 /// wave. The spread is derived from the step, the attempt and the sub-second part
 /// of the failure's instant rather than from a random number generator, so the
 /// machine stays sans-IO and a test with a fixed clock gets a fixed answer.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a finite delay in milliseconds, capped at the backoff maximum; the cast saturates"
+)]
 fn retry_delay(backoff: &Backoff, attempt: u32, step: &str, now: DateTime<Utc>) -> Duration {
     let exponent = attempt.saturating_sub(1).min(63) as i32;
     let raw = (backoff.initial_ms as f64) * backoff.factor.max(1.0).powi(exponent);

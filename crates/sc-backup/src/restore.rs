@@ -37,9 +37,7 @@ use std::sync::Arc;
 
 use sc_access::rows;
 use sc_api::schema_edit;
-use sc_catalog::{
-    Catalog, ConstraintKind, DataFieldKind, Table, TableConstraint, load_file_store_by_name,
-};
+use sc_catalog::{Catalog, DataFieldKind, Table, load_file_store_by_name};
 use sc_db::{ColumnGenerator, SchemaChange};
 use sc_error::{Error, Result};
 use sc_query::{Expr, Insert, Statement};
@@ -104,6 +102,12 @@ pub fn inspect(path: &Path, password: Option<&str>) -> Result<(Available, Json)>
 ///
 /// The file is read as the restore goes ([`Archive`]), so it must stay where it
 /// is until this returns. `password` decrypts a password-protected backup.
+///
+/// `editor` is who started it (TODO-type-hardening H8.5, §7.3a): a person in
+/// the admin UI, the operator at the CLI, or something delegated — an MCP
+/// client calling the restore endpoint. A delegated restore does not change
+/// the access settings of a table that already has row-level security; the
+/// table's other parts are restored and the refusal is in the report.
 #[allow(clippy::too_many_lines)]
 pub async fn restore_backup(
     catalog: &Catalog,
@@ -111,6 +115,7 @@ pub async fn restore_backup(
     path: &Path,
     password: Option<&str>,
     selection: &Selection,
+    editor: sc_catalog::Editor,
 ) -> Result<RestoreReport> {
     let archive = read_backup(path, password)?;
     let manifest = manifest_of(&archive)?;
@@ -272,7 +277,7 @@ pub async fn restore_backup(
                 table: name.clone(),
                 settings: access,
             }],
-            &schema_edit::ApplyOptions::default(),
+            &schema_edit::ApplyOptions::by(editor),
         )
         .await
         .map(|_| String::new());
@@ -342,15 +347,32 @@ pub async fn restore_backup(
         } else {
             TriggerPass::Deferring
         };
-        refused_triggers =
-            restore_triggers(catalog, apps, &archive, &selection, pass, &mut report).await;
+        refused_triggers = restore_triggers(
+            catalog,
+            apps,
+            &archive,
+            &selection,
+            pass,
+            editor,
+            &mut report,
+        )
+        .await;
     }
     if !refused_agents.is_empty() {
         restore_agents(catalog, apps, &archive, Some(&refused_agents), &mut report).await;
     }
     if !refused_triggers.is_empty() {
         let pass = TriggerPass::Retry(&refused_triggers);
-        restore_triggers(catalog, apps, &archive, &selection, pass, &mut report).await;
+        restore_triggers(
+            catalog,
+            apps,
+            &archive,
+            &selection,
+            pass,
+            editor,
+            &mut report,
+        )
+        .await;
     }
     if selection.agents {
         restore_agent_memories(catalog, &archive, &user_ids, &mut report).await;
@@ -1196,7 +1218,7 @@ async fn restore_constraints(
             continue;
         }
         let what = format!("constraint `{constraint_name}` on `{name}`");
-        let constraint = match constraint_from_backup(obj) {
+        let constraint = match crate::codec::constraint_from_body(obj) {
             Ok(constraint) => constraint,
             Err(e) => {
                 report.skipped(format!("{what}: {}", e.causes()));
@@ -1218,72 +1240,6 @@ async fn restore_constraints(
     }
 }
 
-/// One constraint out of a backup's `table.json`, keeping the name it had — a
-/// restored constraint reports itself by the same name a violation would have
-/// named before the backup was taken.
-fn constraint_from_backup(obj: &Map<String, Json>) -> Result<TableConstraint> {
-    let text = |key: &str| {
-        obj.get(key)
-            .and_then(Json::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-    };
-    let fields: Vec<String> = obj
-        .get("fields")
-        .and_then(Json::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Json::as_str)
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default();
-    let type_name = obj
-        .get("type")
-        .and_then(Json::as_str)
-        .ok_or_else(|| Error::invalid("a constraint entry needs a `type`"))?;
-    let kind = match type_name {
-        "unique" => ConstraintKind::Unique { fields },
-        "index" if fields.is_empty() => {
-            return Err(Error::invalid(
-                "an index over an expression is not one this restore can recreate; \
-                 add it by hand",
-            ));
-        }
-        "index" => ConstraintKind::Index {
-            fields,
-            expression: None,
-            method: text("method").unwrap_or_else(|| "btree".to_owned()),
-        },
-        "full_text_search" => ConstraintKind::FullTextSearch {
-            language: text("language").unwrap_or_else(|| "english".to_owned()),
-        },
-        "vector_index" => ConstraintKind::VectorIndex {
-            field: fields
-                .into_iter()
-                .next()
-                .ok_or_else(|| Error::invalid("a vector index entry needs its `fields`"))?,
-        },
-        "formula" => ConstraintKind::Formula {
-            formula: text("formula")
-                .ok_or_else(|| Error::invalid("a row constraint entry needs a `formula`"))?,
-        },
-        other => {
-            return Err(Error::invalid(format!(
-                "`{other}` is not a constraint type"
-            )));
-        }
-    };
-    let name = obj
-        .get("name")
-        .and_then(Json::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    let mut constraint = TableConstraint::new(name, kind);
-    constraint.error_message = text("error_message");
-    Ok(constraint)
-}
-
 async fn add_field(catalog: &Catalog, table: &str, field: &Map<String, Json>) -> Result<String> {
     let mut spec = field_spec_from_body(field)?;
     // A reference's storage type is its target's, and the schema editor is what
@@ -1299,7 +1255,12 @@ async fn add_field(catalog: &Catalog, table: &str, field: &Map<String, Json>) ->
             table: table.to_owned(),
             field: spec,
         }],
-        &schema_edit::ApplyOptions::default(),
+        // A column of a type of the database's own (pgvector's `halfvec`, an
+        // `interval`) that an app made with its own SQL is recreated as it was.
+        &schema_edit::ApplyOptions {
+            database_types: true,
+            ..schema_edit::ApplyOptions::default()
+        },
     )
     .await?;
     Ok(String::new())
@@ -2885,6 +2846,7 @@ async fn restore_triggers(
     archive: &Archive,
     selection: &Selection,
     pass: TriggerPass<'_>,
+    editor: sc_catalog::Editor,
     report: &mut RestoreReport,
 ) -> Vec<String> {
     let mut refused = Vec::new();
@@ -2932,6 +2894,15 @@ async fn restore_triggers(
                 ));
             }
             sc_action::save_trigger(catalog, &dispatcher.registry(), &trigger).await?;
+            // A person's restore keeps the approval to run as system the backup
+            // carries; an agent's leaves the request pending
+            // (TODO-type-hardening H8.10). Either way the approval is for the
+            // configuration it was given for, so a different one lapses.
+            if editor.is_person()
+                && let Some(approval) = crate::codec::system_approval_from_json(&value)
+            {
+                sc_action::restore_system_approval(catalog, &editor, trigger.id, &approval).await?;
+            }
             Ok(trigger)
         }
         .await;
@@ -3111,6 +3082,29 @@ async fn restore_modules(
             {
                 return Ok(None);
             }
+            // A local module whose source came in the backup is installed from
+            // that copy, unpacked where this server keeps such things.
+            let unpacked = match value.get("package").filter(|p| p.is_object()) {
+                Some(package) if module.source == sc_module::ModuleSource::Local => {
+                    match apps.module_source_dir(&module.name) {
+                        Ok(dir) => {
+                            unpack_module_source(archive, package, &dir, &name).await?;
+                            module.location = dir.display().to_string();
+                            true
+                        }
+                        Err(e) => {
+                            report.skipped(format!(
+                                "the source of module `{name}` in the backup was not unpacked, \
+                                 so it is installed from `{}`: {}",
+                                module.location,
+                                e.causes()
+                            ));
+                            false
+                        }
+                    }
+                }
+                _ => false,
+            };
             let package = apps
                 .install_module_package(module.language, module.source, &module.location)
                 .await?;
@@ -3120,16 +3114,22 @@ async fn restore_modules(
             module.name = package.name;
             module.version = Some(package.version.clone());
             sc_module::save_module(catalog, &module).await?;
-            Ok(Some(package.version))
+            Ok(Some((package.version, unpacked.then_some(module.location))))
         }
         .await;
         match result {
             Ok(None) => report.skipped(format!(
                 "module `{name}` is already installed here; its settings and permissions were kept"
             )),
-            Ok(Some(version)) => {
+            Ok(Some((version, unpacked))) => {
                 any = true;
-                report.did(format!("module `{name}` {version}, installed"));
+                report.did(match unpacked {
+                    Some(dir) => format!(
+                        "module `{name}` {version}, installed from its source in the backup, \
+                         now in `{dir}`"
+                    ),
+                    None => format!("module `{name}` {version}, installed"),
+                });
             }
             Err(e) => report.skipped(format!("module `{name}`: {}", e.causes())),
         }
@@ -3140,6 +3140,60 @@ async fn restore_modules(
             e.causes()
         ));
     }
+}
+
+/// A local module's source directory, from the backup into `dir`: emptied
+/// first, so what is installed is the backup's tree and nothing left from an
+/// earlier one.
+///
+/// All or nothing, unlike a file store's files: a module missing one of its
+/// files is a module that does not load, so a file that cannot be written fails
+/// the module, with the reason. An entry name that is not a plain relative path
+/// is refused before anything is read — a zip is a file somebody can hand us.
+async fn unpack_module_source(
+    archive: &Archive,
+    package: &Json,
+    dir: &std::path::Path,
+    name: &str,
+) -> Result<()> {
+    let prefix = package
+        .get("prefix")
+        .and_then(Json::as_str)
+        .ok_or_else(|| Error::invalid(format!("the source of `{name}` names no prefix")))?;
+    let io = |e: std::io::Error| {
+        Error::file(format!(
+            "preparing {} for the source of `{name}`: {e}",
+            dir.display()
+        ))
+    };
+    if dir.exists() {
+        std::fs::remove_dir_all(dir).map_err(io)?;
+    }
+    std::fs::create_dir_all(dir).map_err(io)?;
+    let store = sc_files::LocalFileStore::new(format!("module {name}"), dir)?;
+    for file in array_list(package.get("files").unwrap_or(&Json::Null)) {
+        let path = file
+            .get("path")
+            .and_then(Json::as_str)
+            .ok_or_else(|| Error::invalid(format!("a file of `{name}`'s source has no path")))?;
+        if path.split('/').any(|part| part == ".." || part == ".") {
+            return Err(Error::invalid(format!(
+                "file `{path}` of `{name}`'s source: the path is not relative"
+            )));
+        }
+        let at = sc_files::StorePath::parse(path)?;
+        archive
+            .copy_into(&format!("{prefix}{path}"), &store, &at)
+            .await?;
+        if let Some(mode) = file
+            .get("mode")
+            .and_then(Json::as_u64)
+            .and_then(|mode| u32::try_from(mode).ok())
+        {
+            set_mode(&store, &at, mode)?;
+        }
+    }
+    Ok(())
 }
 
 /// Connections to other databases — the SQLite ones (`sqlite == true`), whose

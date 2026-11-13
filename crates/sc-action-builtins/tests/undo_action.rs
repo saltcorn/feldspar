@@ -74,7 +74,7 @@ fn admin_fields() -> Json {
 }
 
 fn caller() -> Principal {
-    Principal::new(Role::ADMIN, Some(admin_fields()))
+    Principal::recorded(Role::ADMIN, Some(admin_fields()))
 }
 
 /// A request in `session`: the changeset the server's middleware mints.

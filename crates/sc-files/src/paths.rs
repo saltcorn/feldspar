@@ -73,7 +73,7 @@ pub fn data_dir() -> Result<PathBuf> {
 /// it, which is why [`local_config_spec`](crate::local_config_spec) requires
 /// them to name it. What this answers is the question an admin creating their
 /// first store cannot: "and if I have nowhere in particular in mind?"
-pub fn local_store_dir() -> Result<PathBuf> {
+pub(crate) fn local_store_dir() -> Result<PathBuf> {
     Ok(data_dir()?.join("local-stores"))
 }
 
@@ -94,7 +94,7 @@ pub fn suggest_local_dir(name: &str) -> Result<PathBuf> {
 /// name. Every character outside `[A-Za-z0-9._-]` becomes `_`, and a name that
 /// reduces to nothing (or to `.`/`..`) becomes `store`, since a clone directory
 /// called `..` would be the parent of every clone.
-pub(crate) fn path_safe(name: &str) -> String {
+pub fn path_safe(name: &str) -> String {
     let mapped: String = name
         .chars()
         .map(|c| {
@@ -125,12 +125,33 @@ pub(crate) mod testing {
         let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let before = std::env::var(DATA_DIR_ENV).ok();
         f();
-        unsafe {
-            match before {
-                Some(v) => std::env::set_var(DATA_DIR_ENV, v),
-                None => std::env::remove_var(DATA_DIR_ENV),
-            }
+        match before {
+            Some(v) => set_data_dir(&v),
+            None => restore_unset(),
         }
+    }
+
+    /// Set [`DATA_DIR_ENV`] for the test running inside [`temp_env`].
+    #[allow(
+        unsafe_code,
+        clippy::disallowed_methods,
+        reason = "tests of the variable itself; temp_env's lock keeps them one at a time"
+    )]
+    pub(crate) fn set_data_dir(dir: &str) {
+        // SAFETY: only called inside `temp_env`, whose lock serialises the
+        // tests that touch the variable; nothing else in this test binary
+        // reads it concurrently.
+        unsafe { std::env::set_var(DATA_DIR_ENV, dir) };
+    }
+
+    #[allow(
+        unsafe_code,
+        clippy::disallowed_methods,
+        reason = "tests of the variable itself; temp_env's lock keeps them one at a time"
+    )]
+    fn restore_unset() {
+        // SAFETY: as in `set_data_dir`.
+        unsafe { std::env::remove_var(DATA_DIR_ENV) };
     }
 }
 
@@ -157,7 +178,7 @@ mod tests {
     #[test]
     fn a_suggested_directory_sits_under_the_data_directory() {
         temp_env(|| {
-            unsafe { std::env::set_var(DATA_DIR_ENV, "/tmp/sc-data") };
+            crate::paths::testing::set_data_dir("/tmp/sc-data");
             assert_eq!(
                 local_store_dir().unwrap(),
                 PathBuf::from("/tmp/sc-data/local-stores")

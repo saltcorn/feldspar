@@ -188,7 +188,7 @@ async fn deleting_a_construction_waits_for_a_task_being_added_and_takes_it() -> 
     insert_phase(&catalog, &first).await?;
 
     let tx = adding_a_task(&db, first.id).await?;
-    let deleting = tokio::spawn({
+    let deleting = sc_catalog::spawn_scoped({
         let catalog = catalog.clone();
         async move { delete_construction(&catalog, app).await }
     });
@@ -211,7 +211,7 @@ async fn deleting_a_phase_waits_for_a_task_being_added_and_is_then_refused() -> 
     insert_phase(&catalog, &first).await?;
 
     let tx = adding_a_task(&db, first.id).await?;
-    let deleting = tokio::spawn({
+    let deleting = sc_catalog::spawn_scoped({
         let catalog = catalog.clone();
         async move { delete_phase(&catalog, first.id).await }
     });

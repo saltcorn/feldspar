@@ -306,6 +306,35 @@ impl AuthenticatedUser {
     }
 }
 
+impl User {
+    /// The user as the formula language and the `sc.user` GUC see it: `id`,
+    /// `role`, and every extra field, as a JSON object.
+    pub fn fields_json(&self) -> Json {
+        // Keyed in order, as the principal's JSON always was.
+        let mut fields = self.extra.clone();
+        fields.insert(COL_ID.to_owned(), Value::Uuid(self.id));
+        fields.insert(COL_ROLE.to_owned(), Value::Int(i64::from(self.role)));
+        Json::Object(
+            fields
+                .iter()
+                .map(|(k, v)| (k.clone(), sc_types::value_to_json(v)))
+                .collect(),
+        )
+    }
+}
+
+/// The verified user a [`sc_catalog::Principal::of`] is built from
+/// (TODO-type-hardening H3.1): the one implementation of the trait.
+impl sc_catalog::VerifiedUser for AuthenticatedUser {
+    fn verified_role(&self) -> Role {
+        self.0.role()
+    }
+
+    fn verified_fields(&self) -> Json {
+        self.0.fields_json()
+    }
+}
+
 impl std::ops::Deref for AuthenticatedUser {
     type Target = User;
 

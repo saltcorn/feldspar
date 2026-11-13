@@ -162,7 +162,7 @@ pub(crate) fn spec(fx: &Fixture, layer: Layer) -> PlotSpec {
 }
 
 pub(crate) async fn draw(fx: &Fixture, spec: &PlotSpec) -> PlotData {
-    match render_plot(&fx.cat, &sc_dataset::Caller::admin(), spec)
+    match render_plot(&fx.cat, &sc_dataset::Caller::system("test"), spec)
         .await
         .expect("renders")
     {
@@ -174,7 +174,7 @@ pub(crate) async fn draw(fx: &Fixture, spec: &PlotSpec) -> PlotData {
 }
 
 pub(crate) async fn refused(fx: &Fixture, spec: &PlotSpec) -> String {
-    match render_plot(&fx.cat, &sc_dataset::Caller::admin(), spec)
+    match render_plot(&fx.cat, &sc_dataset::Caller::system("test"), spec)
         .await
         .expect("answers")
     {

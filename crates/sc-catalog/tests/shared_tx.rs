@@ -176,7 +176,7 @@ async fn every_statement_carries_its_own_caller_to_the_policies() -> Result<()> 
     enable_rls(&catalog, &table).await?;
 
     let tx = SharedTx::begin_primary(&catalog)?;
-    let admin = Principal::anonymous(Role::ADMIN);
+    let admin = Principal::recorded(Role::ADMIN, None);
     assert_eq!(
         tx.run(sc_catalog::Unchecked::vouched(&admin, "test"), &select())
             .await?
@@ -186,7 +186,7 @@ async fn every_statement_carries_its_own_caller_to_the_policies() -> Result<()> 
 
     // Alice, on the same transaction the admin just used: her row only. Without
     // re-applying the GUCs per statement this would still be the admin's read.
-    let alice = Principal::new(
+    let alice = Principal::recorded(
         Role::of(80),
         Some(serde_json::json!({ "email": "alice@example.com" })),
     );

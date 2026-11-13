@@ -1,7 +1,8 @@
 #!/bin/sh
 #
 # Install the `feldspar` executable — and only that — from the latest
-# release, or upgrade the one that is installed:
+# release (or the one `--version X.Y.Z` names), or upgrade the one that is
+# installed:
 #
 #     curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh
 #     wget -qO-  https://feldspar-latest-static.saltcorn.com/install.sh | sh
@@ -63,6 +64,10 @@ DRY_RUN=0
 FORCE=0
 SKIP_PACKAGES=0
 RESTART=1
+# --version; empty: the latest release, under its version-less name. Not
+# VERSION, which /etc/os-release sets when it is read below.
+WANT_VERSION=""
+ALLOW_DOWNGRADE=0
 
 usage() {
     cat <<EOF
@@ -70,6 +75,11 @@ Install the feldspar executable from the latest release, or upgrade it.
 
 Usage: curl -fsSL ${BASE_URL}/install.sh | sh -s -- [options]
 
+      --version X.Y.Z   Install this release instead of the latest
+                        (${BASE_URL}/versions.txt lists them).
+      --allow-downgrade With --version, install a release older than the one
+                        installed. Its database may already have been changed
+                        by the newer one: take a dump first.
       --base-url URL    Where to download the release from (default ${BASE_URL},
                         or \$FELDSPAR_BASE_URL). A file:// URL reads a directory.
       --no-restart      Do not stop running feldspar units for the upgrade or
@@ -97,6 +107,10 @@ while [ $# -gt 0 ]; do
         --base-url)
             [ $# -ge 2 ] || { echo "error: --base-url needs a value" >&2; exit 2; }
             BASE_URL="$2"; shift 2 ;;
+        --version)
+            [ $# -ge 2 ] || { echo "error: --version needs a value" >&2; exit 2; }
+            WANT_VERSION="$2"; shift 2 ;;
+        --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
         --no-restart)  RESTART=0; shift ;;
         --no-packages) SKIP_PACKAGES=1; shift ;;
         --force)       FORCE=1; shift ;;
@@ -106,6 +120,11 @@ while [ $# -gt 0 ]; do
     esac
 done
 BASE_URL="${BASE_URL%/}"
+if [ -n "${WANT_VERSION}" ]; then
+    WANT_VERSION="${WANT_VERSION#v}"
+    printf '%s\n' "${WANT_VERSION}" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' ||
+        { echo "error: --version takes a release version, X.Y.Z (e.g. 0.1.1), got ${WANT_VERSION}" >&2; exit 2; }
+fi
 
 log()  { printf '\033[1m==>\033[0m %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
@@ -193,8 +212,34 @@ run_root() {
 # there was one release, `static` or `debian13-python`. Either way the upgrade
 # is the same tarball.
 INSTALLED="$(cat "${PREFIX}/VARIANT" 2>/dev/null || true)"
-# Its name carries the platform, ${ARCH} as checked above.
-OBJECT="feldspar-linux-${ARCH}.tar.gz"
+# Its name carries the platform, ${ARCH} as checked above; and the version,
+# for a release other than the latest.
+if [ -n "${WANT_VERSION}" ]; then
+    OBJECT="feldspar-${WANT_VERSION}-linux-${ARCH}.tar.gz"
+else
+    OBJECT="feldspar-linux-${ARCH}.tar.gz"
+fi
+
+# The installed version, as `feldspar --version` says it ("feldspar 0.1.1 · ...").
+INSTALLED_VERSION=""
+if [ -n "${INSTALLED}" ] && [ -x "${PREFIX}/bin/feldspar" ]; then
+    INSTALLED_VERSION="$("${PREFIX}/bin/feldspar" --version 2>/dev/null | awk 'NR == 1 { print $2 }' || true)"
+fi
+# Compared without a pre-release suffix: a build between releases calls itself
+# X.Y.Z-dev, which is older than X.Y.Z.
+INSTALLED_BASE="${INSTALLED_VERSION%%-*}"
+# A named version older than the installed one: an older binary may not
+# understand a database the newer one has migrated, so it takes asking for.
+if [ -n "${WANT_VERSION}" ] && [ -n "${INSTALLED_BASE}" ] && [ "${WANT_VERSION}" != "${INSTALLED_BASE}" ] &&
+    [ "$(printf '%s\n%s\n' "${WANT_VERSION}" "${INSTALLED_BASE}" | sort -t. -k1,1n -k2,2n -k3,3n | head -n 1)" = "${WANT_VERSION}" ]; then
+    if [ "${ALLOW_DOWNGRADE}" -eq 1 ]; then
+        printf 'warning: installing %s over the newer %s (--allow-downgrade)\n' "${WANT_VERSION}" "${INSTALLED_VERSION}" >&2
+    else
+        printf 'error: %s is older than the installed feldspar %s. Its database may already have\n  been changed by %s: take a dump first (docs/OPERATIONS.md §3), then run again\n  with --allow-downgrade.\n' \
+            "${WANT_VERSION}" "${INSTALLED_VERSION}" "${INSTALLED_VERSION}" >&2
+        exit 1
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Is this a machine the release runs on?
@@ -346,6 +391,23 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/feldspar-install.XXXXXX")"
 trap 'rm -rf "${TMP}"' EXIT INT TERM
 
 log "downloading ${OBJECT}"
+if [ -n "${WANT_VERSION}" ] && [ "${DRY_RUN}" -eq 0 ]; then
+    # Said plainly, rather than as a download error: a version that was never
+    # released, or not for this architecture.
+    release_exists() {
+        case "$1" in
+            file://*) [ -f "${1#file://}" ] ;;
+            *)
+                case "${DOWNLOADER}" in
+                    curl) curl -fsIL --proto-redir '=https' -o /dev/null "$1" ;;
+                    wget) wget -q --spider "$1" ;;
+                esac
+                ;;
+        esac
+    }
+    release_exists "${BASE_URL}/${OBJECT}" ||
+        die "there is no feldspar ${WANT_VERSION} for linux ${ARCH} at ${BASE_URL}; ${BASE_URL}/versions.txt lists the releases"
+fi
 fetch "${BASE_URL}/${OBJECT}" "${TMP}/${OBJECT}"
 fetch "${BASE_URL}/${OBJECT}.sha256" "${TMP}/${OBJECT}.sha256"
 

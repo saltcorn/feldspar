@@ -8,6 +8,10 @@
 //! changed the API and left the client describing the old one would be the drift
 //! §13.1 exists to prevent, introduced by the tool meant to avoid it.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 
 use sc_types::Role;
 use std::path::{Path, PathBuf};

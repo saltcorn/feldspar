@@ -35,6 +35,10 @@ use serde_json::Value as Json;
 
 use crate::defs::ConfigDef;
 
+/// The name the Maps settings are exported under, as a section of their own
+/// ([`portable_sections`](crate::portable_sections)).
+pub const MAPS_SECTION: &str = "maps";
+
 /// The style URL of the basemap under a light page.
 pub const MAP_STYLE: &str = "map_style";
 /// The style URL of the basemap under a dark page.

@@ -60,33 +60,33 @@ use crate::table::Table;
 pub const DB_CONNECTIONS_TABLE: &str = "_fd_db_connections";
 
 /// The UUID primary-key column (§9).
-pub const COL_ID: &str = "id";
+pub(crate) const COL_ID: &str = "id";
 /// The connection's name — the key its tables are stamped with and the badge the
 /// admin UI shows.
-pub const COL_NAME: &str = "name";
+pub(crate) const COL_NAME: &str = "name";
 /// The human-readable description column (§9).
-pub const COL_DESCRIPTION: &str = "description";
+pub(crate) const COL_DESCRIPTION: &str = "description";
 /// Host name, or a Unix socket directory when it starts with `/`.
-pub const COL_HOST: &str = "host";
+pub(crate) const COL_HOST: &str = "host";
 /// TCP port.
-pub const COL_PORT: &str = "port";
+pub(crate) const COL_PORT: &str = "port";
 /// The database to connect to.
-pub const COL_DATABASE: &str = "database";
+pub(crate) const COL_DATABASE: &str = "database";
 /// The role to connect as.
-pub const COL_USERNAME: &str = "username";
+pub(crate) const COL_USERNAME: &str = "username";
 /// That role's password — a **secret**, redacted wherever this record is
 /// serialised (§11.1).
-pub const COL_PASSWORD: &str = "password";
+pub(crate) const COL_PASSWORD: &str = "password";
 /// The one schema the connection presents.
-pub const COL_SCHEMA: &str = "schema";
+pub(crate) const COL_SCHEMA: &str = "schema";
 /// Which kind of database this is — [`POSTGRES_BACKEND`] or [`SQLITE_BACKEND`].
-pub const COL_BACKEND: &str = "backend";
+pub(crate) const COL_BACKEND: &str = "backend";
 /// For a SQLite connection: the file store the database file lives in.
-pub const COL_FILE_STORE: &str = "file_store";
+pub(crate) const COL_FILE_STORE: &str = "file_store";
 /// For a SQLite connection: the path of the file inside that store.
-pub const COL_FILE_PATH: &str = "file_path";
+pub(crate) const COL_FILE_PATH: &str = "file_path";
 /// The sparse per-connection values column (§9) — JSON, always an object.
-pub const COL_ATTRIBUTES: &str = "attributes";
+pub(crate) const COL_ATTRIBUTES: &str = "attributes";
 
 /// A connection to another Postgres server.
 pub const POSTGRES_BACKEND: &str = "postgres";

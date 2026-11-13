@@ -40,7 +40,7 @@ mod snapshot;
 mod store;
 mod walk;
 
-pub use access::{Caller, Reader, Sharing, tables_read};
+pub use access::{Caller, Reader, Sharing, TableScope, tables_read};
 pub use compile::{
     BaseReport, Compilation, Library, MAX_RANGE_VALUES, OpStatus, OperationReport, Options,
     ROW_KEY, Restriction, Stage, compile, scramble,

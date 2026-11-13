@@ -12,7 +12,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // reason: an endpoint added later would have to build the JSON by hand to
     // leak one.
 
-    reg.register_admin("listDatabaseConnections", {
+    reg.handle(sc_api::handler_ids::LIST_DATABASE_CONNECTIONS, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -27,7 +27,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createDatabaseConnection", {
+    reg.handle(sc_api::handler_ids::CREATE_DATABASE_CONNECTION, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -49,7 +49,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateDatabaseConnection", {
+    reg.handle(sc_api::handler_ids::UPDATE_DATABASE_CONNECTION, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -87,7 +87,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteDatabaseConnection", {
+    reg.handle(sc_api::handler_ids::DELETE_DATABASE_CONNECTION, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -110,7 +110,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("testDatabaseConnection", {
+    reg.handle(sc_api::handler_ids::TEST_DATABASE_CONNECTION, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();

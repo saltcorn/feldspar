@@ -14,7 +14,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // list shows is what will fire.
 
     set.register(
-        Endpoint::new("listTriggers", Method::Get, api().lit("triggers"))
+        Endpoint::new(ids::LIST_TRIGGERS, Method::Get, api().lit("triggers"))
             .output(TypeSchema::array(trigger_schema()))
             // `describe_triggers` is the composite tool over the same rows and
             // says more about each; this is tagged as well because it carries
@@ -29,39 +29,94 @@ pub(super) fn register(set: &mut EndpointSet) {
                  body.",
                 )
                 .in_area(Area::Triggers),
-            )
-            .auth(AuthRequirement::admin()),
+            ),
     );
 
     set.register(
-        Endpoint::new("createTrigger", Method::Post, api().lit("triggers"))
+        Endpoint::new(ids::CREATE_TRIGGER, Method::Post, api().lit("triggers"))
             .input(trigger_input_schema())
-            .output(trigger_schema())
-            .auth(AuthRequirement::admin()),
+            .output(trigger_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "updateTrigger",
+            ids::UPDATE_TRIGGER,
             Method::Put,
             api().lit("triggers").param("id", ValueType::Uuid),
         )
         .input(trigger_input_schema())
-        .output(trigger_schema())
-        .auth(AuthRequirement::admin()),
+        .output(trigger_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "deleteTrigger",
+            ids::DELETE_TRIGGER,
             Method::Delete,
             api().lit("triggers").param("id", ValueType::Uuid),
         )
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
+    );
+
+    // Approve a trigger to run as system, for its current configuration
+    // (TODO-type-hardening H8.10, §7.3a) — and revoke that. Only a person
+    // approves: the handler refuses anything but an admin's browser session,
+    // and neither is an MCP tool, so an agent that asks (`runs_as_system`)
+    // leaves a pending request for a person to approve here.
+    set.register(
+        Endpoint::new(
+            ids::APPROVE_TRIGGER_SYSTEM,
+            Method::Post,
+            api()
+                .lit("triggers")
+                .param("id", ValueType::Uuid)
+                .lit("system-approval"),
+        )
+        .output(trigger_schema()),
+    );
+    set.register(
+        Endpoint::new(
+            ids::REVOKE_TRIGGER_SYSTEM,
+            Method::Delete,
+            api()
+                .lit("triggers")
+                .param("id", ValueType::Uuid)
+                .lit("system-approval"),
+        )
+        .output(trigger_schema()),
+    );
+
+    // Notices for the administrators (TODO-type-hardening H8.6): what the
+    // server tells them once — the row-level-security upgrade report first —
+    // shown until one of them dismisses it.
+    let notice = || {
+        TypeSchema::struct_of([
+            StructField::new("id", TypeSchema::text()),
+            StructField::new("title", TypeSchema::text()),
+            StructField::new("lines", TypeSchema::array(TypeSchema::text())),
+            StructField::new("created_at", TypeSchema::text()),
+        ])
+    };
+    set.register(
+        Endpoint::new(
+            ids::LIST_ADMIN_NOTICES,
+            Method::Get,
+            api().lit("admin-notices"),
+        )
+        .output(TypeSchema::array(notice())),
+    );
+    set.register(
+        Endpoint::new(
+            ids::DISMISS_ADMIN_NOTICE,
+            Method::Delete,
+            api().lit("admin-notices").param("id", ValueType::Text),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "dismissed",
+            TypeSchema::bool(),
+        )])),
     );
 
     // Run one trigger now — the admin's "test this now". The posted body is the
@@ -69,7 +124,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // comes back as an **error**, not a 200 carrying a failure nobody reads.
     set.register(
         Endpoint::new(
-            "runTrigger",
+            ids::RUN_TRIGGER,
             Method::Post,
             api()
                 .lit("triggers")
@@ -80,8 +135,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "result",
             TypeSchema::json(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // Run one trigger as a **test**, from the admin's list. Everything about it
@@ -103,7 +157,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     //     result is traceable to the row that produced it.
     set.register(
         Endpoint::new(
-            "testRunTrigger",
+            ids::TEST_RUN_TRIGGER,
             Method::Post,
             api()
                 .lit("triggers")
@@ -128,8 +182,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             // every other kind — including a table trigger whose table is empty,
             // which the screen says rather than pretending a row was chosen.
             StructField::new("row", TypeSchema::optional(TypeSchema::json())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // The registered actions with the settings each declares, so the trigger
@@ -145,7 +198,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // for the declaration for the table it is showing and renders what comes
     // back.
     set.register(
-        Endpoint::new("listActions", Method::Get, api().lit("actions"))
+        Endpoint::new(ids::LIST_ACTIONS, Method::Get, api().lit("actions"))
             .query([QueryParam::new("table", ValueType::Text)])
             .output(TypeSchema::array(action_info_schema()))
             // The list; `describe_action` is the one action's settings in full,
@@ -160,8 +213,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                  which is where the full settings are.",
                 )
                 .in_area(Area::Triggers),
-            )
-            .auth(AuthRequirement::admin()),
+            ),
     );
 
     // A workflow is a **trigger body** (§10.3, decision 1), so it is addressed by
@@ -179,7 +231,7 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new(
-            "getWorkflow",
+            ids::GET_WORKFLOW,
             Method::Get,
             api().lit("workflows").param("id", ValueType::Uuid),
         )
@@ -199,13 +251,12 @@ pub(super) fn register(set: &mut EndpointSet) {
                  read an older one; the default is the current version.",
             )
             .in_area(Area::Triggers),
-        )
-        .auth(AuthRequirement::admin()),
+        ),
     );
 
     set.register(
         Endpoint::new(
-            "saveWorkflow",
+            ids::SAVE_WORKFLOW,
             Method::Post,
             api().lit("workflows").param("id", ValueType::Uuid),
         )
@@ -238,13 +289,12 @@ pub(super) fn register(set: &mut EndpointSet) {
             // A workflow is an existing trigger's body — version 1 is created
             // with the trigger — so writing one is an edit rather than a create.
             .needs(Grant::Edit),
-        )
-        .auth(AuthRequirement::admin()),
+        ),
     );
 
     set.register(
         Endpoint::new(
-            "revertWorkflow",
+            ids::REVERT_WORKFLOW,
             Method::Post,
             api()
                 .lit("workflows")
@@ -266,8 +316,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             // Reverting mints a version rather than removing one, so it is an
             // edit and not a drop: nothing stops being readable.
             .needs(Grant::Edit),
-        )
-        .auth(AuthRequirement::admin()),
+        ),
     );
 
     // The runs of one workflow, newest first. Filterable by state and paged,
@@ -275,7 +324,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // has rows and the screen wants the ones that are stuck.
     set.register(
         Endpoint::new(
-            "listWorkflowRuns",
+            ids::LIST_WORKFLOW_RUNS,
             Method::Get,
             api()
                 .lit("workflows")
@@ -297,8 +346,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                  `getRun` reads one in full.",
             )
             .in_area(Area::Triggers),
-        )
-        .auth(AuthRequirement::admin()),
+        ),
     );
 
     // On `runs/{id}` rather than under a workflow, because a run is addressed by
@@ -307,7 +355,7 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new(
-            "resumeRun",
+            ids::RESUME_RUN,
             Method::Post,
             api().lit("runs").param("id", ValueType::Uuid).lit("resume"),
         )
@@ -315,13 +363,12 @@ pub(super) fn register(set: &mut EndpointSet) {
         // checked against that declaration, which is the one the person was shown
         // rather than the workflow's current text.
         .input(TypeSchema::json())
-        .output(run_schema())
-        .auth(AuthRequirement::admin()),
+        .output(run_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "cancelRun",
+            ids::CANCEL_RUN,
             Method::Post,
             api().lit("runs").param("id", ValueType::Uuid).lit("cancel"),
         )
@@ -329,18 +376,16 @@ pub(super) fn register(set: &mut EndpointSet) {
             "reason",
             TypeSchema::optional(TypeSchema::text()),
         )]))
-        .output(run_schema())
-        .auth(AuthRequirement::admin()),
+        .output(run_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "retryRun",
+            ids::RETRY_RUN,
             Method::Post,
             api().lit("runs").param("id", ValueType::Uuid).lit("retry"),
         )
-        .output(run_schema())
-        .auth(AuthRequirement::admin()),
+        .output(run_schema()),
     );
 }
 
@@ -421,6 +466,22 @@ fn trigger_schema() -> TypeSchema {
         "workflow_steps",
         TypeSchema::optional(TypeSchema::int()),
     ));
+    // A person's approval to run as system, and whether it is for the
+    // configuration the trigger has now (TODO-type-hardening H8.10): `off`,
+    // `pending` (asks, and is not approved for what it is now) or `approved`.
+    // Read-only: only `approveTriggerSystem` writes an approval.
+    fields.push(StructField::new(
+        "system_approval",
+        TypeSchema::optional(TypeSchema::struct_of([
+            StructField::new("hash", TypeSchema::text()),
+            StructField::new("by", TypeSchema::optional(TypeSchema::uuid())),
+            StructField::new("at", TypeSchema::timestamp()),
+        ])),
+    ));
+    fields.push(StructField::new(
+        "system_state",
+        TypeSchema::optional(TypeSchema::text()),
+    ));
     TypeSchema::Struct(fields)
 }
 
@@ -453,6 +514,10 @@ fn trigger_fields() -> Vec<StructField> {
         StructField::new("configuration", TypeSchema::optional(TypeSchema::json())),
         StructField::new("min_role", TypeSchema::optional(TypeSchema::int())),
         StructField::new("enabled", TypeSchema::bool()),
+        // Whether it asks to run as system (TODO-type-hardening H8.10). A
+        // setting, not the approval: it elevates nothing until a person
+        // approves the trigger's configuration.
+        StructField::new("runs_as_system", TypeSchema::optional(TypeSchema::bool())),
         // The periodic timing (§10.2), null on the kinds that have none. Three
         // flat fields rather than a nested object: each is one number, each is
         // one input in the form, and a kind that does not use one refuses it —

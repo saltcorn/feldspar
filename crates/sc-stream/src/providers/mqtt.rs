@@ -767,6 +767,10 @@ fn check_topic_filter(topic: &str) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 mod tests {
     use super::*;
     use sc_types::validate_attrs;

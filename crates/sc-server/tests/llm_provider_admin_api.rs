@@ -19,6 +19,10 @@
 //! server**, never a vendor: no test may require an API key or spend a token
 //! (decision 7).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -288,7 +292,7 @@ async fn the_api_key_never_crosses_the_wire_and_a_save_does_not_destroy_it() -> 
     // The stored key, meanwhile, is the real one — redaction is on the way out,
     // not on the way in.
     let stored = list_llm_providers(&catalog).await?;
-    assert_eq!(stored[0].setting(CFG_API_KEY), Some("sk-ant-real-secret"));
+    assert_eq!(stored[0].api_key().expose(), "sk-ant-real-secret");
 
     // The admin edits the name and saves, handing back exactly what they were
     // shown. This is the failure the sentinel contract exists to prevent: a
@@ -310,8 +314,8 @@ async fn the_api_key_never_crosses_the_wire_and_a_save_does_not_destroy_it() -> 
     let stored = list_llm_providers(&catalog).await?;
     assert_eq!(stored[0].name, "house-anthropic");
     assert_eq!(
-        stored[0].setting(CFG_API_KEY),
-        Some("sk-ant-real-secret"),
+        stored[0].api_key().expose(),
+        "sk-ant-real-secret",
         "the sentinel must not be saved over the key"
     );
 
@@ -330,7 +334,7 @@ async fn the_api_key_never_crosses_the_wire_and_a_save_does_not_destroy_it() -> 
         .await;
     assert_eq!(status, StatusCode::OK);
     let stored = list_llm_providers(&catalog).await?;
-    assert_eq!(stored[0].setting(CFG_API_KEY), Some("sk-ant-rotated"));
+    assert_eq!(stored[0].api_key().expose(), "sk-ant-rotated");
     Ok(())
 }
 

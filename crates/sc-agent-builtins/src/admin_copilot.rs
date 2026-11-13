@@ -60,10 +60,14 @@
 //! trigger and a custom SQL query are all [`CFG_ALLOW_CREATE`]; deleting a trigger
 //! or a query is [`CFG_ALLOW_DROP`] alongside dropping a table; and a trigger's
 //! `min_role` — which decides who may `POST /actions/{name}` — and a query's,
-//! which decides who may call its endpoint, are **access rules**, so they need
-//! [`CFG_ALLOW_ACCESS`] exactly as a table's role floors do. A second and a third
-//! set of checkboxes would have been eight more decisions for the admin to make,
-//! on the same question, with the same right answers.
+//! which decides who may call its endpoint, are edits like any other. (They
+//! needed an `allow_access_changes` checkbox until TODO-type-hardening H8.9
+//! retired it: grants on agents are options nobody keeps track of, and on a
+//! table with row-level security only a person changes the access rules, §7.3a.
+//! A stored configuration that has the key keeps loading; it is ignored —
+//! [`AgentTrait::retired_settings`].) A second and a third set of checkboxes
+//! would have been more decisions for the admin to make, on the same question,
+//! with the same right answers.
 //!
 //! ## The two areas, which are the other question
 //!
@@ -114,7 +118,7 @@
 
 use sc_agent::DEFAULT_MAX_DEPTH;
 use sc_agent::{AgentTrait, RunCaller, SessionContext, ToolsContext, TraitCheck, TraitContext};
-use sc_api::mcp::{Area, Areas, ToolContext, ToolSet, arguments, require_admin, require_grant};
+use sc_api::mcp::{Area, Areas, ToolContext, ToolSet, arguments, require_grant};
 use sc_api::schema_edit::{self, Grants};
 use sc_docs::tools::{TOOL_READ_DOCS, TOOL_SEARCH_DOCS};
 use sc_error::{Error, Result};
@@ -196,9 +200,8 @@ pub const CFG_ALLOW_CREATE: &str = schema_edit::GRANT_CREATE;
 pub const CFG_ALLOW_EDIT: &str = schema_edit::GRANT_EDIT;
 /// May drop tables and fields, and delete triggers. Off by default.
 pub const CFG_ALLOW_DROP: &str = schema_edit::GRANT_DROP;
-/// May write the access rules of §7.3, and a trigger's `min_role`. Off by
-/// default, and above `allow_drop` — a drop announces itself and a widened role
-/// floor does not.
+/// The key of the retired access-changes checkbox (TODO-type-hardening H8.9):
+/// a stored configuration that carries it still loads, and it is ignored.
 pub const CFG_ALLOW_ACCESS: &str = schema_edit::GRANT_ACCESS_CHANGES;
 
 /// Whether the trigger half is offered at all. On by default.
@@ -295,13 +298,6 @@ impl AgentTrait for AdminCopilot {
             FormField::new(CFG_ALLOW_DROP, BasicType::Bool)
                 .label("May drop tables and fields, and delete triggers and custom SQL queries")
                 .default_value(false),
-            FormField::new(CFG_ALLOW_ACCESS, BasicType::Bool)
-                .label(
-                    "May change access rules (roles, ownership formula, row-level \
-                     security, a trigger's minimum role, who may call a custom \
-                     SQL query)",
-                )
-                .default_value(false),
             FormField::new(CFG_ALLOW_TRIGGERS, BasicType::Bool)
                 .label("May work on triggers")
                 .default_value(true),
@@ -331,6 +327,10 @@ impl AgentTrait for AdminCopilot {
     /// grants bound the **writing** tools only, and an agent with none of them is
     /// a read-only describer of the schema and the triggers, which is a thing an
     /// admin may deliberately want.
+    fn retired_settings(&self) -> &'static [&'static str] {
+        &[CFG_ALLOW_ACCESS]
+    }
+
     async fn validate_config(&self, check: &TraitCheck<'_>) -> Result<()> {
         // The same six keys asked the same question a token's grants are asked
         // (§13.6): one validator, because there is one vocabulary.
@@ -411,7 +411,7 @@ impl AgentTrait for AdminCopilot {
         // The schema, the triggers and their code are the application itself, and
         // a triggered run's prompt was written by whoever caused its event:
         // holding role 1 because a trigger fired is not being an admin here.
-        if ctx.caller.triggered {
+        if ctx.caller.is_triggered() {
             return Err(Error::invalid(format!(
                 "`{tool}` is not available to a run a trigger started: the admin copilot \
                  changes the application itself, and this run's prompt came from an event. \
@@ -419,14 +419,14 @@ impl AgentTrait for AdminCopilot {
             )));
         }
         // Nor through an application: its page's script can send the chat.
-        if ctx.caller.exposed {
+        if ctx.caller.is_exposed() {
             return Err(Error::invalid(format!(
                 "`{tool}` is not available to a chat through an application: the admin \
                  copilot changes the application itself, and is used from the admin console"
             )));
         }
         if tool == TOOL_DELEGATE || tool == TOOL_PUBLISH {
-            require_admin(ctx.caller.role, tool)?;
+            tool_context(ctx).require_admin(tool)?;
             if !areas(config).has(Area::Applications) {
                 return Err(Error::invalid(format!(
                     "`{tool}` is switched off for this agent; turn on `{}` in its \
@@ -476,7 +476,7 @@ async fn checklist_tool(
             run: ctx.run.to_string(),
             grant: sc_check::ChecklistGrant::from_attrs(config),
         },
-        role: ctx.caller.role,
+        role: ctx.caller.role(),
     };
     sc_check::tools::call_tool(tool, args, &call).await
 }
@@ -699,9 +699,9 @@ async fn publish_application(args: &Json, ctx: &mut TraitContext<'_>) -> Result<
             ctx.agent
         ))
     })?;
-    let user = ctx.caller.user.as_ref().map(|u| u.id());
+    let admin = tool_context(ctx).require_admin(TOOL_PUBLISH)?.clone();
     // A failed build is news about the application, so it is a result.
-    Ok(match host.build_application(user, app.id.0).await {
+    Ok(match host.build_application(&admin, app.id.0).await {
         Ok(mut body) => {
             let log = body
                 .get("log")
@@ -742,8 +742,8 @@ fn tool_set(config: &Attrs) -> ToolSet {
 fn tool_context<'a>(ctx: &'a TraitContext<'a>) -> ToolContext<'a> {
     ToolContext {
         catalog: ctx.catalog,
-        user: ctx.caller.user.as_ref(),
-        role: ctx.caller.role,
+        user: ctx.caller.user_ref(),
+        admin: ctx.caller.console_admin().cloned(),
         triggers: ctx.triggers,
         actor: ctx.agent,
     }
@@ -776,15 +776,18 @@ mod tests {
     }
 
     #[test]
-    fn dropping_and_access_changes_are_off_unless_asked_for() {
-        // An empty configuration is the safe one: it can build, it cannot
-        // destroy, and it cannot widen anybody's access.
+    fn dropping_is_off_unless_asked_for_and_the_access_grant_is_ignored() {
+        // An empty configuration is the safe one: it can build and it cannot
+        // destroy.
         let g = grants(&Attrs::new());
         assert!(g.create && g.edit);
-        assert!(!g.drop && !g.access_changes);
+        assert!(!g.drop);
 
+        // A configuration saved with the retired checkbox reads the same as one
+        // without it (TODO-type-hardening H8.9).
         let g = grants(&config(&[(CFG_ALLOW_DROP, true), (CFG_ALLOW_ACCESS, true)]));
-        assert!(g.drop && g.access_changes);
+        assert_eq!(g, grants(&config(&[(CFG_ALLOW_DROP, true)])));
+        assert_eq!(AdminCopilot.retired_settings(), &[CFG_ALLOW_ACCESS]);
 
         let g = grants(&config(&[
             (CFG_ALLOW_CREATE, false),

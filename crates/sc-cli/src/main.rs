@@ -28,7 +28,10 @@ use commands::mcp_token::mcp_token_command;
 use commands::migrate::migrate_command;
 use commands::module::module_command;
 use commands::python::python_command;
+use commands::registry::registry_command;
 use commands::serve::serve_command;
+use commands::sync::sync_command;
+use commands::trigger::trigger_command;
 use commands::users::{add_user_command, delete_user_command, modify_user_command, role_command};
 use sc_error::Result;
 
@@ -44,6 +47,10 @@ use sc_error::Result;
 const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 
 fn main() -> ExitCode {
+    // Every panic is one line in the log, saying where (TODO-type-hardening
+    // H5.2): a request's is answered with a 500 and a background loop's is
+    // restarted, and this is what says that it happened.
+    sc_log::install_panic_hook();
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(WORKER_STACK_BYTES)
@@ -91,6 +98,8 @@ async fn run(args: &[String]) -> Result<()> {
         Some("role") => role_command(&args[1..]).await,
         Some("backup") => backup_command(&args[1..]).await,
         Some("restore") => restore_command(&args[1..]).await,
+        Some("registry") => registry_command(&args[1..]).await,
+        Some("sync") => sync_command(&args[1..]).await,
         Some("app") => app_command(&args[1..]).await,
         Some("check") => check_command(&args[1..]).await,
         Some("module") => module_command(&args[1..]).await,
@@ -100,6 +109,7 @@ async fn run(args: &[String]) -> Result<()> {
         Some("cmdstan") => cmdstan_command(&args[1..]).await,
         Some("python") => python_command(&args[1..]).await,
         Some("demo") => demo_command(&args[1..]).await,
+        Some("trigger") => trigger_command(&args[1..]).await,
         // The profile is the file the binary was built with, so the one a
         // container is run under always matches the image it runs.
         // The build's version, commit and build time — the System tab's line.
@@ -176,7 +186,6 @@ fn print_usage() {
     );
     eprintln!("                      [--allow-drop|--no-allow-drop]");
     eprintln!("                      [--checklists none|append|full]");
-    eprintln!("                      [--allow-access-changes|--no-allow-access-changes]");
     eprintln!("                      [--allow-triggers|--no-allow-triggers]");
     eprintln!("                      [--allow-applications|--no-allow-applications]");
     eprintln!("                      [--allow-modules|--no-allow-modules]");
@@ -184,6 +193,8 @@ fn print_usage() {
     eprintln!(
         "  feldspar mcp-token create --label TEXT --email EMAIL --routes-only [--expires-in-days N]"
     );
+    eprintln!("  feldspar trigger approve-system|revoke-system NAME [database flags]");
+    eprintln!("                      (approve a trigger's current code to run as system)");
     eprintln!("                      (module routes only, as a user of any role)");
     eprintln!("  feldspar mcp-token list [--json] [database flags]");
     eprintln!("  feldspar build-agent --server URL [--token-file PATH] [--workspace DIR]");
@@ -228,7 +239,30 @@ fn print_usage() {
     eprintln!("  feldspar module remove NAME [database flags]");
     eprintln!("  feldspar send-email --to ADDR --subject TEXT [database flags] < body");
     eprintln!("  feldspar backup FILE|- [--password [P]] [database flags]");
+    eprintln!("  feldspar backup --structure-only FILE|- [database flags]");
     eprintln!("  feldspar restore FILE [--password [P]] [database flags] [server flags]");
+    eprintln!("  feldspar registry list [KIND] | get ENTRY [database flags]");
+    eprintln!(
+        "  feldspar registry put ENTRY [--plan] [--yes] [--allow-destructive] [database flags] \
+         < value.json"
+    );
+    eprintln!(
+        "  feldspar registry delete ENTRY… [--plan] [--yes] [--allow-destructive] [database flags]"
+    );
+    eprintln!(
+        "  feldspar sync link URL [--branch B] [--subdirectory DIR] | unlink | status | pull \
+         [database flags]"
+    );
+    eprintln!("  feldspar sync commit -m MSG [KEY…] [--keep-mine KEY]… [database flags]");
+    eprintln!(
+        "  feldspar sync discard KEY… | deploy [--plan] [--yes] [--allow-destructive] \
+         [--full-backup] [database flags]"
+    );
+    eprintln!(
+        "  feldspar sync deploy --from FILE.zip [--plan] [--yes] [--allow-destructive] \
+         [database flags]"
+    );
+    eprintln!("  feldspar sync branch [NAME] [--create] [database flags]");
     eprintln!("  feldspar demo analytics [--replace] [database flags]");
     eprintln!("  feldspar cmdstan status [--cmdstan DIR]");
     eprintln!("  feldspar cmdstan install [--version V] [--dir D] [--jobs J]");
@@ -347,6 +381,9 @@ fn print_usage() {
        standard tools open with the same password; --password with no value
        asks for it. A password on the command line is visible to other users
        of the machine (ps) — prefer the prompt or the variable.
+       --structure-only writes the structure instead — the files a Source
+       control commit holds, and no rows, accounts or uploads — for
+       `feldspar sync deploy --from`.
 
   restore: restores everything in FILE — a backup from `feldspar backup`, from
        Settings → Backup, or from Saltcorn 1 — exactly as the Restore dialog
@@ -359,6 +396,36 @@ fn print_usage() {
        result when it is restarted. A password-protected backup is opened
        with --password P, or FELDSPAR_BACKUP_PASSWORD, or the password asked
        for at the terminal.
+
+  registry: every configuration value of this installation, one JSON file
+       at a time — what Source control → Registry edits. An ENTRY is its path
+       (tables/tickets.json) or a kind and a name (table/tickets,
+       setting/email, view/APP/NAME); `list` shows them, marking what is this
+       instance's alone. `get` prints the JSON with secrets as the mask; `put`
+       reads it from stdin, where the mask keeps the stored secret. A put or
+       delete is planned and classified as a deploy is, and printed; it is
+       applied only with --yes, which refuses a plan with blockers, and one
+       that loses data unless --allow-destructive is given (a safety backup
+       is written first).
+
+  sync: source control for this installation's structure — what Source
+       control does in the admin UI. `link` links it to a git repository's
+       branch (the credential stored here is used, so generate a deploy key
+       in the UI first for SSH), and `status` compares the base, the branch
+       tip as of the last `pull`, and live, listing each entity by its KEY
+       (table:tickets, view:APP/NAME). `commit` pushes every local change, or
+       the KEYs given; a conflict is committed only with --keep-mine KEY.
+       `deploy` applies the branch tip and `discard` returns KEYs to the
+       base: each prints the plan and applies it only with --yes, which
+       refuses a plan with blockers, and one that loses data unless
+       --allow-destructive is given (a safety backup is written first, and
+       it is also what lifts a `destructive: never` policy). Deploy is
+       refused while there are local changes. `branch` lists the remote's
+       branches, switches to NAME, or creates it from the tip with --create.
+       `deploy --from FILE.zip` deploys a zip from `feldspar backup
+       --structure-only` instead of the tip: on a linked installation in the
+       tip's place, with the same rules; on one with no link additively — it
+       creates and updates, and deletes nothing.
 
   app list: every application with its framework and the project directory
        its source is in on this machine; --json prints an array of
@@ -449,7 +516,7 @@ fn print_usage() {
     eprintln!();
     eprintln!(
         "  a feldspar.toml environment may also carry `base_domain`, `extra_base_domains`, `bind`,
-  `secure_cookies`, `https_port`, `browser`, `browser_sandbox`, `cmdstan` and the `stan_*` keys, so `serve --environment NAME` needs none of those flags —
+  `secure_cookies`, `https_port`, `browser`, `browser_sandbox`, `max_upload_bytes`, `cmdstan` and the `stan_*` keys, so `serve --environment NAME` needs none of those flags —
   and so a build from the command line writes the same application URL into the
   generated documentation that the server would."
     );

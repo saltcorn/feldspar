@@ -46,7 +46,7 @@ import {
   type StepItem,
   type ViewItem,
 } from "../views";
-import { T } from "../i18n";
+import { T, useT } from "../i18n";
 
 export function ViewEditor({
   appId,
@@ -58,6 +58,7 @@ export function ViewEditor({
   /** The step to open at, counting from 0: the builder's way back. */
   initialStep?: number | null;
 }) {
+  const { t } = useT();
   const builderAvailable = useBuilderAvailable();
   const [app, setApp] = useState<AppItem | null>(null);
   const [view, setView] = useState<ViewItem | null>(null);
@@ -175,6 +176,7 @@ export function ViewEditor({
     <PageHeader
       pretitle={app ? `${app.name} · view` : "View"}
       title={name}
+      docTitle={t("{name} view", { name })}
       actions={
         <Button
           variant="outline-secondary"

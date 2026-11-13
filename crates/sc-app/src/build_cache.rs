@@ -57,8 +57,9 @@
 
 use std::path::{Path, PathBuf};
 
+use sc_proc::{Git, Operand, RepoRoot, Timeout};
+
 use sha2::{Digest, Sha256};
-use tokio::process::Command;
 
 use crate::framework::BuildSpec;
 
@@ -149,19 +150,12 @@ async fn source_tree(
     // One call for all three: where `source_dir` sits in its repository (empty at
     // the top), the real index, and the stamp directory. `--git-path` answers
     // relative to the working directory, and follows a worktree's `.git` file.
-    let out = git(
-        source_dir,
-        None,
-        &[
-            "rev-parse",
-            "--show-prefix",
-            "--git-path",
-            "index",
-            "--git-path",
-            STAMP_DIR,
-        ],
-    )
-    .await?;
+    let mut rev_parse = git_in(source_dir, None)?;
+    rev_parse
+        .args(["rev-parse", "--show-prefix"])
+        .flag_value("--git-path", "index")
+        .flag_value("--git-path", STAMP_DIR);
+    let out = stdout(rev_parse).await?;
     let mut lines = out.split('\n');
     let prefix = lines.next()?.to_owned();
     let index = source_dir.join(lines.next()?);
@@ -183,9 +177,10 @@ async fn source_tree(
     // Drop them where the index already tracks them (a committed `dist`), then
     // stage everything else.
     if !excluded.is_empty() {
-        let mut rm = vec!["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--"];
-        rm.extend(excluded.iter().map(String::as_str));
-        git(source_dir, Some(scratch.path()), &rm).await?;
+        let mut rm = git_in(source_dir, Some(scratch.path()))?;
+        rm.args(["rm", "-r", "-q", "--cached", "--ignore-unmatch"])
+            .operands(excluded.iter().map(Operand::path));
+        stdout(rm).await?;
     }
     // `.gitignore` usually covers them already, and an exclude pathspec naming
     // an ignored path makes `git add` fail ("paths are ignored"), so only the
@@ -196,26 +191,31 @@ async fn source_tree(
     let ignored = if excluded.is_empty() {
         Vec::new()
     } else {
-        let mut check = vec!["check-ignore", "--no-index", "--"];
-        check.extend(excluded.iter().map(String::as_str));
-        let out = git_status_ok(source_dir, &check, &[0, 1]).await?;
+        let mut check = git_in(source_dir, None)?;
+        check
+            .args(["check-ignore", "--no-index"])
+            .operands(excluded.iter().map(Operand::path));
+        let out = stdout_on(check, &[0, 1]).await?;
         out.lines().map(str::to_owned).collect()
     };
-    let pathspecs: Vec<String> = excluded
+    let pathspecs = excluded
         .iter()
         .filter(|p| !ignored.contains(p))
-        .map(|p| format!(":(exclude,literal){p}"))
-        .collect();
-    let mut add = vec!["add", "-A", "--", "."];
-    add.extend(pathspecs.iter().map(String::as_str));
-    git(source_dir, Some(scratch.path()), &add).await?;
+        .map(|p| Operand::new(format!(":(exclude,literal){p}")))
+        .collect::<sc_error::Result<Vec<_>>>()
+        .ok()?;
+    let mut add = git_in(source_dir, Some(scratch.path()))?;
+    add.args(["add", "-A"])
+        .operand(Operand::path("."))
+        .operands(pathspecs);
+    stdout(add).await?;
 
-    let prefix_arg = format!("--prefix={prefix}");
-    let mut write = vec!["write-tree"];
+    let mut write = git_in(source_dir, Some(scratch.path()))?;
+    write.arg("write-tree");
     if !prefix.is_empty() {
-        write.push(&prefix_arg);
+        write.flag_eq("--prefix", &prefix);
     }
-    let tree = git(source_dir, Some(scratch.path()), &write).await?;
+    let tree = stdout(write).await?;
     let tree = tree.trim();
     (!tree.is_empty()).then(|| (tree.to_owned(), stamp_dir))
 }
@@ -268,38 +268,40 @@ impl Drop for ScratchIndex {
     }
 }
 
-/// Run git in `dir`, optionally against another index, returning stdout on
-/// success and `None` on any failure — including git not being installed.
-async fn git(dir: &Path, index: Option<&Path>, args: &[&str]) -> Option<String> {
-    let output = git_command(dir, index, args).output().await.ok()?;
-    if !output.status.success() {
-        return None;
+/// How long one of the key's git commands may take: they read the source
+/// directory and write a scratch index, nothing more.
+const GIT_TIMEOUT: Timeout = Timeout::minutes(2);
+
+/// `git` in `dir`, optionally against another index, against the repository of
+/// the work tree `dir` is in — named explicitly rather than discovered: `dir`
+/// is an app's source directory, which users below admin write, and a planted
+/// bare repository layout there would otherwise be the repository git uses,
+/// `core.fsmonitor` and all (security review 2026-11, #1). `None` when `dir`
+/// is in no work tree.
+fn git_in(dir: &Path, index: Option<&Path>) -> Option<Git> {
+    let repo = RepoRoot::enclosing(dir)?;
+    let mut git = Git::new(&repo, &crate::build::build_authority(), GIT_TIMEOUT);
+    git.cwd(dir);
+    if let Some(index) = index {
+        git.index_file(index);
     }
-    String::from_utf8(output.stdout).ok()
+    Some(git)
 }
 
-/// [`git`] for a command whose exit status carries an answer: stdout when it
+/// The command's stdout on success, `None` on any failure — git not being
+/// installed included.
+async fn stdout(git: Git) -> Option<String> {
+    stdout_on(git, &[0]).await
+}
+
+/// [`stdout`] for a command whose exit status carries an answer: stdout when it
 /// exits with one of `ok`, `None` otherwise.
-async fn git_status_ok(dir: &Path, args: &[&str], ok: &[i32]) -> Option<String> {
-    let output = git_command(dir, None, args).output().await.ok()?;
+async fn stdout_on(git: Git, ok: &[i32]) -> Option<String> {
+    let output = git.output().await.ok()?;
     if !output.status.code().is_some_and(|code| ok.contains(&code)) {
         return None;
     }
     String::from_utf8(output.stdout).ok()
-}
-
-fn git_command(dir: &Path, index: Option<&Path>, args: &[&str]) -> Command {
-    let mut cmd = Command::new("git");
-    cmd.args(args)
-        .current_dir(dir)
-        // Nothing here should ever ask a question, and a server has nobody to
-        // answer one.
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(std::process::Stdio::null());
-    if let Some(index) = index {
-        cmd.env("GIT_INDEX_FILE", index);
-    }
-    cmd
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -307,6 +309,10 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: sets up and inspects repositories with git directly"
+)]
 mod tests {
     use super::*;
     use crate::framework::InstallSpec;
@@ -427,6 +433,35 @@ mod tests {
         assert!(staged.stdout.is_empty(), "{staged:?}");
     }
 
+    /// A user below admin can write an app's source directory, so a bare
+    /// repository layout planted there — `HEAD`, `objects/`, `refs/` and a
+    /// `config` naming an fsmonitor command — must not become the repository a
+    /// build's git runs against (security review 2026-11, #1).
+    #[tokio::test]
+    async fn a_planted_bare_repository_in_the_source_dir_is_not_run_by_a_build() {
+        let Some(tmp) = repo("planted") else { return };
+        let root = &tmp.0;
+        let clean = key(root).await;
+        let web = root.join("web");
+        std::fs::create_dir_all(web.join("objects/k")).unwrap();
+        std::fs::create_dir_all(web.join("refs/k")).unwrap();
+        std::fs::write(web.join("HEAD"), "ref: refs/heads/x\n").unwrap();
+        let marker = root.join("fsmonitor-ran");
+        std::fs::write(
+            web.join("config"),
+            format!(
+                "[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\
+                 \tfsmonitor = \"touch '{}'\"\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        let planted = key(root).await;
+        assert!(!marker.exists(), "the planted fsmonitor command ran");
+        // The planted files are source like any other: the key changed.
+        assert_ne!(planted, clean);
+    }
+
     #[tokio::test]
     async fn a_same_size_edit_in_the_second_of_the_commit_changes_the_key() {
         // Git's stat check is to the second, so an edit that keeps the size and
@@ -520,7 +555,7 @@ mod tests {
         // an enclosing repository, but the temp dir is not in one.
         let web = tmp.0.join("web");
         std::fs::create_dir_all(&web).unwrap();
-        if git(&web, None, &["rev-parse", "--git-dir"]).await.is_some() {
+        if RepoRoot::enclosing(&web).is_some() {
             eprintln!("skipping: the temp directory is inside a git repository");
             return;
         }

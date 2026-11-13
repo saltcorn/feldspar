@@ -156,7 +156,7 @@ impl Lexer<'_> {
     }
 
     fn col(&self, at: usize) -> u32 {
-        self.text[self.line_start..at].chars().count() as u32 + 1
+        u32::try_from(self.text[self.line_start..at].chars().count() + 1).unwrap_or(u32::MAX)
     }
 
     fn newline(&mut self) {

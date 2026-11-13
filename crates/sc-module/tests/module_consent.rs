@@ -95,7 +95,7 @@ mod deno {
             "https://login.example.com/authorize"
         );
         assert_eq!(flow.client_secret.expose(), "csecret");
-        assert_eq!(flow.return_to, "/settings/mail");
+        assert_eq!(flow.return_to.as_str(), "/settings/mail");
         assert!(
             flow.params
                 .contains(&("login_hint".into(), "ada@outlook.com".into()))

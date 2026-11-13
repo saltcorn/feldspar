@@ -23,6 +23,7 @@ Contents:
 11. [Vectors with pgvector](#11-vectors-with-pgvector)
 12. [The Docker image](#12-the-docker-image)
 13. [Making a release](#13-making-a-release)
+14. [Source control: moving structure between instances](#14-source-control-moving-structure-between-instances)
 
 ---
 
@@ -245,6 +246,15 @@ Piping a script off the internet into a shell deserves that one look first:
 `--dry-run` prints every command without running any, and the libc it expects to
 use (§1.2). `--help` lists the rest.
 
+`--version X.Y.Z` installs that release instead of the latest (`versions.txt` beside the
+installer lists them), for pinning a host or going back to a known release. A version
+older than the one installed is refused unless `--allow-downgrade` is given too: the newer
+release may already have migrated the database, so take a dump first (§3).
+
+```bash
+curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh -s -- --version 0.1.1
+```
+
 The installer (`scripts/install.sh`) installs what it needs to download and unpack
 (ca-certificates, curl or wget, tar, gzip, find, awk) with the distribution's package
 manager, downloads the tarball for this platform and its checksum, checks it, and
@@ -269,7 +279,10 @@ is each step by hand, with the reason for it.
 
 Those URLs **carry no version**. The objects behind them are always the latest
 release, which is also what makes them the upgrade path (§3.2); there is no
-version to look up. The published `.sha256` names the file you downloaded rather
+version to look up. Each release also stays downloadable by its version, as
+`feldspar-<version>-linux-x86_64.tar.gz` (and its `.sha256`), and
+`https://feldspar-latest-static.saltcorn.com/versions.txt` lists the versions; the curl
+installer takes one with `--version` (§2.1). The published `.sha256` names the file you downloaded rather
 than the versioned file it was computed over, so `sha256sum -c` works on it as it
 is.
 
@@ -974,7 +987,7 @@ Only relevant on a development machine (README §11).
 | `DATABASE_URL` | the maintenance connection per-test databases are created and dropped from. Overrides the `test` environment in `feldspar.toml` |
 | `SC_TEST_TEMPLATE` | the template each per-test database is cloned from; it must be **empty**, since every test inherits whatever is in it. Overrides `test_template` in the file. Leave it unset to use Postgres's `template1`; set it on a machine whose `template1` has a stale collation version |
 | `SC_TEST_POSTGIS_TEMPLATE` | the database a **PostGIS** test database is cloned from (default `feldspar_postgis_template`, §10.3). A test that needs PostGIS skips with a message when it does not exist |
-| `SC_TEST_PGVECTOR_TEMPLATE` | the database a **pgvector** test database is cloned from (default `feldspar_pgvector_template`, §11.3). A test that needs pgvector skips with a message when it does not exist |
+| `SC_TEST_PGVECTOR_TEMPLATE` | the database a **pgvector** test database is cloned from (default `feldspar_pgvector_template`, §11.4). A test that needs pgvector skips with a message when it does not exist |
 | `SC_TSC` | path to a TypeScript compiler for the generated-client type-check tests |
 | `SC_TEST_NPM`, `SC_TEST_MQTT_BROKER` | opt in to the tests that need a real npm registry and a real MQTT broker |
 | `SC_PRINT_SKILL` | print the generated `SKILL.md` during its test, for reading it |
@@ -1730,6 +1743,14 @@ most for `--modules-dir`. **Restart a server that is already running on that
 database** afterwards, because it loaded its tables, applications and triggers when
 it started.
 
+A module installed from a **local directory** (one built on the server, say) has that
+directory's files in the backup — without `node_modules`, `.git`, `__pycache__` or a
+virtual environment, which the install puts back or does not need. The restore unpacks
+them into `<modules dir>/sources/<package name>` and installs the module from there, so
+the module comes back on a machine that never had the original directory; its row then
+names the new location. A directory that was gone when the backup was taken is not in
+it, and the restore tries the recorded path as before.
+
 #### Password-protected backups
 
 A backup can be protected by a password. Every entry in the zip is then
@@ -2284,7 +2305,26 @@ by the **`embed_rows`** action — run it once from a trigger after adding the f
 schedule. The field's dimensions must be the model's output size (1536 for
 `text-embedding-3-small`).
 
-### 11.3 For the test suite
+### 11.3 Columns an app made itself: `halfvec`, `sparsevec`
+
+An app may make its own pgvector columns with SQL. Feldspar reads them as fields:
+
+- **`halfvec(n)`** (16-bit elements, half the storage of `vector(n)`) is a vector field like any
+  other: an array of numbers through REST and GraphQL, ordered by `nearest`, embedded from
+  `embed_from` when it has one, and indexed with `halfvec_cosine_ops`. Values are rounded to
+  the nearest half-precision number when they are stored, and a number past ±65504 is refused.
+  It is not offered in the type picker: a field made in feldspar is a `vector`.
+- **`sparsevec(n)`** is read and written as the text Postgres prints (`{1:1.5,4:2}/5`).
+- Any other type feldspar has no codec for (`interval`, `inet`, arrays, …) is read and written
+  as its text too.
+
+A backup writes vector, `halfvec` and `sparsevec` values compactly, as base64 of their binary
+form tagged with what it is (`f32le:…`, `f16le:…`, `sparse:5:…`): about a fifth of the size of
+their decimal text, half of it after compression. A restore reads that and the older spellings
+(an array of numbers, the `sparsevec` text) and recreates the columns with their types. A
+backup with vector values cannot be restored by a feldspar older than 0.1.1.
+
+### 11.4 For the test suite
 
 The tests that need pgvector clone their database from a template that already has it:
 
@@ -2378,11 +2418,11 @@ For whoever publishes feldspar, not for an operator installing it.
 ### 13.1 Building and publishing
 
 `scripts/build-static.sh` builds the release tarball in a checkout, checks it, and with
-`--release` publishes it:
+`--release X.Y.Z` publishes it as that version:
 
 ```bash
-scripts/build-static.sh                 # dist/feldspar-<version>-<target>.tar.gz and its .sha256
-scripts/build-static.sh --release       # ...and upload it, then the curl installer
+scripts/build-static.sh                     # dist/feldspar-<version>-<target>.tar.gz and its .sha256
+scripts/build-static.sh --release 0.1.1     # ...as release 0.1.1: commit, tag, build, push, upload
 ```
 
 (The name is older than what it builds: the first release was a statically linked
@@ -2398,26 +2438,74 @@ binary. It is now the one dynamically linked artifact with its own CPython and g
 | `-j N` | lower cargo's parallelism if the linker runs the machine out of memory. This workspace links V8 |
 | `--no-verify` | skip the post-build checks: the binary links `libpython3.13.so.1.0` from `$ORIGIN/../python/lib`, the `.glibc` copies have the bundled loader and `DT_RPATH`, and the smoke test of §13.3 |
 
-`--release` uploads the tarball and its `.sha256` to the Cloudflare R2 bucket
-`feldspar-latest-static`, served as `https://feldspar-latest-static.saltcorn.com`:
+**The version between releases.** After releasing `X.Y.Z`, the workspace version is
+`X.Y.(Z+1)-dev`: after 0.1.1, `Cargo.toml` says `0.1.2-dev`. That is a SemVer pre-release
+of the next patch release, ordered between the two (`0.1.1 < 0.1.2-dev < 0.1.2`), and it is
+what a build from a checkout reports (`feldspar --version`, Settings → System). The next
+release may be 0.1.2, or a minor or major one such as 0.2.0.
+
+**Which versions may be released.** `X.Y.Z` (digits, no `v`, no `-rc1`) must be the
+same as or newer than the version in `Cargo.toml` (`[workspace.package]`) without its
+`-dev` suffix, the newest
+`vX.Y.Z` git tag and the newest version in the bucket's `versions.txt`; and this
+architecture's `feldspar-X.Y.Z-linux-<arch>.tar.gz` must not be in the bucket yet, since a
+published version is never replaced. The checkout must have no uncommitted changes. All of
+this is checked, after a `git fetch --tags`, before anything is built.
+
+**A new version** is released from a branch (normally `main`) that is level with or ahead
+of its upstream. Before the build, the script sets `X.Y.Z` in `Cargo.toml` and in
+`Cargo.lock`'s workspace packages, commits the two files as `Release X.Y.Z`, and tags that
+commit `vX.Y.Z` (an annotated tag). When `Cargo.toml` already says `X.Y.Z` exactly (a
+checkout that has never had a `-dev` version), there is nothing to commit and the tag goes
+on `HEAD`. After the build and its checks pass, the script commits the next development
+version as `Start X.Y.(Z+1)-dev`, and pushes the branch (now at that commit) and the tag
+(at the release commit) in one atomic `git push`, **before** any upload: a tag whose
+tarball is not up yet is put right by running the command again, while a published
+tarball whose commit is not on the remote would not be. A refused push takes the `-dev`
+commit back off and uploads nothing. A build or push that fails leaves the release commit
+and tag local with `HEAD` at the tag; run the same command again, which builds there and
+finishes the release, or drop them (`git tag -d vX.Y.Z && git reset --hard HEAD~1`, as the
+script prints).
+
+**Another architecture of the same version** is built on its own machine, at the tag:
+
+```bash
+git fetch --tags && git checkout v0.1.1
+scripts/build-static.sh --target aarch64-unknown-linux-gnu --release 0.1.1
+```
+
+At a commit already tagged `vX.Y.Z` (and already on the remote) the script commits and
+tags nothing; it builds, makes sure the tag is on the remote, and publishes this
+architecture. A run that failed
+part-way through its uploads is repeated the same way.
+
+**What is uploaded**, to the Cloudflare R2 bucket `feldspar-latest-static`, served as
+`https://feldspar-latest-static.saltcorn.com`, in this order:
 
 | Object | What it is |
 |---|---|
-| `feldspar-linux-x86_64.tar.gz`, `.sha256` | the release, under its own name |
+| `feldspar-X.Y.Z-linux-x86_64.tar.gz`, `.sha256` | this version, kept: what `install.sh --version X.Y.Z` fetches |
+| `feldspar-linux-x86_64.tar.gz`, `.sha256` | the latest release, under its version-less name; each release overwrites it |
 | `feldspar.tar.gz`, `.sha256` | the same tarball, under the name the first releases had, which scripts outside this repository still fetch (`~/feldspar-hosted`) |
+| `versions.txt` | every published version, one per line, oldest first |
+| `latest.txt` | the newest version, alone |
 | `install.sh` | the curl installer, uploaded last |
 
-The object names carry no version, so each release overwrites the last and the
-download URLs of §2 never change. They carry the platform, and a build publishes only
-its own: an aarch64 build publishes `feldspar-linux-aarch64.tar.gz` and nothing
-else, because `feldspar.tar.gz` has always been the x86_64 tarball. Each `.sha256`
-names its own object. The installer goes last because it fetches the version-less
-name: between the two uploads, a new installer fetching an old tarball is the less
-surprising half-way state.
+The version-less names are the latest release, so the download URLs of §2 never change.
+All names carry the platform, and a build publishes only its own: an aarch64 build
+publishes `feldspar-X.Y.Z-linux-aarch64.tar.gz` and `feldspar-linux-aarch64.tar.gz`, but
+not `feldspar.tar.gz`, which has always been the x86_64 tarball. Each `.sha256` names its
+own object. The versioned tarball goes first, so that the latest names never point at
+something that cannot also be fetched by its version; `versions.txt` is read again just
+before it is written (another architecture may have added the version meanwhile), sorted
+and de-duplicated, so it lists a version once, as soon as one architecture has it. The
+installer goes last because it fetches the version-less name: between the two uploads, a
+new installer fetching an old tarball is the less surprising half-way state.
 
-It runs `npx wrangler r2 object put --remote`, so it needs `npx` on `PATH` (which
-is checked before the build starts) and a wrangler login with access to the
-bucket. `--bucket NAME` uploads somewhere else; such a bucket is not served at
+It runs `npx wrangler r2 object get` and `put --remote`, so it needs `npx` on `PATH`
+(which is checked before the build starts) and a wrangler login with access to the
+bucket; a read that fails for any reason but a missing object stops the run rather than
+being taken for "not published". `--bucket NAME` uploads somewhere else; such a bucket is not served at
 that hostname and is deliberately given no public URL in the output. The upload
 itself is `scripts/lib/release.sh`, which a macOS build script will source too
 (TODO-portable-release R5).
@@ -2463,3 +2551,201 @@ which libc the process maps (the host's on a glibc image, the bundle's on Alpine
 and on Debian 13 and Alpine a venv with a pure-Python package and a manylinux wheel,
 and an upgrade over a running install. It is skipped for a target that is not this
 machine's architecture.
+
+---
+
+## 14. Source control: moving structure between instances
+
+An installation's **structure** can live in a git repository and move between instances. The
+structure is its tables and fields, applications with their views and pages, triggers, roles,
+modules, file stores, settings that travel, and so on. Instances are separate installations,
+each with its own database; "development", "staging" and "production" are only labels. The
+design is [`APP_SYNC_PROPOSAL.md`](APP_SYNC_PROPOSAL.md), and the implementation is
+[`TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md) §9.3.
+
+**What travels, and what never does.** One JSON file per entity, plus the code and asset
+directories of local file stores. What never travels: rows, users, sessions, tokens, run history,
+uploaded content, a git store's files (only its URL, branch and pinned commit go), the settings
+that belong to the machine (`ssl`, `email`, `authentication`, `development`, backup schedules),
+custom domains, store paths, build hosts, `feldspar.toml`, and the link itself. Every secret is
+written as a mask. A new entity whose secret this instance has not got is created without it and
+listed in the receipt as needing one.
+
+Everything here is under **Administration → Source control** in the admin UI, and `feldspar sync`
+does the same from a terminal. Every action is admin-only and is never offered to an agent over
+MCP.
+
+### 14.1 Linking
+
+A link is a remote URL, a branch, and optionally a subdirectory, for a repository that holds other
+things too. Set it up under **Source control → Link setup**, choosing one of two credentials:
+
+- **A deploy key.** **Generate key** creates an ed25519 key under `<data dir>/keys` and shows its
+  public half. Add it to the repository as a deploy key, with write access on an instance that
+  commits. A read-only key is enough for an instance that only deploys: the remote then refuses
+  its pushes.
+- **An HTTPS token.** It is sealed with the instance key (`secrets.key`, §8.2) and given to git
+  through its environment. It never appears in a command line, a log or `.git/config`.
+
+**Test connection** lists the remote's branches without storing anything. From a terminal, after
+generating a key in the UI:
+
+```bash
+sudo -u feldspar feldspar sync link git@github.com:acme/structure.git --branch main \
+  --environment production
+sudo -u feldspar feldspar sync status --environment production
+```
+
+Linking sets the **base**, the record of what was last in step. It starts from the branch tip,
+leaving out each entity the instance does not have. So:
+
+| Starting point | What Status shows |
+|---|---|
+| an empty repository | everything here is "local new"; the first Commit exports the installation |
+| an empty instance | everything is incoming; Deploy builds it |
+| both have content | identical entities are in sync; review anything else before the first deploy |
+
+The clone at `<data dir>/sync-repo` is a mirror, never a workspace. Do not edit in it: every
+Pull resets it to the remote.
+
+### 14.2 The everyday loop
+
+On the instance where the change is made (call it A):
+
+1. Make the change as usual: a new field, an edited view, a new trigger.
+2. **Status** lists it as **Local**. Expand a row to see its diff.
+3. **Commit** pushes every ticked local change with a message. If another instance pushed first,
+   the push is refused and nothing changes. Press Commit again to redo it on top of the new tip.
+
+On the instance that receives it (B):
+
+1. **Pull** fetches the branch. Live does not change. Status lists the changes as **Incoming**.
+2. **Deploy** opens the review: every operation, grouped by class, with counts and blockers.
+   Confirm it, and the receipt says what was applied, deferred or not reached, and whether the
+   instance now matches the commit (`converged`) or not (`drifted`, with the differences listed).
+3. **History** lists every deploy, discard, commit and registry save, with who, from where and the
+   outcome.
+
+**Deploy is refused while the instance has uncommitted changes**, with a sentence naming them.
+Commit them, or **Discard** them (back to the base, reviewed like a deploy). A git store whose
+checked-out commit moved is the one exception: it never blocks Deploy.
+
+A **Conflict** is an entity changed both here and on the branch. On Commit, choose *keep mine*
+(commit this instance's version), *discard mine* (go back to the base, so the entity becomes
+incoming), or *merge in editor* (the registry editor shows mine, theirs and the base; save the
+merge, then keep mine).
+
+**Branches.** The branch selector switches which tip Status and Deploy compare against. It does
+not change live, and local changes stay local, so creating a branch and then committing puts this
+instance's changes on the new branch.
+
+From a terminal:
+
+```bash
+feldspar sync pull
+feldspar sync deploy --plan                     # print the plan, apply nothing
+feldspar sync deploy --yes                      # apply it, if it has no blockers
+feldspar sync commit -m "Add priority to tickets"
+feldspar sync discard view:helpdesk/list --yes
+feldspar sync branch feature --create
+```
+
+Restart a server that is running on the same database after a CLI deploy: it loaded its
+structure when it started. A deploy from the admin UI reloads the running server itself.
+
+**The registry editor** (**Source control → Registry**, or `feldspar registry`) edits any
+entity's JSON directly, including what only this instance has (marked "this instance only"). A
+save is planned and reviewed like a one-entity deploy. A save of a portable entity is an ordinary
+local change, to commit or discard. An edit to an instance-only value never shows in Status.
+
+### 14.3 Destructive changes
+
+Every operation in a plan is classified, and the class sets whether it starts ticked:
+
+| Class | Examples | In the review |
+|---|---|---|
+| safe | create anything, update a view, add a field, rename by id | ticked |
+| metadata delete | delete a view, page, trigger or a synced file | ticked, listed in red |
+| can fail | make a field required, add a unique constraint | ticked; checked against the data first, and a blocker with the reason ("312 rows have NULL in `status`") if it would fail |
+| data-destructive | drop a table or a field, delete a role users hold, delete a file store | **unticked**; tick each one and type the branch's name to confirm |
+| unsupported | change a column's SQL type, change a primary key | a blocker: add a new field, copy the values, then drop the old one |
+
+**Unticked is deferred, not forgotten.** The table or field stays, Status keeps it as "Incoming
+delete", and the next deploy offers the drop again. It never becomes a local change, so it does
+not block a later deploy, and Commit does not put it back into the repository.
+
+**A safety backup comes first.** When a data-destructive operation is ticked, a backup is written
+before anything is applied. It holds the structure plus the rows of every table or field about to
+be dropped, in `<data dir>/sync-backups/safety-<time>-<id>.zip`. Its path is in the receipt and in
+History.
+
+**The policy**, under Link setup, so instances can differ:
+
+- `destructive`: `confirm` (the default) or `never`. Under `never`, nothing that loses data can be
+  ticked in the UI or applied over the API. Only `feldspar sync deploy --yes --allow-destructive`,
+  run on the server, can apply it. Use `never` on production.
+- `full_backup`: `off` (the default), `optional` (the review offers one), or `required`. A full
+  backup goes through every backup schedule to its destination before the deploy. Under
+  `required`, a deploy is refused if no schedule exists.
+
+At the CLI, `--yes` applies only a plan with no blockers. It refuses a plan that loses data
+unless `--allow-destructive` is given.
+
+### 14.4 Rollback
+
+Rollback is a deploy of an earlier commit. Revert the commit in git (or switch to a branch at the
+earlier commit), then Pull and Deploy. The plan shows exactly what going back changes. It is
+classified like any other: going back past a field's creation is a data-destructive drop of that
+field.
+
+**Dropped data comes back only from the safety backup.** It is an ordinary backup file. Restore it
+under **Settings → Backup → Restore**, or:
+
+```bash
+sudo -u feldspar feldspar restore /var/lib/feldspar/sync-backups/safety-20261110T101500Z-1a2b3c4d.zip \
+  --environment production
+```
+
+Deploy the structure that has the table or field first, so the restore has somewhere to put the
+rows.
+
+### 14.5 Without a repository: the structure zip
+
+The same tree can travel as a zip, for an instance with no link or for a snapshot taken by hand:
+
+```bash
+sudo -u feldspar feldspar backup --structure-only /tmp/structure.zip --environment staging
+sudo -u feldspar feldspar sync deploy --from /tmp/structure.zip --plan --environment production
+sudo -u feldspar feldspar sync deploy --from /tmp/structure.zip --yes --environment production
+```
+
+Or upload it under **Source control → Deploy a zip**, which shows the same review. The zip holds
+what a commit holds: no rows, no accounts, no uploads, and secrets as the mask. It is never
+protected by a password, and `--password` is refused.
+
+- **On an instance with a link**, the zip takes the branch tip's place: local changes block it,
+  what the zip does not have is deleted (data-destructive drops start unticked), and the base is
+  updated as after a deploy of the tip.
+- **On an instance with no link** there is no base to tell a deletion from something that was
+  never there. The zip is applied **additively**: what it has is created or updated, and nothing
+  is deleted. That includes a field a table has here and the zip's version of it lacks.
+
+### 14.6 Credentials and what is on disk
+
+| What | Where |
+|---|---|
+| the link, its policy, the base, a sealed HTTPS token | the `_fd_sync` row |
+| the deploy key | `<data dir>/keys/feldspar-sync.key`, and its public half |
+| the mirror | `<data dir>/sync-repo` |
+| safety backups | `<data dir>/sync-backups` |
+| the ledger | `_fd_deployments` |
+
+- **A backup does not carry the link**, its credential or the ledger: they belong to this
+  instance. After restoring onto a new host, link it again (§14.1). Where the restored structure and
+  the branch agree, Status shows them in sync.
+- **Rotating a credential:** generate a new key (or type a new token) under Link setup. That keeps
+  the base, so Status is unchanged. Then remove the old deploy key from the repository.
+- **Unlinking** (`feldspar sync unlink`, or **Unlink** in Link setup) forgets the link and the base,
+  and leaves the structure as it is. Linking again starts from §14.1's rules.
+- **One deploy at a time.** A deploy, discard, commit or registry save holds the sync lock. A lock
+  older than an hour belongs to a process that died, and the next action takes it over.

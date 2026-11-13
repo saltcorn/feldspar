@@ -13,6 +13,10 @@
 //! tests. `node` is not needed: a module runs on a Deno worker in this process,
 //! and `modules_no_node.rs` is the test that says so with the `PATH` stripped.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_catalog::Authority;
@@ -1080,6 +1084,139 @@ async fn a_backed_up_module_is_reinstalled_with_its_settings_and_permissions()
             .iter()
             .any(|l| l.as_str().unwrap().contains("is already installed here")),
         "{report}"
+    );
+    Ok(())
+}
+
+/// A **local** module's source directory travels in the backup: a module built
+/// on the server (an agent's integration with a legacy system) has no registry
+/// to come back from, and the checkout it was installed from is gone on the
+/// machine restoring — here it is deleted before the restore. The restore
+/// unpacks the backup's copy under the modules root and installs from that.
+#[tokio::test]
+async fn a_local_modules_source_travels_in_the_backup() -> sc_error::Result<()> {
+    skip_without_npm!();
+    let mut source = setup("local-source").await?;
+    // The module's checkout: the echo fixture, plus a file that is not code,
+    // an executable script, and what an install leaves that is not source.
+    let checkout = std::env::temp_dir().join(format!(
+        "sc-modules-api-{}-local-checkout",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&checkout);
+    std::fs::create_dir_all(checkout.join("lib")).unwrap();
+    std::fs::create_dir_all(checkout.join("node_modules/left-pad")).unwrap();
+    std::fs::create_dir_all(checkout.join(".git")).unwrap();
+    for file in ["index.js", "package.json"] {
+        std::fs::copy(fixture("echo-module").join(file), checkout.join(file)).unwrap();
+    }
+    std::fs::write(checkout.join("lib/legacy.txt"), "talks to the AS/400").unwrap();
+    std::fs::write(checkout.join("lib/sync.sh"), "#!/bin/sh\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            checkout.join("lib/sync.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    std::fs::write(checkout.join("node_modules/left-pad/index.js"), "").unwrap();
+    std::fs::write(checkout.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+
+    let (status, body) = source
+        .client
+        .send(
+            "POST",
+            "/api/modules",
+            Some(json!({ "source": "local", "location": checkout.display().to_string() })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let (_, options) = source.client.send("GET", "/api/backup", None).await;
+    let archive = source
+        .client
+        .raw(
+            "POST",
+            "/backup/create",
+            serde_json::to_vec(&json!({ "include": options["include"] })).unwrap(),
+            "application/json",
+        )
+        .await;
+    // The checkout is gone, as it is on any other machine.
+    std::fs::remove_dir_all(&checkout).unwrap();
+
+    let names: Vec<String> = zip::ZipArchive::new(std::io::Cursor::new(&archive))
+        .unwrap()
+        .file_names()
+        .map(str::to_owned)
+        .collect();
+    let id = body["id"].as_str().unwrap();
+    let prefix = format!("modules/{id}/files/");
+    for kept in ["index.js", "package.json", "lib/legacy.txt", "lib/sync.sh"] {
+        assert!(
+            names.contains(&format!("{prefix}{kept}")),
+            "{kept} is not in {names:?}"
+        );
+    }
+    assert!(
+        !names
+            .iter()
+            .any(|n| n.contains("node_modules") || n.contains(".git")),
+        "{names:?}"
+    );
+
+    let mut target = setup("local-target").await?;
+    let uploaded: Value = serde_json::from_slice(
+        &target
+            .client
+            .raw("POST", "/backup/upload", archive, "application/zip")
+            .await,
+    )
+    .unwrap();
+    let (status, report) = target
+        .client
+        .send(
+            "POST",
+            "/api/backup/restore",
+            Some(json!({ "id": uploaded["id"], "include": uploaded["include"] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert!(
+        report["restored"].as_array().unwrap().iter().any(|l| l
+            .as_str()
+            .unwrap()
+            .contains("installed from its source in the backup")),
+        "{report}"
+    );
+
+    let restored = sc_module::load_module_by_name(&target.catalog, "@saltcorn-test/echo")
+        .await?
+        .expect("the module is installed on the second server");
+    let unpacked = target.root.join("sources/_saltcorn-test_echo");
+    assert_eq!(restored.location, unpacked.display().to_string());
+    assert_eq!(
+        std::fs::read_to_string(unpacked.join("lib/legacy.txt")).unwrap(),
+        "talks to the AS/400"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(unpacked.join("lib/sync.sh"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755);
+    }
+    assert!(
+        target
+            .modules
+            .modules()
+            .get("@saltcorn-test/echo")
+            .is_some(),
+        "the restored module is loaded"
     );
     Ok(())
 }

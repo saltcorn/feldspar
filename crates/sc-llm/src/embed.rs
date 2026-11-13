@@ -108,13 +108,13 @@ fn read_embeddings(reply: &Json, expected: usize) -> std::result::Result<Vec<Vec
         let index = item
             .get("index")
             .and_then(Json::as_u64)
-            .map_or(position, |i| i as usize);
+            .map_or(position, |i| usize::try_from(i).unwrap_or(usize::MAX));
         let embedding = item
             .get("embedding")
             .and_then(Json::as_array)
             .ok_or("an item of the reply has no `embedding` array")?
             .iter()
-            .map(|x| x.as_f64().map(|x| x as f32))
+            .map(|x| x.as_f64().map(single_precision))
             .collect::<Option<Vec<f32>>>()
             .ok_or("an embedding holds something other than numbers")?;
         indexed.push((index, embedding));
@@ -127,6 +127,15 @@ fn read_embeddings(reply: &Json, expected: usize) -> std::result::Result<Vec<Vec
     }
     indexed.sort_by_key(|(i, _)| *i);
     Ok(indexed.into_iter().map(|(_, v)| v).collect())
+}
+
+/// An embedding element as the single precision a vector column holds.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the narrowing is the point: a vector element is single precision"
+)]
+fn single_precision(x: f64) -> f32 {
+    x as f32
 }
 
 #[cfg(test)]

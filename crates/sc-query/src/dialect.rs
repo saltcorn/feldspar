@@ -36,6 +36,13 @@ pub trait SqlDialect {
     /// embedded double quote.
     fn quote_ident(&self, ident: &str) -> String;
 
+    /// Quote a checked [`Ident`](crate::Ident) — the typed way into SQL text,
+    /// and the one the DDL renderers use (security review 2026-11 §7). The
+    /// text is [`quote_ident`](Self::quote_ident)'s.
+    fn quote(&self, ident: &crate::Ident) -> crate::QuotedIdent {
+        crate::QuotedIdent::quoted(self.quote_ident(ident.as_str()))
+    }
+
     /// The placeholder text for the `position`-th bind parameter (1-based).
     /// Postgres renders `$1`, `$2`, …; a `?`-style dialect ignores `position`.
     fn placeholder(&self, position: usize) -> String;
@@ -518,6 +525,16 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
             }
             Expr::Unary { op, e } => self.unary(*op, e),
             Expr::Func { name, args } => {
+                // A time function (`crate::time`) is spelled per backend.
+                if let Some(f) = crate::time::TimeFn::of(name)
+                    && let [arg] = args.as_slice()
+                {
+                    let (before, after) = f.template(self.dialect.is_sqlite());
+                    self.push(&before);
+                    self.expr(arg)?;
+                    self.push(after);
+                    return Ok(());
+                }
                 // The function name is structural (from the AST), not user data.
                 self.push(self.dialect.function_name(name));
                 self.push("(");
@@ -690,7 +707,11 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
         self.expr(&d.column)?;
         self.push(" <=> CAST(");
         self.bind(Value::Json(crate::vector::vector_json(&d.to)))?;
-        self.push(" AS vector))");
+        self.push(if d.half {
+            " AS halfvec))"
+        } else {
+            " AS vector))"
+        });
         Ok(())
     }
 

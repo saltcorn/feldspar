@@ -139,7 +139,7 @@ fn card(fx: &Fixture, mut raw: Json) -> StatCard {
 }
 
 async fn numbers(fx: &Fixture, raw: Json) -> CardData {
-    match render_card(&fx.cat, &sc_dataset::Caller::admin(), &card(fx, raw))
+    match render_card(&fx.cat, &sc_dataset::Caller::system("test"), &card(fx, raw))
         .await
         .expect("renders")
     {
@@ -151,7 +151,7 @@ async fn numbers(fx: &Fixture, raw: Json) -> CardData {
 }
 
 async fn refused(fx: &Fixture, raw: Json) -> String {
-    match render_card(&fx.cat, &sc_dataset::Caller::admin(), &card(fx, raw))
+    match render_card(&fx.cat, &sc_dataset::Caller::system("test"), &card(fx, raw))
         .await
         .expect("answers")
     {
@@ -407,7 +407,7 @@ async fn a_card_that_does_not_read_says_why() -> Result<()> {
 
         let mut gone = card(&fx, json!({ "value": { "function": "count" } }));
         gone.dataset = DatasetId::new();
-        match render_card(&fx.cat, &sc_dataset::Caller::admin(), &gone).await? {
+        match render_card(&fx.cat, &sc_dataset::Caller::system("test"), &gone).await? {
             RenderedCard::Refused { error, .. } => assert!(error.contains("gone"), "{b}: {error}"),
             RenderedCard::Card(_) => panic!("{b}: drew a card of nothing"),
         }

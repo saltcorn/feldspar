@@ -183,7 +183,8 @@ pub const BUNDLES: [Bundle; 5] = [
         subdir: "ui/admin",
         env_var: "SC_ADMIN_BUNDLE_DIR",
         label: "admin UI",
-        inputs: &["src", "vite.config.ts", "index.html"],
+        // `public` holds the favicon, copied as-is to the bundle root.
+        inputs: &["src", "public", "vite.config.ts", "index.html"],
         marker: "index.html",
     },
     Bundle {
@@ -315,6 +316,10 @@ pub fn recorded_dir(prefix: Option<&str>, subdir: &str, dist: &std::path::Path) 
 }
 
 /// Run `npm <args>` in `dir`, failing the build loudly on any error.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "build script: npm builds the admin UI at compile time, on the build machine"
+)]
 fn run<const N: usize>(dir: &std::path::Path, args: [&str; N]) {
     let status = Command::new("npm")
         .args(args)

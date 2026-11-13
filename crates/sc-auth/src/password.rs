@@ -47,13 +47,13 @@ pub fn random_password() -> String {
     let len = ALPHABET.len();
     // The largest multiple of the alphabet that fits in a byte; anything at or
     // above it is redrawn rather than folded.
-    let limit = (256 / len * len) as u32;
+    let limit = 256 / len * len;
     let mut out = String::with_capacity(RANDOM_PASSWORD_LENGTH);
     let mut buffer = [0u8; RANDOM_PASSWORD_LENGTH];
     while out.len() < RANDOM_PASSWORD_LENGTH {
         OsRng.fill_bytes(&mut buffer);
         for byte in buffer {
-            if u32::from(byte) >= limit {
+            if usize::from(byte) >= limit {
                 continue;
             }
             out.push(ALPHABET[usize::from(byte) % len] as char);
@@ -125,7 +125,7 @@ pub fn is_valid_hash(hash: &str) -> bool {
 /// Whether a hash that just verified should be replaced by a fresh
 /// [`hash_password`] of the same password — true for every scheme but the one
 /// this system writes.
-pub fn needs_rehash(hash: &str) -> bool {
+pub(crate) fn needs_rehash(hash: &str) -> bool {
     HashScheme::of(hash) != Some(HashScheme::Phc)
 }
 

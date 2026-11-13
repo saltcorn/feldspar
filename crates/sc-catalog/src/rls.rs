@@ -18,7 +18,7 @@
 
 use sc_db::Row;
 use sc_error::{Context, Error, Result};
-use sc_expr::{Formula, Operation, SESSION_GUC, SchemaShape, USER_GUC, UserEnv};
+use sc_expr::{Formula, NOW_GUC, Operation, SESSION_GUC, SchemaShape, USER_GUC, UserEnv};
 use sc_query::{SqlDialect, Statement, render_policy_expr};
 
 use crate::caller::{Principal, Unchecked};
@@ -90,13 +90,36 @@ pub async fn set_caller_context(
     // (`NULLIF(current_setting(…), '')`) — so it reaches them as no access.
     //
     // [`SharedTx`]: crate::SharedTx
-    tx.set_local(ROLE_GUC, &context.role.to_string()).await?;
+    // The **policy** role and user (TODO-type-hardening H8.1): an elevated
+    // principal's cause's, so on a table with row-level security nothing
+    // elevates, whichever path the statement took.
+    tx.set_local(ROLE_GUC, &context.policy_role().to_string())
+        .await?;
     tx.set_local(USER_GUC, context.user_json().as_deref().unwrap_or(""))
         .await?;
     // And the guest session (TODO-payments P1.5), for the same reason: the
     // last writer's must not decide the next writer's `session.id`.
-    tx.set_local(SESSION_GUC, context.session.as_deref().unwrap_or(""))
+    tx.set_local(SESSION_GUC, context.session().unwrap_or(""))
         .await?;
+    // Every presented value any formula reads (TODO-type-hardening H7.5), for
+    // the same reason: a key this writer did not present is set empty, never
+    // left as the last writer's. The names come from the formulas, which an
+    // admin writes; the values are bound.
+    for key in request_keys() {
+        tx.set_local(
+            &sc_expr::request_guc(&key),
+            context.request().get(&key).unwrap_or(""),
+        )
+        .await?;
+    }
+    // The statement's instant (TODO-type-hardening H7.2): `new Date()` and
+    // `Date.now()` in a policy read it, rather than SQL's `now()`, which on a
+    // shared transaction is the transaction's start.
+    tx.set_local(
+        NOW_GUC,
+        &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+    )
+    .await?;
     // The changeset, for the change-log trigger (§14.12), on the same terms:
     // always set, so one writer's changeset is never the next one's.
     tx.set_local(CHANGESET_GUC, &context.changeset_json())
@@ -121,11 +144,44 @@ pub async fn clear_caller_context(tx: &mut dyn sc_db::Transaction) -> Result<()>
     tx.set_local(ROLE_GUC, "").await?;
     tx.set_local(USER_GUC, "").await?;
     tx.set_local(SESSION_GUC, "").await?;
+    tx.set_local(NOW_GUC, "").await?;
+    for key in request_keys() {
+        tx.set_local(&sc_expr::request_guc(&key), "").await?;
+    }
     let ambient = changeset::current()
         .map(|c| c.guc_value(None))
         .unwrap_or_default();
     tx.set_local(CHANGESET_GUC, &ambient).await?;
     Ok(())
+}
+
+/// The presented-value keys any ownership formula has read, in any catalog
+/// this process loaded (TODO-type-hardening H7.5): the `sc.request.<key>` GUCs
+/// [`set_caller_context`] sets every time. It only grows — setting a GUC no
+/// policy reads costs a statement and decides nothing.
+static REQUEST_KEYS: std::sync::RwLock<std::collections::BTreeSet<String>> =
+    std::sync::RwLock::new(std::collections::BTreeSet::new());
+
+/// Record keys a formula reads (each one [`sc_expr::is_request_key`] accepts).
+pub(crate) fn note_request_keys(keys: impl IntoIterator<Item = String>) {
+    let mut guard = REQUEST_KEYS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for key in keys {
+        if sc_expr::is_request_key(&key) {
+            guard.insert(key);
+        }
+    }
+}
+
+/// The keys [`note_request_keys`] has recorded.
+fn request_keys() -> Vec<String> {
+    REQUEST_KEYS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .cloned()
+        .collect()
 }
 
 /// Whether `driver`'s transactions take the caller GUCs: it has row-level
@@ -255,6 +311,12 @@ pub fn enable_rls_sql(
         })?;
     let formula = &*rule;
     let shape = projection.shape();
+    // A policy cannot see the existing and the proposed row together, so a
+    // formula that compares them (`old`, TODO-type-hardening H7.3) has its
+    // proposed-row check in a `BEFORE UPDATE` trigger instead (H7.4).
+    let uses_old = formula
+        .validate(&shape, &table.name)?
+        .uses(sc_expr::Ambient::Old);
     // A policy on `table` that queries a child table (a Ↄ-aggregation, Phase 7)
     // whose own policy queries back would make Postgres raise "infinite
     // recursion detected in policy" at query time — refuse at enablement,
@@ -275,12 +337,106 @@ pub fn enable_rls_sql(
         ));
     }
     for (op, command) in POLICY_OPS {
+        let command = match command {
+            // The trigger below checks the proposed row; the policy keeps the
+            // existing-row check, where `old` is the row itself.
+            PolicyCommand::Both if uses_old => &PolicyCommand::UsingOnlyUpdate,
+            other => other,
+        };
         out.push_str(&policy_clause(
             dialect, &shape, &env, table, formula, *op, command,
         )?);
         out.push('\n');
     }
+    out.push_str(&drop_old_check_sql(dialect, &table.name));
+    if uses_old {
+        out.push_str(&old_check_sql(dialect, &shape, &env, table, formula)?);
+    }
     Ok(out)
+}
+
+/// The name of the trigger that checks an update's proposed row against a
+/// formula that reads `old` (TODO-type-hardening H7.4). Trigger names are
+/// per table, like the policies'.
+const OLD_CHECK_TRIGGER: &str = "sc_owner_update_old";
+
+/// The trigger function's name for `table`: one per table, since its body is
+/// that table's formula. A name past Postgres's 63 bytes would be cut short
+/// and could then be another table's, so a long one ends in a hash of the
+/// whole table name instead.
+fn old_check_function(table: &str) -> String {
+    const PREFIX: &str = "_fd_owner_old_";
+    let name = format!("{PREFIX}{table}");
+    if name.len() <= sc_query::MAX_IDENT_BYTES {
+        return name;
+    }
+    // FNV-1a: stable across builds and platforms, which a function name that
+    // a later `DROP` must find again needs to be.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in table.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let room = sc_query::MAX_IDENT_BYTES - PREFIX.len() - 17;
+    let mut cut = room.min(table.len());
+    while !table.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{PREFIX}{}_{hash:016x}", &table[..cut])
+}
+
+/// Drop the `old` trigger and its function, if there are any.
+fn drop_old_check_sql(dialect: &dyn SqlDialect, table: &str) -> String {
+    format!(
+        "DROP TRIGGER IF EXISTS {OLD_CHECK_TRIGGER} ON {};\nDROP FUNCTION IF EXISTS {}();\n",
+        dialect.quote_ident(table),
+        dialect.quote_ident(&old_check_function(table)),
+    )
+}
+
+/// The `BEFORE UPDATE` trigger that checks an update's proposed row (`NEW`)
+/// with `old` read from `OLD`, under the same GUCs and role floor as the
+/// policies, and refuses it with the policies' own SQLSTATE (`42501`), which
+/// the row layer reports as not found ([`map_policy_violation`]).
+fn old_check_sql(
+    dialect: &dyn SqlDialect,
+    shape: &SchemaShape,
+    env: &UserEnv,
+    table: &Table,
+    formula: &Formula,
+) -> Result<String> {
+    let calc = table.calc_formulas();
+    let check = sc_expr::translate_update_check(
+        formula,
+        &sc_expr::Env::new(env).with_calc(&calc),
+        shape,
+        &table.name,
+        "new",
+        "old",
+    )
+    .map_err(Error::from)?;
+    let floor = table.access.min_role_write;
+    let body = format!(
+        "BEGIN\n  IF ((NULLIF(current_setting('{ROLE_GUC}', true), '')::int <= {floor}) OR ({})) \
+         IS NOT TRUE THEN\n    RAISE EXCEPTION 'new row violates row-level security policy for \
+         table \"%\"', TG_TABLE_NAME USING ERRCODE = '42501';\n  END IF;\n  RETURN NEW;\nEND\n",
+        render_policy_expr(dialect, &check)?
+    );
+    // A dollar-quote tag the body cannot contain, so no string in a formula
+    // can end the function's text early.
+    let mut tag = String::from("$fd$");
+    let mut n = 0_u32;
+    while body.contains(&tag) {
+        n += 1;
+        tag = format!("$fd{n}$");
+    }
+    let function = dialect.quote_ident(&old_check_function(&table.name));
+    Ok(format!(
+        "CREATE OR REPLACE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS \
+         {tag}\n{body}{tag};\nCREATE TRIGGER {OLD_CHECK_TRIGGER} BEFORE UPDATE ON {} FOR EACH ROW \
+         EXECUTE FUNCTION {function}();\n",
+        dialect.quote_ident(&table.name)
+    ))
 }
 
 /// The DDL that [`disable_rls`] runs — public for the same reason
@@ -294,6 +450,7 @@ pub fn disable_rls_sql(dialect: &dyn SqlDialect, table_name: &str) -> String {
             policy_name(*op)
         ));
     }
+    out.push_str(&drop_old_check_sql(dialect, table_name));
     out.push_str(&format!(
         "ALTER TABLE {ident} NO FORCE ROW LEVEL SECURITY;\n"
     ));
@@ -401,6 +558,9 @@ enum PolicyCommand {
     Using(&'static str),
     WithCheck(&'static str),
     Both,
+    /// `UPDATE` whose proposed row a trigger checks: `USING` the predicate,
+    /// `WITH CHECK (true)` (TODO-type-hardening H7.4).
+    UsingOnlyUpdate,
 }
 
 /// A stable, table-scoped policy name per command — fixed so the
@@ -463,6 +623,9 @@ fn policy_clause(
                 "CREATE POLICY {name} ON {ident} FOR UPDATE USING ({expr}) WITH CHECK ({expr});"
             )
         }
+        PolicyCommand::UsingOnlyUpdate => {
+            format!("CREATE POLICY {name} ON {ident} FOR UPDATE USING ({expr}) WITH CHECK (true);")
+        }
     })
 }
 
@@ -474,4 +637,25 @@ async fn run_ddl(catalog: &Catalog, sql: &str) -> Result<()> {
     })
     .await
     .context("applying row-level-security policies")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TODO-type-hardening H7.4: one trigger function per table, and two long
+    /// table names that share their first 49 bytes never share a function.
+    #[test]
+    fn a_long_table_name_gets_its_own_trigger_function() {
+        assert_eq!(old_check_function("posts"), "_fd_owner_old_posts");
+        let a = format!("{}_a", "x".repeat(60));
+        let b = format!("{}_b", "x".repeat(60));
+        let (fa, fb) = (old_check_function(&a), old_check_function(&b));
+        assert_ne!(fa, fb);
+        assert!(fa.len() <= sc_query::MAX_IDENT_BYTES, "{fa}");
+        assert_eq!(fa, old_check_function(&a), "stable");
+        // A multi-byte name is cut on a character boundary.
+        let wide = "é".repeat(40);
+        assert!(old_check_function(&wide).len() <= sc_query::MAX_IDENT_BYTES);
+    }
 }

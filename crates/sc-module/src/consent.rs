@@ -104,7 +104,7 @@ pub struct ConsentFlow {
     /// Extra authorization parameters (`login_hint`, `prompt`, …).
     pub params: Vec<(String, String)>,
     /// A path on the application's host.
-    pub return_to: String,
+    pub return_to: sc_http::RedirectTarget,
     pub store: TokenStore,
     expires: Instant,
 }
@@ -221,15 +221,7 @@ pub fn consent_flow(
         }
         Some(_) => return Err(refuse("`params` is an object of text values".into())),
     }
-    let return_to = match request.get("return_to") {
-        None | Some(Json::Null) => "/".to_owned(),
-        Some(Json::String(path)) if is_local_path(path) => path.clone(),
-        Some(other) => {
-            return Err(refuse(format!(
-                "`return_to` is a path on the application's host, such as \"/settings\", not {other}"
-            )));
-        }
-    };
+    let return_to = return_to_of(request).map_err(refuse)?;
     let store = token_store(catalog, module, request.get("store")).map_err(refuse)?;
     Ok(ConsentFlow {
         module: module.to_owned(),
@@ -262,12 +254,21 @@ fn provider_url(url: &str) -> std::result::Result<String, String> {
     }
 }
 
-/// A path on this host: `/x`, never `//other.example` or `/\other.example`.
-fn is_local_path(path: &str) -> bool {
-    path.starts_with('/')
-        && !path.starts_with("//")
-        && !path.starts_with("/\\")
-        && !path.chars().any(char::is_control)
+/// The request's `return_to`: a path on this host (`/x`, never
+/// `//other.example` or `/\other.example`), by the one rule of
+/// [`sc_http::RedirectTarget`]; `/` when it names none.
+fn return_to_of(request: &Json) -> std::result::Result<sc_http::RedirectTarget, String> {
+    match request.get("return_to") {
+        None | Some(Json::Null) => Ok(sc_http::RedirectTarget::root()),
+        Some(Json::String(path)) => sc_http::RedirectTarget::parse(path).ok_or_else(|| {
+            format!(
+                "`return_to` is a path on the application's host, such as \"/settings\", not {path:?}"
+            )
+        }),
+        Some(other) => Err(format!(
+            "`return_to` is a path on the application's host, such as \"/settings\", not {other}"
+        )),
+    }
 }
 
 fn token_store(
@@ -373,14 +374,20 @@ mod tests {
 
     #[test]
     fn return_to_is_a_path_here() {
-        assert!(is_local_path("/settings?x=1"));
+        let of = |return_to: Json| {
+            return_to_of(&json!({ "return_to": return_to })).map(|t| t.into_string())
+        };
+        assert_eq!(of(json!("/settings?x=1")).as_deref(), Ok("/settings?x=1"));
+        assert_eq!(of(Json::Null).as_deref(), Ok("/"));
         for bad in [
             "//evil.example",
             "/\\evil.example",
             "https://evil.example",
+            "javascript:alert(1)",
             "x",
         ] {
-            assert!(!is_local_path(bad), "{bad}");
+            assert!(of(json!(bad)).is_err(), "{bad}");
         }
+        assert!(of(json!(7)).is_err());
     }
 }

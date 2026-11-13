@@ -236,6 +236,24 @@ impl ChromiumDriver {
         }
     }
 
+    /// The id of the application `target` shows, which its session names.
+    fn app_id(&self, target: &BrowserTarget) -> Result<uuid::Uuid> {
+        self.apps
+            .app_id(
+                &target.subdomain,
+                target
+                    .preview
+                    .as_ref()
+                    .map(|preview| preview.label.as_str()),
+            )
+            .ok_or_else(|| {
+                sc_error::Error::invalid(format!(
+                    "no application is being served at `{}`",
+                    target.subdomain
+                ))
+            })
+    }
+
     /// Let this context's pass reach the target's preview, if it is one.
     fn allow(&self, target: &BrowserTarget, pass: &str) {
         if let Some(preview) = &target.preview {
@@ -284,6 +302,10 @@ impl ChromiumDriver {
     }
 
     /// The browser, started if it is not running.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "tokio::spawn: an I/O pump for a child process or connection; it writes no rows, so there is no task scope to carry"
+    )]
     async fn launched(&self) -> Result<tokio::sync::MutexGuard<'_, Option<Launched>>> {
         let mut guard = self.browser.lock().await;
         let dead = match guard.as_mut() {
@@ -300,7 +322,15 @@ impl ChromiumDriver {
                 uuid::Uuid::new_v4().simple()
             ));
             let config = self.launch_config(&profile)?;
-            let (mut browser, mut handler) = Browser::launch(config).await.map_err(|e| {
+            // The one spawn not made with `sc_proc`: chromiumoxide starts the
+            // browser itself, with this process's environment (security
+            // review 2026-11, C3; listed in the system-authority inventory).
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "chromiumoxide starts the browser itself; this is the one place it does"
+            )]
+            let launched = Browser::launch(config).await;
+            let (mut browser, mut handler) = launched.map_err(|e| {
                 Error::config(format!(
                     "the browser at `{}` did not start: {e}",
                     self.config.executable.display()
@@ -420,12 +450,15 @@ impl ChromiumDriver {
         if let Some(user) = request.user
             && page.session.is_none()
         {
-            // An application's page: an application's session (#15).
-            page.session = Some(
-                self.sessions
-                    .login_in(user.clone(), sc_auth::SessionScope::App)
-                    .await?,
+            // An application's page: that application's session (#15),
+            // past the second factor by a named waiver — the run acts for
+            // this user (security review 2026-11, §2).
+            let who = sc_auth::FullyAuthenticated::waived(
+                user.clone(),
+                sc_auth::SecondFactorWaiver::BrowserDriver,
             );
+            let scope = sc_auth::SessionScope::App(self.app_id(request.target)?);
+            page.session = Some(self.sessions.start(who, self.sessions.ttl(), scope).await?);
         }
         if !page.origins.contains(&origin) {
             let mut cookies = vec![(PREVIEW_COOKIE, page.pass.clone())];
@@ -626,14 +659,25 @@ fn watchdog(browser: u32, profile: &std::path::Path) -> Option<std::process::Chi
         server = std::process::id(),
         profile = profile.display().to_string().replace('\'', ""),
     );
-    std::process::Command::new("sh")
-        .args(["-c", &script])
-        .stdin(std::process::Stdio::null())
+    // Meant to outlive this process — it is what cleans up after a server
+    // that was killed — so detached: not killed with the server, nor when the
+    // handle is dropped. Its script holds only pids and a path from this
+    // process.
+    let mut watchdog = sc_proc::HostCommand::new(
+        "sh",
+        &BROWSER_WATCHDOG,
+        sc_proc::Timeout::unbounded("ends when the server or the browser does"),
+    );
+    watchdog
+        .flag_value("-c", &script)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()
+        .stderr(std::process::Stdio::null());
+    watchdog.spawn_detached().ok()
 }
+
+/// The browser's watchdog, the server's own.
+#[cfg(unix)]
+const BROWSER_WATCHDOG: sc_proc::SystemTask = sc_proc::SystemTask::new("browser watchdog");
 
 #[cfg(not(unix))]
 fn watchdog(_browser: u32, _profile: &std::path::Path) -> Option<std::process::Child> {
@@ -1110,6 +1154,10 @@ async fn screenshot(page: &Page, full_page: bool) -> Result<Vec<u8>> {
 }
 
 /// Start collecting the page's console errors and failed requests.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: CDP event listeners for one page; they write no rows, so there is no task scope to carry"
+)]
 async fn listen(page: &Page, seen: &Arc<Mutex<Seen>>) -> Result<Vec<tokio::task::JoinHandle<()>>> {
     let lock = |seen: &Arc<Mutex<Seen>>| {
         let seen = seen.clone();

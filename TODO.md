@@ -940,6 +940,84 @@ routes call it).
   Development tab shows which `claude` runs and its version, or why there is none. The child
   gets the executable's directory first on its `PATH`, so an nvm install finds its `node`.
 
+## UX2 — Application settings in tabs, declared by the framework, saved as you edit
+
+The application form put every part of the record — identity, framework, tables, triggers,
+APIs, CSP, roles, development options — on one Settings tab.
+
+- [x] **UX2.1** Settings tabs declared by the framework: every part of the form is a named group
+  (`identity`, `framework`, `tables`, …, and the screens `views`, `pages`, `library`,
+  `translations`), and a framework declares its tabs (id, label, groups in order). A framework's
+  own settings name their tab with `tab` (a `section_header` with `tab` applies to its section).
+  The default layout is Framework, Data, Triggers & Streams, API, Security, Development,
+  Translations; Saltcorn UI declares Site, Views, Pages, Library, Data, Users & Security,
+  Advanced. A group a layout leaves out goes on its last tab; a bad layout falls back to the
+  default. Old `…/edit` and `…/app-settings` links keep working.
+- [x] **UX2.2** Autosave: an existing application saves as it is edited (toggles and selects at
+  once, text after a pause, the subdomain on blur), one save at a time, with the state in the
+  header. A new application shows its first tab and its tables (a scaffold is generated against
+  them) and a Create button.
+
+---
+
+## R1 — Versioned releases
+
+Releases get a version, `X.Y.Z`, so that a host can be pinned to one, go back to one, and tell
+which one it runs; the version-less names stay the latest release, which existing hosts fetch.
+The manual is docs/OPERATIONS.md §13.1.
+
+- [x] **R1.1** `scripts/build-static.sh --release X.Y.Z`: refused unless `X.Y.Z` is at least the
+  version in `Cargo.toml`, the newest `vX.Y.Z` tag and the newest in `versions.txt`, the checkout
+  is clean, and this architecture's versioned tarball is not in the bucket. A new version is set
+  in `Cargo.toml` and `Cargo.lock`, committed as `Release X.Y.Z` and tagged `vX.Y.Z` before the
+  build; after it, `X.Y.(Z+1)-dev` is committed on top and the branch and tag are pushed,
+  before any upload. At a commit already tagged (another architecture, or a run that failed)
+  it only builds and publishes, finishing the branch push when it has not happened.
+- [x] **R1.2** Published as `feldspar-X.Y.Z-linux-<arch>.tar.gz` (never replaced) beside the
+  version-less latest names, with `versions.txt` (every version, sorted, each once) and
+  `latest.txt` (the newest) in the bucket.
+- [x] **R1.3** `install.sh --version X.Y.Z` installs that release, says plainly when it is not
+  there, and refuses a downgrade without `--allow-downgrade`.
+- [ ] **R1.4** Settings → System compares the running version with `latest.txt` and says when a
+  newer release is out.
+- [ ] **R1.5** Channels other than latest (`beta`, …), under names of their own.
+
+## BK1 — Back up columns of database types feldspar does not know (bug report: `halfvec`)
+
+`feldspar backup` aborted on a table an app made with raw SQL holding a pgvector `halfvec`
+column: the Postgres driver decodes only the types it knows, so `SELECT *` failed.
+
+- [x] **BK1.1** The Postgres driver reads a result column of a type it cannot decode as its text
+  (`col::text`), and sends a text value to a parameter of such a type in Postgres's text format.
+- [x] **BK1.2** Introspection spells `halfvec` and `sparsevec` with their type modifier, as it
+  does `vector`.
+- [x] **BK1.3** A restore recreates a column of such a type as it was (`ApplyOptions::database_types`),
+  and its rows go back in. Test: a round trip of `halfvec`, `sparsevec` and `interval`.
+- [x] **BK1.4** A raw-SQL HNSW index on a `halfvec` column restores too: introspected as a vector
+  index, recreated with `halfvec_cosine_ops` (BK1.5). Its own operator class is not carried, so
+  an L2 or inner-product HNSW index comes back as a cosine one.
+- [x] **BK1.5** `halfvec(n)` is a vector (`BasicType::HalfVector`): read and written as a JSON
+  array, `nearest` and embeddings work on it, a vector index uses `halfvec_cosine_ops`. Not
+  offered in the type picker, and not created by an admin or agent (only restored).
+- [x] **BK1.6** A backup writes vector, half-vector and sparse-vector values compactly (base64 of
+  their binary form, tagged), and a restore reads both that and the older spellings.
+
+## AU1 — `asUser(<own id>)` in an application that lowers the caller's role (bug report)
+
+An administrator (stored role 1) in an application with `max_role: 30` could not act as
+themselves: `asUser(user.id)` compared the served role (30) with the stored one (1) and refused.
+Every `@feldspar/imap` action that names its caller answered 422 there.
+
+- [x] **AU1.1** `Principal::narrowed`: a caller naming their own id acts at the less privileged of
+  the served and stored roles, with that role in their fields; naming anybody else is unchanged.
+  The loaded `User` an actor carries is held to the same role. Tests: `sc-catalog` unit tests,
+  and the report's case A through the real engine (`code_host_rls_boundary`).
+- [x] **AU1.2** A refusal of the caller's authority that a module lets propagate stays an auth
+  error (403 for a signed-in caller), not "configuration error" (422). Test: `v1_table`.
+- [ ] **AU1.3** The report's "related observation": `db.asUser().<t>.count()` on a table with
+  floors 1/1 and an ownership formula is refused for a caller served below the floor, where
+  reading rows may be granted by the formula. Waiting on the reporter's repro.
+
 ---
 
 ## Open questions

@@ -34,7 +34,8 @@ async fn login_session_logout_round_trip() -> sc_error::Result<()> {
     // Correct credentials authenticate to the same user.
     let user = authenticate(&catalog, "admin@example.com", "s3cret-pw")
         .await?
-        .expect("valid credentials authenticate");
+        .expect("valid credentials authenticate")
+        .into_user();
     assert_eq!(user.id(), created.id());
     assert_eq!(user.role(), Role::ADMIN);
     assert_eq!(

@@ -2,6 +2,10 @@
 //! mode, grant and edit format; the session header's `AGENTS.md`, map and git
 //! log; and the size of the React builder agent's stable prefix.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use crate::common;
 
 use std::path::Path;

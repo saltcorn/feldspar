@@ -585,10 +585,10 @@ mod tests {
         // source is in is the application's own configuration (§13.3), and
         // asking the admin for it twice would be two places to get it wrong.
         assert_eq!(spec("build_application"), vec![CFG_APPLICATION]);
-        // The trait that names no table: four grants, scoping it by what it may
+        // The trait that names no table: three grants, scoping it by what it may
         // do rather than by what it may reach (§11.3) — over the schema, the
-        // triggers and an application's custom SQL queries alike, which is why
-        // there are still four of them. Then the two **areas**, which are the
+        // triggers and an application's custom SQL queries alike (the fourth,
+        // access changes, was retired by TODO-type-hardening H8.9). Then the two **areas**, which are the
         // other question and therefore two more checkboxes rather than eight more
         // grants: not "what may it do?" but "to which of the three?". Last the
         // checklists grant, which has three values rather than two.
@@ -598,7 +598,6 @@ mod tests {
                 CFG_ALLOW_CREATE,
                 CFG_ALLOW_EDIT,
                 CFG_ALLOW_DROP,
-                CFG_ALLOW_ACCESS,
                 CFG_ALLOW_TRIGGERS,
                 CFG_ALLOW_APPLICATIONS,
                 crate::admin_copilot::CFG_CHECKLISTS,

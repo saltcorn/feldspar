@@ -14,47 +14,43 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new(
-            "listCodeLibraries",
+            ids::LIST_CODE_LIBRARIES,
             Method::Get,
             api().lit("code-libraries"),
         )
-        .output(TypeSchema::array(code_library_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(code_library_schema())),
     );
 
     set.register(
         Endpoint::new(
-            "createCodeLibrary",
+            ids::CREATE_CODE_LIBRARY,
             Method::Post,
             api().lit("code-libraries"),
         )
         .input(code_library_input_schema())
-        .output(code_library_schema())
-        .auth(AuthRequirement::admin()),
+        .output(code_library_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "updateCodeLibrary",
+            ids::UPDATE_CODE_LIBRARY,
             Method::Put,
             api().lit("code-libraries").param("id", ValueType::Uuid),
         )
         .input(code_library_input_schema())
-        .output(code_library_schema())
-        .auth(AuthRequirement::admin()),
+        .output(code_library_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "deleteCodeLibrary",
+            ids::DELETE_CODE_LIBRARY,
             Method::Delete,
             api().lit("code-libraries").param("id", ValueType::Uuid),
         )
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 }
 

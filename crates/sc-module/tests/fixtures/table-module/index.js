@@ -161,6 +161,19 @@ module.exports = {
     },
     // A refusal from v1's own list, reached through the real class: still fatal,
     // still naming itself.
+    // A read as a named user (`configuration.as`), left to throw: when this
+    // server refuses it, the call fails with that refusal, not as the module's
+    // own error.
+    v1_read_as: {
+      run: async ({ configuration }) =>
+        Table.findOne("books").getRows({}, { forUser: configuration.as }),
+    },
+    // A module's own throw that merely *reads* like a refusal stays the module's.
+    v1_forged_refusal: {
+      run: async () => {
+        throw new Error("auth error: this is not the server speaking");
+      },
+    },
     v1_schema_edit: {
       run: async () => Table.findOne("books").add_unique_constraint(["title"]),
     },

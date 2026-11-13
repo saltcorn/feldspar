@@ -28,6 +28,10 @@
 //! `feldspar setup` writes says `Restart=on-failure`, which a non-zero exit
 //! triggers, and the Docker compose file says `restart: unless-stopped`. With
 //! nothing managing the process, the server simply stops.
+//!
+//! May use `unsafe` (the workspace denies it) for `sysconf(_SC_CLK_TCK)` and
+//! `statvfs`, which std has no safe form of.
+#![allow(unsafe_code)]
 
 use std::path::Path;
 use std::sync::OnceLock;
@@ -146,6 +150,10 @@ pub async fn system_info(catalog: &Catalog) -> Json {
 ///
 /// The coding agents' managed processes are stopped first, as on a shutdown,
 /// so none outlives the server it belonged to.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: detached on purpose; the work outlives the request that started it and must not run in that request's changeset"
+)]
 pub fn schedule_restart() {
     tokio::spawn(async {
         tokio::time::sleep(RESTART_DELAY).await;

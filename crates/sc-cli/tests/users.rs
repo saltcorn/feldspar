@@ -2,6 +2,10 @@
 //! binary** against a **real Postgres**: an account created or re-passworded
 //! from a terminal is one `authenticate` — the sign-in form's check — accepts.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use sc_types::Role;
 use std::io::Write;
 use std::process::{Command, Stdio};

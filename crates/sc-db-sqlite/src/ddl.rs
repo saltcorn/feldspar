@@ -35,7 +35,7 @@
 use rusqlite::Connection;
 use sc_db::{ColumnDef, ColumnGenerator, CommentTarget, IndexOn, SchemaChange};
 use sc_error::{Error, Result};
-use sc_query::SqlDialect;
+use sc_query::{Ident, QuotedIdent, SqlDialect};
 
 use crate::dialect::SqliteDialect;
 use crate::introspect::{self, COMMENTS_TABLE, RawColumn};
@@ -109,7 +109,7 @@ fn statements(dialect: &SqliteDialect, change: &SchemaChange) -> Result<Option<V
             vec![format!(
                 "DROP TABLE {}{}",
                 if *if_exists { "IF EXISTS " } else { "" },
-                dialect.quote_ident(name)
+                q(dialect, name)?
             )]
         }
         SchemaChange::AddColumn { table, column } => {
@@ -130,15 +130,15 @@ fn statements(dialect: &SqliteDialect, change: &SchemaChange) -> Result<Option<V
             };
             let mut out = vec![format!(
                 "ALTER TABLE {} ADD COLUMN {}",
-                dialect.quote_ident(table),
-                column_def(dialect, &added, false)
+                q(dialect, table)?,
+                column_def(dialect, &added, false)?
             )];
             if column.unique {
                 out.push(format!(
                     "CREATE UNIQUE INDEX {} ON {} ({})",
-                    dialect.quote_ident(&format!("{table}_{}_key", column.name)),
-                    dialect.quote_ident(table),
-                    dialect.quote_ident(&column.name)
+                    q(dialect, &format!("{table}_{}_key", column.name))?,
+                    q(dialect, table)?,
+                    q(dialect, &column.name)?
                 ));
             }
             out
@@ -152,8 +152,8 @@ fn statements(dialect: &SqliteDialect, change: &SchemaChange) -> Result<Option<V
             // which is why the flag is not rendered here.
             vec![format!(
                 "ALTER TABLE {} DROP COLUMN {}",
-                dialect.quote_ident(table),
-                dialect.quote_ident(column)
+                q(dialect, table)?,
+                q(dialect, column)?
             )]
         }
         // SQLite (3.26 on, with `legacy_alter_table` off) rewrites the foreign
@@ -163,15 +163,15 @@ fn statements(dialect: &SqliteDialect, change: &SchemaChange) -> Result<Option<V
         SchemaChange::RenameTable { from, to } => vec![
             format!(
                 "ALTER TABLE {} RENAME TO {}",
-                dialect.quote_ident(from),
-                dialect.quote_ident(to)
+                q(dialect, from)?,
+                q(dialect, to)?
             ),
             create_comments_table(),
             format!(
                 "UPDATE {t} SET \"table\" = {} WHERE \"table\" = {}",
                 dialect.quote_literal(to),
                 dialect.quote_literal(from),
-                t = dialect.quote_ident(COMMENTS_TABLE),
+                t = q(dialect, COMMENTS_TABLE)?,
             ),
         ],
         // SQLite (3.25 on) rewrites the indexes, triggers and views that name
@@ -179,9 +179,9 @@ fn statements(dialect: &SqliteDialect, change: &SchemaChange) -> Result<Option<V
         SchemaChange::RenameColumn { table, from, to } => {
             vec![format!(
                 "ALTER TABLE {} RENAME COLUMN {} TO {}",
-                dialect.quote_ident(table),
-                dialect.quote_ident(from),
-                dialect.quote_ident(to)
+                q(dialect, table)?,
+                q(dialect, from)?,
+                q(dialect, to)?
             )]
         }
         // All of these change a column's declaration, which SQLite cannot do.
@@ -208,9 +208,9 @@ fn statements(dialect: &SqliteDialect, change: &SchemaChange) -> Result<Option<V
             // dropped by name, which a table constraint could not be.
             vec![format!(
                 "CREATE UNIQUE INDEX {} ON {} ({})",
-                dialect.quote_ident(name),
-                dialect.quote_ident(table),
-                quoted_list(dialect, columns)
+                q(dialect, name)?,
+                q(dialect, table)?,
+                quoted_list(dialect, columns)?
             )]
         }
         SchemaChange::DropConstraint {
@@ -221,7 +221,7 @@ fn statements(dialect: &SqliteDialect, change: &SchemaChange) -> Result<Option<V
             vec![format!(
                 "DROP INDEX {}{}",
                 if *if_exists { "IF EXISTS " } else { "" },
-                dialect.quote_ident(name)
+                q(dialect, name)?
             )]
         }
         SchemaChange::CreateIndex {
@@ -239,21 +239,21 @@ fn statements(dialect: &SqliteDialect, change: &SchemaChange) -> Result<Option<V
                             "index `{name}` on `{table}` names no columns"
                         )));
                     }
-                    quoted_list(dialect, columns)
+                    quoted_list(dialect, columns)?
                 }
                 IndexOn::Expression(expr) => format!("({expr})"),
             };
             vec![format!(
                 "CREATE INDEX {} ON {} ({target})",
-                dialect.quote_ident(name),
-                dialect.quote_ident(table),
+                q(dialect, name)?,
+                q(dialect, table)?,
             )]
         }
         SchemaChange::DropIndex { name, if_exists } => {
             vec![format!(
                 "DROP INDEX {}{}",
                 if *if_exists { "IF EXISTS " } else { "" },
-                dialect.quote_ident(name)
+                q(dialect, name)?
             )]
         }
         SchemaChange::SetComment { target, comment } => {
@@ -277,7 +277,7 @@ fn statements(dialect: &SqliteDialect, change: &SchemaChange) -> Result<Option<V
                     dialect.quote_literal(table),
                     dialect.quote_literal(name),
                     dialect.quote_literal(text),
-                    t = dialect.quote_ident(COMMENTS_TABLE),
+                    t = q(dialect, COMMENTS_TABLE)?,
                 )),
                 // Removing a comment removes the row: an empty comment would
                 // read back as "somebody commented this and said nothing".
@@ -286,7 +286,7 @@ fn statements(dialect: &SqliteDialect, change: &SchemaChange) -> Result<Option<V
                     dialect.quote_literal(kind),
                     dialect.quote_literal(table),
                     dialect.quote_literal(name),
-                    t = dialect.quote_ident(COMMENTS_TABLE),
+                    t = q(dialect, COMMENTS_TABLE)?,
                 )),
             }
             out
@@ -350,16 +350,16 @@ fn create_table(
             };
             column_def(dialect, &def, is_rowid)
         })
-        .collect();
+        .collect::<Result<_>>()?;
     if !primary_key.is_empty() && rowid_alias.is_none() {
         items.push(format!(
             "PRIMARY KEY ({})",
-            quoted_list(dialect, primary_key)
+            quoted_list(dialect, primary_key)?
         ));
     }
     Ok(format!(
         "CREATE TABLE {} ({})",
-        dialect.quote_ident(name),
+        q(dialect, name)?,
         items.join(", ")
     ))
 }
@@ -369,8 +369,8 @@ fn create_table(
 ///
 /// `rowid_alias` renders the identity form — `"id" INTEGER PRIMARY KEY` — which
 /// is a declaration SQLite recognises rather than a type plus a constraint.
-fn column_def(dialect: &SqliteDialect, col: &ColumnDef, rowid_alias: bool) -> String {
-    let mut s = dialect.quote_ident(&col.name);
+fn column_def(dialect: &SqliteDialect, col: &ColumnDef, rowid_alias: bool) -> Result<String> {
+    let mut s = q(dialect, &col.name)?.to_string();
     s.push(' ');
     if rowid_alias {
         s.push_str("INTEGER PRIMARY KEY");
@@ -388,9 +388,9 @@ fn column_def(dialect: &SqliteDialect, col: &ColumnDef, rowid_alias: bool) -> St
     }
     if let Some(target) = &col.references {
         s.push_str(" REFERENCES ");
-        s.push_str(&dialect.quote_ident(&target.table));
+        s.push_str(q(dialect, &target.table)?.as_str());
         s.push_str(" (");
-        s.push_str(&dialect.quote_ident(&target.column));
+        s.push_str(q(dialect, &target.column)?.as_str());
         s.push(')');
         // Deferrable, checked immediately by default — as the Postgres driver
         // declares its keys, and for the same reason: a CSV import of a
@@ -398,7 +398,7 @@ fn column_def(dialect: &SqliteDialect, col: &ColumnDef, rowid_alias: bool) -> St
         // three lines further down is there by the time the transaction commits.
         s.push_str(" DEFERRABLE INITIALLY IMMEDIATE");
     }
-    s
+    Ok(s)
 }
 
 /// A `DEFAULT` clause, parenthesised exactly when it has to be.
@@ -604,11 +604,11 @@ fn rebuild_statements(
     let mut items: Vec<String> = columns
         .iter()
         .map(|c| raw_column_def(dialect, c, rowid_alias.as_deref() == Some(c.name.as_str())))
-        .collect();
+        .collect::<Result<_>>()?;
     if !primary_key.is_empty() && rowid_alias.is_none() {
         items.push(format!(
             "PRIMARY KEY ({})",
-            quoted_list(dialect, &primary_key)
+            quoted_list(dialect, &primary_key)?
         ));
     }
     for index in indexes.iter().filter(|i| i.is_constraint_index()) {
@@ -618,40 +618,40 @@ fn rebuild_statements(
         if index.origin == "u" {
             let cols: Vec<String> = index.columns.iter().flatten().cloned().collect();
             if !cols.is_empty() {
-                items.push(format!("UNIQUE ({})", quoted_list(dialect, &cols)));
+                items.push(format!("UNIQUE ({})", quoted_list(dialect, &cols)?));
             }
         }
     }
     for key in &foreign_keys {
         items.push(format!(
             "FOREIGN KEY ({}) REFERENCES {} ({}) DEFERRABLE INITIALLY IMMEDIATE",
-            quoted_list(dialect, &key.columns),
-            dialect.quote_ident(&key.referenced_table),
-            quoted_list(dialect, &key.referenced_columns),
+            quoted_list(dialect, &key.columns)?,
+            q(dialect, &key.referenced_table)?,
+            quoted_list(dialect, &key.referenced_columns)?,
         ));
     }
 
     let names = quoted_list(
         dialect,
         &columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
-    );
+    )?;
     let mut statements = vec![
         "PRAGMA defer_foreign_keys = ON".to_owned(),
         format!(
             "CREATE TABLE {} ({})",
-            dialect.quote_ident(&temporary),
+            q(dialect, &temporary)?,
             items.join(", ")
         ),
         format!(
             "INSERT INTO {} ({names}) SELECT {names} FROM {}",
-            dialect.quote_ident(&temporary),
-            dialect.quote_ident(table)
+            q(dialect, &temporary)?,
+            q(dialect, table)?
         ),
-        format!("DROP TABLE {}", dialect.quote_ident(table)),
+        format!("DROP TABLE {}", q(dialect, table)?),
         format!(
             "ALTER TABLE {} RENAME TO {}",
-            dialect.quote_ident(&temporary),
-            dialect.quote_ident(table)
+            q(dialect, &temporary)?,
+            q(dialect, table)?
         ),
     ];
     // The indexes and triggers the drop took with it, put back exactly as they
@@ -662,12 +662,12 @@ fn rebuild_statements(
 }
 
 /// A column of a table being rebuilt, rendered from what it currently is.
-fn raw_column_def(dialect: &SqliteDialect, col: &RawColumn, rowid_alias: bool) -> String {
-    let mut s = dialect.quote_ident(&col.name);
+fn raw_column_def(dialect: &SqliteDialect, col: &RawColumn, rowid_alias: bool) -> Result<String> {
+    let mut s = q(dialect, &col.name)?.to_string();
     s.push(' ');
     if rowid_alias {
         s.push_str("INTEGER PRIMARY KEY");
-        return s;
+        return Ok(s);
     }
     // A column declared without a type keeps none: SQLite allows it, and
     // inventing one would change how its values are read back.
@@ -680,7 +680,7 @@ fn raw_column_def(dialect: &SqliteDialect, col: &RawColumn, rowid_alias: bool) -
     if let Some(default) = &col.default_sql {
         s.push_str(&default_clause(default));
     }
-    s
+    Ok(s)
 }
 
 /// The `CREATE TABLE` for the comment side table, `IF NOT EXISTS` so setting a
@@ -762,13 +762,21 @@ fn execute(conn: &Connection, sql: &str) -> Result<()> {
     })
 }
 
+/// `name` quoted for SQLite, through [`Ident`] (security review 2026-11 §7):
+/// every name this renderer writes is checked once, here. A name the database
+/// already has passes ([`Ident::existing`]: SQLite has no length limit); one
+/// with a NUL in it is refused rather than sent.
+fn q(dialect: &SqliteDialect, name: &str) -> Result<QuotedIdent> {
+    Ok(dialect.quote(&Ident::existing(name)?))
+}
+
 /// A comma-separated list of quoted identifiers.
-fn quoted_list(dialect: &SqliteDialect, items: &[String]) -> String {
-    items
+fn quoted_list(dialect: &SqliteDialect, items: &[String]) -> Result<String> {
+    Ok(items
         .iter()
-        .map(|c| dialect.quote_ident(c))
-        .collect::<Vec<_>>()
-        .join(", ")
+        .map(|c| q(dialect, c).map(|q| q.to_string()))
+        .collect::<Result<Vec<_>>>()?
+        .join(", "))
 }
 
 /// A change's name, for an error that has to say which one it is about.
@@ -798,6 +806,28 @@ mod tests {
 
     fn render_change(change: &SchemaChange) -> String {
         render(&SqliteDialect, change).expect("render")
+    }
+
+    /// Names go through `Ident` (H6.2): a quote is doubled, a name longer
+    /// than Postgres keeps is kept (SQLite has no limit), a NUL is refused.
+    #[test]
+    fn names_are_quoted_through_ident_and_a_nul_is_refused() {
+        let long = "x".repeat(80);
+        let sql = render_change(&SchemaChange::DropTable {
+            name: format!("a\"b{long}"),
+            if_exists: true,
+        });
+        assert_eq!(sql, format!("DROP TABLE IF EXISTS \"a\"\"b{long}\""));
+        assert!(
+            render(
+                &SqliteDialect,
+                &SchemaChange::DropTable {
+                    name: "a\0b".into(),
+                    if_exists: false,
+                },
+            )
+            .is_err()
+        );
     }
 
     #[test]

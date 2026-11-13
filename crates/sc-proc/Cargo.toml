@@ -1,0 +1,31 @@
+[package]
+name = "sc-proc"
+description = "The one way to start a host process: cleared environment, mandatory timeout, operands that cannot be options, its own process group, and a named authority (layer 0)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sc-error.workspace = true
+# Every spawn is logged, at verbose, with the authority it ran on.
+sc-log.workspace = true
+tokio = { workspace = true, features = ["process", "time", "io-util", "rt"] }
+# The IDE terminal's pseudo-terminal (`pty` feature): the one spawn that is not
+# a pipe.
+pty-process = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+# `killpg` for the process group and `prctl(PR_SET_PDEATHSIG)` in `pre_exec`.
+libc.workspace = true
+
+[features]
+pty = ["dep:pty-process"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "time", "io-util"] }
+
+[lints]
+workspace = true

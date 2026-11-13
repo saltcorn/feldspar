@@ -1,5 +1,6 @@
 //! The running server's services, as a backup restore writes into them
-//! ([`sc_backup::RestoreHost`]): the mount registry reaches each of them.
+//! ([`sc_backup::RestoreHost`]) and a deploy or registry save does
+//! ([`sc_sync::DeployHost`]): the mount registry reaches each of them.
 
 use std::sync::Arc;
 
@@ -8,6 +9,31 @@ use sc_error::Result;
 
 use crate::apps::AppMounts;
 use crate::handlers::{agents_of, dataset_shape, models_of, modules_of, streams_of, triggers_of};
+
+/// The subdirectory of the modules root a restored local module's source is
+/// unpacked into, one directory per module.
+const RESTORED_SOURCES_DIR: &str = "sources";
+
+/// A package name as one directory name: `@acme/legacy-bridge` is
+/// `_acme_legacy-bridge`. Anything but ASCII letters, digits, `-` and `_` is
+/// `_`, so there is no `.`, `/` or a backslash left to climb out with.
+fn source_dir_name(name: &str) -> String {
+    let safe: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if safe.is_empty() {
+        "_".to_owned()
+    } else {
+        safe
+    }
+}
 
 #[async_trait::async_trait]
 impl sc_backup::RestoreHost for AppMounts {
@@ -38,6 +64,18 @@ impl sc_backup::RestoreHost for AppMounts {
         modules_of(self)?.reload().await
     }
 
+    /// `<modules root>/sources/<name>`, the name reduced to characters a
+    /// directory name cannot be anything but one with: it comes from the
+    /// backup, so `..` or a `/` in it must not reach a path.
+    fn module_source_dir(&self, name: &str) -> Result<std::path::PathBuf> {
+        let modules = modules_of(self)?;
+        Ok(modules
+            .installer()
+            .root()
+            .join(RESTORED_SOURCES_DIR)
+            .join(source_dir_name(name)))
+    }
+
     fn stream_registry(&self) -> Result<Arc<sc_stream::StreamRegistry>> {
         Ok(streams_of(self)?.registry())
     }
@@ -57,5 +95,72 @@ impl sc_backup::RestoreHost for AppMounts {
 
     async fn build_and_mount(&self, app: sc_app::Application) -> Result<sc_app::BuildReport> {
         crate::apps::build_and_mount(self, app).await
+    }
+}
+
+#[async_trait::async_trait]
+impl sc_sync::DeployHost for AppMounts {
+    /// Everything loaded again after a deploy or a registry save: the
+    /// catalog, the triggers, the streams, and every mounted application
+    /// re-projected. What was saved is saved, so each problem is a sentence
+    /// on the receipt rather than an error.
+    async fn reload_all(&self, catalog: &Catalog) -> Vec<String> {
+        let mut problems = Vec::new();
+        if let Err(e) = catalog.reload().await {
+            problems.push(format!("the catalog could not be reloaded: {}", e.causes()));
+        }
+        // A server that runs no triggers (or no streams) has none to reload.
+        if let Ok(dispatcher) = triggers_of(self)
+            && let Err(e) = dispatcher.reload(catalog).await
+        {
+            problems.push(format!(
+                "the triggers could not be reloaded: {}",
+                e.causes()
+            ));
+        }
+        if let Ok(streams) = streams_of(self)
+            && let Err(e) = streams.reload(catalog).await
+        {
+            problems.push(format!(
+                "the streams could not be restarted: {}",
+                e.causes()
+            ));
+        }
+        if let Err(e) = self.refresh_triggers() {
+            problems.push(format!(
+                "an application could not be re-projected and keeps its previous mount: {}",
+                e.causes()
+            ));
+        }
+        problems
+    }
+
+    /// The registries an export redacts secrets by: this server's, and the
+    /// built-in ones for a service it does not run (an admin-only server has
+    /// no trigger dispatcher), so a registry read works on every server.
+    fn registries(&self) -> Result<sc_sync::Registries> {
+        let builtin = sc_sync::Registries::builtin()?;
+        Ok(sc_sync::Registries {
+            actions: triggers_of(self).map_or(builtin.actions, |d| d.registry()),
+            streams: streams_of(self).map_or(builtin.streams, |s| s.registry()),
+            agent_traits: agents_of(self)
+                .map_or(builtin.agent_traits, |a| Arc::clone(a.registry())),
+            modules: std::collections::BTreeMap::new(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_dir_name;
+
+    #[test]
+    fn a_package_name_becomes_one_directory_name() {
+        assert_eq!(
+            source_dir_name("@acme/legacy-bridge"),
+            "_acme_legacy-bridge"
+        );
+        assert_eq!(source_dir_name("../../etc"), "______etc");
+        assert_eq!(source_dir_name(""), "_");
     }
 }

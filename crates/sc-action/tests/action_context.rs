@@ -259,12 +259,8 @@ async fn an_action_is_handed_the_triggers_authority_and_the_events_caller() -> R
     let scoped = ctx.scoped();
     assert!(scoped.role().is_admin(), "a trigger writes as the admin");
     let principal = scoped.principal().expect("a caller, not the system");
-    assert_eq!(
-        principal.user.as_ref(),
-        Some(&user),
-        "in the event's user's name"
-    );
-    assert_eq!(principal.chain, ["outer", "audit"]);
+    assert_eq!(principal.user(), Some(&user), "in the event's user's name");
+    assert_eq!(principal.chain(), ["outer", "audit"]);
     assert!(
         scoped.unchecked().is_some(),
         "the admin's rows are unchecked"
@@ -275,9 +271,9 @@ async fn an_action_is_handed_the_triggers_authority_and_the_events_caller() -> R
     ));
 
     let caller = ctx.caller();
-    assert_eq!(caller.role, Role::of(40));
-    assert_eq!(caller.user, Some(user));
-    assert_eq!(caller.chain, ["outer", "audit"]);
+    assert_eq!(caller.role(), Role::of(40));
+    assert_eq!(caller.user(), Some(&user));
+    assert_eq!(caller.chain(), ["outer", "audit"]);
 
     // A workflow step's transaction is where the scoped handle's statements run.
     let tx = sc_catalog::SharedTx::begin_primary(&cat)?;

@@ -1,6 +1,10 @@
 //! `feldspar build-agent` against a real server on a real port
 //! (`TODO-build-hosts.md` B1.3): the agent hears its targets, checks them on
 //! this machine and reports back; a removed host's agent is told to stop.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use std::sync::Arc;
 

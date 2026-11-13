@@ -61,15 +61,15 @@ pub use authentication::{
     SECOND_FACTOR_FOR_IDENTITY_PROVIDERS, SECOND_FACTOR_ISSUER, SESSION_TTL_HOURS,
     SHARED_SESSION_COOKIE, authentication_section, first_user_tokens, first_user_tokens_with,
     oauth_preset, oauth_provider, oauth_provider_records, oauth_provider_spec, oauth_providers,
-    persistent_session_cookie_from, save_oauth_provider_records,
-    second_factor_for_identity_providers, second_factor_for_identity_providers_from,
-    second_factor_issuer, session_policy, session_policy_from, session_ttl_hours,
-    session_ttl_hours_from, shared_session_cookie, shared_session_cookie_from,
+    persistent_session_cookie_from, save_oauth_provider_records, second_factor_issuer,
+    session_policy, session_policy_from, session_ttl_hours, session_ttl_hours_from,
+    shared_session_cookie, shared_session_cookie_from,
 };
 pub use defs::{
-    BACKUP_INCLUDE, BACKUP_SCHEDULE_STATUS, BACKUP_SCHEDULES, ConfigDef, ConfigSection,
-    DEFAULT_LLM_PROVIDER, ONBOARDING_DONE, STARTUP_HISTORY, STARTUP_HISTORY_DAYS, config_sections,
-    config_spec, definition, hidden_sections, internal_defs, known_keys,
+    ADMIN_NOTICES, BACKUP_INCLUDE, BACKUP_SCHEDULE_STATUS, BACKUP_SCHEDULES, ConfigDef,
+    ConfigSection, DEFAULT_LLM_PROVIDER, ONBOARDING_DONE, RLS_BOUNDARY_REPORTED, STARTUP_HISTORY,
+    STARTUP_HISTORY_DAYS, config_sections, config_spec, definition, hidden_sections, internal_defs,
+    known_keys, portable_sections,
 };
 pub use development::{
     ADMIN_SUBDOMAIN, CLAUDE_CODE_PATH, DevelopmentSettings, IDE_TERMINAL_ENABLED, LOG_SQL,
@@ -77,7 +77,8 @@ pub use development::{
     admin_subdomain_from, apply_development_settings, check_admin_subdomain,
     check_claude_code_path, claude_code_path, claude_code_path_from, development_section,
     development_settings, development_settings_from, ide_terminal_enabled,
-    ide_terminal_enabled_from, mcp_settings, mcp_settings_from,
+    ide_terminal_enabled_from, install_scripts_on_save, install_scripts_on_save_from, mcp_settings,
+    mcp_settings_from,
 };
 pub use email::{
     CERTIFICATE_ACCEPT_ANY, CERTIFICATE_VERIFY, DEFAULT_SMTP_PORT, EMAIL_FROM, EmailSettings,
@@ -90,8 +91,8 @@ pub use localisation::{
     localisation_settings, localisation_settings_from,
 };
 pub use maps::{
-    DEFAULT_MAP_STYLE, DEFAULT_MAP_STYLE_DARK, MAP_HOSTS, MAP_STYLE, MAP_STYLE_DARK, MapSettings,
-    allow_map_host, hosts_with, map_defs, map_settings, map_settings_from, origin_of,
+    DEFAULT_MAP_STYLE, DEFAULT_MAP_STYLE_DARK, MAP_HOSTS, MAP_STYLE, MAP_STYLE_DARK, MAPS_SECTION,
+    MapSettings, allow_map_host, hosts_with, map_defs, map_settings, map_settings_from, origin_of,
     save_map_settings,
 };
 pub use ssl::{

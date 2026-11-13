@@ -93,6 +93,7 @@ mod none;
 mod react;
 mod scaffold;
 pub mod server_render;
+mod settings_tabs;
 mod skill;
 mod store;
 mod streams;
@@ -119,13 +120,13 @@ pub use applications::{
     COL_STREAMS, COL_SUBDOMAIN, COL_TABLES, COL_TRIGGERS, COL_UPLOADS, bootstrap,
 };
 pub use build::{
-    AppSource, BuildReport, TargetInfo, TargetReadiness, TargetReport, TypecheckReport,
-    app_output_dir, app_source_from_config, app_source_in, app_store_root, app_target_readiness,
-    app_target_spec, build_app, build_application, build_application_if_changed,
-    build_application_quick, build_application_target, build_code_framework, emit_app_client,
-    emit_client, framework_build_targets, load_app_bundle, prepare_remote_target,
-    remove_app_dependencies, remove_dependencies, require_target_ready, requirements_readiness,
-    run_build, run_target, target_log_path, typecheck_application,
+    APP_BUILD, AppSource, BuildReport, InstallScripts, TargetInfo, TargetReadiness, TargetReport,
+    TypecheckReport, app_output_dir, app_source_from_config, app_source_in, app_store_root,
+    app_target_readiness, app_target_spec, build_app, build_application,
+    build_application_if_changed, build_application_quick, build_application_target,
+    build_code_framework, emit_app_client, emit_client, framework_build_targets, load_app_bundle,
+    prepare_remote_target, remove_app_dependencies, remove_dependencies, require_target_ready,
+    requirements_readiness, run_build, run_target, target_log_path, typecheck_application,
 };
 pub use build_hosts::{
     AgentReport, AnsweredTarget, BUILD_AGENT_PROTOCOL, BUILD_HOST_TOKEN_PREFIX, BUILD_HOSTS_TABLE,
@@ -174,9 +175,11 @@ pub use framework::{
     AppRequest, AppResponse, Asset, AssetBundle, BuildSpec, CFG_CLIENT, CFG_COMMAND, CFG_OUTPUT,
     CFG_SOURCE, CFG_STORE, CODE_FRAMEWORK, CodeFramework, Framework, FrameworkInfo, InstallSpec,
     RequestBody, asset_content_type, code_config_spec, config_spec_in, default_csp_in,
-    framework_config_spec, framework_default_csp, framework_info_in, framework_serves_ui,
-    registered_framework_info, registered_frameworks, serves_ui_in, validate_config_in,
-    validate_config_structure_in, validate_framework_config, validate_framework_config_structure,
+    framework_config_spec, framework_default_csp, framework_info_in, framework_known,
+    framework_serves_ui,
+    framework_settings_tabs, registered_framework_info, registered_frameworks, serves_ui_in,
+    validate_config_in, validate_config_structure_in, validate_framework_config,
+    validate_framework_config_structure,
 };
 pub use i18n::{
     ATTR_DEFAULT_LOCALE, ATTR_LOCALES, CatalogStore, FileCatalogStore, I18N_SEGMENT, LOCALES_DIR,
@@ -202,6 +205,14 @@ pub use scaffold::{
 pub use server_render::{
     ServerRendered, check_server_entry, mount_code_framework, prerender as prerender_site,
 };
+pub use settings_tabs::{
+    GROUP_ACCESS, GROUP_AGENTS, GROUP_APIS, GROUP_CHECKLISTS, GROUP_CODING_AGENT, GROUP_CSP,
+    GROUP_FILE_STORES, GROUP_FRAMEWORK, GROUP_GUEST_SESSIONS, GROUP_IDENTITY, GROUP_LIBRARY,
+    GROUP_PAGES, GROUP_ROW_API, GROUP_SETTINGS, GROUP_STATIC_DIRS, GROUP_STREAMS, GROUP_TABLES,
+    GROUP_TARGETS, GROUP_TRANSLATIONS, GROUP_TRIGGERS, GROUP_UPLOADS, GROUP_VIEWS, RECORD_GROUPS,
+    SCREEN_GROUPS, SettingsTab, VIEW_SCREENS, default_settings_tabs, resolve_settings_tabs,
+    settings_tabs_problems,
+};
 pub use skill::{SKILL_FILE, generate_skill};
 pub use store::{
     applications_using_file_store, delete_application, list_applications, load_application,
@@ -214,7 +225,8 @@ pub use streams::{
 pub use target_ops::{OperationOutcome, run_target_operation};
 pub use uploads::{
     DEFAULT_SLOT_MIN_ROLE, UPLOAD_SEGMENT, UPLOADS_TABLE, UploadRecord, UploadRoute, UploadSlot,
-    bootstrap_uploads, delete_upload, insert_upload, load_upload, set_upload_progress,
-    upload_exports, upload_path, upload_route, upload_slots_from_json, upload_slots_json,
+    bootstrap_uploads, delete_upload, insert_upload, load_upload, set_upload_ceiling,
+    set_upload_progress, upload_ceiling, upload_ceiling_warnings, upload_exports, upload_path,
+    upload_route, upload_slots_from_json, upload_slots_json, upload_slots_report,
     uploads_begun_before, validate_upload_slots,
 };

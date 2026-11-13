@@ -281,6 +281,10 @@ pub struct FrameworkDecl {
     /// The builds it offers beside the web bundle, in declaration order. Empty
     /// for a framework that only serves.
     pub targets: Vec<TargetTemplate>,
+    /// How an application's settings are laid out in tabs, or `None` for the
+    /// default layout (see [`SettingsTab`](crate::SettingsTab)). A module's
+    /// layout is checked when it loads, and one with problems is dropped there.
+    pub settings_tabs: Option<Vec<crate::SettingsTab>>,
 }
 
 impl FrameworkDecl {
@@ -299,6 +303,7 @@ impl FrameworkDecl {
             // protect is the safe direction to be wrong in anyway (see
             // `framework_serves_ui`).
             serves_ui: true,
+            settings_tabs: self.settings_tabs.clone(),
         }
     }
 
@@ -907,6 +912,7 @@ pub(crate) mod tests {
             )),
             checks: vec!["typecheck".to_owned()],
             scaffolds: true,
+            settings_tabs: None,
             targets: vec![TargetTemplate {
                 name: "android".to_owned(),
                 label: "Android APK".to_owned(),

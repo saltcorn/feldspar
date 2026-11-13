@@ -70,6 +70,8 @@ pub fn email_section() -> ConfigSection {
         name: "email",
         label: "Email",
         description: "The SMTP server used by this instance to send mail.",
+        // This instance's own: never in the installation's structure (§3.4).
+        portable: false,
         fields: vec![
             ConfigDef::help(
                 FormField::new(SMTP_HOST, BasicType::Text).label("SMTP host"),
@@ -356,7 +358,7 @@ impl EmailSettings {
                     )));
                 }
             },
-            _ => DEFAULT_SMTP_PORT as u16,
+            _ => u16::try_from(DEFAULT_SMTP_PORT).unwrap_or(587),
         };
         let security = match config.get(SMTP_SECURITY) {
             Some(Json::String(s)) if !s.trim().is_empty() => SmtpSecurity::parse(s.trim())?,
@@ -446,6 +448,10 @@ impl EmailSettings {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 mod tests {
     use super::*;
     use serde_json::json;

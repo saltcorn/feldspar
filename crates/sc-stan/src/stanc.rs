@@ -20,7 +20,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -63,30 +62,26 @@ pub struct ProgramCheck {
 pub async fn run_stanc(stanc: &Path, program: &Program, scratch: &Path) -> Result<StancOutput> {
     let work = ScratchDir::new(scratch)?;
     let main = program.layout(&work.0)?;
-    let mut command = tokio::process::Command::new(stanc);
+    let mut command = sc_proc::HostCommand::new(
+        sc_proc::Program::path(stanc),
+        &crate::process::FIT,
+        sc_proc::Timeout::after(STANC_TIMEOUT),
+    );
     command
         .arg("--info")
         .arg("--include-paths=.")
-        .arg(&main)
-        .current_dir(&work.0)
-        .env_clear()
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    for var in ["PATH", "HOME", "TMPDIR"] {
-        if let Some(value) = std::env::var_os(var) {
-            command.env(var, value);
-        }
-    }
-    let output = tokio::time::timeout(STANC_TIMEOUT, command.output())
+        .positional(sc_proc::Operand::path(&main))
+        .cwd(&work.0);
+    let output = command
+        .output()
         .await
-        .map_err(|_| {
-            Error::msg(format!(
+        .map_err(|e| match e.is_timeout() {
+            true => Error::msg(format!(
                 "stanc did not finish checking `{main}` within {} seconds",
                 STANC_TIMEOUT.as_secs()
-            ))
-        })?
+            )),
+            false => Error::msg(e.to_string()),
+        })
         .with_context(|| format!("running {}", stanc.display()))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);

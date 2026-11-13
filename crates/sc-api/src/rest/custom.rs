@@ -715,6 +715,9 @@ fn check_sql(q: &CustomQuery) -> Result<()> {
     // real dialect renders the statement that runs.
     let named = rewrite_named_params(&CountingDialect, &q.code)
         .map_err(|e| Error::invalid(format!("custom query `{}`: {e}", q.name)))?;
+    // Nothing that forges the caller context or reshapes row-level security
+    // (TODO-type-hardening H8.3, H8.5), checked again when it runs.
+    sc_query::check_admin_sql(&q.code, &format!("custom query `{}`", q.name))?;
     if named.statements == 0 {
         return Err(Error::invalid(format!(
             "custom query `{}` has no SQL",
@@ -843,10 +846,14 @@ pub fn custom_endpoint(mount: &str, query: &CustomQuery) -> Endpoint {
         ))
     };
 
-    let mut endpoint = Endpoint::new(&query.name, query.method, path)
-        .output(output)
-        .auth(AuthRequirement::MinRole(query.min_role))
-        .handler(HandlerRef::Custom(query.name.clone()));
+    let mut endpoint = Endpoint::projected(
+        &query.name,
+        query.method,
+        path,
+        AuthRequirement::MinRole(query.min_role),
+    )
+    .output(output)
+    .handler(HandlerRef::Custom(query.name.clone()));
     if query.body_type == BodyType::Bytes {
         // The body is the bytes (`Blob | ArrayBuffer | Uint8Array`), and the
         // declared parameters travel in the query string.
@@ -916,6 +923,9 @@ pub fn undeclared_params_note(query: &CustomQuery) -> Option<String> {
 /// be two answers, and the one that is wrong is the one nobody is reading until
 /// a caller hits it.
 fn prepare(catalog: &Catalog, query: &CustomQuery) -> Result<(sc_query::NamedSql, Vec<String>)> {
+    // At run as well as at save (TODO-type-hardening H8.3): a query stored
+    // before the check existed, or restored from a backup, is read here too.
+    sc_query::check_admin_sql(&query.code, &format!("custom query `{}`", query.name))?;
     let named = rewrite_named_params(catalog.primary_dialect(), &query.code)
         .map_err(|e| Error::invalid(format!("custom query `{}`: {e}", query.name)))?;
     let types = named

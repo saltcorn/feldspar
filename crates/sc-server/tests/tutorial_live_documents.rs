@@ -17,6 +17,10 @@
 //! runtime, bundled by `esbuild`, in a real browser — when Chromium, `esbuild`
 //! and `yjs` are available (it says so and stops short when they are not).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use crate::support::{Socket, next_frame, send};
 use sc_types::Role;

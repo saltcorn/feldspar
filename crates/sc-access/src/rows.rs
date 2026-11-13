@@ -136,7 +136,7 @@ pub async fn delete_row(
 /// `context` routes the read through an RLS caller-context transaction (§7.3)
 /// when the table's ownership is enforced by the database; `None` runs it on a
 /// pooled connection through the provider, as every non-RLS read does.
-pub async fn list_rows_where(
+pub(crate) async fn list_rows_where(
     catalog: &Catalog,
     table: &Table,
     filter: Option<Expr>,
@@ -393,7 +393,7 @@ pub async fn list_row_values(
 /// [`list_row_values`] on a caller's [`Executor`] — the same read, inside the
 /// caller's transaction, which is the only way to see what that transaction has
 /// written but not yet committed.
-pub async fn list_row_values_in(
+pub(crate) async fn list_row_values_in(
     catalog: &Catalog,
     table: &Table,
     query: &RowQuery,
@@ -602,7 +602,7 @@ pub fn group_key(value: Option<&Value>) -> String {
 }
 
 /// One fetched row as a map from column name to its value.
-pub fn row_values(row: &Row) -> std::collections::BTreeMap<String, Value> {
+pub(crate) fn row_values(row: &Row) -> std::collections::BTreeMap<String, Value> {
     row.columns()
         .iter()
         .cloned()
@@ -676,7 +676,7 @@ pub async fn create_row_in(
         catalog,
         table,
         body,
-        context.principal().and_then(|c| c.user.as_ref()),
+        context.principal().and_then(|c| c.user()),
     )
     .await?;
     let body = &*crate::vector::embed_insert(catalog, table, body).await?;
@@ -746,7 +746,7 @@ pub async fn create_row_in(
 /// nothing (`null` or `undefined` — `user.email` with no user) for a `NOT NULL`
 /// field fails the insert naming the field, rather than leaving the database to
 /// report a null it cannot say the origin of.
-pub async fn fill_defaults(
+pub(crate) async fn fill_defaults(
     catalog: &Catalog,
     table: &Table,
     body: &Json,
@@ -811,6 +811,7 @@ pub async fn fill_defaults(
             // this insert runs inside, so a basket's `session_id` can default
             // to `session.id`.
             ambient: sc_expr::session_ambient(sc_catalog::current_origin().session.as_deref()),
+            now: chrono::Utc::now(),
         };
         let json = evaluator
             .eval_value(call)
@@ -1064,7 +1065,7 @@ pub async fn delete_row_guarded(
 }
 
 /// [`delete_row`] on a caller's [`Executor`] — see [`create_row_in`].
-pub async fn delete_row_in(
+pub(crate) async fn delete_row_in(
     catalog: &Catalog,
     table: &Table,
     id: &str,
@@ -1246,7 +1247,7 @@ async fn remove_deleted_files(
             };
             match executor.serving(table) {
                 Some(tx) => tx.after_commit(move || {
-                    tokio::spawn(remove);
+                    sc_catalog::spawn_scoped(remove);
                 }),
                 None => remove.await,
             }
@@ -1356,7 +1357,7 @@ fn guarded_filter(table: &Table, pk: &str, id: &str, guard: Option<Expr>) -> Res
 /// values an ownership formula is checked against before an insert or update
 /// (§7.3) sees the database. Unknown columns are refused by name, exactly as
 /// the write itself would.
-pub fn coerce_row_values(
+pub(crate) fn coerce_row_values(
     table: &Table,
     body: &Json,
 ) -> Result<std::collections::BTreeMap<String, Value>> {
@@ -1575,11 +1576,10 @@ async fn may_attach_file(
         Value::Text(path) if !path.is_empty() => path.as_str(),
         _ => return Ok(true),
     };
-    let caller = context.file_caller();
-    if caller.is_admin() {
+    if context.role().is_admin() {
         return Ok(true);
     }
-    let files = sc_catalog::open_checked_store(catalog, &store.0, caller).await?;
+    let files = sc_catalog::open_checked_store(catalog, &store.0, context).await?;
     // Both or neither: a file the caller may write, and one that is there.
     let Ok(file) = files.writable(path).await else {
         return Ok(false);
@@ -1937,7 +1937,7 @@ mod tests {
     /// fail-closed shape §7.3 depends on.
     #[test]
     fn the_table_decides_the_caller_context_transaction_not_the_caller() {
-        let caller = Principal::anonymous(Role::ADMIN);
+        let caller = Principal::recorded(Role::ADMIN, None);
         assert!(in_context(&table(true), Some(&caller), false).is_some());
         assert!(in_context(&table(false), Some(&caller), false).is_none());
         assert!(in_context(&table(true), None, false).is_none());
@@ -1954,7 +1954,7 @@ mod tests {
     /// gets to ask for the transaction the table did not need.
     #[test]
     fn a_statement_reaching_a_protected_table_asks_for_the_transaction_itself() {
-        let caller = Principal::anonymous(Role::ADMIN);
+        let caller = Principal::recorded(Role::ADMIN, None);
         assert!(in_context(&table(false), Some(&caller), true).is_some());
         // Still fail-closed on the other half: no context is no transaction,
         // whatever the statement reaches.

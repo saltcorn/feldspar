@@ -20,6 +20,11 @@
 //! the loop's own file, and the next line of it would silently become the new
 //! account's password. And a line read from stdin is read byte by byte, so
 //! nothing after it is taken from whoever reads stdin next.
+//!
+//! May use `unsafe` (the workspace denies it) for the hidden password prompt:
+//! an unbuffered `libc::read` of stdin, and `tcgetattr`/`tcsetattr` to turn
+//! echo off and back on.
+#![allow(unsafe_code)]
 
 use sc_types::Role;
 use std::io::{BufRead, IsTerminal, Read, Write};

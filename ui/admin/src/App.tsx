@@ -13,12 +13,20 @@
 // already owns the DOM, so vendoring a second script to add one class would buy
 // nothing.
 
-import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import Spinner from "react-bootstrap/Spinner";
 
 import { api } from "./api";
 import { setServedBaseDomain } from "./adminAddress";
 import { splitRoute, stepParam } from "./builder";
+import { AdminNotices } from "./AdminNotices";
 import { PoppedChats } from "./PoppedChats";
 import { useChatWindows } from "./chatWindows";
 import type { AuthStatusResponse } from "./client";
@@ -31,6 +39,7 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconFolder,
+  IconGitBranch,
   IconList,
   IconLogout,
   IconMoon,
@@ -77,6 +86,7 @@ import { Login } from "./screens/Login";
 import { Roles } from "./screens/Roles";
 import { AccountSecurity } from "./screens/SecondFactor";
 import { Settings, settingsTabFromPath } from "./screens/Settings";
+import { SourceControlPage } from "./screens/SourceControlPage";
 import { CodeLibraries } from "./screens/CodeLibraries";
 import { SharedTranslations } from "./screens/SharedTranslations";
 import { StreamForm } from "./screens/StreamForm";
@@ -126,7 +136,9 @@ export function navigate(path: string): void {
 export function ideUrl(store: string, path?: string): string {
   const base = `/ide/?store=${encodeURIComponent(store)}`;
   // A file to open once the workbench is up — a model's program (Stan TODO §18).
-  return path && path.trim() !== "" ? `${base}&path=${encodeURIComponent(path.trim())}` : base;
+  return path && path.trim() !== ""
+    ? `${base}&path=${encodeURIComponent(path.trim())}`
+    : base;
 }
 
 /** The IDE on `store` with Claude Code open in application `app`'s source
@@ -219,6 +231,29 @@ type NavItem = {
  * header says where a screen is in the sidebar. */
 export type NavGroup = "Data" | "Automation" | "Insights" | "Administration";
 
+/** Whether the sidebar links to the Analytics UI. Off for the first release:
+ * the rest of the admin UI is ready and Analytics is not yet. The `/analytics/`
+ * bundle and the old `#/models/…` redirects into it are unchanged; set this to
+ * `true` to bring back the entry and its Insights heading (the server's
+ * `ANALYTICS_FRAMEWORK_ENABLED` turns the application framework back on). */
+export const ANALYTICS_IN_SIDEBAR: boolean = false;
+
+/** The sidebar entry for the Analytics UI, kept for when it returns. */
+export const ANALYTICS_NAV_ITEM: NavItem = {
+  // The Analytics UI: its own bundle under `/analytics/` (analytics TODO
+  // A1.14), a full navigation rather than a hash route. Datasets, models and
+  // workspaces live there; it replaced *Predictive models* in A3, and the old
+  // `#/models/…` links redirect into its model editor (`modelRedirect.ts`).
+  // Beside Agents rather than under Tables: a model is a question asked *of*
+  // a table, and the section it belongs to is the one about answering
+  // questions rather than the one about storing rows.
+  href: "/analytics/",
+  group: "Insights",
+  label: "Analytics",
+  icon: <IconChartHistogram />,
+  matches: [],
+};
+
 /** The installation's entries in the sidebar: its shared furniture, under
  * their group headings. Applications are the other section, and are not
  * entries here — that section is about one application at a time, picked in
@@ -282,20 +317,9 @@ export const NAV: NavItem[] = [
     // admin UI has any use for one. The same goes for an MCP server.
     matches: ["/agents", "/llm-providers", "/mcp-servers"],
   },
-  {
-    // The Analytics UI: its own bundle under `/analytics/` (analytics TODO
-    // A1.14), a full navigation rather than a hash route. Datasets, models and
-    // workspaces live there; it replaced *Predictive models* in A3, and the old
-    // `#/models/…` links redirect into its model editor (`modelRedirect.ts`).
-    // Beside Agents rather than under Tables: a model is a question asked *of*
-    // a table, and the section it belongs to is the one about answering
-    // questions rather than the one about storing rows.
-    href: "/analytics/",
-    group: "Insights",
-    label: "Analytics",
-    icon: <IconChartHistogram />,
-    matches: [],
-  },
+  // The Analytics entry, under its own Insights heading, goes here while
+  // `ANALYTICS_IN_SIDEBAR` is on.
+  ...(ANALYTICS_IN_SIDEBAR ? [ANALYTICS_NAV_ITEM] : []),
   {
     href: "#/users",
     group: "Administration",
@@ -305,6 +329,17 @@ export const NAV: NavItem[] = [
     // providers hang off Agents: a role exists to be held by a user, and the
     // way to the list is a button on the Users screen.
     matches: ["/users", "/roles"],
+  },
+  {
+    // The installation's structure as JSON, one file at a time (the registry
+    // editor, APP_SYNC_PROPOSAL §7.6), and — once the installation can be
+    // linked to a repository — committing and deploying it. In the sidebar
+    // whether or not there is a link (§7.5).
+    href: "#/source-control",
+    group: "Administration",
+    label: "Source control",
+    icon: <IconGitBranch />,
+    matches: ["/source-control"],
   },
   {
     href: "#/settings",
@@ -317,7 +352,13 @@ export const NAV: NavItem[] = [
     // The data-only checklists (TODO-checklists C1.16) are its Checklists tab,
     // so a checklist's own screen and its runs light it up as well. An
     // application's checklists are under that application instead.
-    matches: ["/settings", "/code-libraries", "/translations", "/checklists", "/checklist-runs"],
+    matches: [
+      "/settings",
+      "/code-libraries",
+      "/translations",
+      "/checklists",
+      "/checklist-runs",
+    ],
   },
 ];
 
@@ -357,6 +398,8 @@ function navLabel(label: string, t: Translator["t"]): string {
       return t("Users");
     case "Settings":
       return t("Settings");
+    case "Source control":
+      return t("Source control");
     default:
       return label;
   }
@@ -444,8 +487,9 @@ function Shell({
           which springs open under a passing pointer. Tabler owns both numbers,
           which is why nothing here (or in `admin.css`) restates the geometry. */}
       <aside
-        className={`navbar navbar-vertical navbar-expand-lg${folded ? " navbar-folded" : ""
-          }`}
+        className={`navbar navbar-vertical navbar-expand-lg${
+          folded ? " navbar-folded" : ""
+        }`}
         data-bs-theme="dark"
       >
         <div className="container-fluid">
@@ -473,7 +517,9 @@ function Shell({
               `navbar-folded` sidebar. */}
           <div
             className={`navbar-brand d-flex align-items-center ${
-              folded ? "flex-lg-column gap-2" : "justify-content-between flex-lg-fill"
+              folded
+                ? "flex-lg-column gap-2"
+                : "justify-content-between flex-lg-fill"
             }`}
           >
             <a
@@ -489,8 +535,12 @@ function Shell({
                     rail is the logo mark's width and Tabler would crop this to
                     the stems of its first two letters. */}
                 <div className="ms-2 sidebar-wide-only">
-                  <div className="saltcorn-label"><T text="Saltcorn" /></div>
-                  <div className="feldspar-label"><T text="Feldspar" /></div>
+                  <div className="saltcorn-label">
+                    <T text="Saltcorn" />
+                  </div>
+                  <div className="feldspar-label">
+                    <T text="Feldspar" />
+                  </div>
                 </div>
               </div>
             </a>
@@ -499,7 +549,9 @@ function Shell({
               className="btn btn-icon btn-ghost-secondary d-none d-lg-inline-flex"
               onClick={toggleFolded}
               aria-pressed={folded}
-              aria-label={folded ? t("Expand the sidebar") : t("Fold the sidebar")}
+              aria-label={
+                folded ? t("Expand the sidebar") : t("Fold the sidebar")
+              }
               title={folded ? t("Expand the sidebar") : t("Fold the sidebar")}
             >
               {folded ? (
@@ -550,19 +602,24 @@ function Shell({
               {NAV.map((item, n) => (
                 <Fragment key={item.href}>
                   {item.group !== NAV[n - 1]?.group && (
-                    <li className="nav-section-title">{groupLabel(item.group, t)}</li>
+                    <li className="nav-section-title">
+                      {groupLabel(item.group, t)}
+                    </li>
                   )}
                   <NavLink item={item} route={route} folded={folded} />
                 </Fragment>
               ))}
-              <li className="nav-section-title"><T text="Applications" /></li>
+              <li className="nav-section-title">
+                <T text="Applications" />
+              </li>
               <ApplicationsNav route={route} folded={folded} />
             </ul>
             {/* The nav list above is `flex-grow: 1` in a column collapse, so
                 everything below it settles at the bottom of the sidebar. */}
             <div
-              className={`d-none d-lg-block py-3 border-top ${folded ? "px-0" : "px-3"
-                }`}
+              className={`d-none d-lg-block py-3 border-top ${
+                folded ? "px-0" : "px-3"
+              }`}
             >
               {/* Folded there is no room for an address, so the email moves
                   into the log-out button's tooltip (see `admin.css`). */}
@@ -577,7 +634,9 @@ function Shell({
                   title={`Log out (${user.email})`}
                 >
                   <IconLogout className="icon-2" />
-                  <span className="sidebar-wide-only"><T text="Log out" /></span>
+                  <span className="sidebar-wide-only">
+                    <T text="Log out" />
+                  </span>
                 </button>
                 <ThemeToggle theme={theme} onToggle={toggleTheme} />
                 {/* The admin's own account: two-factor authentication. */}
@@ -600,12 +659,15 @@ function Shell({
       </aside>
 
       <div className="page-wrapper">
+        <AdminNotices />
         <Screen route={route} user={user} />
         <footer className="footer footer-transparent d-print-none">
           <div className="container-xl">
             <div className="row text-center align-items-center flex-row-reverse">
               <div className="col-12 col-lg-auto mt-3 mt-lg-0">
-                <span className="text-secondary"><T text="Saltcorn" /></span>
+                <span className="text-secondary">
+                  <T text="Saltcorn" />
+                </span>
               </div>
             </div>
           </div>
@@ -619,7 +681,9 @@ function Shell({
       {/* A build started from the sidebar finishes wherever the admin has got
           to by then; the applications list has its own banner for the news. */}
       {path !== "/applications" && <AppOutcomeToast />}
-      {onboardingOpen && <Onboarding onClose={() => setOnboardingOpen(false)} />}
+      {onboardingOpen && (
+        <Onboarding onClose={() => setOnboardingOpen(false)} />
+      )}
     </div>
   );
 }
@@ -717,10 +781,14 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   }
   const changesetMatch = path.match(/^\/changesets\/([^/]+)$/);
   if (changesetMatch) {
-    return <ChangesetDetail key={route} id={decodeURIComponent(changesetMatch[1])} />;
+    return (
+      <ChangesetDetail key={route} id={decodeURIComponent(changesetMatch[1])} />
+    );
   }
   if (path === "/changesets") {
-    return <Changesets key={route} initialTable={query.get("table") ?? undefined} />;
+    return (
+      <Changesets key={route} initialTable={query.get("table") ?? undefined} />
+    );
   }
   const tableMatch = path.match(/^\/tables\/([^/]+)$/);
   if (tableMatch) {
@@ -738,9 +806,7 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
       />
     );
   }
-  const viewEditMatch = path.match(
-    /^\/applications\/([^/]+)\/views\/([^/]+)$/,
-  );
+  const viewEditMatch = path.match(/^\/applications\/([^/]+)\/views\/([^/]+)$/);
   if (viewEditMatch) {
     return (
       <ViewEditor
@@ -756,7 +822,11 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   const newPageMatch = path.match(/^\/applications\/([^/]+)\/pages\/new$/);
   if (newPageMatch) {
     return (
-      <PageProperties key={path} appId={decodeURIComponent(newPageMatch[1])} name={null} />
+      <PageProperties
+        key={path}
+        appId={decodeURIComponent(newPageMatch[1])}
+        name={null}
+      />
     );
   }
   const pagePropertiesMatch = path.match(
@@ -771,10 +841,14 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
       />
     );
   }
-  const translationsMatch = path.match(/^\/applications\/([^/]+)\/translations$/);
+  const translationsMatch = path.match(
+    /^\/applications\/([^/]+)\/translations$/,
+  );
   if (translationsMatch) {
     return (
-      <ApplicationTranslations appId={decodeURIComponent(translationsMatch[1])} />
+      <ApplicationTranslations
+        appId={decodeURIComponent(translationsMatch[1])}
+      />
     );
   }
   // Plan & build (TODO-app-constructor AC4): the application's construction.
@@ -804,7 +878,9 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
       />
     );
   }
-  const appChecklistMatch = path.match(/^\/applications\/([^/]+)\/checklists\/([^/]+)$/);
+  const appChecklistMatch = path.match(
+    /^\/applications\/([^/]+)\/checklists\/([^/]+)$/,
+  );
   if (appChecklistMatch) {
     return (
       <ChecklistDetail
@@ -814,9 +890,16 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
       />
     );
   }
-  const appChecklistsMatch = path.match(/^\/applications\/([^/]+)\/checklists$/);
+  const appChecklistsMatch = path.match(
+    /^\/applications\/([^/]+)\/checklists$/,
+  );
   if (appChecklistsMatch) {
-    return <Checklists key={path} appId={decodeURIComponent(appChecklistsMatch[1])} />;
+    return (
+      <Checklists
+        key={path}
+        appId={decodeURIComponent(appChecklistsMatch[1])}
+      />
+    );
   }
   const libraryMatch = path.match(/^\/applications\/([^/]+)\/library$/);
   if (libraryMatch) {
@@ -831,14 +914,17 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
       />
     );
   }
+  // `edit` is the first settings tab and `edit/<id>` another (TODO UX2.1);
+  // `app-settings`, where a Saltcorn UI application's settings used to be,
+  // opens the first tab, which is where its site settings are now.
   const editMatch = path.match(
-    /^\/applications\/([^/]+)\/(edit|app-settings)$/,
+    /^\/applications\/([^/]+)\/(?:edit(?:\/([^/]+))?|app-settings)$/,
   );
   if (editMatch) {
     return (
       <ApplicationForm
         appId={decodeURIComponent(editMatch[1])}
-        tab={editMatch[2] === "app-settings" ? "app-settings" : "settings"}
+        tab={editMatch[2] ? decodeURIComponent(editMatch[2]) : undefined}
       />
     );
   }
@@ -888,7 +974,10 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   const streamObserveMatch = path.match(/^\/streams\/([^/]+)\/observe$/);
   if (streamObserveMatch) {
     return (
-      <StreamObserve key={path} streamId={decodeURIComponent(streamObserveMatch[1])} />
+      <StreamObserve
+        key={path}
+        streamId={decodeURIComponent(streamObserveMatch[1])}
+      />
     );
   }
   if (path.startsWith("/streams")) {
@@ -977,7 +1066,11 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   const checklistRunMatch = path.match(/^\/checklist-runs\/([^/]+)$/);
   if (checklistRunMatch) {
     return (
-      <ChecklistRun key={path} appId={null} runId={decodeURIComponent(checklistRunMatch[1])} />
+      <ChecklistRun
+        key={path}
+        appId={null}
+        runId={decodeURIComponent(checklistRunMatch[1])}
+      />
     );
   }
   const checklistMatch = path.match(/^\/checklists\/([^/]+)$/);
@@ -998,6 +1091,16 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   }
   if (path.startsWith("/settings")) {
     return <Settings key={path} requestedTab={settingsTabFromPath(path)} />;
+  }
+  if (path === "/source-control") {
+    return (
+      <SourceControlPage
+        key={route}
+        initialPath={query.get("path") ?? undefined}
+        initialTab={query.get("tab") ?? undefined}
+        merge={query.get("merge") === "1"}
+      />
+    );
   }
   // Settings → Development → Code library (TODO F3.3).
   if (path.startsWith("/code-libraries")) {

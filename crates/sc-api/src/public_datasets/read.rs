@@ -365,8 +365,17 @@ pub(super) fn value(
                     .transpose()
                     .map_err(in_field)?
                     .unwrap_or(1);
-                let date = NaiveDate::from_ymd_opt(year as i32, month as u32, day as u32)
-                    .ok_or_else(|| in_field(format!("{year}-{month}-{day} is not a date")))?;
+                // Converted, not cast: `year as i32` would wrap a year past the
+                // range into a different, valid one.
+                let date = match (
+                    i32::try_from(year),
+                    u32::try_from(month),
+                    u32::try_from(day),
+                ) {
+                    (Ok(y), Ok(m), Ok(d)) => NaiveDate::from_ymd_opt(y, m, d),
+                    _ => None,
+                }
+                .ok_or_else(|| in_field(format!("{year}-{month}-{day} is not a date")))?;
                 Ok(Json::String(date.to_string()))
             }
         };
@@ -420,6 +429,10 @@ fn text<'a>(raw: &'a Raw<'_>) -> Cow<'a, str> {
     }
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "integral and well inside the i64 range, so the cast is exact"
+)]
 fn int(raw: &Raw<'_>) -> std::result::Result<i64, String> {
     if let Raw::Json(j) = raw
         && let Some(i) = j.as_i64()
@@ -464,6 +477,10 @@ fn boolean(raw: &Raw<'_>) -> std::result::Result<bool, String> {
     }
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a decimal year's floor and month fraction: float-to-integer as saturates, and from_ymd_opt refuses what is out of range"
+)]
 fn date(raw: &Raw<'_>, parse: Option<Parse>) -> std::result::Result<NaiveDate, String> {
     let t = text(raw);
     let bad = || format!("`{t}` is not a date");
@@ -695,6 +712,29 @@ mod tests {
                 vec![json!("2024-12-01"), json!(27), json!("red")],
             ]
         );
+    }
+
+    /// A year past `i32` is refused, not wrapped: `year as i32` turned
+    /// 4294969296 (2³² + 2000) into the year 2000 (security review 2026-11, §6).
+    #[test]
+    fn a_combined_date_out_of_range_is_refused_rather_than_wrapped() {
+        let s = source(Format::Csv);
+        let mut date = field("d", "date");
+        date.from = Some(super::super::Columns::Many(vec![
+            "year".into(),
+            "month".into(),
+        ]));
+        let mut seen = Vec::new();
+        each_record(&s, b"year,month\n4294969296,1\n2000,1\n", |_, record| {
+            seen.push(value(&date, &BasicType::Date, record, &[]).map_err(|e| e.to_string()));
+            Ok(())
+        })
+        .expect("the file reads");
+        assert!(
+            matches!(&seen[0], Err(e) if e.contains("is not a date")),
+            "{seen:?}"
+        );
+        assert_eq!(seen[1], Ok(json!("2000-01-01")));
     }
 
     #[test]

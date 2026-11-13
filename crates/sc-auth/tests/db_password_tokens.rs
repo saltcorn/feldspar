@@ -124,7 +124,12 @@ async fn an_invited_account_chooses_its_password_with_its_token_once() -> Result
 async fn a_reset_ends_the_users_sessions_and_a_bad_token_is_just_none() -> Result<()> {
     let f = fixture().await?;
     let user = create_user(&f.catalog, "pat@example.com", "old-pw", Role::of(80)).await?;
-    create_session(&f.catalog, user.id(), Duration::hours(1)).await?;
+    create_session(
+        &f.catalog,
+        sc_auth::FullyAuthenticated::waived(user.clone(), sc_auth::SecondFactorWaiver::Test),
+        Duration::hours(1),
+    )
+    .await?;
     assert_eq!(count(&f.catalog, SESSIONS_TABLE).await?, 1);
 
     let token = issue_password_token(&f.catalog, user.id(), PasswordTokenPurpose::Reset).await?;
@@ -181,7 +186,7 @@ async fn a_reset_ends_the_users_sessions_and_a_bad_token_is_just_none() -> Resul
 
     // So is a disabled account's.
     let token = issue_password_token(&f.catalog, user.id(), PasswordTokenPurpose::Reset).await?;
-    set_user_disabled(&f.catalog, user.id(), true).await?;
+    let _changed = set_user_disabled(&f.catalog, user.id(), true).await?;
     assert!(
         redeem_password_token(&f.catalog, &token, "x")
             .await?
@@ -248,7 +253,12 @@ async fn a_signup_is_unproven_until_a_link_is_redeemed_and_is_claimed_whole() ->
     );
 
     let squat = sign_up_user(&f.catalog, "squat@example.com", "squat-pw", Role::of(80)).await?;
-    create_session(&f.catalog, squat.id(), Duration::hours(1)).await?;
+    create_session(
+        &f.catalog,
+        sc_auth::FullyAuthenticated::waived(squat.clone(), sc_auth::SecondFactorWaiver::Test),
+        Duration::hours(1),
+    )
+    .await?;
     issue_password_token(&f.catalog, squat.id(), PasswordTokenPurpose::Reset).await?;
     let claimed = claim_unproven_account(&f.catalog, squat.clone()).await?;
     assert_eq!(claimed.id(), squat.id());

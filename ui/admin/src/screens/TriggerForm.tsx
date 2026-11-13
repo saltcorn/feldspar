@@ -184,6 +184,10 @@ export function TriggerForm({ triggerId, table }: { triggerId?: string; table?: 
   const [config, setConfig] = useState<Record<string, string>>({});
   const [minRole, setMinRole] = useState<number | null>(null);
   const [enabled, setEnabled] = useState(true);
+  // Whether it asks to run as system (TODO-type-hardening H8.10). Sent back on
+  // every save — the update is a whole-object `PUT`, and leaving it out would
+  // switch it off. Asking is not approving: that is the list's Approve button.
+  const [runsAsSystem, setRunsAsSystem] = useState(false);
   // The periodic timing, held as strings so an empty box stays empty rather than
   // becoming a 0 the admin did not type.
   const [timing, setTiming] = useState<Record<TimingField, string>>({
@@ -226,6 +230,7 @@ export function TriggerForm({ triggerId, table }: { triggerId?: string; table?: 
           setConfig(readConfig(existing.configuration ?? {}));
           setMinRole(existing.min_role ?? null);
           setEnabled(existing.enabled);
+          setRunsAsSystem(existing.runs_as_system ?? false);
           setTiming({
             minute: existing.minute == null ? "" : String(existing.minute),
             hour: existing.hour == null ? "" : String(existing.hour),
@@ -309,6 +314,7 @@ export function TriggerForm({ triggerId, table }: { triggerId?: string; table?: 
         configuration: body === "action" ? buildConfig(spec, config) : null,
         min_role: minRole,
         enabled,
+        runs_as_system: runsAsSystem,
         minute: timingValue("minute"),
         hour: timingValue("hour"),
         day_of_week: timingValue("day_of_week"),
@@ -651,6 +657,17 @@ export function TriggerForm({ triggerId, table }: { triggerId?: string; table?: 
             checked={enabled}
             onChange={(e) => setEnabled(e.target.checked)}
           />
+          <Form.Check
+            type="checkbox"
+            id="triggerRunsAsSystem"
+            className="mb-1"
+            label={t("Run as system")}
+            checked={runsAsSystem}
+            onChange={(e) => setRunsAsSystem(e.target.checked)}
+          />
+          <Form.Text muted className="d-block mb-3">
+            <T text="Its action then runs at system authority, tables with row-level security included, once a person approves its code on the triggers list. Until then it runs as the user who caused it." />
+          </Form.Text>
 
           <div className="d-flex gap-2">
             <Button type="submit" disabled={busy}>

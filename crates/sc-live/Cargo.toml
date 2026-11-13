@@ -55,6 +55,9 @@ yrs.workspace = true
 base64.workspace = true
 
 [dev-dependencies]
+# Tests start sessions without a sign-in (`SessionStore::login`), which only
+# the `testing` feature offers (security review 2026-11, §2).
+sc-auth = { workspace = true, features = ["testing"] }
 # The hub's own tests subscribe to a stream the scripted provider publishes on,
 # through the real supervisor, exactly as `sc-server`'s socket tests do.
 # Starting a stream needs no database: `StreamSupervisor::start` takes the row.

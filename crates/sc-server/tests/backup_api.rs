@@ -26,6 +26,14 @@
 //! - and every one of these is **admin-only**, like every other configuration
 //!   endpoint.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 
 use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_types::Role;
@@ -391,10 +399,19 @@ async fn furnish(server: &mut Server) -> sc_error::Result<()> {
                 "configuration": { "code": "row.title" },
                 "min_role": null,
                 "enabled": true,
+                "runs_as_system": true,
             })),
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
+    // Approved by the person at the console (TODO-type-hardening H8.10), which
+    // a restore that person makes keeps.
+    let id = body["id"].as_str().expect("the trigger's id").to_owned();
+    let (status, body) = server
+        .client
+        .send("POST", &format!("/api/triggers/{id}/system-approval"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     let (certificate, private_key) = self_signed();
     let (status, body) = server
@@ -757,6 +774,9 @@ async fn a_backup_restores_into_a_second_installation() -> sc_error::Result<()> 
     // here, and it fires on the table that was restored beside it.
     assert_eq!(trigger["error"], Value::Null);
     assert_eq!(trigger["channel"], json!("books"));
+    // A person restored it, so its approval to run as system came with it, for
+    // the same configuration (TODO-type-hardening H8.10).
+    assert_eq!(trigger["system_state"], json!("approved"), "{trigger}");
 
     // The private key travelled — a backup that redacted it would restore a server
     // that cannot serve HTTPS — and it is *stored*, not merely echoed.
@@ -2205,7 +2225,9 @@ async fn a_vector_field_its_values_and_its_index_travel_in_a_backup() -> sc_erro
     }
     let archive = backup_everything(&mut source).await;
     let rows = entry(&archive, "tables/docs/rows.ndjson");
-    assert!(rows.contains("[0.0,0.5,0.25]"), "{rows}");
+    // Packed (`sc_types::vector_pack`), not decimal text.
+    assert!(rows.contains("\"f32le:"), "{rows}");
+    assert!(!rows.contains("0.25"), "{rows}");
 
     let Some(db) = TestDb::with_pgvector().await? else {
         return Ok(());
@@ -2243,6 +2265,236 @@ async fn a_vector_field_its_values_and_its_index_travel_in_a_backup() -> sc_erro
             .any(|c| c["type"] == "vector_index" && c["fields"] == json!(["embedding"])),
         "{constraints}"
     );
+    Ok(())
+}
+
+/// A table an app made with its own SQL, with columns of types this system does
+/// not know — `(column, type, a value as Postgres prints it)` — backed up from
+/// `source` and restored into `target`: the backup no longer aborts on them
+/// (bug report: `halfvec`), the columns come back with the same types and the
+/// values as they were.
+async fn database_types_round_trip(
+    mut source: Server,
+    mut target: Server,
+    columns: &[(&str, &str, &str)],
+) -> sc_error::Result<()> {
+    let ddl: Vec<String> = columns.iter().map(|(c, t, _)| format!("{c} {t}")).collect();
+    let names: Vec<&str> = columns.iter().map(|(c, _, _)| *c).collect();
+    let values: Vec<String> = columns.iter().map(|(_, _, v)| format!("'{v}'")).collect();
+    source
+        .db
+        .client()
+        .await?
+        .batch_execute(&format!(
+            "CREATE TABLE odd (id bigint primary key, {}); \
+             INSERT INTO odd (id, {names}) VALUES (1, {values}), (2, {values}); \
+             INSERT INTO odd (id) VALUES (3);",
+            ddl.join(", "),
+            names = names.join(", "),
+            values = values.join(", "),
+        ))
+        .await
+        .map_err(db_error)?;
+    source.catalog.reload().await?;
+
+    // Read through the API as text, the value the type layer has for them.
+    let (status, rows) = source
+        .client
+        .send("GET", "/api/tables/odd/rows?order=id", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{rows}");
+    for (column, _, value) in columns {
+        assert_eq!(rows[0][column], json!(value), "{rows}");
+    }
+
+    let archive = backup_everything(&mut source).await;
+    let backed_up = entry(&archive, "tables/odd/rows.ndjson");
+    assert_eq!(backed_up.lines().count(), 3, "{backed_up}");
+
+    let report = restore_everything(&mut target, &archive).await;
+    let introspected = target
+        .catalog
+        .require("odd")
+        .map_err(|e| sc_error::Error::msg(format!("{e}; {report}")))?;
+    for (column, sql_type, _) in columns {
+        let field = introspected
+            .field(column)
+            .unwrap_or_else(|| panic!("`{column}` restored: {report}"));
+        assert_eq!(field.base.type_.sql_type(), *sql_type, "{report}");
+    }
+    let (status, rows) = target
+        .client
+        .send("GET", "/api/tables/odd/rows?order=id", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{rows}");
+    assert_eq!(rows.as_array().map(Vec::len), Some(3), "{rows} {report}");
+    for (column, _, value) in columns {
+        assert_eq!(rows[1][column], json!(value), "{rows}");
+        assert_eq!(rows[2][column], Value::Null, "{rows}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn columns_of_types_the_system_does_not_know_travel_in_a_backup() -> sc_error::Result<()> {
+    database_types_round_trip(
+        setup().await?,
+        setup().await?,
+        &[
+            ("span", "interval", "1 day 02:00:00"),
+            ("addr", "inet", "10.0.0.0/24"),
+            ("tags", "_int4", "{1,2,3}"),
+        ],
+    )
+    .await
+}
+
+/// The bug report's case: an app's own `halfvec` column (with the HNSW index it
+/// made for it) and a `sparsevec` one. The half vector is a vector here — an
+/// array on the wire, ordered nearest by — and both are written compactly in
+/// the backup (`f16le:…`, `sparse:5:…`), restored with their types, values and
+/// index. A field of the half type is still not one an admin creates.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn pgvector_halfvec_and_sparsevec_columns_travel_in_a_backup() -> sc_error::Result<()> {
+    let (Some(from), Some(to)) = (
+        TestDb::with_pgvector().await?,
+        TestDb::with_pgvector().await?,
+    ) else {
+        return Ok(());
+    };
+    let mut source = setup_in(from).await?;
+    source
+        .db
+        .client()
+        .await?
+        .batch_execute(
+            "CREATE TABLE mail_embed (id bigint primary key, vec halfvec(3), sparse sparsevec(5)); \
+             CREATE INDEX mail_embed_vec ON mail_embed USING hnsw (vec halfvec_cosine_ops); \
+             INSERT INTO mail_embed VALUES \
+               (1, '[1,0,0]', '{1:1.5,4:2}/5'), \
+               (2, '[0.1,1,0]', '{2:-1}/5'), \
+               (3, '[0.9,0.1,0]', '{}/5'), \
+               (4, NULL, NULL);",
+        )
+        .await
+        .map_err(db_error)?;
+    source.catalog.reload().await?;
+
+    let read = |rows: &Value| -> Vec<(Value, Value)> {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (r["vec"].clone(), r["sparse"].clone()))
+            .collect()
+    };
+    let expected = vec![
+        (json!([1.0, 0.0, 0.0]), json!("{1:1.5,4:2}/5")),
+        // The column's nearest half to 0.1.
+        (json!([0.099975586, 1.0, 0.0]), json!("{2:-1}/5")),
+        (json!([0.89990234, 0.099975586, 0.0]), json!("{}/5")),
+        (Value::Null, Value::Null),
+    ];
+    let (status, rows) = source
+        .client
+        .send("GET", "/api/tables/mail_embed/rows?order=id", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{rows}");
+    assert_eq!(read(&rows), expected, "{rows}");
+
+    // Written through the API as an array, and ordered nearest by.
+    let (status, body) = source
+        .client
+        .send(
+            "POST",
+            "/api/tables/mail_embed/rows",
+            Some(json!({ "id": 5, "vec": [0, 0, 1] })),
+        )
+        .await;
+    assert!(status.is_success(), "{body}");
+    let (status, nearest) = source
+        .client
+        .send(
+            "GET",
+            "/api/tables/mail_embed/rows?nearest=vec.[1,0,0]&limit=2",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{nearest}");
+    let ids: Vec<&Value> = nearest
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| &r["id"])
+        .collect();
+    assert_eq!(ids, vec![&json!(1), &json!(3)], "{nearest}");
+
+    // Not a type a field is made with.
+    let (status, body) = source
+        .client
+        .send(
+            "POST",
+            "/api/tables/mail_embed/fields",
+            Some(json!({ "name": "other", "type": "halfvec(3)" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.to_string().contains("Create a `vector` field"),
+        "{body}"
+    );
+
+    let archive = backup_everything(&mut source).await;
+    let backed_up = entry(&archive, "tables/mail_embed/rows.ndjson");
+    assert!(backed_up.contains("\"f16le:"), "{backed_up}");
+    assert!(backed_up.contains("\"sparse:5:"), "{backed_up}");
+    assert!(!backed_up.contains("0.099975586"), "{backed_up}");
+
+    let mut target = setup_in(to).await?;
+    let report = restore_everything(&mut target, &archive).await;
+    let restored = target
+        .catalog
+        .require("mail_embed")
+        .map_err(|e| sc_error::Error::msg(format!("{e}; {report}")))?;
+    let type_of = |name: &str| {
+        restored
+            .field(name)
+            .map(|f| f.base.type_.sql_type().to_owned())
+    };
+    assert_eq!(type_of("vec").as_deref(), Some("halfvec(3)"), "{report}");
+    assert_eq!(
+        type_of("sparse").as_deref(),
+        Some("sparsevec(5)"),
+        "{report}"
+    );
+    assert!(
+        sc_catalog::vector_index(&restored, "vec").is_some(),
+        "the HNSW index: {report}"
+    );
+    let (status, rows) = target
+        .client
+        .send("GET", "/api/tables/mail_embed/rows?order=id", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{rows}");
+    let mut with_new = expected.clone();
+    with_new.push((json!([0.0, 0.0, 1.0]), Value::Null));
+    assert_eq!(read(&rows), with_new, "{rows} {report}");
+    let (status, nearest) = target
+        .client
+        .send(
+            "GET",
+            "/api/tables/mail_embed/rows?nearest=vec.[1,0,0]&limit=2",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{nearest}");
+    let ids: Vec<&Value> = nearest
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| &r["id"])
+        .collect();
+    assert_eq!(ids, vec![&json!(1), &json!(3)], "{nearest}");
     Ok(())
 }
 
@@ -2437,17 +2689,11 @@ async fn every_backup_route_is_admin_only() -> sc_error::Result<()> {
 
 /// The data directory a store restored from another machine is moved into.
 ///
-/// Set once for the whole binary, as `git_store_api`'s is: the environment is
-/// process-wide and these tests run in parallel. Only this test defines a store
-/// the restore has to place; every other one prepares its store first.
-fn data_dir() -> &'static std::path::Path {
-    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| {
-        let dir = temp_dir();
-        unsafe { std::env::set_var(sc_files::DATA_DIR_ENV, &dir) };
-        dir
-    })
-}
+// The binary's data directory is the shared one (`support::data_dir`): the
+// environment is process-wide and these tests run in parallel. Only this test
+// defines a store the restore has to place; every other one prepares its
+// store first.
+use crate::support::data_dir;
 
 /// A store restored onto a server where its directory does not exist goes where
 /// this server puts its stores; one whose directory does exist (a shared drive)

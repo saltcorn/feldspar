@@ -37,7 +37,7 @@ use sc_module::{
     Installer, Module, ModuleHost, ModuleSet, ModuleSource, bootstrap_modules, save_module,
 };
 use sc_test_harness::TestDb;
-use sc_types::Attrs;
+use sc_types::{Attrs, Role};
 use serde_json::{Value as Json, json};
 
 /// A library with a **key** in it, because `getField("author").is_fkey` is one of
@@ -433,6 +433,60 @@ async fn a_module_cannot_wrap_the_host_bridge() {
         .expect("the wrapping action itself runs");
     assert_eq!(answer["kept"], json!([]), "{answer}");
     assert_eq!(answer["count"], json!(4), "{answer}");
+
+    host.shutdown().await;
+    let _ = std::fs::remove_dir_all(installer.root());
+}
+
+/// A refusal of the caller's authority that a module lets propagate is still
+/// that refusal (bug report: `@feldspar/imap`'s actions answered 422
+/// "configuration error: auth error: …"). A signed-in caller is forbidden, not
+/// told the module is misconfigured. A module that merely *throws the words*
+/// cannot pass its own error off as one: only the host script marks a refusal.
+#[tokio::test]
+async fn a_refusal_a_module_lets_propagate_is_still_a_refusal() {
+    skip_without!(have_npm(), "npm is not on the PATH");
+    let db = TestDb::new().await.unwrap();
+    let cat = Arc::new(setup(&db).await.unwrap());
+    db.on_teardown(cat.teardown_hook());
+    sc_auth::bootstrap(&cat).await.unwrap();
+    cat.reload().await.unwrap();
+    sc_auth::save_role(&cat, &sc_auth::RoleDef::new(Role::of(80), "User"))
+        .await
+        .unwrap();
+    let admin = sc_auth::create_user(&cat, "root@example.com", "a long password", Role::ADMIN)
+        .await
+        .unwrap();
+    let ada = sc_auth::create_user(&cat, "ada@example.com", "a long password", Role::of(80))
+        .await
+        .unwrap();
+    let (installer, host, registry, _set) = install(&cat, "v1-table-refusal-kind").await;
+
+    // Ada names the administrator: refused, and the refusal arrives as one.
+    let event = Event::new(EventKind::None).caller(ada.role(), Some(ada.fields_json()));
+    let mut config = Attrs::new();
+    config.insert("as".into(), json!(admin.id().to_string()));
+    let handler = registry.require("v1_read_as").unwrap();
+    let mut ctx = ActionContext::new(&cat, &event, &config, "a trigger");
+    let err = handler.run(&mut ctx).await.expect_err("ada may not act as the admin");
+    let refusal = err.auth_message().unwrap_or_else(|| panic!("not a refusal: {err}"));
+    assert!(refusal.contains("may not act as"), "{err}");
+    assert_eq!(err.to_string().matches("auth error").count(), 1, "{err}");
+    assert!(!err.to_string().contains("configuration error"), "{err}");
+
+    // Naming herself passes the narrowing, and then `books`' admin floors refuse
+    // her read — a refusal too, and named as the read it is.
+    config.insert("as".into(), json!(ada.id().to_string()));
+    let mut ctx = ActionContext::new(&cat, &event, &config, "a trigger");
+    let err = handler.run(&mut ctx).await.expect_err("books is admin-only");
+    assert_eq!(err.auth_message(), Some("you may not read `books`"), "{err}");
+
+    // A module's own throw stays the module's, whatever it says.
+    let err = run(&registry, &cat, "v1_forged_refusal", Attrs::new())
+        .await
+        .expect_err("the module threw");
+    assert!(err.auth_message().is_none(), "{err}");
+    assert_eq!(err.kind(), sc_error::ErrorKind::Application);
 
     host.shutdown().await;
     let _ = std::fs::remove_dir_all(installer.root());

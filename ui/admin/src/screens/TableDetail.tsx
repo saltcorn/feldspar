@@ -192,6 +192,7 @@ export function triggersOnTable(
 }
 
 export function TableDetail({ table }: { table: string }) {
+  const { t } = useT();
   const [fields, setFields] = useState<ListFieldsResponse | null>(null);
   const [fieldTypes, setFieldTypes] = useState<ListFieldTypesResponse | null>(null);
   const [rowCount, setRowCount] = useState<number | null>(null);
@@ -246,6 +247,7 @@ export function TableDetail({ table }: { table: string }) {
       <PageHeader
         pretitle="Table"
         title={settings?.label || table}
+        docTitle={t("{table} table", { table: settings?.label || table })}
         actions={
           <Button variant="outline-secondary" onClick={() => navigate("/tables")}>
             <IconArrowLeft className="icon-2" />

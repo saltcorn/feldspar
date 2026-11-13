@@ -12,7 +12,6 @@
 //! [`IDE_PREFIX`], which is the file-store IDE's own bundle, served admin-only and
 //! under its own Content-Security-Policy (design §12.1).
 
-use sc_types::Role;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,7 +21,7 @@ use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{Path as AxumPath, Request, State};
 use axum::http::{HeaderValue, StatusCode, Uri, header};
-use axum::response::{AppendHeaders, Html, IntoResponse, Redirect, Response};
+use axum::response::{AppendHeaders, IntoResponse, Redirect, Response};
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::Cookie;
 use sc_api::{
@@ -40,16 +39,14 @@ use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Pr
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 
-use crate::admin_host::HANDOFF_ROUTE;
 use crate::admin_session::{AdminSession, Caller, Who};
 use crate::apps::{AppMounts, MountedApp, subdomain_in};
-use crate::chat::{AGENT_CHAT_ROUTE, agent_chat_upgrade};
+use crate::chat::agent_chat_upgrade;
 use crate::config::ServerConfig;
-use crate::fit_progress::{FIT_PROGRESS_ROUTE, fit_progress_upgrade};
+use crate::fit_progress::fit_progress_upgrade;
 use crate::handler::{HandlerCtx, HandlerRegistry, HandlerResponse};
-use crate::lsp::{LSP_ROUTE, ServerSlots, language_server_upgrade, server_slots};
-use crate::mcp::MCP_ROUTE;
-use crate::observe::{STREAM_OBSERVE_ROUTE, stream_observe_upgrade};
+use crate::lsp::{ServerSlots, language_server_upgrade, server_slots};
+use crate::observe::stream_observe_upgrade;
 use crate::security::{
     ANALYTICS_CONTENT_SECURITY_POLICY, AnonymousCaller, CONTENT_SECURITY_POLICY, CsrfPolicy,
     GUEST_COOKIE, IDE_CONTENT_SECURITY_POLICY, PREVIEW_COOKIE, SESSION_COOKIE,
@@ -57,8 +54,8 @@ use crate::security::{
     upgrade_origin_allowed, upgrade_origin_refused,
 };
 use crate::terminal::{
-    SessionTokens, TERMINAL_ROUTE, TerminalHost, TerminalQuery, TerminalSlots, loopback_origin,
-    terminal_slots, terminal_upgrade,
+    SessionTokens, TerminalHost, TerminalQuery, TerminalSlots, loopback_origin, terminal_slots,
+    terminal_upgrade,
 };
 use sc_api::auth::CSRF_HEADER;
 use sc_backup::{BACKUP_CREATE_ROUTE, BACKUP_UPLOAD_ROUTE};
@@ -73,7 +70,7 @@ use sc_backup::{BACKUP_CREATE_ROUTE, BACKUP_UPLOAD_ROUTE};
 /// answering `None` (it has no `OptionalFromRequestParts` impl). So this wraps
 /// it: extracted from the parts, *before* the body is read, which is the one
 /// ordering rule an upgrade has.
-struct MaybeUpgrade(Option<axum::extract::ws::WebSocketUpgrade>);
+pub(crate) struct MaybeUpgrade(Option<axum::extract::ws::WebSocketUpgrade>);
 
 impl<S: Send + Sync> axum::extract::FromRequestParts<S> for MaybeUpgrade {
     type Rejection = std::convert::Infallible;
@@ -303,6 +300,9 @@ pub fn build_router_with_apps(
     // these same handlers (§13.6), so the router that serves them installs them.
     if let Some(catalog) = apps.catalog() {
         crate::mcp::AdminHandlers::install(catalog, &apps)?;
+        // So `describe_applications` and `update_application` can say what an
+        // upload slot really takes.
+        sc_app::set_upload_ceiling(catalog, config.max_upload_bytes);
     }
     let state = AppState {
         routes,
@@ -330,208 +330,10 @@ pub fn build_router_with_apps(
     // every `fs` a run is handed starts from them (TODO F2.8).
     sc_api::code_host::set_file_limits(config.code_max_file_bytes, config.code_max_copy_bytes);
 
-    let app = Router::new()
-        // Operational health check: a fixed, unauthenticated route (outside the
-        // typed API) so a CLI smoke test, load balancer, or orchestrator can
-        // confirm the process is up. It takes precedence over the SPA fallback.
-        .route("/health", axum::routing::get(health))
-        // Binary file upload, deliberately **outside** the typed `EndpointSet`.
-        //
-        // The endpoint model is JSON-only — `TypeSchema` is
-        // `Value`/`Struct`/`Array`/`Optional` and `HandlerResponse` carries
-        // `Json` — so a raw body cannot be described by it. `writeFile`'s base64
-        // path stays for small files and remains in the generated TypeScript
-        // client; this exists for the ones that should not be held in memory
-        // twice and inflated by a third to cross the wire.
-        //
-        // The cost, accepted knowingly: this is the first admin operation absent
-        // from the generated client, so the SPA hand-writes this one call. It
-        // therefore has to do for itself everything `dispatch` does for a typed
-        // endpoint — session lookup and the admin check — which is why the auth
-        // is repeated here rather than inherited. CSRF is *not* repeated: the
-        // middleware wraps every route including this one.
-        .route("/upload/{store}/{*path}", axum::routing::post(upload))
-        // …and its mirror: a store file as itself, for the file manager's
-        // Download. `readFile` answers base64 inside JSON, which a browser has
-        // to hold twice and decode by hand — fine for a source file, hopeless
-        // for a 100 MB APK. A plain `GET`, so a link downloads it; it reads
-        // nothing it does not check access to, as `readFile` does.
-        .route("/download/{store}/{*path}", axum::routing::get(download))
-        // Backup and restore, **outside** the typed `EndpointSet` for the same
-        // reason the upload above is: one route's response is a file and the
-        // other's request is one, and a `TypeSchema` has no bytes shape. Both
-        // still dispatch through the handler registry, so both are behind the
-        // same session lookup, the same admin check and the same CSRF middleware
-        // as every typed endpoint — the auth is repeated here rather than
-        // inherited because `dispatch` is what usually applies it.
-        //
-        // The *choice* of what to back up and what to restore travels as JSON
-        // through typed endpoints (`getBackupOptions`, `restoreBackup`); only the
-        // archive itself comes through here.
-        .route(BACKUP_CREATE_ROUTE, axum::routing::post(create_backup))
-        .route(BACKUP_UPLOAD_ROUTE, axum::routing::post(upload_backup))
-        // The file-store IDE's language server (design §12.1). A real route
-        // rather than a branch of the fallback, because a WebSocket upgrade is
-        // not a request the fallback's `Bytes` body could survive: it has to be
-        // extracted before the body is touched.
-        .route(LSP_ROUTE, axum::routing::get(language_server))
-        // Claude Code in an IDE terminal tab (§12.1): the language server's
-        // sibling, an upgrade for the same reason.
-        .route(TERMINAL_ROUTE, axum::routing::get(ide_terminal))
-        // The admin chat socket (§11.4). A real route for the same reason the
-        // language server's is: an upgrade cannot survive the fallback's `Bytes`
-        // body, and a chat turn is bidirectional in a way the typed endpoint
-        // model has no shape for.
-        .route(AGENT_CHAT_ROUTE, axum::routing::get(agent_chat))
-        // A stream's Observe socket (TODO "Streams" §9). The third route that
-        // is an upgrade rather than a typed endpoint, for the reason the other
-        // two are: an `EndpointSet` is a typed request/response model and a
-        // socket has no shape in it. It sits on `/api/streams/{id}/observe`,
-        // beside the stream endpoints rather than under `/admin`, because it is
-        // the same resource the CRUD endpoints address — and axum matches this
-        // literal route ahead of the `dispatch` fallback the rest of `/api`
-        // goes through.
-        .route(STREAM_OBSERVE_ROUTE, axum::routing::get(stream_observe))
-        // A fit's progress, pushed to the model editor (analytics TODO A3.3).
-        // An upgrade for the reason the Observe socket's is.
-        .route(FIT_PROGRESS_ROUTE, axum::routing::get(fit_progress))
-        // The administration MCP server (§13.6). A real route rather than a
-        // typed endpoint for the reason the upload and backup routes are:
-        // JSON-RPC over a raw body is not a shape `TypeSchema` describes.
-        //
-        // It authenticates by `Authorization: Bearer` and by **nothing else** —
-        // a session cookie on this route is ignored, not accepted — which is
-        // what makes it safe to exempt from the CSRF middleware below, and is
-        // the whole of the confused-deputy story rather than belt-and-braces.
-        .route(MCP_ROUTE, axum::routing::post(crate::mcp::mcp))
-        // The installation's MCP servers, forwarded for the IDE's Claude Code
-        // sessions (§12.1): an open terminal's session token and nothing else,
-        // so it is exempt from the CSRF check as `/mcp` is.
-        .route(
-            crate::mcp_proxy::MCP_PROXY_ROUTE,
-            axum::routing::any(crate::mcp_proxy::mcp_proxy),
-        )
-        // A build host's agent (`TODO-build-hosts.md`): by its bearer token and
-        // nothing else, so it is exempt from the CSRF check as `/mcp` is.
-        .route(
-            crate::build_agent::BUILD_AGENT_HEARTBEAT_ROUTE,
-            axum::routing::post(crate::build_agent::heartbeat),
-        )
-        .route(
-            crate::build_agent::BUILD_AGENT_CLAIM_ROUTE,
-            axum::routing::post(crate::build_agent::claim),
-        )
-        .route(
-            "/build-agent/jobs/{id}/project",
-            axum::routing::get(crate::build_agent::project),
-        )
-        .route(
-            "/build-agent/jobs/{id}/log",
-            axum::routing::post(crate::build_agent::log),
-        )
-        .route(
-            "/build-agent/jobs/{id}/artifact",
-            axum::routing::post(crate::build_agent::artifact),
-        )
-        .route(
-            "/build-agent/jobs/{id}/failed",
-            axum::routing::post(crate::build_agent::failed),
-        )
-        // The far end of moving the admin UI to its own subdomain (Settings →
-        // Development): a single-use token from the old host becomes a session
-        // here, so following the move does not mean logging in again. A real
-        // route because its answer is a cookie and a redirect, not JSON.
-        .route(HANDOFF_ROUTE, axum::routing::get(admin_handoff))
-        // Signing in with an external identity provider (Settings →
-        // Authentication): redirects and a cookie, on every host, so real
-        // routes rather than typed endpoints (`crate::oauth`).
-        .route(
-            crate::oauth::PROVIDERS_ROUTE,
-            axum::routing::get(crate::oauth::providers),
-        )
-        .route(
-            crate::oauth::START_ROUTE,
-            axum::routing::get(crate::oauth::start),
-        )
-        .route(
-            crate::oauth::CALLBACK_ROUTE,
-            axum::routing::get(crate::oauth::callback),
-        )
-        .route(
-            crate::oauth::COMPLETE_ROUTE,
-            axum::routing::get(crate::oauth::complete),
-        )
-        // Two-factor authentication (design §7.2): the challenge a sign-in is
-        // given in place of a session, and an account's own setup, on every
-        // host as the OAuth routes are (`crate::second_factor`).
-        .route(
-            crate::second_factor::STATUS_ROUTE,
-            axum::routing::get(crate::second_factor::status),
-        )
-        .route(
-            crate::second_factor::SETUP_ROUTE,
-            axum::routing::post(crate::second_factor::setup),
-        )
-        .route(
-            crate::second_factor::ENABLE_ROUTE,
-            axum::routing::post(crate::second_factor::enable),
-        )
-        .route(
-            crate::second_factor::VERIFY_ROUTE,
-            axum::routing::post(crate::second_factor::verify),
-        )
-        .route(
-            crate::second_factor::DISABLE_ROUTE,
-            axum::routing::post(crate::second_factor::disable),
-        )
-        .route(
-            crate::second_factor::RECOVERY_CODES_ROUTE,
-            axum::routing::post(crate::second_factor::recovery_codes),
-        )
-        .route(
-            crate::second_factor::PAGE_ROUTE,
-            axum::routing::get(crate::second_factor::page),
-        )
-        // Module webhooks (TODO-payments P1.1): a provider's events, on every
-        // host as the OAuth routes are. A route of their own because the
-        // answer is whatever the module says, bytes and all, and with a body
-        // limit of their own: an unauthenticated caller is held to 1 MiB.
-        .route(
-            crate::webhooks::HOOK_ROUTE,
-            axum::routing::on(
-                axum::routing::MethodFilter::GET.or(axum::routing::MethodFilter::POST),
-                crate::webhooks::hook,
-            )
-            .layer(axum::extract::DefaultBodyLimit::max(
-                sc_module::WEBHOOK_MAX_BODY,
-            )),
-        )
-        .route(
-            crate::webhooks::HOOK_REST_ROUTE,
-            axum::routing::on(
-                axum::routing::MethodFilter::GET.or(axum::routing::MethodFilter::POST),
-                crate::webhooks::hook_rest,
-            )
-            .layer(axum::extract::DefaultBodyLimit::max(
-                sc_module::WEBHOOK_MAX_BODY,
-            )),
-        )
-        // v1 plugin routes: on the admin host, as the person calling, with
-        // the webhook's body limit (`crate::module_routes`).
-        .route(
-            crate::module_routes::ROUTE,
-            axum::routing::on(
-                axum::routing::MethodFilter::GET.or(axum::routing::MethodFilter::POST),
-                crate::module_routes::route,
-            )
-            .layer(axum::extract::DefaultBodyLimit::max(
-                sc_module::WEBHOOK_MAX_BODY,
-            )),
-        )
-        .route(
-            crate::oauth::CONSENT_ROUTE,
-            axum::routing::get(crate::oauth::consent),
-        )
+    // Every route outside the typed endpoint set, each with how it
+    // authenticates, is in `crate::raw_routes` (H6.1): this mounts exactly
+    // those, and a test holds the list to a pinned copy.
+    let app = crate::raw_routes::mount(Router::new())
         .fallback(dispatch)
         // Explicit rather than axum's implicit 2 MiB (TODO F2.5): every `Bytes`
         // extractor above reads at most `--max-request-body`. The fallback reads
@@ -541,6 +343,14 @@ pub fn build_router_with_apps(
             config.max_request_body,
         ))
         .with_state(state.clone())
+        // The panic boundary (security review 2026-11 F-3, TODO-type-hardening
+        // H5.2): a handler that panics is answered with a 500 — the standard
+        // `{error}` body, with every header below — rather than a connection
+        // reset, and the panic hook has logged where. Innermost, so the
+        // changeset and the request log around it see the answer.
+        .layer(tower_http::catch_panic::CatchPanicLayer::custom(
+            panic_response,
+        ))
         // Every request is one changeset (§14.12): what it writes, and what the
         // triggers its writes fire write, is one action to read back or undo.
         .layer(axum::middleware::from_fn(request_changeset))
@@ -627,6 +437,20 @@ pub fn build_router_with_apps(
         .layer(axum::middleware::from_fn(crate::logging::log_requests));
 
     Ok(app)
+}
+
+/// The answer to a request whose handler panicked: a 500 in the shape of every
+/// other error. What the panic said is logged, not sent — it is a bug's
+/// message, written for whoever fixes it.
+fn panic_response(panic: Box<dyn std::any::Any + Send + 'static>) -> Response {
+    sc_log::log_error!(
+        "feldspar: a request handler panicked ({}); answered 500",
+        sc_log::panic_message(panic.as_ref())
+    );
+    json_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "the server hit a bug answering this request; it has been logged",
+    )
 }
 
 /// Run the request inside a changeset of its own (§14.12), keyed to its
@@ -759,7 +583,7 @@ pub(crate) async fn spool_body(
 
 /// The operational health check. Always `200 {"status":"ok"}`; reaching it at
 /// all is the signal that the server booted and is accepting requests.
-async fn health() -> Response {
+pub(crate) async fn health() -> Response {
     (StatusCode::OK, Json(serde_json::json!({ "status": "ok" }))).into_response()
 }
 
@@ -776,7 +600,7 @@ async fn health() -> Response {
 /// `EndpointSet` does not also mean routing around the access model. All this
 /// function adds is the plumbing dispatch would otherwise have done — session
 /// lookup, the admin check, and reading the body.
-async fn upload(
+pub(crate) async fn upload(
     State(state): State<AppState>,
     admin: AdminSession,
     jar: CookieJar,
@@ -841,7 +665,7 @@ async fn upload(
 
 /// Serve one store file as a download (`GET /download/{store}/{*path}`), behind
 /// the same session lookup and admin check as the typed endpoints.
-async fn download(
+pub(crate) async fn download(
     State(state): State<AppState>,
     admin: AdminSession,
     jar: CookieJar,
@@ -889,7 +713,7 @@ async fn download(
 /// the half the endpoint model cannot describe. The work is the `createBackup`
 /// handler's: it holds the catalog, it persists the selection, and it is where an
 /// admin-only check has already been applied by the time the bytes exist.
-async fn create_backup(
+pub(crate) async fn create_backup(
     State(state): State<AppState>,
     admin: AdminSession,
     jar: CookieJar,
@@ -952,17 +776,51 @@ async fn create_backup(
 /// chosen from it. That is one upload rather than two — the alternative, sending
 /// the file again with the choice, means a browser holding a large archive twice
 /// and an admin waiting for it twice.
-async fn upload_backup(
+pub(crate) async fn upload_backup(
     State(state): State<AppState>,
     admin: AdminSession,
     jar: CookieJar,
     body: Body,
 ) -> Response {
+    upload_to(state, admin, jar, body, "uploadBackup", BACKUP_UPLOAD_ROUTE).await
+}
+
+/// Take delivery of a structure zip (see
+/// [`STRUCTURE_ZIP_UPLOAD_ROUTE`](crate::raw_routes::STRUCTURE_ZIP_UPLOAD_ROUTE)),
+/// as a backup is taken: spooled, kept, and named by the token the typed
+/// `planSyncZipDeploy` and `syncZipDeploy` take.
+pub(crate) async fn upload_structure_zip(
+    State(state): State<AppState>,
+    admin: AdminSession,
+    jar: CookieJar,
+    body: Body,
+) -> Response {
+    upload_to(
+        state,
+        admin,
+        jar,
+        body,
+        "uploadStructureZip",
+        crate::raw_routes::STRUCTURE_ZIP_UPLOAD_ROUTE,
+    )
+    .await
+}
+
+/// Spool an uploaded body to disk and hand it to the handler `name`, which
+/// answers what the file holds.
+async fn upload_to(
+    state: AppState,
+    admin: AdminSession,
+    jar: CookieJar,
+    body: Body,
+    name: &str,
+    route: &str,
+) -> Response {
     let session_token = Some(admin.token().to_owned());
-    let Some(handler) = state.handlers.get("uploadBackup").cloned() else {
+    let Some(handler) = state.handlers.get(name).cloned() else {
         return json_error(
             StatusCode::NOT_FOUND,
-            "this server has no backup handler registered",
+            format!("this server has no `{name}` handler registered"),
         );
     };
     // To disk, not to memory: a backup can be larger than this process is
@@ -990,17 +848,7 @@ async fn upload_backup(
         Ok(resp) => {
             apply_response(&state, jar, session_token, SessionClient::default(), resp).await
         }
-        Err(e) => {
-            error_out(
-                &state,
-                &e,
-                Audience::Admin,
-                "POST",
-                BACKUP_UPLOAD_ROUTE,
-                caller.as_ref(),
-            )
-            .await
-        }
+        Err(e) => error_out(&state, &e, Audience::Admin, "POST", route, caller.as_ref()).await,
     }
 }
 
@@ -1016,7 +864,7 @@ async fn upload_backup(
 /// alone — so the handshake's `Origin` is checked instead
 /// ([`upgrade_origin_allowed`]): `SameSite=Strict` keeps a cross-*site* page's
 /// cookie off the request, but not a sibling subdomain's.
-async fn language_server(
+pub(crate) async fn language_server(
     State(state): State<AppState>,
     admin: AdminSession,
     headers: axum::http::HeaderMap,
@@ -1026,6 +874,7 @@ async fn language_server(
     if !upgrade_origin_allowed(&headers) {
         return upgrade_origin_refused();
     }
+    let who = admin.console().spawn_proof();
     language_server_upgrade(
         ws,
         state.apps.catalog(),
@@ -1033,6 +882,7 @@ async fn language_server(
         Arc::clone(&state.language_server),
         store,
         admin.watch(state.sessions.clone()),
+        who,
     )
     .await
 }
@@ -1044,7 +894,7 @@ async fn language_server(
 /// upgrade and the handshake's `Origin` must be this host's own. The socket
 /// holds the session, so a sign-out, a disabled account or a demotion closes
 /// it and ends the program (#42).
-async fn ide_terminal(
+pub(crate) async fn ide_terminal(
     State(state): State<AppState>,
     admin: AdminSession,
     headers: axum::http::HeaderMap,
@@ -1078,7 +928,7 @@ async fn ide_terminal(
 /// two facts apply: a failed handshake carries no readable body, so the auth
 /// refusal is the one answered with a status; and the handshake's `Origin` must
 /// be this host's own ([`upgrade_origin_allowed`]).
-async fn agent_chat(
+pub(crate) async fn agent_chat(
     State(state): State<AppState>,
     admin: AdminSession,
     headers: axum::http::HeaderMap,
@@ -1111,7 +961,7 @@ async fn agent_chat(
 /// stream support, no such stream, not running here — is a close frame instead
 /// (see [`crate::observe`]). The handshake's `Origin` must be this host's own
 /// ([`upgrade_origin_allowed`]).
-async fn stream_observe(
+pub(crate) async fn stream_observe(
     State(state): State<AppState>,
     // This is a real axum route, so it wins over the fallback every
     // application's request goes through — including an app whose API is
@@ -1157,7 +1007,7 @@ async fn stream_observe(
 /// `GET /api/model-instances/{id}/progress`: a fit's progress socket
 /// (analytics TODO A3.3). Admin only, decided before the upgrade as the
 /// Observe socket's is.
-async fn fit_progress(
+pub(crate) async fn fit_progress(
     State(state): State<AppState>,
     // An application's request on a path spelled like this one is not a fit's
     // (applications have no model editor): the `AdminSession` refuses it.
@@ -1276,10 +1126,18 @@ async fn dispatch(
         Resolved::App(app) => {
             let csrf = csrf.map(|axum::Extension(token)| token.0);
             let anonymous = anonymous.is_some();
+            // The values the request presents to ownership formulas, from its
+            // `X-Sc-Request-<key>` headers (TODO-type-hardening H7.6).
+            let presented = match presented_values(&headers, client_ip) {
+                Ok(presented) => presented,
+                Err(response) => return *response,
+            };
+            let private = !presented.is_empty();
             // Everything the request does runs inside its origin: the events it
             // raises carry the application (TODO-payments P1.3).
-            let origin = request_origin(&state, &app, &headers);
-            return sc_catalog::with_origin(
+            let mut origin = request_origin(&state, &app, &headers);
+            origin.request = presented;
+            let response = sc_catalog::with_origin(
                 origin,
                 dispatch_app(
                     &state, &app, method, &uri, &headers, jar, csrf, anonymous, client_ip, ws,
@@ -1287,6 +1145,11 @@ async fn dispatch(
                 ),
             )
             .await;
+            return if private {
+                no_store(response)
+            } else {
+                response
+            };
         }
         // A run's preview, asked for without that run's session: the answer is
         // the one a host that serves nothing gets, so a preview shows nobody
@@ -1568,7 +1431,7 @@ fn moved_admin_redirect(
 ///
 /// A token that is spent, expired or for another host is not an error page — it
 /// is the login screen, which is where the admin would have been without one.
-async fn admin_handoff(
+pub(crate) async fn admin_handoff(
     State(state): State<AppState>,
     uri: Uri,
     headers: axum::http::HeaderMap,
@@ -1587,7 +1450,15 @@ async fn admin_handoff(
         return Redirect::to("/").into_response();
     };
     let policy = state.apps.current_session_policy().await;
-    match state.sessions.login_for(user, policy.ttl).await {
+    // Past the second factor, named: the token was minted from this
+    // administrator's own session on the old host (security review 2026-11,
+    // §2).
+    let who = sc_auth::FullyAuthenticated::waived(user, sc_auth::SecondFactorWaiver::AdminHandoff);
+    match state
+        .sessions
+        .start(who, policy.ttl, sc_auth::SessionScope::Admin)
+        .await
+    {
         Ok(token) => {
             let domain = session_cookie_domain(&state, Some(&host));
             let mut cookie = session_cookie(&state, token, domain.as_deref());
@@ -2275,18 +2146,20 @@ async fn serve_static_dir(
     // A caller the application does not let in (TODO F9) is served as nobody:
     // a file open to the public role is part of the sign-in surface (a page
     // and the assets it is drawn with), and every other file is refused.
-    let user = match app_caller(state, &app.app, jar, false).await {
-        Ok(caller) => caller.user,
+    let signed_in = match app_caller(state, &app.app, jar, false).await {
+        Ok(caller) => caller.signed_in,
         Err(rejection) => return *rejection,
     };
-    let caller = sc_files::FileCaller::new(
-        user.as_ref().map_or(Role::PUBLIC, |u| u.role()),
-        user.as_ref().map(|u| u.id().to_string()),
-    );
+    // The viewer, from their session's proof (TODO-type-hardening H3.1).
+    let caller = match &signed_in {
+        Some(user) => sc_catalog::Principal::of(user),
+        None => sc_catalog::Principal::anonymous(),
+    };
 
     // The store with the viewer bound (TODO-code-quality Q3.6): the read is
-    // checked by the store, not by a call made beside it.
-    let store = match sc_catalog::open_checked_store(catalog, &dir.store.0, caller).await {
+    // checked by the store, against the floor the catalog reads (H3.2), not by
+    // a call made beside it.
+    let store = match sc_catalog::open_checked_store(catalog, &dir.store.0, &caller).await {
         Ok(store) => store,
         Err(e) => {
             log_failure("reading a static directory's file store", &e);
@@ -2476,14 +2349,14 @@ pub(crate) async fn app_caller(
         .get(SESSION_COOKIE)
         .filter(|_| !anonymous)
         .map(|c| c.value().to_owned());
+    // Its own session, or one a shared sign-in cookie brings from the admin
+    // host or another application (`crate::session::AppSession`): either is
+    // the user here, at most at the application's `max_role`.
     let signed_in = match &session {
-        Some(token) => state.sessions.user_for(token).await.map_err(|e| {
-            log_failure("session lookup failed", &e);
-            Box::new(json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session lookup failed",
-            ))
-        })?,
+        Some(_) => crate::session::AppSession::of_request(&state.sessions, app.id.0, jar)
+            .await
+            .map_err(|failed| Box::new(failed.into_response()))?
+            .map(crate::session::AppSession::into_user),
         None => None,
     };
     let (user, refused) = admit_caller(
@@ -2787,6 +2660,72 @@ fn app_request(
     Ok(req)
 }
 
+/// The header prefix a request presents a value to ownership formulas with:
+/// `X-Sc-Request-Token: …` is `_request.token` (TODO-type-hardening H7.6).
+/// A header rather than the query string, so a token stays out of access logs,
+/// browser history and `Referer`.
+pub const REQUEST_HEADER_PREFIX: &str = "x-sc-request-";
+
+/// How many requests presenting a value one address may make: automatic, with
+/// no setting, so a share link's token cannot be guessed at speed. Generous
+/// beside a token's 122 random bits, and beside a page that presents its
+/// token with each of a dozen calls.
+pub const PRESENTED_VALUES_RATE: sc_ratelimit::Rate = sc_ratelimit::Rate {
+    max: 120,
+    window: std::time::Duration::from_secs(60),
+};
+
+/// The values a request presents, from its `X-Sc-Request-<key>` headers, or
+/// the response refusing it: a name or a value that is not one (`400`), or
+/// one request too many from this address (`429`).
+fn presented_values(
+    headers: &axum::http::HeaderMap,
+    client_ip: Option<std::net::IpAddr>,
+) -> Result<sc_expr::RequestValues, Box<Response>> {
+    let mut pairs = Vec::new();
+    for (name, value) in headers {
+        let Some(key) = name.as_str().strip_prefix(REQUEST_HEADER_PREFIX) else {
+            continue;
+        };
+        let Ok(value) = value.to_str() else {
+            return Err(Box::new(json_error(
+                StatusCode::BAD_REQUEST,
+                format!("the `{}` header is not text", name.as_str()),
+            )));
+        };
+        pairs.push((key.to_owned(), value.to_owned()));
+    }
+    let presented = sc_expr::RequestValues::new(pairs)
+        .map_err(|e| Box::new(json_error(StatusCode::BAD_REQUEST, e.to_string())))?;
+    if !presented.is_empty()
+        && let Some(ip) = client_ip
+        && let Err(limited) =
+            sc_ratelimit::global().hit(&format!("presented:{ip}"), PRESENTED_VALUES_RATE)
+    {
+        let secs = limited.retry_after_secs();
+        let mut response = json_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("too many requests presenting a value from this address; retry in {secs} s"),
+        );
+        if let Ok(value) = HeaderValue::from_str(&secs.to_string()) {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        return Err(Box::new(response));
+    }
+    Ok(presented)
+}
+
+/// `response` marked for nobody's cache but the caller's: it was computed
+/// with a value the caller presented, so a shared cache must not hand it to
+/// someone who did not.
+fn no_store(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    response
+}
+
 /// The attribute naming the URL scheme an application's native apps open
 /// (`myshop`), which an event's `app.scheme` reports (TODO-payments P1.3).
 pub const URL_SCHEME_ATTRIBUTE: &str = "url_scheme";
@@ -2817,6 +2756,7 @@ fn request_origin(
             scheme,
         }),
         session: None,
+        request: sc_expr::RequestValues::default(),
     }
 }
 
@@ -3064,17 +3004,13 @@ async fn apply_response(
         if let Ok(value) = HeaderValue::from_str(&file.content_type) {
             out.headers_mut().insert(header::CONTENT_TYPE, value);
         }
-        // The filename is server-built (a timestamp and the host's own name), so
-        // it needs no escaping beyond the quotes — but it is still checked rather
-        // than trusted, because a header value that will not parse must not take
-        // the download with it.
         // A download with no name is not for saving (a map's vector tile), so
-        // it is not marked as an attachment.
-        if !file.filename.is_empty()
-            && let Ok(value) =
-                HeaderValue::from_str(&format!("attachment; filename=\"{}\"", file.filename))
-        {
-            out.headers_mut().insert(header::CONTENT_DISPOSITION, value);
+        // it is not marked as an attachment. A name is a `DownloadName`, so it
+        // renders as a header whatever it was built from (security review
+        // 2026-11 D7): no quote or CR/LF of its can reach the header.
+        if let Some(name) = &file.filename {
+            out.headers_mut()
+                .insert(header::CONTENT_DISPOSITION, name.header_value(true));
         }
         return out;
     }
@@ -3155,91 +3091,99 @@ pub(crate) async fn apply_session(
         return Err(Box::new(refusal));
     }
     // A sign-in by an account with two-factor authentication on, or whose role
-    // requires it, gets a challenge here instead of a session (design §7.2):
-    // every way of signing in starts its session in this one place, so none of
-    // them can forget to ask. `StartVerified` is a sign-in that has answered
-    // it, or one that never asks.
-    if let SessionAction::Start(user) | SessionAction::StartUntilBrowserCloses(user) = &session
-        && let Some(challenge) =
-            crate::second_factor::challenge_for(state, &client, user, remember).await
-    {
-        return Err(Box::new(challenge));
-    }
+    // requires it, gets a challenge here instead of a session (design §7.2).
+    // A session starts from a `FullyAuthenticated` alone, and the half of a
+    // sign-in a `Start` carries becomes one only here, by way of the
+    // second-factor decision (security review 2026-11, §2): no way of signing
+    // in can skip it. `StartVerified` is a sign-in that has answered it, or a
+    // named waiver.
+    let (session, starting) = match session {
+        SessionAction::Start(signing_in) | SessionAction::StartUntilBrowserCloses(signing_in) => {
+            let who = crate::second_factor::challenge_for(state, &client, signing_in, remember)
+                .await
+                .map_err(Box::new)?;
+            (SessionAction::Keep, Some(who))
+        }
+        SessionAction::StartVerified { who, .. } => (SessionAction::Keep, Some(who)),
+        other => (other, None),
+    };
     // Read from the store for a sign-in rather than believed from this process,
     // so a lifetime saved on another node applies here too.
-    let policy = match &session {
-        SessionAction::Start(_)
-        | SessionAction::StartUntilBrowserCloses(_)
-        | SessionAction::StartVerified { .. } => state.apps.current_session_policy().await,
-        _ => crate::apps::SessionPolicy {
+    let policy = match &starting {
+        Some(_) => state.apps.current_session_policy().await,
+        None => crate::apps::SessionPolicy {
             ttl: state.apps.session_ttl(),
             persistent: state.apps.persistent_session_cookie(),
         },
     };
     let ttl = policy.ttl;
+    if let Some(who) = starting {
+        let user = who.user().clone();
+        // Bound to the host that issued it (security review #15): an
+        // application's session is never admin authority on the admin host,
+        // and names the one application it was issued by (2026-11, §2).
+        return match state.sessions.start(who, ttl, client.scope()).await {
+            Ok(token) => {
+                // The session the request arrived with is replaced, not joined:
+                // the cookie is about to name the new one, so leaving the old one
+                // live would leave a credential nobody can present and nobody can
+                // withdraw. That is what makes `becomeUser` a swap — the admin
+                // session that authorised it does not survive behind the session
+                // it turned into.
+                //
+                // A failed logout is logged rather than failing the sign-in: the
+                // new session already exists and the cookie stops naming the old
+                // one, so the old token is one no browser presents any more, and
+                // it expires with its lifetime. Refusing here would instead leave
+                // the caller holding the old session *and* a new one nobody
+                // withdrew.
+                if let Some(previous) = &session_token
+                    && let Err(e) = state.sessions.logout(previous).await
+                {
+                    log_failure(
+                        "could not end the session a sign-in replaced; it stays valid \
+                             until it expires",
+                        &e,
+                    );
+                }
+                // A guest who signs in or signs up in the same browser stops
+                // being a guest (TODO-payments P1.6): the guest session ends, its
+                // cookie goes, and the `login` event says which one it was, so
+                // the application's trigger can move the guest's rows to the
+                // account. Holding the cookie is what proves it is the same
+                // buyer; an email address would not.
+                let (jar, guest) = end_guest_session_at_sign_in(state, jar, &client).await;
+                // After the session exists, not before: an event that says
+                // someone logged in must not fire for a login that then failed.
+                fire_login(state, &user, guest.as_deref()).await;
+                let mut cookie = session_cookie(state, token, domain.as_deref());
+                if remember && (policy.persistent || client.native) {
+                    persist(&mut cookie, ttl);
+                }
+                Ok(cookies(jar.add(cookie)))
+            }
+            // The account's credentials changed while it signed in.
+            Err(e) if e.auth_message().is_some() => Err(Box::new(json_error(
+                StatusCode::UNAUTHORIZED,
+                e.auth_message().unwrap_or("sign in again").to_owned(),
+            ))),
+            Err(e) => {
+                log_failure("could not start session", &e);
+                Err(Box::new(json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "could not start session",
+                )))
+            }
+        };
+    }
     Ok(match session {
-        SessionAction::Keep => SessionCookies {
+        SessionAction::Keep
+        | SessionAction::Start(_)
+        | SessionAction::StartUntilBrowserCloses(_)
+        | SessionAction::StartVerified { .. } => SessionCookies {
             jar,
             stale: AppendHeaders(None),
         },
-        // Bound to the host that issued it (security review #15): an
-        // application's session is never admin authority on the admin host.
-        SessionAction::Start(user)
-        | SessionAction::StartUntilBrowserCloses(user)
-        | SessionAction::StartVerified { user, .. } => {
-            match state
-                .sessions
-                .login_scoped(user.clone(), ttl, client.scope())
-                .await
-            {
-                Ok(token) => {
-                    // The session the request arrived with is replaced, not joined:
-                    // the cookie is about to name the new one, so leaving the old one
-                    // live would leave a credential nobody can present and nobody can
-                    // withdraw. That is what makes `becomeUser` a swap — the admin
-                    // session that authorised it does not survive behind the session
-                    // it turned into.
-                    //
-                    // A failed logout is logged rather than failing the sign-in: the
-                    // new session already exists and the cookie stops naming the old
-                    // one, so the old token is one no browser presents any more, and
-                    // it expires with its lifetime. Refusing here would instead leave
-                    // the caller holding the old session *and* a new one nobody
-                    // withdrew.
-                    if let Some(previous) = &session_token
-                        && let Err(e) = state.sessions.logout(previous).await
-                    {
-                        log_failure(
-                            "could not end the session a sign-in replaced; it stays valid \
-                             until it expires",
-                            &e,
-                        );
-                    }
-                    // A guest who signs in or signs up in the same browser stops
-                    // being a guest (TODO-payments P1.6): the guest session ends, its
-                    // cookie goes, and the `login` event says which one it was, so
-                    // the application's trigger can move the guest's rows to the
-                    // account. Holding the cookie is what proves it is the same
-                    // buyer; an email address would not.
-                    let (jar, guest) = end_guest_session_at_sign_in(state, jar, &client).await;
-                    // After the session exists, not before: an event that says
-                    // someone logged in must not fire for a login that then failed.
-                    fire_login(state, &user, guest.as_deref()).await;
-                    let mut cookie = session_cookie(state, token, domain.as_deref());
-                    if remember && (policy.persistent || client.native) {
-                        persist(&mut cookie, ttl);
-                    }
-                    cookies(jar.add(cookie))
-                }
-                Err(e) => {
-                    log_failure("could not start session", &e);
-                    return Err(Box::new(json_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "could not start session",
-                    )));
-                }
-            }
-        }
         SessionAction::End => {
             if let Some(token) = &session_token
                 && let Err(e) = state.sessions.logout(token).await
@@ -3269,6 +3213,25 @@ pub(crate) async fn apply_session(
                 log_failure("could not end every session", &e);
             }
             cookies(jar.remove(session_cookie_removal(domain.as_deref())))
+        }
+        // Accounts whose credentials changed (security review 2026-11, H2.3):
+        // their epochs are raised already, so every node refuses their older
+        // sessions; this ends them here — the rows, this node's cached copies
+        // and its live sockets. The caller's own cookie stops resolving when
+        // it was one of them.
+        SessionAction::CredentialsChanged(changes) => {
+            for changed in changes {
+                if let Err(e) = state.sessions.bump_epoch(changed, None).await {
+                    log_failure(
+                        "could not end the sessions a credential change outdated",
+                        &e,
+                    );
+                }
+            }
+            SessionCookies {
+                jar,
+                stale: AppendHeaders(None),
+            }
         }
         // A guest session's cookie (TODO-payments P1.5): the application's own,
         // so set on the host the request reached and never on the shared
@@ -3383,8 +3346,8 @@ impl SessionClient {
     /// The host scope a session this client starts is issued for: an
     /// application's when it signs in to one, the admin host's otherwise.
     pub(crate) fn scope(&self) -> sc_auth::SessionScope {
-        match self.app {
-            Some(_) => sc_auth::SessionScope::App,
+        match &self.app {
+            Some(app) => sc_auth::SessionScope::App(app.app.id.0),
             None => sc_auth::SessionScope::Admin,
         }
     }
@@ -3608,11 +3571,13 @@ async fn serve_builder(
         }
     };
     let user = admin.user().clone().into_user();
+    let admin = crate::admin_session::Admin::from(admin);
     let env = crate::builder::BuilderEnv {
         bundle: state.builder_dir.as_deref().map(PathBuf::as_path),
         apps: &state.apps,
         base_domain: state.base_domain.as_deref().map(String::as_str),
         secure: state.secure_cookies,
+        admin: &admin,
     };
     if crate::builder::is_files_serve_path(uri.path()) {
         return crate::builder::redirect_file(&env, uri, headers).await;
@@ -3626,33 +3591,6 @@ fn accepts_html(headers: &axum::http::HeaderMap) -> bool {
         .get(header::ACCEPT)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|accept| accept.contains("text/html"))
-}
-
-/// The user a request's session cookie names, or the response to send instead.
-///
-/// `Ok(None)` is an anonymous request — which is not by itself an error, since
-/// what anonymity costs depends on what is being asked for; `Err` is a session
-/// store that failed, which no caller can do anything about. The error is boxed
-/// because a `Response` is large and this is the rare path.
-pub(crate) async fn session_user(
-    state: &AppState,
-    jar: &CookieJar,
-) -> std::result::Result<Option<User>, Box<Response>> {
-    let Some(token) = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned()) else {
-        return Ok(None);
-    };
-    state
-        .sessions
-        .user_for(&token)
-        .await
-        .map(|user| user.map(sc_auth::AuthenticatedUser::into_user))
-        .map_err(|e| {
-            log_failure("session lookup failed", &e);
-            Box::new(json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session lookup failed",
-            ))
-        })
 }
 
 /// Serve a file from the static bundle, falling back to the bundle's own
@@ -3674,7 +3612,11 @@ async fn serve_static(state: &AppState, uri: &Uri) -> Response {
             return response;
         }
     }
-    let mut response = (StatusCode::OK, Html(BOOTSTRAP_HTML)).into_response();
+    let mut response = (
+        StatusCode::OK,
+        crate::html_page::html(sc_expr::html::SafeHtml::trusted(BOOTSTRAP_HTML)),
+    )
+        .into_response();
     set_cache_control(&mut response, "/index.html");
     response
 }
@@ -3923,7 +3865,8 @@ async fn fire_login(state: &AppState, user: &User, guest_session: Option<&str>) 
         return;
     };
     let caller = sc_access::principal_of(Some(user));
-    let mut event = sc_action::Event::login(caller.role, caller.user.unwrap_or(Value::Null));
+    let mut event =
+        sc_action::Event::login(caller.role(), caller.user().cloned().unwrap_or(Value::Null));
     if let Some(guest_session) = guest_session {
         event = event.payload(serde_json::json!({ "guest_session": guest_session }));
     }
@@ -3963,6 +3906,39 @@ mod tests {
             .await
             .expect("read body");
         serde_json::from_slice(&bytes).expect("body is JSON")
+    }
+
+    /// TODO-type-hardening H7.6: the `X-Sc-Request-<key>` headers are the
+    /// presented values, by lower-cased name; requests presenting one are
+    /// limited per address, and a request presenting none is not counted.
+    #[test]
+    fn presented_values_come_from_headers_and_are_rate_limited() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-sc-request-token", HeaderValue::from_static("abc"));
+        headers.insert("x-other", HeaderValue::from_static("ignored"));
+        let ip: std::net::IpAddr = "203.0.113.71".parse().unwrap();
+        let values = presented_values(&headers, Some(ip)).expect("presented");
+        assert_eq!(values.get("token"), Some("abc"));
+        assert_eq!(values.keys().count(), 1);
+
+        let quiet = axum::http::HeaderMap::new();
+        for _ in 0..PRESENTED_VALUES_RATE.max * 2 {
+            assert!(presented_values(&quiet, Some(ip)).is_ok());
+        }
+        for _ in 1..PRESENTED_VALUES_RATE.max {
+            assert!(presented_values(&headers, Some(ip)).is_ok());
+        }
+        let refused = presented_values(&headers, Some(ip)).expect_err("one too many");
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(refused.headers().contains_key(header::RETRY_AFTER));
+        // Another address is counted on its own.
+        let other: std::net::IpAddr = "203.0.113.72".parse().unwrap();
+        assert!(presented_values(&headers, Some(other)).is_ok());
+
+        let mut bad = axum::http::HeaderMap::new();
+        bad.insert("x-sc-request-no-dash", HeaderValue::from_static("v"));
+        let refused = presented_values(&bad, None).expect_err("bad name");
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

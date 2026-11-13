@@ -42,8 +42,10 @@ function application(
     access_if: "",
     source,
     builds: true,
+    framework_known: true,
     installs: true,
     has_views: false,
+    settings_tabs: [],
     targets: [],
     claude: { available: true, reason: null },
   };

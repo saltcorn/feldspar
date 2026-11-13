@@ -12,7 +12,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // vocabulary an application's REST read takes, parsed by the same code
     // (`sc_api::query_string`). The admin grid sends `order`, `limit`, `offset`
     // and one `column=op.value` pair per box its filter row has typed in.
-    reg.register_admin("listRows", {
+    reg.handle(sc_api::handler_ids::LIST_ROWS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -24,7 +24,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &catalog,
                     &table,
                     &query,
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 // The data editor is a client like any other: it may write a
@@ -35,7 +35,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("countRows", {
+    reg.handle(sc_api::handler_ids::COUNT_ROWS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -50,7 +50,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &catalog,
                     &table,
                     filter,
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 Ok(HandlerResponse::ok(json!({ "count": count })))
@@ -58,7 +58,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createRow", {
+    reg.handle(sc_api::handler_ids::CREATE_ROW, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -68,7 +68,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &catalog,
                     &table,
                     &ctx.body,
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
@@ -79,7 +79,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateRow", {
+    reg.handle(sc_api::handler_ids::UPDATE_ROW, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -91,7 +91,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &table,
                     id,
                     &ctx.body,
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
@@ -102,7 +102,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteRow", {
+    reg.handle(sc_api::handler_ids::DELETE_ROW, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -115,7 +115,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &catalog,
                     &table,
                     id,
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
@@ -124,7 +124,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteAllRows", {
+    reg.handle(sc_api::handler_ids::DELETE_ALL_ROWS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -133,7 +133,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let deleted = rows::delete_all_rows(
                     &catalog,
                     &table,
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 if deleted > 0 {
@@ -148,7 +148,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // Admin-only routes, read through `sc_api::history` all the same, so the
     // table must keep history and secrets are the sentinel here as everywhere.
 
-    reg.register_admin("getRowHistory", {
+    reg.handle(sc_api::handler_ids::GET_ROW_HISTORY, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -165,7 +165,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listDeletedRows", {
+    reg.handle(sc_api::handler_ids::LIST_DELETED_ROWS, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -184,7 +184,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("getRowAsOf", {
+    reg.handle(sc_api::handler_ids::GET_ROW_AS_OF, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -204,7 +204,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listChangesets", {
+    reg.handle(sc_api::handler_ids::LIST_CHANGESETS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -216,7 +216,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("getChangeset", {
+    reg.handle(sc_api::handler_ids::GET_CHANGESET, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -233,7 +233,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // Writes as the caller through `sc_api::undo`, each in one transaction and
     // a changeset of its own.
 
-    reg.register_admin("restoreRow", {
+    reg.handle(sc_api::handler_ids::RESTORE_ROW, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -250,7 +250,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("revertRow", {
+    reg.handle(sc_api::handler_ids::REVERT_ROW, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -268,7 +268,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("undoChangeset", {
+    reg.handle(sc_api::handler_ids::UNDO_CHANGESET, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -300,7 +300,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("exportTableCsv", {
+    reg.handle(sc_api::handler_ids::EXPORT_TABLE_CSV, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -309,7 +309,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let document = csv_rows::export_table(
                     &catalog,
                     &table,
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 // The browser saves the file, so the server says what to call
@@ -323,7 +323,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("importTableCsv", {
+    reg.handle(sc_api::handler_ids::IMPORT_TABLE_CSV, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -338,7 +338,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &catalog,
                     &table,
                     &document,
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 // An import is row by row, so any row that went in counts.

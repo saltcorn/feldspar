@@ -19,6 +19,16 @@ members = [
     # one SSRF rule, `PublicAddr`, and the HTTP client that connects to one.
     # Layer 0: it knows addresses and `reqwest`, nothing of the catalog.
     "crates/sc-net",
+    # The one way to start a host process (security review 2026-11 §4,
+    # TODO-type-hardening H4): a cleared environment, a timeout, operands
+    # that cannot be options, its own process group, and the authority it
+    # runs on. Layer 0: `sc-files` runs git, and it is below the catalog.
+    "crates/sc-proc",
+    # Values that go into an HTTP response header, each made by one rule
+    # (security review 2026-11 D6, D7; TODO-type-hardening H6.3): a
+    # same-origin `RedirectTarget` and a `DownloadName`. Layer 0: the server,
+    # the module runtime and the v1 view runtime all redirect.
+    "crates/sc-http",
     # The documentation agents read (`search_docs`, `read_docs`): `docs/`'s
     # tutorials and references and the admin UI's help topics (v1's
     # `help/*.tmd`, markdown templates filled in with what a screen is about),
@@ -145,6 +155,11 @@ members = [
     "crates/sc-construct",
     "crates/sc-agent-builtins",
     "crates/sc-backup",
+    # Source control for an installation's structure (TODO-app-sync): the tree
+    # an installation exports to git, and the diff, planner and executor over
+    # it. Above `sc-backup`, whose entity codecs every record in the tree is
+    # written with; below the server, which drives it.
+    "crates/sc-sync",
     "crates/sc-server",
     # Layer 10 — CLI binary
     "crates/sc-cli",
@@ -154,7 +169,7 @@ members = [
 
 # Shared package metadata inherited by every member crate via `field.workspace = true`.
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1-dev"
 edition = "2024"
 license = "MIT"
 authors = ["Saltcorn contributors"]
@@ -179,6 +194,8 @@ sc-config-file = { path = "crates/sc-config-file" }
 # the *link*, not of any caller.
 sc-dns = { path = "crates/sc-dns" }
 sc-net = { path = "crates/sc-net" }
+sc-proc = { path = "crates/sc-proc" }
+sc-http = { path = "crates/sc-http" }
 sc-query = { path = "crates/sc-query" }
 # `default-features = false` at the workspace level so members choose: the
 # catalog takes the parse/validate/translate half only; the server adds
@@ -220,6 +237,7 @@ sc-construct = { path = "crates/sc-construct" }
 sc-action-builtins = { path = "crates/sc-action-builtins" }
 sc-agent-builtins = { path = "crates/sc-agent-builtins" }
 sc-backup = { path = "crates/sc-backup" }
+sc-sync = { path = "crates/sc-sync" }
 sc-server = { path = "crates/sc-server" }
 sc-test-harness = { path = "tests/harness" }
 
@@ -354,6 +372,9 @@ rust_decimal = { version = "1", features = ["db-tokio-postgres"] }
 swc_common = "24"
 swc_ecma_ast = "26"
 swc_ecma_parser = "42"
+# Grows the stack for a long formula, whose swc tree is walked and dropped
+# recursively (security review 2026-11, D1). Already a dependency of swc.
+stacker = "0.1"
 # The reified formula evaluator (TODO Phase 3): a real V8 isolate via deno_core,
 # so a formula runs under exactly the engine whose grammar swc parses. Built
 # with no extensions and no ops — the sandbox has no I/O to reach. Pulls the
@@ -475,6 +496,9 @@ flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 # workbench, bridged to a `typescript-language-server` process on the server.
 axum = { version = "0.8", features = ["macros", "ws"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
+# `HeaderValue`, for `sc-http`'s header-safe values. The version axum and
+# reqwest already bring in.
+http = "1"
 # A cookie's `Max-Age` is a `time::Duration` (the `cookie` crate's own type,
 # which `axum-extra` does not re-export). Already in the tree through `cookie`.
 time = "0.3"
@@ -549,6 +573,8 @@ rcgen = "0.13"
 # rather than special-casing binary routes, so file contents ride in JSON as
 # base64 (with a UTF-8 `text` shortcut for editing text files).
 base64 = "0.22"
+# IEEE 754 half precision, the element of pgvector's `halfvec`.
+half = "2.7"
 # Secret fields (TODO-imap M2): a value is sealed with AES-256-GCM under the
 # instance key before it reaches its column. 0.10 is the version `deno_crypto`
 # already brings, so this adds no crate to the tree; `getrandom` is left off
@@ -558,7 +584,7 @@ aes-gcm = { version = "0.10", default-features = false, features = ["aes", "allo
 # merged in Yjs's own binary format, so the browser keeps the standard `yjs`.
 yrs = "0.28"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["fs", "set-header", "trace", "compression-br", "compression-gzip"] }
+tower-http = { version = "0.6", features = ["fs", "set-header", "trace", "compression-br", "compression-gzip", "catch-panic"] }
 matchit = "0.8"
 # A WebSocket **client**, for tests only: the IDE's language-server route (§12.1)
 # is the one piece of the server a `tower::oneshot` cannot exercise, because the
@@ -794,6 +820,22 @@ nalgebra = { version = "0.35", default-features = false, features = ["std"] }
 # Member crates opt in with `[lints]` + `workspace = true`. Test code is exempted
 # via `clippy.toml` (`allow-unwrap-in-tests` / `allow-expect-in-tests`). These
 # lints fire under `cargo clippy`, not `cargo build`/`cargo test`.
+# The lint set from the 2026-11 security review (§6, TODO-type-hardening H1),
+# so that what the review fixed stays fixed.
+#
+# `unsafe_code` is denied everywhere, and allowed again only on the modules
+# that call into C (`sc-dns`'s `getaddrinfo`, CPython, the `libc` process and
+# terminal calls): `#![allow(unsafe_code)]` at the top of that module, each
+# block with a `// SAFETY:` comment (`undocumented_unsafe_blocks` below). It is
+# `deny` rather than `forbid` because `forbid` cannot be allowed again in one
+# module, and a crate cannot override part of an inherited `[lints]` table.
+[workspace.lints.rust]
+unsafe_code = "deny"
+# `--cfg feldspar_advisory_lints` turns on the advisory lints of the
+# request-facing crates (H1.7; their `lib.rs` says which). Declared so that the
+# `cfg_attr` naming it is not itself an unexpected-cfg warning.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feldspar_advisory_lints)'] }
+
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
@@ -802,6 +844,22 @@ expect_used = "deny"
 # explicit `#[allow(clippy::too_many_lines)]`: split one when it is next
 # changed, and drop its allow.
 too_many_lines = "warn"
+# Every `unsafe` block says why it is sound.
+undocumented_unsafe_blocks = "deny"
+# Placeholders and debugging left behind.
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+# `let _ = fut;` drops a future without running it.
+let_underscore_future = "deny"
+# The methods `clippy.toml` lists, each with the replacement to use instead.
+disallowed_methods = "deny"
+disallowed_types = "deny"
+# `x as i32` silently drops the high bits of a wider value: an `i64` id bound to
+# an `int4` column matched a different row (security review #8). Use
+# `i32::try_from(x)` and handle the error, or `#[allow]` the cast with a
+# reason when the range is known.
+cast_possible_truncation = "deny"
 
 # --- Build profiles ----------------------------------------------------------
 #
@@ -844,9 +902,17 @@ debug = false
 #
 # Switch this back to optimising builds before a release anyone relies on the
 # performance of.
+#
+# `overflow-checks` stays on in release, as it is in `dev` (security review
+# 2026-11, §6): an integer that overflows panics — a failed request — instead of
+# wrapping into a wrong length, offset or id. The cost is a compare per
+# arithmetic operation, which at `opt-level = 0` is lost in the noise; keep it
+# on when optimisation is turned back on. Arithmetic that is meant to wrap says
+# so with `wrapping_*`.
 [profile.release]
 opt-level = 0
 codegen-units = 16
 incremental = true
 debug = false
 strip = true
+overflow-checks = true

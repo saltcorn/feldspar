@@ -65,7 +65,7 @@ impl S3Client {
             Some(port) => format!("{host}:{port}"),
             None => host.to_owned(),
         };
-        let http = reqwest::Client::builder()
+        let http = sc_net::client_builder()
             .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|e| Error::msg(format!("building the S3 client: {e}")))?;

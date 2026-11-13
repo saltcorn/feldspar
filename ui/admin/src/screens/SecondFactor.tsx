@@ -141,7 +141,7 @@ export function SecondFactorSignIn({
   };
 
   return (
-    <CenteredPage>
+    <CenteredPage title={t("Two-factor authentication")}>
       <Card className="card-md">
         <Card.Body>
           <Card.Title as="h1" className="h3 text-center mb-4">
@@ -197,6 +197,8 @@ export function AccountSecurity() {
   const [setup, setSetup] = useState<SecondFactorSetup | null>(null);
   const [codes, setCodes] = useState<string[] | null>(null);
   const [code, setCode] = useState("");
+  const [password, setPassword] = useState("");
+  const [asking, setAsking] = useState(false);
   const [action, setAction] = useState<"disable" | "codes" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -227,12 +229,18 @@ export function AccountSecurity() {
     }
   };
 
-  const start = () =>
-    run(async () => {
+  // Setting one up proves the password again: a second factor decides who
+  // can sign in to the account.
+  const start = (e: FormEvent) => {
+    e.preventDefault();
+    void run(async () => {
       setCodes(null);
       setCode("");
-      setSetup(await api.secondFactorSetup());
+      setSetup(await api.secondFactorSetup({ password }));
+      setPassword("");
+      setAsking(false);
     });
+  };
 
   const enable = (e: FormEvent) => {
     e.preventDefault();
@@ -339,9 +347,35 @@ export function AccountSecurity() {
                       <span className="badge bg-secondary-lt me-2"><T text="Off" /></span>
                       <T text="Signing in takes your password only." />
                     </p>
-                    <Button onClick={() => void start()} disabled={busy}>
-                      <T text="Set up two-factor authentication" />
-                    </Button>
+                    {asking ? (
+                      <Form onSubmit={start}>
+                        <Form.Group className="mb-3" controlId="current-password">
+                          <Form.Label>
+                            <T text="Your current password" />
+                          </Form.Label>
+                          <Form.Control
+                            type="password"
+                            autoComplete="current-password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            autoFocus
+                            required
+                          />
+                        </Form.Group>
+                        <div className="d-flex gap-2">
+                          <Button type="submit" disabled={busy || !password}>
+                            <T text="Continue" />
+                          </Button>
+                          <Button variant="link" onClick={() => setAsking(false)}>
+                            <T text="Cancel" />
+                          </Button>
+                        </div>
+                      </Form>
+                    ) : (
+                      <Button onClick={() => setAsking(true)} disabled={busy}>
+                        <T text="Set up two-factor authentication" />
+                      </Button>
+                    )}
                   </>
                 )}
               </Card.Body>

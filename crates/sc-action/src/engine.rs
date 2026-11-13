@@ -78,6 +78,16 @@ pub trait WorkflowEngine: Send + Sync {
         event: &Event,
         chain: Vec<String>,
     ) -> Result<WorkflowStarted>;
+
+    /// A fingerprint of `trigger`'s **current workflow definition**, which an
+    /// approval to run as system is bound to with the rest of its
+    /// configuration (TODO-type-hardening H8.10,
+    /// [`Trigger::configuration_hash`](crate::Trigger::configuration_hash)):
+    /// a new version makes the approval lapse. `None` when there is none.
+    async fn fingerprint(&self, catalog: &Catalog, trigger: &Trigger) -> Result<Option<String>> {
+        let _ = (catalog, trigger);
+        Ok(None)
+    }
 }
 
 #[cfg(test)]

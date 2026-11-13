@@ -57,6 +57,12 @@ pub enum BasicType {
     /// [`crate::vector`]). `Vector(0)` is only the bare `vector` a type picker
     /// offers before the dimensions are given; no column has it.
     Vector(u32),
+    /// A vector of this many 16-bit floats (pgvector's `halfvec(n)`), carried
+    /// as [`Vector`](BasicType::Vector) is. Only ever a column the database
+    /// already has: not offered in the type picker (see
+    /// [`crate::vector::HALFVEC_TYPE_NAME`]). [`vector_dimensions`](BasicType::vector_dimensions)
+    /// answers for both.
+    HalfVector(u32),
     /// A backend type not mapped to any of the above. Still usable, but only
     /// through the catch-all display/edit path, where it is treated as text. The
     /// wrapped string is the backend's own type name so it survives round-trips.
@@ -75,6 +81,9 @@ impl BasicType {
         }
         if let Some(dimensions) = vector::of_sql_type(sql_type) {
             return BasicType::Vector(dimensions);
+        }
+        if let Some(dimensions) = vector::of_half_sql_type(sql_type) {
+            return BasicType::HalfVector(dimensions);
         }
         match sql_type.trim().to_ascii_lowercase().as_str() {
             "bool" | "boolean" => BasicType::Bool,
@@ -117,6 +126,7 @@ impl BasicType {
             BasicType::Timestamp => "timestamptz",
             BasicType::Geometry(kind) => kind.sql_type(),
             BasicType::Vector(dimensions) => vector::spelling(*dimensions),
+            BasicType::HalfVector(dimensions) => vector::half_spelling(*dimensions),
             BasicType::Other(name) => name,
         }
     }
@@ -139,6 +149,7 @@ impl BasicType {
             BasicType::Timestamp => "timestamp",
             BasicType::Geometry(kind) => kind.type_name(),
             BasicType::Vector(dimensions) => vector::spelling(*dimensions),
+            BasicType::HalfVector(dimensions) => vector::half_spelling(*dimensions),
             BasicType::Other(name) => name,
         }
     }
@@ -170,6 +181,16 @@ impl BasicType {
         }
     }
 
+    /// The dimensions of a vector of either precision ([`Vector`](BasicType::Vector),
+    /// [`HalfVector`](BasicType::HalfVector)), or `None` for any other type —
+    /// what a caller asking "is this a vector field?" wants.
+    pub fn vector_dimensions(&self) -> Option<u32> {
+        match self {
+            BasicType::Vector(n) | BasicType::HalfVector(n) => Some(*n),
+            _ => None,
+        }
+    }
+
     /// The [`Value::kind`] a non-null value of this type must have, or `None`
     /// for [`Other`](BasicType::Other) (which accepts text only via the
     /// catch-all path but imposes no `Value`-family constraint here).
@@ -186,7 +207,7 @@ impl BasicType {
             BasicType::Date => "date",
             BasicType::Time => "time",
             BasicType::Timestamp => "timestamp",
-            BasicType::Geometry(_) | BasicType::Vector(_) => "json",
+            BasicType::Geometry(_) | BasicType::Vector(_) | BasicType::HalfVector(_) => "json",
             BasicType::Other(_) => return None,
         })
     }
@@ -224,6 +245,9 @@ impl BasicType {
         if let (BasicType::Vector(dimensions), Value::Json(json)) = (self, value) {
             return vector::vector_value(*dimensions, json).is_ok();
         }
+        if let (BasicType::HalfVector(dimensions), Value::Json(json)) = (self, value) {
+            return vector::half_vector_value(*dimensions, json).is_ok();
+        }
         match self.value_kind() {
             Some(kind) => value.kind() == kind,
             // `Other` imposes no family constraint beyond "not a structured
@@ -257,6 +281,9 @@ impl BasicType {
         }
         if let BasicType::Vector(dimensions) = self {
             return json.is_null() || vector::vector_value(*dimensions, json).is_ok();
+        }
+        if let BasicType::HalfVector(dimensions) = self {
+            return json.is_null() || vector::half_vector_value(*dimensions, json).is_ok();
         }
         match json {
             Json::Null => true,
@@ -292,6 +319,9 @@ impl BasicType {
         // And a vector of the wrong length says both lengths.
         if let (BasicType::Vector(dimensions), Value::Json(json)) = (self, value) {
             return vector::vector_value(*dimensions, json).map(|_| ());
+        }
+        if let (BasicType::HalfVector(dimensions), Value::Json(json)) = (self, value) {
+            return vector::half_vector_value(*dimensions, json).map(|_| ());
         }
         if self.accepts(value) {
             Ok(())

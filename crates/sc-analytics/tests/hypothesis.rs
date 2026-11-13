@@ -50,7 +50,7 @@ fn spec(fx: &Fixture, y: &[&str], x: Option<FieldDef>) -> TestSpec {
 }
 
 async fn analyse(cat: &Catalog, backend: &str, spec: &TestSpec) -> Analysis {
-    match run_tests(cat, &sc_dataset::Caller::admin(), spec)
+    match run_tests(cat, &sc_dataset::Caller::system("test"), spec)
         .await
         .expect("runs")
     {
@@ -60,7 +60,7 @@ async fn analyse(cat: &Catalog, backend: &str, spec: &TestSpec) -> Analysis {
 }
 
 async fn refused(fx: &Fixture, spec: &TestSpec) -> String {
-    match run_tests(&fx.cat, &sc_dataset::Caller::admin(), spec)
+    match run_tests(&fx.cat, &sc_dataset::Caller::system("test"), spec)
         .await
         .expect("answers")
     {

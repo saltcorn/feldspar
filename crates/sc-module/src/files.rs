@@ -31,13 +31,19 @@
 //! asks of one megabyte, never one 27 MB string.
 
 use sc_api::code_host::FileStoreHost;
-use sc_catalog::Catalog;
+use sc_catalog::{Authority, Catalog};
 use sc_error::{Error, Result};
 use sc_expr::FileHost;
 use sc_files::{CONTENT_TYPE_ATTRIBUTE, FILENAME_ATTRIBUTE};
 use serde_json::{Map, Value as Json};
 
 use crate::tables::TableDecl;
+
+/// The system reason a module's file surface labels what it wrote with: the
+/// surface is confined to the module's declared areas (`admit`), and labelling
+/// needs the administrator's authority, which clears every file rule. Listed in
+/// the system-authority inventory.
+const MODULE_FILE_LABEL: &str = "module files: label a file in the module's own area";
 
 /// One place a module may keep files: a store, and the folder within it (`""`
 /// for the whole store).
@@ -173,11 +179,10 @@ impl<'a> ModuleFiles<'a> {
         }
         // The module's file surface is the administrator's, confined to its
         // areas (`admit`), which clears every file rule (TODO-code-quality Q3.6).
-        let store = self.catalog.checked_file_store(
-            store,
-            None,
-            sc_files::FileCaller::new(sc_types::Role::ADMIN, None),
-        )?;
+        let store = self
+            .catalog
+            .checked_file_store(store, Authority::system(MODULE_FILE_LABEL))
+            .await?;
         let file = store.writable(path).await?;
         let mut meta = file.get_meta().await?;
         // The module's own mark, which is no user's id: `check_write` lets only

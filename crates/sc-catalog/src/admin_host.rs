@@ -23,10 +23,13 @@
 //! handler parses that document anyway. What comes back is the handler's
 //! answer, which the tools pass on to the agent.
 //!
-//! **Authorization is the caller's.** The host runs a handler the way the
-//! router would after the endpoint's `AuthRequirement` passed; every tool that
-//! reaches it is an administrative tool that has already refused a caller below
-//! role 1.
+//! **Every operation takes a [`ConsoleAdmin`]** (security review 2026-11 #16,
+//! TODO-type-hardening H3.3): the proof that an administrator at the console
+//! (or the server, with a named reason) is asking, which only the console's
+//! own checks make. It used to take a bare `Option<Uuid>`, so a new tool that
+//! forgot its admin check got every handler here. The implementation checks
+//! again that the named user is a live administrator before it runs the
+//! handler as one.
 //!
 //! [`Catalog`]: crate::Catalog
 
@@ -35,8 +38,7 @@ use sc_error::Result;
 use serde_json::{Map, Value as Json};
 use uuid::Uuid;
 
-/// Who an operation runs as: the user's id, or `None` for a system run.
-pub type AdminUser = Option<Uuid>;
+use crate::ConsoleAdmin;
 
 /// A file store backend's operation (`runBackendOperation`), run on the
 /// settings a store would be created with.
@@ -79,43 +81,43 @@ pub enum TranslationsOf {
 pub trait AdminHost: Send + Sync {
     /// Run a file store backend's operation; the answer carries the settings
     /// it produced under `config`.
-    async fn backend_operation(&self, user: AdminUser, op: BackendOperation) -> Result<Json>;
+    async fn backend_operation(&self, admin: &ConsoleAdmin, op: BackendOperation) -> Result<Json>;
 
     /// Create a file store; the answer is the store as the admin API shows it.
-    async fn create_file_store(&self, user: AdminUser, store: NewFileStore) -> Result<Json>;
+    async fn create_file_store(&self, admin: &ConsoleAdmin, store: NewFileStore) -> Result<Json>;
 
     /// Create an application from the admin API's application document.
-    async fn create_application(&self, user: AdminUser, application: Json) -> Result<Json>;
+    async fn create_application(&self, admin: &ConsoleAdmin, application: Json) -> Result<Json>;
 
     /// Every application, as the admin API lists them.
-    async fn list_applications(&self, user: AdminUser) -> Result<Vec<Json>>;
+    async fn list_applications(&self, admin: &ConsoleAdmin) -> Result<Vec<Json>>;
 
     /// Update the application `id` from the admin API's application document.
     async fn update_application(
         &self,
-        user: AdminUser,
+        admin: &ConsoleAdmin,
         id: Uuid,
         application: Json,
     ) -> Result<Json>;
 
     /// Build the application `id`.
-    async fn build_application(&self, user: AdminUser, id: Uuid) -> Result<Json>;
+    async fn build_application(&self, admin: &ConsoleAdmin, id: Uuid) -> Result<Json>;
 
     /// The translations screen of an application or of the instance.
-    async fn translations(&self, user: AdminUser, of: TranslationsOf) -> Result<Json>;
+    async fn translations(&self, admin: &ConsoleAdmin, of: TranslationsOf) -> Result<Json>;
 
     /// Save one locale's messages for an application or the instance.
     async fn save_translations(
         &self,
-        user: AdminUser,
+        admin: &ConsoleAdmin,
         of: TranslationsOf,
         locale: String,
         messages: Map<String, Json>,
     ) -> Result<Json>;
 
     /// Save a stream from the admin API's stream document.
-    async fn save_stream(&self, user: AdminUser, stream: Json) -> Result<Json>;
+    async fn save_stream(&self, admin: &ConsoleAdmin, stream: Json) -> Result<Json>;
 
     /// Delete the stream `id`.
-    async fn delete_stream(&self, user: AdminUser, id: Uuid) -> Result<Json>;
+    async fn delete_stream(&self, admin: &ConsoleAdmin, id: Uuid) -> Result<Json>;
 }

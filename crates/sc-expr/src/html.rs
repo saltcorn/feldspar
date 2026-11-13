@@ -60,6 +60,91 @@ impl SafeHtml {
     pub fn push_text(&mut self, text: &str) {
         push_escaped(self.0.to_mut(), text);
     }
+
+    /// `value` as JSON that is safe inside a `<script>` element (a
+    /// `type="application/json"` block a page boots from): nothing in it can
+    /// close the element, open a comment or end a line in a JavaScript string.
+    pub fn json_in_script(value: &serde_json::Value) -> SafeHtml {
+        let json = serde_json::to_string(value)
+            .unwrap_or_else(|_| "null".to_owned())
+            .replace('<', "\\u003c")
+            .replace('>', "\\u003e")
+            .replace('&', "\\u0026")
+            .replace('\u{2028}', "\\u2028")
+            .replace('\u{2029}', "\\u2029");
+        SafeHtml(Cow::Owned(json))
+    }
+
+    /// Markup a program in this server draws (an SVG a QR encoder made from
+    /// a string it was given), named by `generator` so each such site is a
+    /// greppable `SafeHtml::generated(` a reviewer can read. Never data a
+    /// person or a request supplied.
+    pub fn generated(markup: String, generator: &'static str) -> SafeHtml {
+        let _ = generator;
+        SafeHtml(Cow::Owned(markup))
+    }
+
+    /// The markup, for [`safe_html!`](crate::safe_html): taking `&SafeHtml`
+    /// is what makes the macro refuse a `String` argument.
+    #[doc(hidden)]
+    pub fn markup(&self) -> &str {
+        &self.0
+    }
+
+    /// What [`safe_html!`](crate::safe_html) formats: a literal the program
+    /// spells, with only `SafeHtml` interpolated. Not for direct use.
+    #[doc(hidden)]
+    pub fn __composed(markup: String) -> SafeHtml {
+        SafeHtml(Cow::Owned(markup))
+    }
+}
+
+impl FromIterator<SafeHtml> for SafeHtml {
+    fn from_iter<I: IntoIterator<Item = SafeHtml>>(iter: I) -> SafeHtml {
+        let mut out = SafeHtml::default();
+        for piece in iter {
+            out.push(&piece);
+        }
+        out
+    }
+}
+
+/// Markup from a format string the program spells, interpolating only
+/// [`SafeHtml`] (TODO-type-hardening H3.7, security review 2026-11 A10):
+/// `safe_html!("<p>{}</p>", html::escape(name))` or with named arguments,
+/// `safe_html!("<a href=\"{href}\">", href = html::escape(url))`.
+///
+/// The format string must be a literal, and it is expanded through `concat!`,
+/// so `format!`'s implicit capture of a variable named in the braces does not
+/// apply — every value interpolated is an argument, and every argument must be
+/// a `SafeHtml`:
+///
+/// ```compile_fail
+/// let name = String::from("<script>");
+/// let _ = sc_expr::safe_html!("<p>{}</p>", name);
+/// ```
+///
+/// ```compile_fail
+/// let name = String::from("<script>");
+/// let _ = sc_expr::safe_html!("<p>{name}</p>");
+/// ```
+#[macro_export]
+macro_rules! safe_html {
+    ($fmt:literal $(,)?) => {
+        $crate::html::SafeHtml::__composed(::std::format!(::std::concat!($fmt)))
+    };
+    ($fmt:literal, $($name:ident = $arg:expr),+ $(,)?) => {
+        $crate::html::SafeHtml::__composed(::std::format!(
+            ::std::concat!($fmt),
+            $($name = $crate::html::SafeHtml::markup(&$arg)),+
+        ))
+    };
+    ($fmt:literal, $($arg:expr),+ $(,)?) => {
+        $crate::html::SafeHtml::__composed(::std::format!(
+            ::std::concat!($fmt),
+            $($crate::html::SafeHtml::markup(&$arg)),+
+        ))
+    };
 }
 
 impl fmt::Display for SafeHtml {
@@ -102,6 +187,25 @@ fn push_escaped(out: &mut String, text: &str) {
 
 #[cfg(test)]
 mod tests {
+    /// TODO-type-hardening H3.7: the macro interpolates only `SafeHtml`.
+    #[test]
+    fn safe_html_interpolates_only_safe_html() {
+        let name = "<b>\"ann\"</b>";
+        let page = crate::safe_html!("<p>{}</p>", escape(name));
+        assert_eq!(page.as_str(), "<p>&lt;b&gt;&quot;ann&quot;&lt;/b&gt;</p>");
+        let link = crate::safe_html!(
+            "<a href=\"{href}\">{label}</a>",
+            href = escape("/a?b=1&c=2"),
+            label = SafeHtml::trusted("<i>go</i>"),
+        );
+        assert_eq!(link.as_str(), "<a href=\"/a?b=1&amp;c=2\"><i>go</i></a>");
+        assert_eq!(crate::safe_html!("<br>{{x}}").as_str(), "<br>{x}");
+        let joined: SafeHtml = ["a<", "b"].iter().map(|t| escape(t)).collect();
+        assert_eq!(joined.as_str(), "a&lt;b");
+        let boot = SafeHtml::json_in_script(&serde_json::json!({ "x": "</script><!--" }));
+        assert!(!boot.as_str().contains('<') && !boot.as_str().contains('>'));
+    }
+
     use super::*;
 
     #[test]

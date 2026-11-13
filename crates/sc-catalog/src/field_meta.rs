@@ -57,22 +57,22 @@ use crate::table::Table;
 pub const FIELD_META_TABLE: &str = "_fd_fields";
 
 /// The UUID row-handle column (§9).
-pub const COL_ID: &str = "id";
+pub(crate) const COL_ID: &str = "id";
 /// The name of the table the overlaid field belongs to. Part of the key.
-pub const COL_TABLE: &str = "table_name";
+pub(crate) const COL_TABLE: &str = "table_name";
 /// The overlaid field's own name — §9's required `name` column. Part of the key.
-pub const COL_NAME: &str = "name";
+pub(crate) const COL_NAME: &str = "name";
 /// The human label shown instead of the field name, when one is given.
-pub const COL_LABEL: &str = "label";
+pub(crate) const COL_LABEL: &str = "label";
 /// The human-readable description column (§9).
-pub const COL_DESCRIPTION: &str = "description";
+pub(crate) const COL_DESCRIPTION: &str = "description";
 /// The registered rich type's name, or NULL for a basic field.
-pub const COL_TYPE: &str = "type";
+pub(crate) const COL_TYPE: &str = "type";
 /// The field-kind discriminant: [`KIND_PLAIN`], [`KIND_KEY`] or [`KIND_FILE`].
-pub const COL_KIND: &str = "kind";
+pub(crate) const COL_KIND: &str = "kind";
 /// The sparse per-field values column (§9) — JSON, always an object. Holds the
 /// kind's parameters alongside the field's rich-type attributes.
-pub const COL_ATTRIBUTES: &str = "attributes";
+pub(crate) const COL_ATTRIBUTES: &str = "attributes";
 
 /// The `kind` discriminant for a plain scalar field.
 pub const KIND_PLAIN: &str = "plain";

@@ -60,10 +60,7 @@ fn coding(application: &str) -> sc_types::Attrs {
 
 /// The tool's result for one call, as `caller`.
 async fn list(env: &Env, config: &sc_types::Attrs, args: Json, role: Role) -> Result<Json> {
-    let caller = RunCaller {
-        role,
-        ..RunCaller::system()
-    };
+    let caller = RunCaller::system().capped_at(role);
     env.call_tool("coding", config, "list_assets_apps_web", args, &caller)
         .await
 }

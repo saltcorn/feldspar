@@ -117,7 +117,9 @@ async fn the_switch_decides_whether_the_aggregates_are_in_the_schema() -> Result
         .expect("the app enables graphql")
         .sdl;
     assert!(
-        sdl.contains("departments_aggregate(where: DepartmentsBoolExp): DepartmentsAggregate!"),
+        sdl.contains(
+            "departments_aggregate(where: DepartmentsBoolExp, request: JSON): DepartmentsAggregate!"
+        ),
         "{sdl}"
     );
     assert!(

@@ -803,6 +803,15 @@ Object.defineProperty(globalThis, "__scMakeDb", {
   value: (__scTok) => {
   // Every plan carries the run's own token.
   const send = (plan) => __scDbCall(__scTok, plan);
+  const userAuthority = (who) => {
+    // TODO-type-hardening H8.8: `asUser()` is the event's caller; `asUser(id)`
+    // (or `asUser(row)`) is one named user, sent as the plan's `{ user: id }`
+    // and allowed by the host only when that user holds no more authority than
+    // whoever caused the run.
+    if (who === undefined) return "user";
+    const id = who !== null && typeof who === "object" ? who.id : who;
+    return { user: id === undefined ? null : id };
+  };
   // A condition is the object DSL every other surface speaks, or a formula
   // string — the two spellings §3 gives, lowered to one plan field.
   const condition = (c) => {
@@ -853,6 +862,7 @@ Object.defineProperty(globalThis, "__scMakeDb", {
       if (state.aggregate.length) p.aggregate = state.aggregate;
       if (state.limit !== null) p.limit = state.limit;
       if (state.offset !== null) p.offset = state.offset;
+      if (state.request !== null) p.request = state.request;
       return Object.assign(p, extra || {});
     };
     // A whole table rewritten or emptied is not something an omitted call
@@ -1004,8 +1014,27 @@ Object.defineProperty(globalThis, "__scMakeDb", {
       having: (c) => derive({ having: state.having.concat([condition(c)]) }),
       limit: (n) => derive({ limit: n }),
       offset: (n) => derive({ offset: n }),
-      asUser: () => derive({ authority: "user" }),
+      asUser: (who) => derive({ authority: userAuthority(who) }),
       asAdmin: () => derive({ authority: "admin" }),
+      // The values this query presents to the table's ownership formula as
+      // `_request` (TODO-type-hardening H7.6): `{ token }` reaches the row
+      // whose `token === _request.token`. Strings only; the host checks the
+      // names.
+      withRequest: (values) => {
+        if (values === null || typeof values !== "object" || Array.isArray(values)) {
+          throw new Error("withRequest() takes an object of strings, e.g. { token: query.token }");
+        }
+        const request = {};
+        for (const key of Object.keys(values)) {
+          const v = values[key];
+          if (v === null || v === undefined) continue;
+          if (typeof v !== "string") {
+            throw new Error("withRequest(): `" + key + "` must be a string");
+          }
+          request[key] = v;
+        }
+        return derive({ request: request });
+      },
 
       rows: () => read(),
       iter: (batchSize) => iterate(batchSize),
@@ -1062,7 +1091,7 @@ Object.defineProperty(globalThis, "__scMakeDb", {
     query({
       table: name, authority: authority,
       where: [], select: [], order: [], group: [], having: [], aggregate: [],
-      limit: null, offset: null,
+      limit: null, offset: null, request: null,
     });
   // `db.sql(text, params, options)`: the body's own SQL. The authority is the
   // handle's, unless the options object says otherwise — `{ asUser: true }` is
@@ -1103,7 +1132,7 @@ Object.defineProperty(globalThis, "__scMakeDb", {
     const base = {
       table: (name) => table(authority, name),
       sql: (text, params, options) => sql(authority, text, params, options),
-      asUser: () => handle("user"),
+      asUser: (who) => handle(userAuthority(who)),
       asAdmin: () => handle("admin"),
       // The plan seam itself, and the one thing on this handle that is not the
       // fluent surface: one plan in, a promise of its answer out, over this
@@ -1146,6 +1175,15 @@ Object.defineProperty(globalThis, "__scMakeDb", {
 Object.defineProperty(globalThis, "__scMakeModels", {
   writable: false, configurable: false, enumerable: false,
   value: (db) => {
+    const userAuthority = (who) => {
+      // TODO-type-hardening H8.8: `asUser()` is the event's caller; `asUser(id)`
+      // (or `asUser(row)`) is one named user, sent as the plan's `{ user: id }`
+      // and allowed by the host only when that user holds no more authority than
+      // whoever caused the run.
+      if (who === undefined) return "user";
+      const id = who !== null && typeof who === "object" ? who.id : who;
+      return { user: id === undefined ? null : id };
+    };
     const variable = (what, v) => {
       if (typeof v !== "string" || v === "") {
         throw new Error(
@@ -1210,7 +1248,7 @@ Object.defineProperty(globalThis, "__scMakeModels", {
           return many ? answer : answer[0];
         },
         // Whose authority a write-back writes under, as on `db`.
-        asUser: () => makeHandle(got, "user"),
+        asUser: (who) => makeHandle(got, userAuthority(who)),
         asAdmin: () => makeHandle(got, "admin"),
       };
       const posteriorOnly = {
@@ -2124,7 +2162,10 @@ pub(crate) const FILES_PRELUDE: &str = r##"
           // The narrower authority of the two wins: a part opened `asUser`
           // is read as the user even when the target was opened as the admin,
           // and one left at the run's default is never read as the admin.
-          if (ref.handle.authority === "user") authority = "user";
+          if (typeof ref.handle.authority === "object") authority = ref.handle.authority;
+          else if (ref.handle.authority === "user" && typeof authority !== "object") {
+            authority = "user";
+          }
           else if (ref.handle.authority === "default" && authority === "admin") {
             authority = "default";
           }
@@ -2349,6 +2390,16 @@ pub(crate) const FILES_PRELUDE: &str = r##"
     }
   }
 
+  const userAuthority = (who) => {
+    // TODO-type-hardening H8.8: `asUser()` is the event's caller; `asUser(id)`
+    // (or `asUser(row)`) is one named user, sent as the plan's `{ user: id }`
+    // and allowed by the host only when that user holds no more authority than
+    // whoever caused the run.
+    if (who === undefined) return "user";
+    const id = who !== null && typeof who === "object" ? who.id : who;
+    return { user: id === undefined ? null : id };
+  };
+
   // --- a store ------------------------------------------------------------
   // Frozen, so a body that assigns to `store.open` breaks nothing but its own
   // object — and the next `fs("…")` answers a fresh one regardless.
@@ -2361,7 +2412,8 @@ pub(crate) const FILES_PRELUDE: &str = r##"
     // the caller's in a body answering a request) unless the body says which —
     // and when it is the caller's, the path-cumulative `min_role` rule decides
     // every operation.
-    asUser: () => makeStore({ token: handle.token, store: handle.store, authority: "user" }),
+    asUser: (who) =>
+      makeStore({ token: handle.token, store: handle.store, authority: userAuthority(who) }),
     asAdmin: () => makeStore({ token: handle.token, store: handle.store, authority: "admin" }),
   });
 
@@ -2370,7 +2422,10 @@ pub(crate) const FILES_PRELUDE: &str = r##"
   fixed("__scFileRef", (value) => {
     if (!(value instanceof SaltcornFile)) return undefined;
     const ref = value.__scRef(INTERNAL);
-    return { store: ref.handle.store, path: ref.path, authority: ref.handle.authority };
+    // A file opened `asUser(id)` is served as the request's user, as one
+    // opened `asUser()` is: never as the admin.
+    const authority = typeof ref.handle.authority === "object" ? "user" : ref.handle.authority;
+    return { store: ref.handle.store, path: ref.path, authority: authority };
   });
   fixed("__scIsFsEntry", (value) => value instanceof SaltcornFile || value instanceof SaltcornDir);
 
@@ -2435,6 +2490,15 @@ pub(crate) const TRIGGERS_PRELUDE: &str = r#"
       value: value, writable: false, configurable: false, enumerable: false,
     });
 
+  const userAuthority = (who) => {
+    // TODO-type-hardening H8.8: `asUser()` is the event's caller; `asUser(id)`
+    // (or `asUser(row)`) is one named user, sent as the plan's `{ user: id }`
+    // and allowed by the host only when that user holds no more authority than
+    // whoever caused the run.
+    if (who === undefined) return "user";
+    const id = who !== null && typeof who === "object" ? who.id : who;
+    return { user: id === undefined ? null : id };
+  };
   // Frozen, for `makeStore`'s reason: a body that assigns to `handle.run` breaks
   // nothing but its own object, and the next `trigger("…")` answers a fresh one.
   const makeHandle = (handle) => Object.freeze({
@@ -2447,8 +2511,8 @@ pub(crate) const TRIGGERS_PRELUDE: &str = r#"
       payload: payload === undefined ? {} : payload,
       authority: handle.authority,
     }),
-    asUser: () => makeHandle({
-      token: handle.token, trigger: handle.trigger, authority: "user",
+    asUser: (who) => makeHandle({
+      token: handle.token, trigger: handle.trigger, authority: userAuthority(who),
     }),
     asAdmin: () => makeHandle({
       token: handle.token, trigger: handle.trigger, authority: "admin",
@@ -5406,6 +5470,10 @@ impl CodeRuntime {
     /// out. Not public: [`DEFAULT_MAX_HEAP`] is a bound on the *engine*, not a
     /// per-installation policy, and the tests are what want to say it in
     /// megabytes rather than hundreds of them.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "unbounded: each queued job is a caller awaiting its answer, so the queue is never longer than the runs in flight; max_inflight bounds how many are resident"
+    )]
     fn build(workers: usize, max_inflight: usize, max_heap: usize) -> CodeRuntime {
         let max_inflight = max_inflight.max(1);
         let mut pool = Vec::new();
@@ -5449,6 +5517,10 @@ impl CodeRuntime {
     /// other, because a body's `Promise.all([…])` issues several at once and
     /// serving them in turn would quietly make that sequential — the parallelism
     /// the body asked for is real, and this is where it is honoured.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "unbounded: a run's requests to its hosts, each awaited by the body that sent it; the run's time and heap limits bound how many it can issue"
+    )]
     pub async fn run(&self, call: CodeCall<'_>) -> Result<Json> {
         let (reply, answer) = tokio::sync::oneshot::channel();
         // The proxies go to the worker and the borrowed hosts stay here, with

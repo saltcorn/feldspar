@@ -23,6 +23,10 @@
 //! Needs `node`, and `yjs` in `ui/admin/node_modules` (a dev dependency there);
 //! skips without them.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -486,7 +490,7 @@ fn query_client(streams: &[StreamExport]) -> String {
     let mut set = EndpointSet::new();
     set.register(
         Endpoint::new(
-            "openNote",
+            sc_api::HandlerId::<sc_api::SignedIn>::new("openNote"),
             Method::Post,
             PathSpec::root().lit("/api").lit("/open-note"),
         )

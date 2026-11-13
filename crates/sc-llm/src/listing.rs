@@ -14,8 +14,8 @@ use sc_error::{Error, Result};
 use serde_json::Value as Json;
 
 use crate::def::{
-    ANTHROPIC_BACKEND, CFG_API_KEY, CFG_BASE_URL, LlmProviderDef, OPENAI_CHAT_BACKEND,
-    OPENAI_RESPONSES_BACKEND, validate_provider_config,
+    ANTHROPIC_BACKEND, CFG_BASE_URL, LlmProviderDef, OPENAI_CHAT_BACKEND, OPENAI_RESPONSES_BACKEND,
+    validate_provider_config,
 };
 
 /// How long a listing may take. It is a single small request an admin is
@@ -31,10 +31,11 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// can show "type the name" rather than a failure.
 pub async fn fetch_host_models(provider: &LlmProviderDef) -> Result<Vec<String>> {
     validate_provider_config(provider)?;
-    let key = provider.setting(CFG_API_KEY).unwrap_or_default().trim();
+    let key = provider.api_key();
+    let key = key.expose().as_str();
     let base = provider.setting(CFG_BASE_URL).unwrap_or_default().trim();
 
-    let client = reqwest::Client::builder()
+    let client = sc_net::client_builder()
         .timeout(LISTING_TIMEOUT)
         .build()
         .map_err(|e| Error::msg(format!("cannot build an HTTP client: {e}")))?;

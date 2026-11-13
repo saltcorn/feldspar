@@ -81,6 +81,24 @@ pub(crate) fn request_stop(construction: Uuid) -> bool {
         .is_some_and(|stop| stop.send(true).is_ok())
 }
 
+/// Why a construction run may act with console authority:
+/// - an admin started it, and only admins can reach the construction endpoints;
+/// - its input is that admin's specification and the agent's own plan;
+/// - a run resumed after a restart checks that its starter is still an admin
+///   (`admin_caller`).
+///
+/// Listed in the system-authority inventory (docs/SECURITY_REVIEW_2026-10.md).
+const CONSTRUCTION_RUN: &str =
+    "a construction run an administrator started (sc-server construction_runner)";
+
+/// `admin` as the caller of a construction's agent runs: their own authority,
+/// with the console's proof, so the data-model tools (which refuse a run
+/// without one) are theirs, as in their console chat.
+pub(crate) fn console_caller(admin: sc_auth::User) -> RunCaller {
+    let proof = sc_catalog::ConsoleAdmin::at_console(Some(admin.fields_json()), CONSTRUCTION_RUN);
+    RunCaller::console(admin, proof)
+}
+
 /// Refuses while this process runs `construction`. The runner gives up its
 /// place just before it writes the final status, so this agrees with the
 /// status; it is checked as well because Retry, Skip and Run must never write
@@ -159,7 +177,7 @@ pub(crate) fn spawn_resume(apps: Arc<AppMounts>) {
     let Some(catalog) = apps.catalog().cloned() else {
         return;
     };
-    tokio::spawn(async move {
+    sc_catalog::spawn_scoped(async move {
         if let Err(e) = resume_constructions(catalog, apps).await {
             crate::router::log_failure("resuming the running constructions failed", &e);
         }
@@ -269,7 +287,7 @@ impl ConstructionRunner {
     }
 
     /// The admin who started the construction, as the caller every run is
-    /// driven as, or why there is none.
+    /// driven as ([`console_caller`]), or why there is none.
     async fn admin_caller(
         &self,
         construction: &Construction,
@@ -278,7 +296,7 @@ impl ConstructionRunner {
             return Ok(Err("nobody is recorded as having started it".to_owned()));
         };
         Ok(match sc_auth::load_user(&self.catalog, id).await? {
-            Some(user) if user.is_admin() => Ok(RunCaller::user(user)),
+            Some(user) if user.is_admin() => Ok(console_caller(user)),
             Some(_) => Err("the admin who started it is no longer an admin".to_owned()),
             None => Err("the admin who started it no longer exists".to_owned()),
         })

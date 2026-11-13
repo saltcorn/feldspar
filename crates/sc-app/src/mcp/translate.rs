@@ -424,7 +424,7 @@ impl AdminTool for SaveTranslations {
 
         let mut out = host(ctx)?
             .save_translations(
-                ctx.user.map(|u| u.id()),
+                ctx.require_admin("save_translations")?,
                 target.of(),
                 locale.clone(),
                 merged,
@@ -466,7 +466,7 @@ fn current_translations(screen: &Json, locale: &str) -> Map<String, Json> {
 
 async fn get_translations(ctx: &ToolContext<'_>, target: &Target) -> Result<Json> {
     host(ctx)?
-        .translations(ctx.user.map(|u| u.id()), target.of())
+        .translations(ctx.require_admin("translations")?, target.of())
         .await
 }
 

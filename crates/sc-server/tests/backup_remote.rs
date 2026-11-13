@@ -8,6 +8,10 @@
 //! as a real service would refuse it. The SFTP server is russh's own server
 //! half over a temporary directory, with OpenSSH's refusal to rename over an
 //! existing file.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;

@@ -12,7 +12,10 @@
 //!   chunks to documents.
 //! - Every one of them reads **as the caller**: two users under an ownership
 //!   formula get two answers, in either mode.
-
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::common;

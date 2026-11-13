@@ -137,6 +137,16 @@ pub(crate) fn bind(value: &Value) -> SqlValue {
     }
 }
 
+/// A REAL read from an integer column, truncated toward zero and saturating at
+/// the `i64` range (NaN is 0), as SQLite's own `CAST(x AS INTEGER)` does.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "truncation toward zero is the conversion meant"
+)]
+fn truncated(f: f64) -> i64 {
+    f as i64
+}
+
 /// One column of a result row as a [`Value`], read through what its column was
 /// declared as.
 ///
@@ -164,7 +174,7 @@ pub(crate) fn decode(raw: ValueRef<'_>, decl: Declared) -> Result<Value> {
         },
         ValueRef::Real(f) => match decl {
             Declared::Decimal => Decimal::try_from(f).map_or(Value::Float(f), Value::Decimal),
-            Declared::Int => Value::Int(f as i64),
+            Declared::Int => Value::Int(truncated(f)),
             Declared::Json => serde_json::Number::from_f64(f).map_or(Value::Float(f), |n| {
                 Value::Json(serde_json::Value::Number(n))
             }),

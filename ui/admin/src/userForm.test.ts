@@ -16,7 +16,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   adminUserFields,
+  ADMIN_SIGN_IN_TARGET,
   credentialsText,
+  signInTargets,
   defaultUserRole,
   editUserForm,
   newUserForm,
@@ -199,5 +201,35 @@ describe("credentialsText", () => {
     expect(text).toContain("abc123");
     // Three lines, so it pastes into a message as one readable block.
     expect(text.split("\n")).toHaveLength(3);
+  });
+});
+
+describe("signInTargets", () => {
+  const urlOf = (sub: string) => `https://${sub}.example.com`;
+
+  it("lists the applications alphabetically, then the admin UI last", () => {
+    const targets = signInTargets(
+      [
+        { id: "2", name: "zoo", subdomain: "zoo" },
+        { id: "1", name: "Blog", subdomain: "blog" },
+        { id: "3", name: "accounts", subdomain: "acc" },
+      ],
+      "https://admin.example.com",
+      urlOf,
+    );
+    expect(targets.map((x) => x.label)).toEqual(["accounts", "Blog", "zoo", "Admin UI"]);
+    // The first application is the default, and each carries its own URL.
+    expect(targets[0].url).toBe("https://acc.example.com");
+    expect(targets[3]).toEqual({
+      key: ADMIN_SIGN_IN_TARGET,
+      label: "Admin UI",
+      url: "https://admin.example.com",
+    });
+  });
+
+  it("offers the admin UI alone when there are no applications", () => {
+    const targets = signInTargets([], "https://admin.example.com", urlOf);
+    expect(targets).toHaveLength(1);
+    expect(targets[0].key).toBe(ADMIN_SIGN_IN_TARGET);
   });
 });

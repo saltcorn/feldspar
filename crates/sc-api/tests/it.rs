@@ -23,6 +23,8 @@ mod calc_fields;
 mod code_host_as_user;
 #[path = "code_host_reads.rs"]
 mod code_host_reads;
+#[path = "code_host_rls_boundary.rs"]
+mod code_host_rls_boundary;
 #[path = "code_host_sql.rs"]
 mod code_host_sql;
 #[path = "code_host_writes.rs"]
@@ -65,6 +67,8 @@ mod history_retention;
 mod history_sqlite;
 #[path = "history_undo.rs"]
 mod history_undo;
+#[path = "history_users.rs"]
+mod history_users;
 #[path = "live_connection.rs"]
 mod live_connection;
 #[path = "public_datasets.rs"]

@@ -247,9 +247,9 @@ impl AgentTrait for GenerateImage {
         let (store, path) = open_to_write(&scope, ctx, &name).await?;
         store.write(&path, Bytes::from(image.bytes.clone())).await?;
         // Whoever the run is for created the file (§2.1), as an upload would.
-        if let Some(owner) = file_caller(ctx.caller).user_id {
+        if let Some(owner) = file_caller(ctx.caller).user_id() {
             let mut meta = store.get_meta(&path).await.unwrap_or_default();
-            meta.owner = Some(owner);
+            meta.owner = Some(owner.to_owned());
             if let Err(e) = store.set_meta(&path, &meta).await {
                 sc_log::log_warn!(
                     "agent `{}`: recording `{path}`'s owner failed — {e}",
@@ -382,7 +382,7 @@ impl AgentTrait for Speech {
 
     async fn on_final_answer(&self, config: &Attrs, cx: &mut AnswerContext<'_>) -> Result<()> {
         // A trigger's run has nobody listening.
-        if cx.caller.triggered {
+        if cx.caller.is_triggered() {
             return Ok(());
         }
         let request = Speech::request(config, speakable(cx.answer))?;

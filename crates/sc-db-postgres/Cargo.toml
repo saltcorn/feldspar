@@ -28,6 +28,8 @@ rust_decimal.workspace = true
 serde_json.workspace = true
 # Named only in the `ToSql` method signatures the param wrapper implements.
 bytes.workspace = true
+# pgvector's `halfvec` elements.
+half.workspace = true
 
 [dev-dependencies]
 sc-test-harness.workspace = true

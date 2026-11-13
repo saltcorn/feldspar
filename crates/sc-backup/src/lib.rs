@@ -30,6 +30,7 @@
 //! users/rows.ndjson                   the accounts, one per line — hashes included
 //! keys/secrets.key                    the key Secret fields are sealed with, when rows hold any
 //! modules.json                        [ module, … ] — reinstalled from where they came
+//! modules/<id>/files/<path>           a local module's source directory, as it is
 //! db-connections.json                 [ connection, … ] — passwords included
 //! analytics/datasets.json             [ dataset, … ]
 //! analytics/models.json               [ model, … ]
@@ -88,6 +89,20 @@
 //! [`v1`] translates such an archive into the layout described here before the
 //! restorer sees it, so the upload, the dialog, the selection and the report are
 //! the same ones a Feldspar backup goes through.
+//!
+//! Indexing, string slicing and unchecked arithmetic are warned about here
+//! (security review 2026-11, §6; TODO-type-hardening H1.7) when built with
+//! `--cfg feldspar_advisory_lints` (the CI `clippy-advisory` job): this crate
+//! handles request input, where each is a panic a request can cause. Advisory
+//! until the existing hits are fixed, so they do not fail `-D warnings`.
+#![cfg_attr(
+    feldspar_advisory_lints,
+    warn(
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::arithmetic_side_effects
+    )
+)]
 
 mod archive;
 pub mod codec;
@@ -151,6 +166,17 @@ pub trait RestoreHost: Send + Sync {
     /// Load the installed modules again.
     async fn reload_modules(&self) -> Result<()>;
 
+    /// The directory a local module named `name` has its source directory
+    /// unpacked into from a backup, and then installed from — one this server
+    /// owns, never a path the backup names. A host without one answers why,
+    /// and the module is installed from its recorded location instead.
+    fn module_source_dir(&self, name: &str) -> Result<std::path::PathBuf> {
+        let _ = name;
+        Err(Error::invalid(
+            "this server keeps no directory for restored module sources",
+        ))
+    }
+
     /// The stream provider registry streams are checked against.
     fn stream_registry(&self) -> Result<Arc<sc_stream::StreamRegistry>>;
 
@@ -196,6 +222,10 @@ impl<T: RestoreHost + ?Sized> RestoreHost for Arc<T> {
 
     async fn reload_modules(&self) -> Result<()> {
         (**self).reload_modules().await
+    }
+
+    fn module_source_dir(&self, name: &str) -> Result<std::path::PathBuf> {
+        (**self).module_source_dir(name)
     }
 
     fn stream_registry(&self) -> Result<Arc<sc_stream::StreamRegistry>> {
@@ -661,6 +691,10 @@ impl Available {
         self.tables.iter().map(|i| i.name.clone()).collect()
     }
 }
+
+/// Where in the zip a local module's source directory goes: `modules/<id>/files/…`,
+/// named in its `modules.json` item's `package`.
+pub(crate) const MODULE_SOURCES_DIR: &str = "modules/";
 
 /// Whether a store-relative path is in (or is) a `node_modules` directory.
 ///

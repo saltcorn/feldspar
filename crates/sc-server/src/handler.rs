@@ -20,17 +20,21 @@
 //! # Gates
 //!
 //! Who is calling arrives typed by the **gate** a handler was registered
-//! behind (code quality Q2.4). [`register`](HandlerRegistry::register) is
-//! open: the context's [`who`](HandlerCtx::who) is the [`Caller`], anybody.
-//! [`register_signed_in`](HandlerRegistry::register_signed_in) hands an
-//! [`AuthenticatedUser`], [`register_admin`](HandlerRegistry::register_admin)
-//! an [`Admin`], and [`register_analytics`](HandlerRegistry::register_analytics)
-//! an [`AnalyticsCaller`]. The registry narrows the caller before the handler
-//! runs and refuses one the gate does not admit, so an admin handler cannot be
-//! called with anything but admin authority however it is reached; and
+//! behind (code quality Q2.4), and the gate is the type of the
+//! [`HandlerId`] it was registered under (security review 2026-11 §8,
+//! H6.1): [`handle`](HandlerRegistry::handle) takes a `HandlerId<A>`, and
+//! the context's [`who`](HandlerCtx::who) is `A`'s [`Gated::Who`] — the
+//! [`Caller`] (anybody) for `Anyone`, an [`AuthenticatedUser`] for
+//! `SignedIn`, an [`Admin`] for `AdminOnly` and an [`AnalyticsCaller`] for
+//! `AnalyticsUi`. The endpoint naming the handler is declared with the same
+//! id ([`sc_api::handler_ids`]), so its requirement *is* the gate's. The
+//! registry narrows the caller before the handler runs and refuses one the
+//! gate does not admit, so an admin handler cannot be called with anything but
+//! admin authority however it is reached; and
 //! [`check_gates`](HandlerRegistry::check_gates), which the router runs at
-//! startup, refuses an endpoint set in which an `admin()` endpoint names a
-//! handler registered behind a weaker gate.
+//! startup, refuses an endpoint set in which an endpoint names a handler whose
+//! gate's requirement is not the one it declares (a second id of the same name
+//! and another type).
 //!
 //! # Typed handlers
 //!
@@ -49,8 +53,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use sc_api::{AuthRequirement, EndpointSet, HandlerRef, SessionAction};
-use sc_auth::{AuthenticatedUser, User};
+use sc_api::{AuthRequirement, EndpointSet, HandlerId, HandlerRef, SessionAction};
+use sc_auth::{AuthenticatedUser, CredentialsChanged, FullyAuthenticated, PasswordVerified, User};
 use sc_error::{Error, Result};
 use serde_json::Value;
 
@@ -60,7 +64,7 @@ pub use crate::admin_session::{Admin, AdminSession, AnalyticsCaller, Caller, Who
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 /// Adapt a typed handler to the shape a gate registers (module docs, "Typed
-/// handlers"): `reg.register_admin("deleteStream", typed(&state, delete_stream))`.
+/// handlers"): `reg.handle(handler_ids::DELETE_STREAM, typed(&state, delete_stream))`.
 ///
 /// `In` is read from the request's JSON body — `()` for an endpoint with none,
 /// which reads `null` — and the body is moved out of the context the function
@@ -260,8 +264,8 @@ pub struct Download {
     /// The `Content-Type` to serve them under.
     pub content_type: String,
     /// The name the browser should save it as, carried in `Content-Disposition`;
-    /// empty for bytes a page fetches rather than a person saves.
-    pub filename: String,
+    /// `None` for bytes a page fetches rather than a person saves.
+    pub filename: Option<sc_http::DownloadName>,
 }
 
 /// What a [`Download`] serves: bytes already in memory, or a file on disk that
@@ -377,12 +381,13 @@ impl HandlerResponse {
         }
     }
 
-    /// A `200 OK` response that also starts a session for `user` (login).
-    pub fn start_session(user: User, body: Value) -> HandlerResponse {
+    /// A `200 OK` response that also starts a session for `signing_in`
+    /// (login), once its second factor is dealt with.
+    pub fn start_session(signing_in: PasswordVerified, body: Value) -> HandlerResponse {
         HandlerResponse {
             body,
             status: 200,
-            session: SessionAction::Start(user),
+            session: SessionAction::Start(signing_in),
             download: None,
             serve: None,
         }
@@ -390,20 +395,25 @@ impl HandlerResponse {
 
     /// [`start_session`](HandlerResponse::start_session), honouring the
     /// sign-in's "Remember me" (`sc_api::auth::remember` of its body).
-    pub fn start_session_remembering(user: User, body: Value, remember: bool) -> HandlerResponse {
+    pub fn start_session_remembering(
+        signing_in: PasswordVerified,
+        body: Value,
+        remember: bool,
+    ) -> HandlerResponse {
         HandlerResponse {
-            session: SessionAction::start(user, remember),
+            session: SessionAction::start(signing_in, remember),
             ..HandlerResponse::ok(body)
         }
     }
 
-    /// A `200 OK` response that starts a session for `user` **without asking for
-    /// a second factor**: an admin becoming a user, or the first user of a new
-    /// installation, who has none yet.
-    pub fn start_verified_session(user: User, body: Value) -> HandlerResponse {
+    /// A `200 OK` response that starts a session for `who` **without asking
+    /// for a second factor**: one past both factors, or a named waiver — an
+    /// admin becoming a user, the first user of a new installation, who has
+    /// none yet.
+    pub fn start_verified_session(who: FullyAuthenticated, body: Value) -> HandlerResponse {
         HandlerResponse {
             session: SessionAction::StartVerified {
-                user,
+                who,
                 remember: true,
             },
             ..HandlerResponse::ok(body)
@@ -431,6 +441,24 @@ impl HandlerResponse {
             session: SessionAction::EndUser(user_id),
             download: None,
             serve: None,
+        }
+    }
+
+    /// A `200 OK` response for a change to an account's credentials
+    /// (security review 2026-11, H2.3): `changed` ends the account's sessions
+    /// on this node ([`SessionAction::CredentialsChanged`]), and a change that
+    /// was none (`None`) changes nothing about sessions. The one way a
+    /// handler hands a [`CredentialsChanged`] on.
+    pub fn credentials_changed(
+        changed: Option<CredentialsChanged>,
+        body: Value,
+    ) -> HandlerResponse {
+        HandlerResponse {
+            session: match changed {
+                Some(changed) => SessionAction::CredentialsChanged(vec![changed]),
+                None => SessionAction::Keep,
+            },
+            ..HandlerResponse::ok(body)
         }
     }
 
@@ -468,17 +496,70 @@ pub enum Gate {
 }
 
 impl Gate {
-    /// Whether a handler behind this gate may serve an endpoint requiring
-    /// `auth`: an `admin()` endpoint needs an admin (or Analytics) handler, a
-    /// `LoggedIn` one a handler that is handed a user.
-    pub fn serves(self, auth: &AuthRequirement) -> bool {
-        match auth {
-            AuthRequirement::MinRole(role) if role.is_admin() => {
-                matches!(self, Gate::Admin | Gate::Analytics)
-            }
-            AuthRequirement::LoggedIn => self != Gate::Open,
-            AuthRequirement::MinRole(_) | AuthRequirement::Public => true,
+    /// The requirement an endpoint served by a handler behind this gate
+    /// declares: the [`Auth`](sc_api::Auth) marker's.
+    pub fn requirement(self) -> AuthRequirement {
+        match self {
+            Gate::Open => <sc_api::Anyone as sc_api::Auth>::REQ,
+            Gate::SignedIn => <sc_api::SignedIn as sc_api::Auth>::REQ,
+            Gate::Admin => <sc_api::AdminOnly as sc_api::Auth>::REQ,
+            Gate::Analytics => <sc_api::AnalyticsUi as sc_api::Auth>::REQ,
         }
+    }
+
+    /// Whether a handler behind this gate may serve an endpoint requiring
+    /// `auth`: exactly when the endpoint declares the gate's requirement
+    /// ([`requirement`](Gate::requirement)). Registered and declared with one
+    /// [`HandlerId`], they always do; a handler registered under a second id
+    /// of the same name and another type does not, and the router refuses it.
+    pub fn serves(self, auth: &AuthRequirement) -> bool {
+        self.requirement() == *auth
+    }
+}
+
+/// What a [`HandlerId<A>`]'s `A` makes of a handler (H6.1): the gate it is
+/// registered behind, and the caller it is handed. Implemented for the four
+/// [`sc_api::Auth`] markers and nothing else.
+pub trait Gated: sc_api::Auth {
+    /// Who the handler is handed.
+    type Who: Send + 'static;
+    /// The gate it is registered behind.
+    const GATE: Gate;
+    /// The request with its caller narrowed to [`Who`](Gated::Who), or the
+    /// refusal of a caller this does not admit.
+    fn narrow(ctx: HandlerCtx) -> Result<HandlerCtx<Self::Who>>;
+}
+
+impl Gated for sc_api::Anyone {
+    type Who = Caller;
+    const GATE: Gate = Gate::Open;
+    fn narrow(ctx: HandlerCtx) -> Result<HandlerCtx<Caller>> {
+        Ok(ctx)
+    }
+}
+
+impl Gated for sc_api::SignedIn {
+    type Who = AuthenticatedUser;
+    const GATE: Gate = Gate::SignedIn;
+    fn narrow(ctx: HandlerCtx) -> Result<HandlerCtx<AuthenticatedUser>> {
+        ctx.narrow(Caller::into_signed_in)
+    }
+}
+
+impl Gated for sc_api::AdminOnly {
+    type Who = Admin;
+    const GATE: Gate = Gate::Admin;
+    fn narrow(ctx: HandlerCtx) -> Result<HandlerCtx<Admin>> {
+        ctx.narrow(Caller::into_admin)
+    }
+}
+
+impl Gated for sc_api::AnalyticsUi {
+    type Who = AnalyticsCaller;
+    const GATE: Gate = Gate::Analytics;
+    fn narrow(ctx: HandlerCtx) -> Result<HandlerCtx<AnalyticsCaller>> {
+        let in_app = ctx.analytics_app.is_some();
+        ctx.narrow(|caller| caller.into_analytics(in_app))
     }
 }
 
@@ -503,85 +584,30 @@ impl HandlerRegistry {
         HandlerRegistry::default()
     }
 
-    /// Register an **open** async handler under `name`, replacing any previous
-    /// one: it is handed whoever the dispatcher resolved, and may serve only
-    /// endpoints that do not require a user ([`Gate::serves`]).
+    /// Register the handler `id` names (security review 2026-11 §8; H6.1),
+    /// replacing any previous one.
     ///
-    /// Accepts any async closure `Fn(HandlerCtx) -> Future<Output = Result<HandlerResponse>>`.
-    pub fn register<F, Fut>(&mut self, name: impl Into<String>, handler: F) -> &mut HandlerRegistry
+    /// `id`'s type says who may call it, and so what the handler is handed
+    /// ([`Gated::Who`]): the [`Caller`] for [`Anyone`](sc_api::Anyone), an
+    /// [`AuthenticatedUser`] for [`SignedIn`](sc_api::SignedIn), an [`Admin`]
+    /// for [`AdminOnly`](sc_api::AdminOnly) and an [`AnalyticsCaller`] for
+    /// [`AnalyticsUi`](sc_api::AnalyticsUi). The endpoint that names the
+    /// handler is declared with the same id ([`sc_api::handler_ids`]), so its
+    /// requirement and the handler's gate are one fact. The caller is narrowed
+    /// before the handler runs, so it is never called with less, however it is
+    /// reached.
+    pub fn handle<A, F, Fut>(&mut self, id: HandlerId<A>, handler: F) -> &mut HandlerRegistry
     where
-        F: Fn(HandlerCtx) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<HandlerResponse>> + Send + 'static,
-    {
-        let boxed: HandlerFn = Arc::new(move |ctx| Box::pin(handler(ctx)));
-        self.insert(name, Gate::Open, boxed)
-    }
-
-    /// Register a handler for a `LoggedIn` endpoint: it is handed the
-    /// signed-in [`AuthenticatedUser`], and never called without one.
-    pub fn register_signed_in<F, Fut>(
-        &mut self,
-        name: impl Into<String>,
-        handler: F,
-    ) -> &mut HandlerRegistry
-    where
-        F: Fn(HandlerCtx<AuthenticatedUser>) -> Fut + Send + Sync + 'static,
+        A: Gated,
+        F: Fn(HandlerCtx<A::Who>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<HandlerResponse>> + Send + 'static,
     {
         let handler = Arc::new(handler);
-        let boxed: HandlerFn =
-            Arc::new(
-                move |ctx: HandlerCtx| match ctx.narrow(Caller::into_signed_in) {
-                    Ok(ctx) => Box::pin(handler(ctx)) as BoxFuture<_>,
-                    Err(refused) => Box::pin(async move { Err(refused) }),
-                },
-            );
-        self.insert(name, Gate::SignedIn, boxed)
-    }
-
-    /// Register a handler for an `admin()` endpoint: it is handed the
-    /// [`Admin`] authority, and never called without it.
-    pub fn register_admin<F, Fut>(
-        &mut self,
-        name: impl Into<String>,
-        handler: F,
-    ) -> &mut HandlerRegistry
-    where
-        F: Fn(HandlerCtx<Admin>) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<HandlerResponse>> + Send + 'static,
-    {
-        let handler = Arc::new(handler);
-        let boxed: HandlerFn =
-            Arc::new(
-                move |ctx: HandlerCtx| match ctx.narrow(Caller::into_admin) {
-                    Ok(ctx) => Box::pin(handler(ctx)) as BoxFuture<_>,
-                    Err(refused) => Box::pin(async move { Err(refused) }),
-                },
-            );
-        self.insert(name, Gate::Admin, boxed)
-    }
-
-    /// Register a handler for an Analytics endpoint: on the admin host it is
-    /// handed [`Admin`] authority, and through an Analytics application its
-    /// visitor ([`AnalyticsCaller`]).
-    pub fn register_analytics<F, Fut>(
-        &mut self,
-        name: impl Into<String>,
-        handler: F,
-    ) -> &mut HandlerRegistry
-    where
-        F: Fn(HandlerCtx<AnalyticsCaller>) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<HandlerResponse>> + Send + 'static,
-    {
-        let handler = Arc::new(handler);
-        let boxed: HandlerFn = Arc::new(move |ctx: HandlerCtx| {
-            let in_app = ctx.analytics_app.is_some();
-            match ctx.narrow(|caller| caller.into_analytics(in_app)) {
-                Ok(ctx) => Box::pin(handler(ctx)) as BoxFuture<_>,
-                Err(refused) => Box::pin(async move { Err(refused) }),
-            }
+        let boxed: HandlerFn = Arc::new(move |ctx: HandlerCtx| match A::narrow(ctx) {
+            Ok(ctx) => Box::pin(handler(ctx)) as BoxFuture<_>,
+            Err(refused) => Box::pin(async move { Err(refused) }),
         });
-        self.insert(name, Gate::Analytics, boxed)
+        self.insert(id.name(), A::GATE, boxed)
     }
 
     fn insert(&mut self, name: impl Into<String>, gate: Gate, handler: HandlerFn) -> &mut Self {
@@ -600,11 +626,12 @@ impl HandlerRegistry {
         self.handlers.get(name).map(|r| r.gate)
     }
 
-    /// Every handler `endpoints` name is behind a gate that serves the
-    /// endpoint's requirement ([`Gate::serves`]): an `admin()` endpoint's
-    /// handler takes [`Admin`] authority, a `LoggedIn` one's a user. An
-    /// endpoint whose handler is not registered here is left to dispatch,
-    /// which answers it `501`.
+    /// Every handler `endpoints` name is behind a gate whose requirement is
+    /// the endpoint's ([`Gate::serves`]). Declared and registered under one
+    /// [`HandlerId`] they always agree; this refuses a handler registered
+    /// under a second id of the same name and another type. An endpoint whose
+    /// handler is not registered here is left to dispatch, which answers it
+    /// `501`.
     ///
     /// The router runs this before it serves anything, so an admin handler
     /// registered behind the open gate is a server that does not start rather

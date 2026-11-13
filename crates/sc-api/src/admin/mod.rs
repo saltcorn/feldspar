@@ -43,9 +43,8 @@
 //! lists the endpoints grouped by domain.
 
 use crate::auth::{credentials_schema, user_row_schema, user_summary_schema};
-use crate::endpoint::{
-    AuthRequirement, Endpoint, EndpointSet, McpTag, Method, PathSpec, QueryParam,
-};
+use crate::endpoint::{Endpoint, EndpointSet, McpTag, Method, PathSpec, QueryParam};
+use crate::handler_ids as ids;
 use crate::mcp::{Area, Grant};
 use crate::schema::{StructField, TypeSchema, ValueType};
 
@@ -66,8 +65,10 @@ mod llm;
 mod mcp_servers;
 mod models;
 mod modules;
+mod registry;
 mod rows;
 mod settings;
+mod source_control;
 mod streams;
 mod tables;
 mod translations;
@@ -110,6 +111,8 @@ pub fn admin_endpoints() -> EndpointSet {
     models::register(&mut set);
     streams::register(&mut set);
     backup::register(&mut set);
+    registry::register(&mut set);
+    source_control::register(&mut set);
 
     // The Analytics UI's datasets and workspaces (analytics TODO A1.13).
     crate::analytics::register(&mut set);
@@ -296,6 +299,16 @@ fn framework_ref_schema() -> TypeSchema {
     ])
 }
 
+/// An application's settings tabs (`sc_app::SettingsTab`): an id, a label, and
+/// the groups of the form the tab holds, in order.
+pub(crate) fn settings_tabs_schema() -> TypeSchema {
+    TypeSchema::array(TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::text()),
+        StructField::new("label", TypeSchema::text()),
+        StructField::new("groups", TypeSchema::array(TypeSchema::text())),
+    ]))
+}
+
 /// A registered framework and the settings it declares, so the admin UI can
 /// render a form for a framework it knows nothing about (§13.3). Each setting is
 /// a [`form_field_schema`] — the same `FormField` vocabulary a row editor uses.
@@ -315,6 +328,11 @@ fn framework_info_schema() -> TypeSchema {
         // form, the languages — so the screen keeps them off the create form
         // and edits them on the application's App settings tab.
         StructField::new("has_views", TypeSchema::bool()),
+        // How an application of this framework is edited: its settings tabs,
+        // in order, each with the parts of the form it holds (TODO UX2.1). The
+        // framework declares them; the server completes them, so every part of
+        // the form is on one.
+        StructField::new("settings_tabs", settings_tabs_schema()),
         // The settings whose value names a file store. `config_spec` cannot say
         // so — by the time it is sent, a store picker has been resolved to a
         // plain list of names — and a new application's form needs to know,
@@ -439,6 +457,10 @@ fn form_field_schema() -> TypeSchema {
         // `section_header`), or null for one that continues the group before
         // it: the form draws the heading above it.
         StructField::new("section", TypeSchema::optional(TypeSchema::text())),
+        // The id of the settings tab the field is shown on (an application
+        // form's, `sc_app::SettingsTab`), or null for the tab holding the
+        // framework choice.
+        StructField::new("tab", TypeSchema::optional(TypeSchema::text())),
         // A sentence or two shown under the control (v1's `sublabel`), or null.
         StructField::new("sublabel", TypeSchema::optional(TypeSchema::text())),
         // The help topic that explains the setting at length (`getHelp`), or
@@ -590,6 +612,8 @@ mod tests {
             "createUser",
             "becomeUser",
             "setRandomPassword",
+            // Nor mailing a password, which the request carries in clear.
+            "sendCredentialsEmail",
             // And above all: a token that could mint tokens could not be
             // revoked (phase 2.4 says so in its own comment).
             "createApiToken",
@@ -686,20 +710,22 @@ mod tests {
         // Building writes the generated client and replaces what a subdomain
         // serves: a change to what is there, whatever the method reads as.
         assert_eq!(grant_of("buildApplication"), Some(Grant::Edit));
-        // Roles and accounts are access (TODO F1.9); deleting one is a deletion
-        // as well.
+        // Roles and accounts (TODO F1.9) need no access grant since
+        // TODO-type-hardening H8.9: creating is creating, disabling is an edit,
+        // and deleting still needs `allow_drop`. The last enabled admin is
+        // protected by `sc_auth::refuse_last_admin`, not by a grant.
         let also_of = |name: &str| {
             set.find(name)
                 .and_then(|e| e.mcp.as_ref())
                 .and_then(|t| t.also)
         };
+        assert_eq!(grant_of("createRole"), Some(Grant::Create));
+        assert_eq!(grant_of("setUserDisabled"), Some(Grant::Edit));
+        assert_eq!(grant_of("deleteRole"), Some(Grant::Drop));
+        assert_eq!(grant_of("deleteUser"), Some(Grant::Drop));
         for name in ["createRole", "setUserDisabled", "deleteRole", "deleteUser"] {
-            assert_eq!(grant_of(name), Some(Grant::AccessChanges), "{name}");
+            assert_eq!(also_of(name), None, "{name}");
         }
-        assert_eq!(also_of("createRole"), None);
-        assert_eq!(also_of("setUserDisabled"), None);
-        assert_eq!(also_of("deleteRole"), Some(Grant::Drop));
-        assert_eq!(also_of("deleteUser"), Some(Grant::Drop));
 
         for read_only in [
             "listAgents",
@@ -739,7 +765,7 @@ mod tests {
         for projection in Projection::all(&admin_endpoints()) {
             assert_eq!(
                 projection.auth(),
-                &AuthRequirement::admin(),
+                &crate::AuthRequirement::admin(),
                 "`{}` is projected as an MCP tool and must be admin-only",
                 projection.name()
             );

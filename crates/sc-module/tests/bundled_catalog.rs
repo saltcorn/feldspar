@@ -12,6 +12,10 @@
 //! writing it rather than leaving the catalog to the two `#[ignore]`d install
 //! tests that reach a registry.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use std::path::Path;
 
 use sc_module::{BUNDLED_IN_CHECKOUT, BundledModules, ModuleLanguage};

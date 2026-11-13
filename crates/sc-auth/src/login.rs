@@ -13,13 +13,16 @@ use sc_error::Result;
 use sc_query::{Expr, Select, Source, Statement, Value};
 
 use crate::password::{needs_rehash, verify_password};
+use crate::signin::{FirstFactor, PasswordVerified};
 use crate::user::User;
 use crate::users::{COL_EMAIL, COL_PASSWORD_HASH, USERS_TABLE};
 
 /// Authenticate `email` + `password` against the `users` table.
 ///
-/// Returns `Ok(Some(user))` when a user with that email exists and the password
-/// matches, and `Ok(None)` for every ordinary failure — unknown email, a user
+/// Returns `Ok(Some(signing_in))` when a user with that email exists and the
+/// password matches — a [`PasswordVerified`], which is half a sign-in: a
+/// session is started only once it is completed with the second factor
+/// ([`PasswordVerified::complete`]). Otherwise and `Ok(None)` for every ordinary failure — unknown email, a user
 /// with no password set, a wrong password, or a **disabled** account. Only an
 /// infrastructure fault (a broken stored hash, a database error) yields [`Err`].
 ///
@@ -32,7 +35,11 @@ use crate::users::{COL_EMAIL, COL_PASSWORD_HASH, USERS_TABLE};
 /// unicode) is a policy decision deferred past the MVP. This function applies no
 /// role gate — an authenticated public user is still returned; the admin-UI role
 /// gate is layered on separately (a later Phase 5 item).
-pub async fn authenticate(catalog: &Catalog, email: &str, password: &str) -> Result<Option<User>> {
+pub async fn authenticate(
+    catalog: &Catalog,
+    email: &str,
+    password: &str,
+) -> Result<Option<PasswordVerified>> {
     let email = email.trim();
     if email.is_empty() {
         return Ok(None);
@@ -76,7 +83,7 @@ pub async fn authenticate(catalog: &Catalog, email: &str, password: &str) -> Res
     // moment it ever is. Best-effort: the password was right, and a failed
     // upgrade is tried again at the next login rather than refusing this one.
     if needs_rehash(&hash)
-        && let Err(e) = crate::manage::set_user_password(catalog, user.id(), password).await
+        && let Err(e) = crate::manage::replace_password_hash(catalog, user.id(), password).await
     {
         sc_log::log_warn!(
             "the legacy password hash of user {} could not be replaced: {}",
@@ -86,7 +93,10 @@ pub async fn authenticate(catalog: &Catalog, email: &str, password: &str) -> Res
     }
 
     // Served at the effective role, as every other way of loading a user is.
-    Ok(Some(crate::grants::with_grants(catalog, user).await?.0))
+    let user = crate::grants::with_grants(catalog, user).await?.0;
+    Ok(Some(
+        PasswordVerified::by(catalog, user, FirstFactor::Password).await?,
+    ))
 }
 
 /// Authenticate credentials and require **admin** access — the role gate for the
@@ -102,7 +112,7 @@ pub async fn authenticate_admin(
     catalog: &Catalog,
     email: &str,
     password: &str,
-) -> Result<Option<User>> {
+) -> Result<Option<PasswordVerified>> {
     match authenticate(catalog, email, password).await? {
         Some(user) if user.is_admin() => Ok(Some(user)),
         _ => Ok(None),

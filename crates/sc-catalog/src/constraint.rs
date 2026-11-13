@@ -398,12 +398,9 @@ pub fn create_constraint_steps(
             })]
         }
         ConstraintKind::FullTextSearch { language } if dialect.is_sqlite() => {
-            vec![SchemaStep::Sql(fts5_create_sql(
-                dialect,
-                table,
-                &constraint.name,
-                language,
-            )?)]
+            vec![SchemaStep::Sql(sc_query::TrustedSql::composed(
+                fts5_create_sql(dialect, table, &constraint.name, language)?,
+            ))]
         }
         ConstraintKind::FullTextSearch { language } => {
             vec![SchemaStep::Change(SchemaChange::CreateIndex {
@@ -414,17 +411,14 @@ pub fn create_constraint_steps(
             })]
         }
         ConstraintKind::Formula { formula } => {
-            vec![SchemaStep::Sql(row_constraint_sql(
-                dialect, projection, table, constraint, formula,
-            )?)]
+            vec![SchemaStep::Sql(sc_query::TrustedSql::composed(
+                row_constraint_sql(dialect, projection, table, constraint, formula)?,
+            ))]
         }
         ConstraintKind::VectorIndex { field } => {
-            vec![SchemaStep::Sql(vector_index_sql(
-                dialect,
-                table,
-                &constraint.name,
-                field,
-            )?)]
+            vec![SchemaStep::Sql(sc_query::TrustedSql::composed(
+                vector_index_sql(dialect, table, &constraint.name, field)?,
+            ))]
         }
     };
     if let Some(meta) = constraint.meta() {
@@ -454,7 +448,10 @@ pub fn drop_constraint_steps(
         // An FTS5 table is not an index and keeps its comment in a table of the
         // driver's, which a dropped virtual table does not take with it.
         ConstraintKind::FullTextSearch { .. } if dialect.is_sqlite() => vec![
-            SchemaStep::Sql(fts5_drop_sql(dialect, &constraint.name)),
+            SchemaStep::Sql(sc_query::TrustedSql::composed(fts5_drop_sql(
+                dialect,
+                &constraint.name,
+            ))),
             SchemaStep::Change(SchemaChange::SetComment {
                 target: constraint.comment_target(table_name),
                 comment: None,
@@ -470,13 +467,15 @@ pub fn drop_constraint_steps(
         }
         // The function goes with the trigger, or a re-created constraint of the
         // same name would silently keep the *old* formula's body.
-        ConstraintKind::Formula { .. } => vec![SchemaStep::Sql(format!(
-            "DROP TRIGGER IF EXISTS {trigger} ON {table};\n\
+        ConstraintKind::Formula { .. } => {
+            vec![SchemaStep::Sql(sc_query::TrustedSql::composed(format!(
+                "DROP TRIGGER IF EXISTS {trigger} ON {table};\n\
              DROP FUNCTION IF EXISTS {function}();\n",
-            trigger = dialect.quote_ident(&constraint.name),
-            table = dialect.quote_ident(table_name),
-            function = dialect.quote_ident(&function_name(&constraint.name)),
-        ))],
+                trigger = dialect.quote_ident(&constraint.name),
+                table = dialect.quote_ident(table_name),
+                function = dialect.quote_ident(&function_name(&constraint.name)),
+            )))]
+        }
     }
 }
 
@@ -504,15 +503,21 @@ fn vector_index_sql(
             table.name
         )));
     };
-    if !matches!(found.base.type_.as_basic(), Some(BasicType::Vector(n)) if *n > 0) {
-        return Err(Error::invalid(format!(
-            "a vector index is over a vector field, and `{}.{field}` is a {}",
-            table.name,
-            found.base.type_.name()
-        )));
-    }
+    // The operator class is the column's precision: pgvector indexes a
+    // `halfvec` with its own (`halfvec_cosine_ops`).
+    let ops = match found.base.type_.as_basic() {
+        Some(BasicType::Vector(n)) if *n > 0 => "vector_cosine_ops",
+        Some(BasicType::HalfVector(n)) if *n > 0 => "halfvec_cosine_ops",
+        _ => {
+            return Err(Error::invalid(format!(
+                "a vector index is over a vector field, and `{}.{field}` is a {}",
+                table.name,
+                found.base.type_.name()
+            )));
+        }
+    };
     Ok(format!(
-        "CREATE INDEX {} ON {} USING {VECTOR_INDEX_METHOD} ({} vector_cosine_ops);\n",
+        "CREATE INDEX {} ON {} USING {VECTOR_INDEX_METHOD} ({} {ops});\n",
         dialect.quote_ident(name),
         dialect.quote_ident(&table.name),
         dialect.quote_ident(field),
@@ -555,7 +560,7 @@ pub fn is_full_text_field(field: &DataField) -> bool {
 /// ([`sc_query::text_search_document`]), because an index and the search that
 /// hopes to use it must be the same expression or the index is simply never
 /// used.
-pub fn full_text_expression(
+pub(crate) fn full_text_expression(
     dialect: &dyn SqlDialect,
     table: &Table,
     language: &str,
@@ -918,6 +923,18 @@ pub fn validate_formula(
              is checked the same way on every write.",
         ));
     }
+    if analysis.uses(sc_expr::Ambient::Request) {
+        return Err(Error::invalid(
+            "a row constraint cannot use `_request`: it is checked by the database, which \
+             has no request. Put the rule in the table's ownership formula instead.",
+        ));
+    }
+    if analysis.uses(sc_expr::Ambient::Old) {
+        return Err(Error::invalid(
+            "a row constraint cannot use `old`: it is checked on the row as it is written. \
+             Put a rule about how a row may change in the table's ownership formula instead.",
+        ));
+    }
     Ok(())
 }
 
@@ -1100,7 +1117,7 @@ mod tests {
         .message("we don't work for free");
         let steps = create_constraint_steps(&Pg, &projection, &table, &constraint).expect("steps");
         let sql = match &steps[0] {
-            SchemaStep::Sql(sql) => sql.clone(),
+            SchemaStep::Sql(sql) => sql.as_str().to_owned(),
             other => panic!("expected generated SQL, got {other:?}"),
         };
 
@@ -1160,6 +1177,7 @@ mod tests {
         let SchemaStep::Sql(sql) = &steps[0] else {
             panic!("expected generated SQL")
         };
+        let sql = sql.as_str();
         assert!(
             sql.contains("row constraint `sc_ck_employees_paid` on `employees` is not satisfied"),
             "{sql}"
@@ -1203,6 +1221,7 @@ mod tests {
         let SchemaStep::Sql(sql) = &steps[0] else {
             panic!("expected generated SQL")
         };
+        let sql = sql.as_str();
         assert!(sql.contains("DROP TRIGGER IF EXISTS \"sc_ck_employees_paid\" ON \"employees\""));
         assert!(sql.contains("DROP FUNCTION IF EXISTS \"sc_ck_employees_paid_fn\"()"));
     }
@@ -1216,6 +1235,9 @@ mod tests {
         assert!(err.to_string().contains("user"), "{err}");
         let err = validate_formula(&projection, "employees", "_insert || salary > 0").unwrap_err();
         assert!(err.to_string().contains("_insert"), "{err}");
+        // TODO-type-hardening H7.3: `old` is an update's, not a constraint's.
+        let err = validate_formula(&projection, "employees", "salary >= old.salary").unwrap_err();
+        assert!(err.to_string().contains("`old`"), "{err}");
     }
 
     #[test]

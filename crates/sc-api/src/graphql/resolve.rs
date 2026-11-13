@@ -75,6 +75,68 @@ use sc_types::value_to_json;
 pub type Resolver =
     Box<dyn for<'a> Fn(ResolverContext<'a>) -> FieldFuture<'a> + Send + Sync + 'static>;
 
+/// The argument a root field presents values to ownership formulas with, as
+/// `_request` (TODO-type-hardening H7.6): `shares(request: { token: "…" })`.
+pub const ARG_REQUEST: &str = "request";
+
+/// `inner`, run inside an origin presenting the field's `request` argument, when
+/// it has one. What the field's own reads decide by; a nested field resolved
+/// after it presents what the HTTP request did (its `X-Sc-Request-*` headers).
+pub fn presenting(inner: Resolver) -> Resolver {
+    presenting_by(ARG_REQUEST, inner)
+}
+
+/// [`presenting`], reading the argument called `arg` (`_request` beside a
+/// primary key called `request`).
+pub fn presenting_by(arg: &'static str, inner: Resolver) -> Resolver {
+    Box::new(move |ctx| {
+        let presented = match presented_argument(&ctx, arg) {
+            Ok(presented) => presented,
+            Err(e) => {
+                return FieldFuture::new(async move { Err::<Option<FieldValue<'_>>, _>(e.into()) });
+            }
+        };
+        match (inner(ctx), presented) {
+            (FieldFuture::Future(fut), Some(values)) => {
+                let origin = sc_catalog::Origin {
+                    request: values,
+                    ..sc_catalog::current_origin()
+                };
+                FieldFuture::Future(Box::pin(sc_catalog::with_origin(origin, fut)))
+            }
+            (other, _) => other,
+        }
+    })
+}
+
+/// A field's `request` argument as presented values: an object of strings.
+fn presented_argument(
+    ctx: &ResolverContext<'_>,
+    name: &str,
+) -> Result<Option<sc_expr::RequestValues>> {
+    let Some(arg) = ctx.args.get(name) else {
+        return Ok(None);
+    };
+    let json = arg
+        .as_value()
+        .clone()
+        .into_json()
+        .map_err(|e| Error::invalid(format!("`{name}`: {e}")))?;
+    let serde_json::Value::Object(map) = json else {
+        return Err(Error::invalid(format!(
+            "`{name}` is an object of strings, as `{{ token: \"…\" }}`"
+        )));
+    };
+    let mut pairs = Vec::with_capacity(map.len());
+    for (key, value) in map {
+        let serde_json::Value::String(value) = value else {
+            return Err(Error::invalid(format!("`{name}.{key}` must be a string")));
+        };
+        pairs.push((key, value));
+    }
+    sc_expr::RequestValues::new(pairs).map(Some)
+}
+
 /// One row as the resolvers pass it down: the values its `SELECT` returned,
 /// keyed by column, plus whichever table they came from.
 ///

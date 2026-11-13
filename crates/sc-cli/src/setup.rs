@@ -60,10 +60,16 @@
 //! request fails without `SSL_CERT_FILE` and passes with the distribution's
 //! bundle, it sets that variable for the service (a systemd drop-in, or
 //! `/etc/conf.d/feldspar` under OpenRC).
+//!
+//! May use `unsafe` (the workspace denies it) for one `libc::geteuid`, the root
+//! check.
+#![allow(unsafe_code)]
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+
+use sc_proc::{HostCommand, OperatorCli, Program, Timeout};
 
 use sc_config_file::ConfigFile;
 use sc_error::{Error, Result};
@@ -475,9 +481,9 @@ impl Host {
             .ok()
             .filter(|u| !u.is_empty())
             .or_else(|| {
-                Command::new("id")
-                    .arg("-un")
-                    .output()
+                let mut id = HostCommand::new("id", &SETUP, Timeout::secs(30));
+                id.arg("-un");
+                id.output_blocking()
                     .ok()
                     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
             })
@@ -501,11 +507,9 @@ impl Host {
                 .join(".s.PGSQL.5432")
                 .exists(),
             npm: which("npm").and_then(|npm| {
-                let out = Command::new(npm)
-                    .arg("--version")
-                    .stderr(Stdio::null())
-                    .output()
-                    .ok()?;
+                let mut version = HostCommand::new(Program::path(npm), &SETUP, Timeout::secs(30));
+                version.arg("--version").stderr(Stdio::null());
+                let out = version.output_blocking().ok()?;
                 out.status
                     .success()
                     .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
@@ -1929,6 +1933,20 @@ start_pre() {{
     )
 }
 
+/// The operator's authority for what setup runs.
+const SETUP: OperatorCli = OperatorCli::new("setup");
+
+/// `argv` — a step setup planned, with `sudo` in front where it needs root —
+/// at the operator's terminal: their environment, their stdin (so `sudo` can
+/// ask for a password) and their process group (so Ctrl-C reaches it). `None`
+/// for an empty one.
+fn operator_command(argv: &[String], timeout: Timeout) -> Option<HostCommand> {
+    let (program, args) = argv.split_first()?;
+    let mut command = HostCommand::new(Program::configured(program), &SETUP, timeout);
+    command.configured_args(args).operator_terminal(&SETUP);
+    Some(command)
+}
+
 fn with_sudo(argv: &[String], root: bool, host: &Host) -> Vec<String> {
     match (&host.sudo, root && !host.root) {
         (Some(sudo), true) => std::iter::once(sudo.clone())
@@ -2050,12 +2068,10 @@ pub fn execute(steps: &[Step], host: &Host, out: &mut dyn Write) -> Result<()> {
             }
             Step::Run { argv, root, unless } => {
                 if let Some(probe) = unless
-                    && Command::new(&probe[0])
-                        .args(&probe[1..])
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status()
-                        .is_ok_and(|s| s.success())
+                    && operator_command(probe, Timeout::minutes(2)).is_some_and(|mut probe| {
+                        probe.stdout(Stdio::null()).stderr(Stdio::null());
+                        probe.status_blocking().is_ok_and(|s| s.success())
+                    })
                 {
                     let _ = writeln!(out, "    already done: {}", shell_line(argv));
                     continue;
@@ -2063,10 +2079,16 @@ pub fn execute(steps: &[Step], host: &Host, out: &mut dyn Write) -> Result<()> {
                 let argv = with_sudo(argv, *root, host);
                 let _ = writeln!(out, "    $ {}", shell_line(&argv));
                 let _ = out.flush();
-                let status = Command::new(&argv[0])
-                    .args(&argv[1..])
-                    .status()
-                    .map_err(|e| Error::msg(format!("running {}: {e}", argv[0])))?;
+                // As long as it takes: a package install, at the operator's
+                // terminal, which may first ask for a password.
+                let step = operator_command(
+                    &argv,
+                    Timeout::unbounded("a setup step at the operator's terminal"),
+                )
+                .ok_or_else(|| Error::msg("a setup step with no program"))?;
+                let status = step
+                    .status_blocking()
+                    .map_err(|e| Error::msg(e.to_string()))?;
                 if !status.success() {
                     return Err(Error::msg(format!(
                         "`{}` failed ({status}); nothing after it was done",
@@ -2125,16 +2147,13 @@ fn check_browser(
             user.is_some(),
             host,
         );
-        match Command::new(&argv[0])
-            .args(&argv[1..])
-            .stdin(Stdio::null())
-            .output()
-        {
-            Ok(o) => (
+        match operator_command(&argv, Timeout::minutes(2)).map(HostCommand::output_blocking) {
+            Some(Ok(o)) => (
                 String::from_utf8_lossy(&o.stdout).contains("<html"),
                 String::from_utf8_lossy(&o.stderr).into_owned(),
             ),
-            Err(e) => (false, format!("running {}: {e}", argv[0])),
+            Some(Err(e)) => (false, e.to_string()),
+            None => (false, "no browser to run".to_owned()),
         }
     };
     let _ = writeln!(out, "    starting {}", browser.display());
@@ -2202,12 +2221,8 @@ fn check_python_tls(
 ) -> Result<()> {
     let attempt = |bundle: Option<&str>| {
         let argv = with_sudo(&python_check_argv(binary, user, bundle), true, host);
-        match Command::new(&argv[0])
-            .args(&argv[1..])
-            .stdin(Stdio::null())
-            .output()
-        {
-            Ok(o) => (
+        match operator_command(&argv, Timeout::minutes(2)).map(HostCommand::output_blocking) {
+            Some(Ok(o)) => (
                 o.status.success(),
                 format!(
                     "{}{}",
@@ -2215,7 +2230,8 @@ fn check_python_tls(
                     String::from_utf8_lossy(&o.stderr)
                 ),
             ),
-            Err(e) => (false, format!("running {}: {e}", argv[0])),
+            Some(Err(e)) => (false, e.to_string()),
+            None => (false, "no interpreter to run".to_owned()),
         }
     };
     let (ok, output) = attempt(None);
@@ -2315,10 +2331,9 @@ fn write_file(
     }
     let result = commands.iter().try_for_each(|argv| {
         let argv = with_sudo(argv, true, host);
-        let ok = Command::new(&argv[0])
-            .args(&argv[1..])
-            .status()
-            .is_ok_and(|s| s.success());
+        // `sudo` may ask for a password first.
+        let ok = operator_command(&argv, Timeout::minutes(10))
+            .is_some_and(|cmd| cmd.status_blocking().is_ok_and(|s| s.success()));
         if ok {
             Ok(())
         } else {
@@ -2342,9 +2357,9 @@ fn read_existing(path: &Path, host: &Host) -> Result<Option<String>> {
                 true,
                 host,
             );
-            let out = Command::new(&argv[0])
-                .args(&argv[1..])
-                .output()
+            let out = operator_command(&argv, Timeout::minutes(10))
+                .ok_or_else(|| Error::msg(format!("reading {}", path.display())))?
+                .output_blocking()
                 .map_err(|e| Error::msg(format!("reading {}: {e}", path.display())))?;
             if !out.status.success() {
                 return Err(Error::msg(format!("could not read {}", path.display())));

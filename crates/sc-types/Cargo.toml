@@ -23,6 +23,8 @@ rust_decimal.workspace = true
 regex-lite.workspace = true
 # An archive's bytes (`json::Spelling::Archive`).
 base64.workspace = true
+# A backup's half-precision vectors (`vector_pack`).
+half.workspace = true
 
 [lints]
 workspace = true

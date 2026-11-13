@@ -130,7 +130,7 @@ async fn resolve_module_call(
         "module": call.module,
         "function": call.function,
         "args": args,
-        "timeout_ms": MODULE_CALL_TIMEOUT.as_millis() as u64,
+        "timeout_ms": u64::try_from(MODULE_CALL_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
     });
     let answered = tokio::time::timeout(MODULE_CALL_TIMEOUT, host.call(plan))
         .await

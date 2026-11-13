@@ -579,7 +579,7 @@ async fn stack_and_split_turn_columns_into_rows_and_back() -> Result<()> {
         let compiled = compile(&schema, &Library::default(), &base, Options::default());
         let values = column_values(
             &fx.cat,
-            &sc_dataset::Caller::admin(),
+            &sc_dataset::Caller::system("test"),
             compiled.last().expect("reads"),
             "quarter",
             10,
@@ -1051,7 +1051,7 @@ async fn paging_is_stable_under_the_order_and_the_count_matches() -> Result<()> 
         let stage = compiled.last().expect("reads");
         let whole = read_page(
             &fx.cat,
-            &sc_dataset::Caller::admin(),
+            &sc_dataset::Caller::system("test"),
             stage,
             Page::first(100),
         )
@@ -1061,7 +1061,7 @@ async fn paging_is_stable_under_the_order_and_the_count_matches() -> Result<()> 
         for offset in [0, 2, 4] {
             let page = read_page(
                 &fx.cat,
-                &sc_dataset::Caller::admin(),
+                &sc_dataset::Caller::system("test"),
                 stage,
                 Page { offset, limit: 2 },
             )

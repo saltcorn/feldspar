@@ -500,6 +500,10 @@ impl ContextState {
     /// The measured size of a request whose raw estimate is `raw`: what the
     /// provider reported for the last request, plus the calibrated estimate of
     /// the difference. Before any report, the calibrated estimate alone.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "an estimate: a non-negative float, saturating at u64::MAX"
+    )]
     pub fn measure(&self, raw: u64) -> u64 {
         match self.measured {
             Some(Measured {

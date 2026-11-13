@@ -102,8 +102,17 @@ enum Applied {
     /// Nothing has been applied yet: the next statement must say who it is,
     /// whoever that is.
     Unknown,
-    /// This `(role, user JSON, changeset GUC text)`.
-    Caller(Role, Option<String>, String),
+    /// This `(role, user JSON, changeset GUC text)`, guest session and
+    /// presented values: everything [`set_caller_context`] sets a GUC from but
+    /// the instant, so a writer who differs in any of them is given its own
+    /// (TODO-type-hardening H7.5).
+    Caller(
+        Role,
+        Option<String>,
+        String,
+        Option<String>,
+        sc_expr::RequestValues,
+    ),
 }
 
 /// Something to do once the transaction has committed
@@ -242,7 +251,13 @@ impl SharedTx {
         if self.caller_gucs {
             // The system runs as the admin role with no user (`Authority`).
             let caller = authority.as_principal();
-            let wanted = Applied::Caller(caller.role, caller.user_json(), caller.changeset_json());
+            let wanted = Applied::Caller(
+                caller.policy_role(),
+                caller.user_json(),
+                caller.changeset_json(),
+                caller.session().map(str::to_owned),
+                caller.request().clone(),
+            );
             if open.applied != wanted {
                 let tx = open.handle(&self.driver).await?;
                 // Every GUC is spelled out rather than left alone: an unset GUC

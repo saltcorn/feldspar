@@ -98,46 +98,28 @@ pub fn check_browser_sandbox(browser: &Path) -> Result<(), String> {
     result
 }
 
+/// The server checking its browser at boot: a fixed page, a scratch profile.
+const BROWSER_PROBE: sc_proc::SystemTask = sc_proc::SystemTask::new("browser sandbox check");
+
 fn run_sandbox_check(browser: &Path, profile: &Path) -> Result<(), String> {
-    use std::process::{Command, Stdio};
-    let mut child = match Command::new(browser)
+    let mut probe = sc_proc::HostCommand::new(
+        sc_proc::Program::path(browser),
+        &BROWSER_PROBE,
+        sc_proc::Timeout::after(SANDBOX_CHECK_TIMEOUT),
+    );
+    probe
         .args(["--headless", "--disable-gpu", "--no-first-run"])
-        .arg(format!("--user-data-dir={}", profile.display()))
+        .flag_eq("--user-data-dir", profile)
         .args(["--dump-dom", "about:blank"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        // Not this check's finding: `view_app` will say the same, in context.
+        .stdout(std::process::Stdio::null());
+    let output = match probe.output_blocking() {
+        Ok(output) => output,
+        // Not this check's finding — a browser that would not start, or did
+        // not finish in time: `view_app` will say the same, in context.
         Err(_) => return Ok(()),
     };
-    // The pipe is drained on a thread so a chatty browser cannot fill it and
-    // stall while this waits for it to exit.
-    let stderr = child.stderr.take().map(|mut pipe| {
-        std::thread::spawn(move || {
-            let mut out = String::new();
-            let _ = pipe.read_to_string(&mut out);
-            out
-        })
-    });
-    let started = std::time::Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < SANDBOX_CHECK_TIMEOUT => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Ok(());
-            }
-        }
-    };
-    let stderr = stderr.and_then(|t| t.join().ok()).unwrap_or_default();
-    if status.success() || !stderr.contains(NO_SANDBOX) {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if output.status.success() || !stderr.contains(NO_SANDBOX) {
         return Ok(());
     }
     Err(format!(

@@ -194,7 +194,7 @@ async fn a_task_inserted_while_the_phases_are_saved_is_seen_by_the_save() -> Res
 
     // A task is being inserted for the phase: it holds the phase locked.
     let mut tx = lock_phase(&db, phase).await?;
-    let saving = tokio::spawn({
+    let saving = sc_catalog::spawn_scoped({
         let catalog = catalog.clone();
         async move { save_phases(&catalog, app, &[input("Customers")]).await }
     });
@@ -224,7 +224,7 @@ async fn a_task_for_a_phase_the_save_deletes_waits_and_is_refused() -> Result<()
 
     // A save of the phases holds the phase locked, then deletes it.
     let mut tx = lock_phase(&db, phase).await?;
-    let inserting = tokio::spawn({
+    let inserting = sc_catalog::spawn_scoped({
         let catalog = catalog.clone();
         async move { insert_task(&catalog, &tables_task(phase)).await }
     });

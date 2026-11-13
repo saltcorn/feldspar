@@ -11,6 +11,12 @@
 //!   for *any* column type — unlike `Option::<T>::None`, which only accepts one.
 //! - **Result column → [`Value`]**: [`decode`] reads one column of a
 //!   [`tokio_postgres::Row`] according to its Postgres type, handling `NULL`.
+//!
+//! A type outside both lists — an extension's (`sparsevec`),
+//! `interval`, `inet`, an array — travels as **its text**: `run_query` reads such
+//! a column as `col::text`, and a text value bound to such a parameter is sent in
+//! Postgres's text format (`encode_format`). That is the same value the type
+//! layer has for it (`BasicType::Other` holds text), and what a backup writes.
 
 use bytes::BytesMut;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
@@ -18,7 +24,7 @@ use rust_decimal::Decimal;
 use sc_error::{Error, Result};
 use sc_query::Value;
 use tokio_postgres::Row as PgRow;
-use tokio_postgres::types::{FromSql, IsNull, ToSql, Type};
+use tokio_postgres::types::{Format, FromSql, IsNull, ToSql, Type};
 use uuid::Uuid;
 
 /// The boxed error type tokio-postgres' `ToSql` methods return.
@@ -32,6 +38,11 @@ type BoxError = Box<dyn std::error::Error + Sync + Send>;
 #[derive(Debug)]
 pub struct PgParam<'a>(pub &'a Value);
 
+/// The error for an integer that does not fit the placeholder's narrower type.
+fn out_of_range(v: i64, ty: &str) -> BoxError {
+    format!("the value {v} is out of range for type {ty}").into()
+}
+
 impl PgParam<'_> {
     fn encode(&self, ty: &Type, out: &mut BytesMut) -> std::result::Result<IsNull, BoxError> {
         match self.0 {
@@ -44,10 +55,16 @@ impl PgParam<'_> {
             // integer (`int2`/`int4`) or `numeric` — the latter is common when a
             // formula compares against an aggregate (`sum(x) > 100`), since
             // `sum` widens to `numeric`. `i64::to_sql` only accepts `int8`, so
-            // coerce to the target rather than error the whole query.
+            // coerce to the target rather than error the whole query. A value
+            // out of the narrower type's range is an error, never a wrapped
+            // value: `4294967297` bound as `int4` would otherwise match row 1.
             Value::Int(v) => match *ty {
-                Type::INT2 => (*v as i16).to_sql_checked(ty, out),
-                Type::INT4 => (*v as i32).to_sql_checked(ty, out),
+                Type::INT2 => i16::try_from(*v)
+                    .map_err(|_| out_of_range(*v, "smallint"))?
+                    .to_sql_checked(ty, out),
+                Type::INT4 => i32::try_from(*v)
+                    .map_err(|_| out_of_range(*v, "integer"))?
+                    .to_sql_checked(ty, out),
                 Type::NUMERIC => Decimal::from(*v).to_sql_checked(ty, out),
                 // `price > 100000` on a `double precision` column: Postgres
                 // infers the placeholder from the column, and a whole-number
@@ -60,7 +77,7 @@ impl PgParam<'_> {
                 Type::NUMERIC => Decimal::try_from(*v)
                     .map_err(BoxError::from)
                     .and_then(|d| d.to_sql_checked(ty, out)),
-                Type::FLOAT4 => (*v as f32).to_sql_checked(ty, out),
+                Type::FLOAT4 => single_precision(*v).to_sql_checked(ty, out),
                 _ => v.to_sql_checked(ty, out),
             },
             // A geometry travels as GeoJSON and PostGIS takes EWKB (see
@@ -71,10 +88,15 @@ impl PgParam<'_> {
             // A vector travels as a JSON array and pgvector takes its own
             // binary form; a form may send the array's text.
             Value::Json(v) if ty.name() == VECTOR_TYPE => encode_vector(v, out),
-            Value::Text(v) if ty.name() == VECTOR_TYPE => {
+            Value::Json(v) if ty.name() == HALFVEC_TYPE => encode_half_vector(v, out),
+            Value::Text(v) if ty.name() == VECTOR_TYPE || ty.name() == HALFVEC_TYPE => {
                 let json: serde_json::Value = serde_json::from_str(v)
                     .map_err(|_| BoxError::from(format!("{v:?} is not a vector")))?;
-                encode_vector(&json, out)
+                if ty.name() == HALFVEC_TYPE {
+                    encode_half_vector(&json, out)
+                } else {
+                    encode_vector(&json, out)
+                }
             }
             Value::Text(v) if crate::geometry::is_geometry_type(ty.name()) => {
                 let json: serde_json::Value = serde_json::from_str(v)
@@ -129,6 +151,13 @@ impl PgParam<'_> {
             .to_sql_checked(ty, out),
             Value::Text(v) if *ty == Type::BOOL => {
                 parse_text(v, ty, parse_bool)?.to_sql_checked(ty, out)
+            }
+            // A type this driver has no binary form for (`halfvec`, `interval`,
+            // `inet`, …): `encode_format` sent the parameter in text format, so
+            // its bytes are the text, which the type's own input function reads.
+            Value::Text(v) if sends_text_format(ty) => {
+                out.extend_from_slice(v.as_bytes());
+                Ok(IsNull::No)
             }
             Value::Text(v) => v.to_sql_checked(ty, out),
             Value::Bytes(v) => v.to_sql_checked(ty, out),
@@ -199,6 +228,21 @@ fn encode_geometry(
 /// itself: an extension's type has no fixed OID.
 pub(crate) const VECTOR_TYPE: &str = "vector";
 
+/// pgvector's half-precision vector, read and written like [`VECTOR_TYPE`]
+/// with 16-bit elements.
+pub(crate) const HALFVEC_TYPE: &str = "halfvec";
+
+/// `v` rounded to the single precision a `float4` column (and a vector
+/// element) holds, as Postgres itself rounds a `float8` assigned to one. A value
+/// past `f32`'s range becomes infinite.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the narrowing is the point: a float4 holds single precision"
+)]
+fn single_precision(v: f64) -> f32 {
+    v as f32
+}
+
 /// A JSON array of numbers as pgvector's binary form: the dimension count and
 /// an unused word, as 16-bit integers, then each element as a big-endian
 /// `f32` (pgvector's `vector_recv`).
@@ -218,7 +262,7 @@ fn encode_vector(
     for item in items {
         let x = item
             .as_f64()
-            .map(|x| x as f32)
+            .map(single_precision)
             .filter(|x| x.is_finite())
             .ok_or_else(|| BoxError::from(format!("{item} is not a number of a vector")))?;
         out.extend_from_slice(&x.to_be_bytes());
@@ -226,23 +270,70 @@ fn encode_vector(
     Ok(IsNull::No)
 }
 
+/// A JSON array of numbers as pgvector's `halfvec` binary form
+/// (`halfvec_recv`): the header as for a vector, then each element as a
+/// big-endian IEEE 754 half, rounded to the nearest one. A number past the
+/// half range is refused rather than stored as infinity, as pgvector refuses it.
+fn encode_half_vector(
+    json: &serde_json::Value,
+    out: &mut BytesMut,
+) -> std::result::Result<IsNull, BoxError> {
+    let serde_json::Value::Array(items) = json else {
+        return Err(BoxError::from(format!(
+            "a vector is an array of numbers, not {json}"
+        )));
+    };
+    let dimensions = i16::try_from(items.len())
+        .map_err(|_| BoxError::from(format!("a vector of {} dimensions", items.len())))?;
+    out.extend_from_slice(&dimensions.to_be_bytes());
+    out.extend_from_slice(&0_i16.to_be_bytes());
+    for item in items {
+        let x = item
+            .as_f64()
+            .map(half::f16::from_f64)
+            .filter(|x| x.is_finite())
+            .ok_or_else(|| {
+                BoxError::from(format!("{item} is not a number of a half-precision vector"))
+            })?;
+        out.extend_from_slice(&x.to_be_bytes());
+    }
+    Ok(IsNull::No)
+}
+
 /// pgvector's binary form as the JSON array a vector is above the driver.
 fn decode_vector(raw: &[u8]) -> std::result::Result<serde_json::Value, String> {
+    decode_elements(raw, 4, |c| f32::from_be_bytes([c[0], c[1], c[2], c[3]]))
+}
+
+/// pgvector's `halfvec` binary form as the same JSON array: each half widened
+/// to the `f32` it is exactly, and printed as that `f32` is.
+fn decode_half_vector(raw: &[u8]) -> std::result::Result<serde_json::Value, String> {
+    decode_elements(raw, 2, |c| half::f16::from_be_bytes([c[0], c[1]]).to_f32())
+}
+
+/// A vector's binary form — a 16-bit dimension count, an unused word, then
+/// the elements of `width` bytes each — as a JSON array of numbers.
+fn decode_elements(
+    raw: &[u8],
+    width: usize,
+    element: impl Fn(&[u8]) -> f32,
+) -> std::result::Result<serde_json::Value, String> {
     let header = raw.get(..4).ok_or("a vector shorter than its header")?;
     let dimensions = i16::from_be_bytes([header[0], header[1]]);
     let body = &raw[4..];
-    if dimensions < 0 || body.len() != dimensions as usize * 4 {
+    if dimensions < 0 || body.len() != dimensions as usize * width {
         return Err(format!(
             "a vector of {dimensions} dimensions in {} bytes",
             body.len()
         ));
     }
     Ok(serde_json::Value::Array(
-        body.chunks_exact(4)
+        body.chunks_exact(width)
             .map(|c| {
-                let x = f32::from_be_bytes([c[0], c[1], c[2], c[3]]);
+                let x = element(c);
                 // The shortest decimal that reads back as the same `f32`, so
-                // 0.1 written is 0.1 read.
+                // 0.1 written is 0.1 read (and a half reads as Postgres prints
+                // it).
                 format!("{x}")
                     .parse::<f64>()
                     .ok()
@@ -262,7 +353,7 @@ impl<'a> FromSql<'a> for RawVector<'a> {
     }
 
     fn accepts(ty: &Type) -> bool {
-        ty.name() == VECTOR_TYPE
+        ty.name() == VECTOR_TYPE || ty.name() == HALFVEC_TYPE
     }
 }
 
@@ -303,13 +394,63 @@ impl ToSql for PgParam<'_> {
     ) -> std::result::Result<IsNull, BoxError> {
         self.encode(ty, out)
     }
+
+    // Text bound to a type this driver cannot encode goes in Postgres's text
+    // format, which every type has; everything else stays binary.
+    fn encode_format(&self, ty: &Type) -> Format {
+        match self.0 {
+            Value::Text(_) if sends_text_format(ty) => Format::Text,
+            _ => Format::Binary,
+        }
+    }
+}
+
+/// Whether a text value bound to a parameter of type `ty` is sent as its text
+/// (Postgres's text format) rather than in binary: for a type that neither
+/// `String` binds nor [`PgParam::encode`] parses text into — an extension's type
+/// (`sparsevec`; `ltree` aside, which `String` takes), `interval`,
+/// `inet`, an array. Such a column reads back as text ([`decodes`] is false for
+/// it), so this is what writes that text back.
+fn sends_text_format(ty: &Type) -> bool {
+    !<String as ToSql>::accepts(ty) && !decodes(ty)
+}
+
+/// Whether [`decode`] reads a column of type `ty`. A query whose result has a
+/// column it does not is rerun with that column read as text (see
+/// `exec::run_query`), so this and `decode` must agree.
+pub(crate) fn decodes(ty: &Type) -> bool {
+    [
+        Type::BOOL,
+        Type::INT2,
+        Type::INT4,
+        Type::INT8,
+        Type::FLOAT4,
+        Type::FLOAT8,
+        Type::TEXT,
+        Type::VARCHAR,
+        Type::BPCHAR,
+        Type::NAME,
+        Type::BYTEA,
+        Type::UUID,
+        Type::JSON,
+        Type::JSONB,
+        Type::DATE,
+        Type::TIME,
+        Type::TIMESTAMPTZ,
+        Type::TIMESTAMP,
+        Type::NUMERIC,
+    ]
+    .contains(ty)
+        || crate::geometry::is_geometry_type(ty.name())
+        || ty.name() == VECTOR_TYPE
+        || ty.name() == HALFVEC_TYPE
 }
 
 /// Read one column of `row` as a [`Value`], mapping the Postgres type to a basic
 /// `Value` variant and turning SQL `NULL` into [`Value::Null`].
 ///
-/// Unmapped types are an explicit error rather than a silent coercion — this
-/// milestone deliberately covers only the basic types.
+/// A type [`decodes`] does not cover is an error here rather than a silent
+/// coercion; `run_query` reads those as text before they reach this.
 pub fn decode(row: &PgRow, idx: usize) -> Result<Value> {
     let column = row
         .columns()
@@ -359,17 +500,26 @@ pub fn decode(row: &PgRow, idx: usize) -> Result<Value> {
                     .map_err(|e| Error::database(format!("column `{}`: {e}", column.name())))?,
             ),
         }
-    } else if ty.name() == VECTOR_TYPE {
+    } else if ty.name() == VECTOR_TYPE || ty.name() == HALFVEC_TYPE {
+        let decode = if ty.name() == HALFVEC_TYPE {
+            decode_half_vector
+        } else {
+            decode_vector
+        };
         match get::<Option<RawVector<'_>>>(row, idx)? {
             None => Value::Null,
             Some(RawVector(bytes)) => Value::Json(
-                decode_vector(bytes)
+                decode(bytes)
                     .map_err(|e| Error::database(format!("column `{}`: {e}", column.name())))?,
             ),
         }
     } else {
+        // `run_query` reads such a column as text, so only a caller decoding
+        // rows it did not get through there arrives here.
         return Err(Error::database(format!(
-            "unsupported column type `{ty}` for column `{}` (basic types only this milestone)",
+            "column `{}` is of type `{ty}`, which this driver cannot read; select it as \
+             text (`{}::text`)",
+            column.name(),
             column.name()
         )));
     };
@@ -470,6 +620,37 @@ mod tests {
                 .to_sql_checked(&Type::FLOAT4, &mut out)
                 .is_ok()
         );
+    }
+
+    /// An integer outside a narrower placeholder's range is refused, never
+    /// wrapped: `4294967297` bound as `int4` would otherwise read row 1
+    /// (security review 2026-11, F-1).
+    #[test]
+    fn an_out_of_range_int_is_refused_for_a_narrow_placeholder() {
+        let mut out = BytesMut::new();
+        for (v, ty) in [
+            (4_294_967_297, Type::INT4),
+            (-4_294_967_295, Type::INT4),
+            (i64::from(i32::MAX) + 1, Type::INT4),
+            (65_537, Type::INT2),
+            (i64::from(i16::MIN) - 1, Type::INT2),
+        ] {
+            let Err(err) = PgParam(&Value::Int(v)).to_sql_checked(&ty, &mut out) else {
+                panic!("{v} must not bind as {ty}");
+            };
+            assert!(err.to_string().contains("out of range"), "{err}");
+        }
+        for (v, ty) in [
+            (i64::from(i32::MAX), Type::INT4),
+            (i64::from(i32::MIN), Type::INT4),
+            (i64::from(i16::MAX), Type::INT2),
+        ] {
+            assert!(
+                PgParam(&Value::Int(v))
+                    .to_sql_checked(&ty, &mut out)
+                    .is_ok()
+            );
+        }
     }
 
     /// A formula's string literal compared with a date, an instant, a time

@@ -226,7 +226,7 @@ impl AgentTrait for AppConstructor {
         args: &Json,
         ctx: &mut TraitContext<'_>,
     ) -> Result<Json> {
-        require_admin(ctx.caller.role, tool)?;
+        require_admin(ctx.caller.role(), tool)?;
         if ctx.caller.untrusted_origin() {
             return Err(Error::invalid(format!(
                 "`{tool}` changes the application or its construction plan, so it is only for \
@@ -324,15 +324,15 @@ pub const DATA_MODEL_TOOLS: [&str; 12] = [
     sc_docs::tools::TOOL_READ_DOCS,
 ];
 
-/// What the data-model tools may do: create and change, but not drop or
-/// widen access, which an admin does deliberately.
+/// What the data-model tools may do: create and change, but not drop, which
+/// an admin does deliberately. A table with row-level security keeps its
+/// access rules either way: only a person changes those.
 fn data_model_tool_set() -> sc_api::mcp::ToolSet {
     sc_app::mcp::tool_set(
         sc_api::schema_edit::Grants {
             create: true,
             edit: true,
             drop: false,
-            access_changes: false,
         },
         sc_api::mcp::Areas::all(),
     )
@@ -345,8 +345,8 @@ fn data_model_tool_set() -> sc_api::mcp::ToolSet {
 async fn data_model_call(tool: &str, args: &Json, ctx: &TraitContext<'_>) -> Result<Json> {
     let tool_context = sc_api::mcp::ToolContext {
         catalog: ctx.catalog,
-        user: ctx.caller.user.as_ref(),
-        role: ctx.caller.role,
+        user: ctx.caller.user_ref(),
+        admin: ctx.caller.console_admin().cloned(),
         triggers: ctx.triggers,
         actor: ctx.agent,
     };

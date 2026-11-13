@@ -95,6 +95,9 @@ zip.workspace = true
 rusqlite.workspace = true
 
 [dev-dependencies]
+# Tests start sessions without a sign-in (`SessionStore::login`), which only
+# the `testing` feature offers (security review 2026-11, §2).
+sc-auth = { workspace = true, features = ["testing"] }
 # The SQLite backend, for the tests that run the row layer against a database
 # that is not Postgres — which is what having a `DatabaseDriver` trait is for.
 sc-db-sqlite.workspace = true

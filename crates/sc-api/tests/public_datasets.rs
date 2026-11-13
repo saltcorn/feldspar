@@ -13,6 +13,10 @@
 //! `cargo test -p sc-api --test it -- --ignored every_public_dataset`, and set
 //! `FELDSPAR_PUBLIC_DATA_CACHE` to a directory to download each file once, and
 //! `FELDSPAR_PUBLIC_DATASETS` to a comma-separated list of keys to install only those.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

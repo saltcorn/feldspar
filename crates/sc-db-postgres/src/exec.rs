@@ -14,7 +14,7 @@ use tokio_postgres::Client;
 use tokio_postgres::types::{ToSql, Type};
 
 use crate::dialect::PgDialect;
-use crate::value::{PgParam, decode};
+use crate::value::{PgParam, decode, decodes};
 
 /// What went wrong, as the *server* said it — the part a
 /// `tokio_postgres::Error` hides behind a terse "db error".
@@ -78,38 +78,52 @@ pub(crate) async fn run_query(
     // with them is what makes running it agree with the shape its endpoint
     // promises — and is the only way a placeholder whose type Postgres cannot
     // infer (`WHERE :q IS NULL`) can be sent at all.
-    let prepared = match stmt {
-        Statement::Raw { param_types, .. } if !param_types.is_empty() => {
-            let types: Vec<Type> = param_types
+    let types: Option<Vec<Type>> = match stmt {
+        Statement::Raw { param_types, .. } if !param_types.is_empty() => Some(
+            param_types
                 .iter()
                 .map(|name| crate::value::pg_type(name))
-                .collect::<Result<_>>()?;
-            Some(client.prepare_typed(&sql, &types).await.map_err(|e| {
-                Error::database(format!(
-                    "query failed: {}\n  sql: {sql}",
-                    sc_error::format_chain(&e)
-                ))
-            })?)
-        }
+                .collect::<Result<_>>()?,
+        ),
         _ => None,
     };
-
-    let pg_rows = match &prepared {
-        Some(prepared) => client.query(prepared, &param_refs).await,
-        None => client.query(&sql, &param_refs).await,
-    }
     // `tokio_postgres::Error` displays as a terse "db error"; the real
     // cause (the server's SQLSTATE + message) is only in its source chain.
     // The failing SQL is included so the error is actionable; the bind
     // *values* are not — only their count — because they may hold secrets
     // (passwords, tokens) and this message is also returned to the client.
-    .map_err(|e| {
+    let failed = |e: &tokio_postgres::Error, sql: &str| {
+        let cause = if types.is_some() {
+            sc_error::format_chain(e)
+        } else {
+            db_error(e)
+        };
         Error::database(format!(
-            "query failed: {}\n  sql: {sql}\n  ({} bind parameter(s))",
-            db_error(&e),
+            "query failed: {cause}\n  sql: {sql}\n  ({} bind parameter(s))",
             binds.len(),
         ))
-    })?;
+    };
+    // Preparing first is what running `&str` does anyway (one Parse/Describe
+    // round trip), and it says the result's column types before any row comes.
+    let prepare = async |sql: &str| match &types {
+        Some(types) => client.prepare_typed(sql, types).await,
+        None => client.prepare(sql).await,
+    };
+    let mut prepared = prepare(&sql).await.map_err(|e| failed(&e, &sql))?;
+    // A column of a type this driver cannot decode (an extension's `halfvec`,
+    // `interval`, an array) is read as its text instead: the same statement,
+    // wrapped, with that column cast. Only such a statement pays the second
+    // prepare.
+    if prepared.columns().iter().any(|c| !decodes(c.type_())) {
+        let wrapped = read_as_text(dialect, &sql, prepared.columns())?;
+        sc_log::log_sql(&wrapped, &binds);
+        prepared = prepare(&wrapped).await.map_err(|e| failed(&e, &wrapped))?;
+    }
+
+    let pg_rows = client
+        .query(&prepared, &param_refs)
+        .await
+        .map_err(|e| failed(&e, &sql))?;
 
     // All rows in a result share one column list; build it once.
     let columns: Arc<Vec<String>> = Arc::new(
@@ -128,6 +142,50 @@ pub(crate) async fn run_query(
         rows.push(Row::new(columns.clone(), values)?);
     }
     Ok(RowStream::from_rows(rows))
+}
+
+/// `sql` wrapped so that each of its result `columns` of a type [`decodes`] does
+/// not cover comes back as text, in the same order and under the same name:
+/// `WITH "_fd_q" AS (<sql>) SELECT "_fd_q"."id", "_fd_q"."vec"::text AS "vec" FROM "_fd_q"`.
+///
+/// A CTE rather than a subquery, so a data-modifying statement with `RETURNING`
+/// wraps too (Postgres allows one in a top-level `WITH`). The rows keep their
+/// order: an `ORDER BY` inside keeps the inner query from being flattened into
+/// the outer one, which only projects it.
+///
+/// Two result columns of the same name cannot be told apart from outside, so
+/// that statement is refused with a sentence saying what to do instead.
+fn read_as_text(
+    dialect: &PgDialect,
+    sql: &str,
+    columns: &[tokio_postgres::Column],
+) -> Result<String> {
+    const INNER: &str = "_fd_q";
+    let inner = dialect.quote_ident(INNER);
+    let mut list = Vec::with_capacity(columns.len());
+    for (i, column) in columns.iter().enumerate() {
+        if columns[..i].iter().any(|c| c.name() == column.name()) {
+            let text = columns.iter().find(|c| !decodes(c.type_()));
+            return Err(Error::database(format!(
+                "the result has a column `{}` of type `{}`, which is read as text, and two \
+                 columns named `{}`; give them different names",
+                text.map_or("", |c| c.name()),
+                text.map_or(String::new(), |c| c.type_().to_string()),
+                column.name()
+            )));
+        }
+        let name = dialect.quote_ident(column.name());
+        list.push(if decodes(column.type_()) {
+            format!("{inner}.{name}")
+        } else {
+            format!("{inner}.{name}::text AS {name}")
+        });
+    }
+    let body = sql.trim_end().trim_end_matches(';');
+    Ok(format!(
+        "WITH {inner} AS ({body}) SELECT {} FROM {inner}",
+        list.join(", ")
+    ))
 }
 
 /// Prepare `sql` with its parameters typed as `param_types`, and report the

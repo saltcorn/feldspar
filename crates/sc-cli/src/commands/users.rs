@@ -72,14 +72,13 @@ pub(crate) async fn modify_user_command(args: &[String]) -> Result<()> {
         None => None,
     };
     // First, so a refusal (the last enabled admin) changes nothing else.
+    let sessions = sc_auth::SessionStore::database(catalog.clone());
     if let Some(disabled) = parsed.disabled {
-        sc_auth::set_user_disabled(&catalog, user.id(), disabled).await?;
-        if disabled {
-            // A disabled account stops resolving from a session it holds; the
-            // rows are dropped too, as the admin UI's "Disable" drops them.
-            sc_auth::SessionStore::database(catalog.clone())
-                .end_user_sessions(user.id())
-                .await?;
+        let changed = sc_auth::set_user_disabled(&catalog, user.id(), disabled).await?;
+        // A disabled account stops resolving from a session it holds; the
+        // rows are dropped too, as the admin UI's "Disable" drops them.
+        if let Some(credentials) = changed.credentials {
+            sessions.bump_epoch(credentials, None).await?;
         }
         eprintln!(
             "feldspar: {} is now {}",
@@ -88,10 +87,12 @@ pub(crate) async fn modify_user_command(args: &[String]) -> Result<()> {
         );
     }
     if parsed.reset_second_factor {
-        sc_auth::disable_second_factor(&catalog, user.id()).await?;
-        sc_auth::SessionStore::database(catalog.clone())
-            .end_user_sessions(user.id())
-            .await?;
+        let removed = sc_auth::disable_second_factor(&catalog, user.id()).await?;
+        if let Some(credentials) = removed.changed {
+            sessions.bump_epoch(credentials, None).await?;
+        }
+        // Whoever is signed in to it now may be why it is being reset.
+        sessions.end_user_sessions(user.id()).await?;
         eprintln!(
             "feldspar: two-factor authentication is off for {}; its sessions have ended",
             parsed.email.trim()
@@ -100,7 +101,7 @@ pub(crate) async fn modify_user_command(args: &[String]) -> Result<()> {
     if role.is_none() && password.is_none() {
         return Ok(());
     }
-    sc_auth::update_user(
+    let changed = sc_auth::update_user(
         &catalog,
         user.id(),
         sc_auth::UserUpdate {
@@ -110,6 +111,9 @@ pub(crate) async fn modify_user_command(args: &[String]) -> Result<()> {
         },
     )
     .await?;
+    if let Some(credentials) = changed.credentials {
+        sessions.bump_epoch(credentials, None).await?;
+    }
     if let Some(role) = &role {
         eprintln!(
             "feldspar: {} now has role {} ({})",

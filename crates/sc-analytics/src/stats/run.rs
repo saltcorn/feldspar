@@ -410,6 +410,10 @@ impl Tester<'_> {
 
     /// `SELECT keys, count(_v0), avg(_v0), stddev_samp(_v0)` and, for each
     /// further input, its average: one row per group, in key order.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+    )]
     async fn moments(
         &mut self,
         keys: &[Key],
@@ -449,6 +453,10 @@ impl Tester<'_> {
     }
 
     /// `SELECT keys, count(*)` for each combination of the keys.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+    )]
     async fn counts(&mut self, keys: &[Key], filters: &[Expr]) -> Step<Vec<(Vec<Value>, u64)>> {
         let points = self.r.points(keys, Vec::new(), filters)?;
         let mut columns = group_projections(keys.len());
@@ -581,6 +589,10 @@ impl Tester<'_> {
 
     /// Shapiro–Wilk on `values` as an assumption check (none for fewer than
     /// three values, or when every value is the same).
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "TEST_SAMPLE is a small constant"
+    )]
     fn normality_check(of: Json, values: &[f64]) -> Option<Check> {
         let t = shapiro(&values[..values.len().min(TEST_SAMPLE as usize)]).ok()?;
         let n = values.len() as u64;

@@ -340,6 +340,25 @@ struct Preview {
     last_used: Instant,
 }
 
+/// Register the constructed frameworks compiled into this binary.
+fn install_compiled_frameworks() {
+    // A server that can mount applications can mount every framework
+    // compiled into it. Saltcorn UI is constructed rather than built, so it
+    // is a factory in `sc-app`'s registry (TODO "Saltcorn UI" 5.2), and
+    // installing it twice is harmless.
+    if let Err(e) = sc_viewpattern::install_saltcorn_ui() {
+        eprintln!("feldspar: the Saltcorn UI framework could not be registered: {e}");
+    }
+    // The Analytics UI as a framework (analytics TODO A9.2), constructed for
+    // the same reason: it serves a bundle this binary already has. Not
+    // offered while `ANALYTICS_FRAMEWORK_ENABLED` is off (the first release).
+    if crate::analytics_app::ANALYTICS_FRAMEWORK_ENABLED {
+        if let Err(e) = crate::analytics_app::install_analytics_framework() {
+            eprintln!("feldspar: the Analytics framework could not be registered: {e}");
+        }
+    }
+}
+
 /// The previews, and the tokens that may reach each run's.
 #[derive(Default)]
 struct Previews {
@@ -355,18 +374,7 @@ impl AppMounts {
 
     /// A registry whose apps build and run against `catalog`.
     pub fn new(catalog: Arc<Catalog>) -> AppMounts {
-        // A server that can mount applications can mount every framework
-        // compiled into it. Saltcorn UI is constructed rather than built, so it
-        // is a factory in `sc-app`'s registry (TODO "Saltcorn UI" 5.2), and
-        // installing it twice is harmless.
-        if let Err(e) = sc_viewpattern::install_saltcorn_ui() {
-            eprintln!("feldspar: the Saltcorn UI framework could not be registered: {e}");
-        }
-        // The Analytics UI as a framework (analytics TODO A9.2), constructed for
-        // the same reason: it serves a bundle this binary already has.
-        if let Err(e) = crate::analytics_app::install_analytics_framework() {
-            eprintln!("feldspar: the Analytics framework could not be registered: {e}");
-        }
+        install_compiled_frameworks();
         AppMounts {
             catalog: Some(catalog),
             evaluator: None,
@@ -677,6 +685,19 @@ impl AppMounts {
         }
         preview.last_used = Instant::now();
         Ok(Some(preview.mounted.clone()))
+    }
+
+    /// The id of the application served at `subdomain` — its live mount, or
+    /// the preview of it under `label` — which an application session for it
+    /// names (security review 2026-11, §2).
+    pub fn app_id(&self, subdomain: &str, label: Option<&str>) -> Option<uuid::Uuid> {
+        if let Some(label) = label
+            && let Some(preview) = self.previews().by_label.get(label)
+            && preview.mounted.app.subdomain == subdomain
+        {
+            return Some(preview.mounted.app.id.0);
+        }
+        self.get(subdomain).map(|mounted| mounted.app.id.0)
     }
 
     /// How many previews are mounted.
@@ -1317,8 +1338,10 @@ pub async fn build_and_mount(apps: &AppMounts, app: Application) -> Result<sc_ap
 }
 
 /// [`build_and_mount`], or with `quick` the dev loop's build
-/// ([`sc_app::build_application_quick`]): no install, no regenerated client, no
-/// prerendering — what the IDE runs on save.
+/// ([`sc_app::build_application_quick`]): no regenerated client, no
+/// prerendering, and an install only when the manifests changed, without the
+/// packages' install scripts unless the Development setting says to run them
+/// — what the IDE runs on save.
 pub async fn build_and_mount_with(
     apps: &AppMounts,
     app: Application,
@@ -1327,6 +1350,7 @@ pub async fn build_and_mount_with(
     let catalog = apps.catalog().ok_or_else(|| {
         Error::config("this server was built with no catalog, so it cannot mount applications")
     })?;
+    refuse_unknown_framework(&app)?;
     if let Some(factory) = sc_app::framework_factory(&app.framework.name) {
         mount_constructed(apps, &*factory, app).await?;
         // Nothing was built, and the report says so: no bundle, no output, no
@@ -1345,7 +1369,11 @@ pub async fn build_and_mount_with(
     }
     let source = app_source_from_config(&app.framework)?;
     let report = if quick {
-        sc_app::build_application_quick(catalog, &app, &source, apps.triggers()).await?
+        let scripts = match sc_config::install_scripts_on_save(catalog).await? {
+            true => sc_app::InstallScripts::Run,
+            false => sc_app::InstallScripts::Skip,
+        };
+        sc_app::build_application_quick(catalog, &app, &source, apps.triggers(), scripts).await?
     } else {
         build_application(catalog, &app, &source, apps.triggers()).await?
     };
@@ -1397,6 +1425,7 @@ pub(crate) async fn mount_from_disk(apps: &AppMounts, app: Application) -> Resul
     let catalog = apps.catalog().ok_or_else(|| {
         Error::config("this server was built with no catalog, so it cannot mount applications")
     })?;
+    refuse_unknown_framework(&app)?;
     if let Some(factory) = sc_app::framework_factory(&app.framework.name) {
         mount_constructed(apps, &*factory, app).await?;
         return Ok(0);
@@ -1409,6 +1438,22 @@ pub(crate) async fn mount_from_disk(apps: &AppMounts, app: Application) -> Resul
     let mounted = MountedApp::new_with(app, framework, catalog, apps.evaluator(), apps.triggers())?;
     apps.remount(mounted);
     Ok(assets)
+}
+
+/// Refuse to serve or build `app` when this server does not know its framework
+/// ([`sc_app::framework_known`]) — one switched off in this release, or a
+/// module's that was uninstalled. Without this a name with no factory would be
+/// taken for a built framework and fail somewhere less clear. The application
+/// stays stored and listed; the admin UI marks it "Unknown framework".
+pub(crate) fn refuse_unknown_framework(app: &Application) -> Result<()> {
+    if sc_app::framework_known(&app.framework.name) {
+        return Ok(());
+    }
+    Err(Error::config(format!(
+        "application `{}` is on the framework `{}`, which this server does not have, so it \
+         is not served",
+        app.subdomain, app.framework.name
+    )))
 }
 
 /// Construct `app`'s framework through `factory` and mount it.
@@ -1549,6 +1594,18 @@ fn path_under_mount(mount: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Analytics framework is held back from the first release: a server
+    /// registers Saltcorn UI and not `analytics`. (Nothing else in this test
+    /// binary registers it; the integration tests that need it do so
+    /// themselves.) Turning `ANALYTICS_FRAMEWORK_ENABLED` back on means
+    /// replacing this test with one that it is offered.
+    #[test]
+    fn the_analytics_framework_is_not_offered_while_switched_off() {
+        install_compiled_frameworks();
+        assert!(sc_app::framework_factory("saltcorn-ui").is_some());
+        assert!(sc_app::framework_factory(sc_analytics::app::ANALYTICS_FRAMEWORK).is_none());
+    }
 
     #[test]
     fn subdomain_resolution() {

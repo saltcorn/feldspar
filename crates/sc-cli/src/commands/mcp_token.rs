@@ -28,6 +28,9 @@ pub(crate) async fn mcp_token_command(args: &[String]) -> Result<()> {
 pub(crate) async fn mcp_token_create_command(args: &[String]) -> Result<()> {
     let (db, rest) = DbConfig::extract(args)?;
     let parsed = sc_cli::mcp_token::parse_create(&rest)?;
+    for warning in &parsed.warnings {
+        eprintln!("feldspar: {warning}");
+    }
     // Before the database: a grant that will not validate is a typo, and the
     // message should not wait on a connection.
     let grants = match parsed.routes_only {

@@ -64,7 +64,7 @@ async fn the_hosts_provider_is_found_like_a_stored_one_and_never_stored() -> Res
     let by_name = load_llm_provider_by_name(&catalog, "hosted")
         .await?
         .expect("by name");
-    assert_eq!(by_name.setting(CFG_API_KEY), Some("sk-operator"));
+    assert_eq!(by_name.api_key().expose(), "sk-operator");
 
     // Its models, the default among them, with their settings.
     let models = list_llm_models(&catalog, host).await?;
@@ -146,7 +146,7 @@ async fn every_write_to_the_hosts_provider_is_refused() -> Result<()> {
     assert_eq!(
         load_llm_provider(&catalog, host.id)
             .await?
-            .and_then(|d| d.setting(CFG_API_KEY).map(str::to_owned))
+            .map(|d| d.api_key().expose().clone())
             .as_deref(),
         Some("sk-operator")
     );

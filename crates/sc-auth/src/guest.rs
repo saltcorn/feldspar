@@ -97,7 +97,7 @@ fn guest_session_fields() -> Vec<DataField> {
 }
 
 /// Ensure the guest-session table exists. Idempotent.
-pub async fn bootstrap_guest_sessions(catalog: &Catalog) -> Result<Table> {
+pub(crate) async fn bootstrap_guest_sessions(catalog: &Catalog) -> Result<Table> {
     if let Some(existing) = catalog.get(GUEST_SESSIONS_TABLE)? {
         return Ok(existing);
     }
@@ -184,7 +184,7 @@ pub async fn end_guest_session(catalog: &Catalog, token: &str) -> Result<Option<
 }
 
 /// Delete the guest sessions that have lapsed.
-pub async fn sweep_guest_sessions(catalog: &Catalog) -> Result<()> {
+pub(crate) async fn sweep_guest_sessions(catalog: &Catalog) -> Result<()> {
     let delete = Delete::from(GUEST_SESSIONS_TABLE).filter(Expr::binary(
         BinOp::Le,
         Expr::col(COL_EXPIRES_AT),

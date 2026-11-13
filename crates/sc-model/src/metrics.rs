@@ -317,6 +317,10 @@ impl Metrics {
     /// The one entry point the fit uses, so that "which metric set does a random
     /// forest over a text label get" is answered in exactly one place: by its
     /// [`Outcome`].
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+    )]
     pub fn of(outcome: &Outcome, predictions: &[Prediction], encoded: &Encoded) -> Result<Metrics> {
         // A posterior is scored by its draws, not by predictions over a split.
         if !outcome.predicts() || outcome.is_posterior() {
@@ -405,6 +409,10 @@ fn regression(predicted: &[f64], truth: &[f64]) -> Metrics {
 }
 
 /// Accuracy, the per-class table and the confusion matrix.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+)]
 fn classification(predicted: &[usize], actual: &[usize], classes: &[String]) -> Result<Metrics> {
     let k = classes.len();
     for (what, values) in [("predicted", predicted), ("actual", actual)] {

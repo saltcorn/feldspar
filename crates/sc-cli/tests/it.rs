@@ -51,6 +51,8 @@ mod install_script;
 mod install_tree;
 #[path = "mcp_token.rs"]
 mod mcp_token;
+#[path = "registry.rs"]
+mod registry;
 #[path = "repo_hygiene.rs"]
 mod repo_hygiene;
 #[path = "serve.rs"]
@@ -59,6 +61,8 @@ mod serve;
 mod setup;
 #[path = "sqlite_primary.rs"]
 mod sqlite_primary;
+#[path = "sync.rs"]
+mod sync;
 #[path = "users.rs"]
 mod users;
 #[path = "version.rs"]

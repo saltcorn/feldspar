@@ -8,6 +8,10 @@
 //! fails) when the Node toolchain has not been installed under `ui/admin`, so a
 //! Rust-only checkout stays green; run it after `npm install` in `ui/admin`.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use std::path::PathBuf;
 use std::process::Command;
 

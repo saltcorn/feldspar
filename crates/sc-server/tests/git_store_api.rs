@@ -10,6 +10,10 @@
 //! registry ends up holding a usable store, and that a clone that fails leaves a
 //! saved, editable definition rather than an error.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -97,6 +101,10 @@ impl Client {
 /// these tests run in parallel: a per-test `set_var` would have tests reading
 /// each other's value. One directory is enough because a clone lands under the
 /// store's *name*, and every test below names its store differently.
+#[allow(
+    unsafe_code,
+    reason = "the binary's data directory is set once, through the environment the server reads"
+)]
 fn data_dir() -> &'static Path {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
@@ -106,6 +114,9 @@ fn data_dir() -> &'static Path {
         std::fs::create_dir_all(&dir).unwrap();
         // Never the developer's real data directory: a test that cloned there
         // would leave repositories behind and collide with the next run.
+        // SAFETY: test-only: written once per binary, under the `OnceLock`,
+        // and never changed after. A concurrent `getenv` in another test is
+        // the test-code race security review 2026-11 (F §1) records.
         unsafe { std::env::set_var(sc_files::DATA_DIR_ENV, &dir) };
         dir
     })
@@ -249,7 +260,14 @@ async fn a_git_store_is_cloned_on_save_and_serves_the_repository() -> sc_error::
         .collect();
     assert_eq!(
         settings,
-        ["url", "directory", "branch", "key_path", "public_key"]
+        [
+            "url",
+            "directory",
+            "branch",
+            "public_url",
+            "key_path",
+            "public_key"
+        ]
     );
     // The working-copy directory is settable once, when the store is created:
     // it says where the checkout was put, so an edit would abandon it rather
@@ -1242,6 +1260,10 @@ async fn a_new_application_can_ask_for_a_new_local_store() -> sc_error::Result<(
         def.setting(sc_files::CFG_PATH),
         Some(dir.to_string_lossy().as_ref())
     );
+    // Made for the application's code, so its files travel with the structure
+    // whole (APP_SYNC_PROPOSAL §3.5): the intent is known here, and nowhere
+    // later.
+    assert_eq!(def.sync_contents()?, sc_files::SyncContents::Include);
     assert!(
         catalog
             .file_store("notebook1", sc_catalog::Unchecked::system("test"))?

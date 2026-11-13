@@ -49,6 +49,9 @@ pub struct CalcPlan {
     /// The shape the after-read formulas were validated against, which their
     /// prefetch needs again.
     shape: Option<SchemaShape>,
+    /// The read's instant: `new Date()` and `Date.now()` in the projected
+    /// fields and in the ones computed after (TODO-type-hardening H7.2).
+    now: chrono::DateTime<chrono::Utc>,
 }
 
 /// One calculated field computed after the read.
@@ -68,6 +71,7 @@ impl CalcPlan {
             projections: Vec::new(),
             after: Vec::new(),
             shape: None,
+            now: chrono::Utc::now(),
         };
         if calc.is_empty() {
             return Ok(plan);
@@ -81,7 +85,7 @@ impl CalcPlan {
             };
             match translate_value(
                 formula,
-                &Env::new(&env).with_calc(&calc),
+                &Env::new(&env).with_calc(&calc).with_now(plan.now),
                 &shape,
                 &table.name,
             ) {
@@ -193,7 +197,8 @@ impl CalcPlan {
         self.predict_page(catalog, table, &mut values).await?;
         for row in &mut values {
             for after in &self.after {
-                let value = compute(catalog, table, shape, &evaluator, after, row).await?;
+                let value =
+                    compute(catalog, table, shape, &evaluator, after, row, self.now).await?;
                 row.insert(after.field.clone(), value);
             }
         }
@@ -342,6 +347,7 @@ async fn compute(
     evaluator: &Arc<dyn sc_expr::JsEvaluator>,
     after: &AfterRead,
     row: &mut BTreeMap<String, Value>,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Result<Value> {
     let failed = |row: &BTreeMap<String, Value>, e: Error| {
         let which = match table.primary_key.as_slice() {
@@ -365,6 +371,7 @@ async fn compute(
         row: row.clone(),
         user: None,
         ambient: AmbientValues::new(),
+        now,
     };
     let json = evaluator
         .eval_value(call)

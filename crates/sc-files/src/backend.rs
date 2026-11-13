@@ -44,8 +44,8 @@ use sc_error::{Context, Error, Repr, Result};
 use sc_types::{Attrs, BasicType, FormField, Operation, validate_attrs};
 
 use crate::def::{
-    CFG_BRANCH, CFG_CREATE, CFG_DIR, CFG_KEY_PATH, CFG_PATH, CFG_PUBLIC_KEY, CFG_URL, FileStoreDef,
-    GIT_BACKEND, LOCAL_BACKEND,
+    CFG_BRANCH, CFG_CREATE, CFG_DIR, CFG_KEY_PATH, CFG_PATH, CFG_PUBLIC_KEY, CFG_PUBLIC_URL,
+    CFG_URL, FileStoreDef, GIT_BACKEND, LOCAL_BACKEND, SyncContents,
 };
 use crate::git::{GitFileStore, GitRepo, clone_path, git_operations, validate_git_config};
 use crate::local::{LocalFileStore, local_operations};
@@ -60,7 +60,7 @@ use crate::store::FileStore;
 /// need a backend's settings *before* there is an instance to ask, and a
 /// `LocalFileStore` cannot exist until its directory does — which is precisely
 /// the thing being configured.
-pub fn local_config_spec() -> Vec<FormField> {
+pub(crate) fn local_config_spec() -> Vec<FormField> {
     vec![
         FormField::new(CFG_PATH, BasicType::Text)
             .label("Directory")
@@ -96,13 +96,17 @@ pub fn local_config_spec() -> Vec<FormField> {
 /// button usually fills them in, because an admin pointing a store at a key that
 /// already exists on the machine is a configuration Saltcorn has no business
 /// refusing.
-pub fn git_config_spec() -> Vec<FormField> {
+pub(crate) fn git_config_spec() -> Vec<FormField> {
     vec![
         FormField::new(CFG_URL, BasicType::Text).label("Repository URL"),
         FormField::new(CFG_DIR, BasicType::Text)
             .label("Working copy directory (blank to let Saltcorn choose)")
             .create_only(),
         FormField::new(CFG_BRANCH, BasicType::Text).label("Branch (blank for the default)"),
+        // Last of the repository's own settings, and optional: only another
+        // instance deploying this installation's structure reads it (§3.5).
+        FormField::new(CFG_PUBLIC_URL, BasicType::Text)
+            .label("Public HTTPS URL (for other instances; blank to derive one)"),
         FormField::new(CFG_KEY_PATH, BasicType::Text).label("SSH private key file"),
         FormField::new(CFG_PUBLIC_KEY, BasicType::Text)
             .label("Deploy key (public)")
@@ -159,7 +163,7 @@ impl OperationOutcome {
     }
 
     /// Carry structured data alongside the prose.
-    pub fn with_data(self, data: serde_json::Value) -> OperationOutcome {
+    pub(crate) fn with_data(self, data: serde_json::Value) -> OperationOutcome {
         OperationOutcome {
             data: Some(data),
             ..self
@@ -392,6 +396,18 @@ pub fn validate_file_store_config(def: &FileStoreDef) -> Result<()> {
     if def.backend == GIT_BACKEND {
         validate_git_config(def)?;
     }
+    // Which files travel with the structure (§3.5). A git store's files are
+    // never copied: they are already in a repository, which the structure
+    // names by URL and pinned commit instead.
+    let contents = def.sync_contents()?;
+    if def.backend == GIT_BACKEND && contents == SyncContents::Include {
+        return Err(Error::invalid(format!(
+            "file store `{}` is a git repository, so its files are never copied into the \
+             installation's structure; it is synced by its URL and pinned commit, and \
+             `sync_contents` cannot be `include`",
+            def.name
+        )));
+    }
     Ok(())
 }
 
@@ -501,7 +517,7 @@ mod tests {
     #[test]
     fn a_restored_store_is_relocated_only_when_its_directory_is_missing() {
         crate::paths::testing::temp_env(|| {
-            unsafe { std::env::set_var(crate::DATA_DIR_ENV, "/tmp/sc-relocate") };
+            crate::paths::testing::set_data_dir("/tmp/sc-relocate");
             let missing = temp_path("missing").to_string_lossy().into_owned();
             let here = std::env::temp_dir().to_string_lossy().into_owned();
 
@@ -586,7 +602,14 @@ mod tests {
         let names: Vec<&str> = spec.iter().map(|f| f.name()).collect();
         assert_eq!(
             names,
-            [CFG_URL, CFG_DIR, CFG_BRANCH, CFG_KEY_PATH, CFG_PUBLIC_KEY]
+            [
+                CFG_URL,
+                CFG_DIR,
+                CFG_BRANCH,
+                CFG_PUBLIC_URL,
+                CFG_KEY_PATH,
+                CFG_PUBLIC_KEY
+            ]
         );
         // Not even the URL: a store may instead name a directory that already
         // holds a checkout. What is required is one of the two, which is a
@@ -838,5 +861,49 @@ mod tests {
         let def = FileStoreDef::new("docs", "s3").with("bucket", "things");
         let err = connect_err(&def);
         assert!(err.contains("s3"), "{err}");
+    }
+
+    #[test]
+    fn sync_contents_is_checked_on_save() {
+        // Absent is `auto`: a store saved before the attribute existed.
+        let local = FileStoreDef::local("assets", "/srv/assets");
+        assert_eq!(local.sync_contents().unwrap(), SyncContents::Auto);
+        validate_file_store_config(&local).unwrap();
+
+        for contents in [
+            SyncContents::Auto,
+            SyncContents::Include,
+            SyncContents::Exclude,
+        ] {
+            let def = local.clone().with_sync_contents(contents);
+            assert_eq!(def.sync_contents().unwrap(), contents);
+            validate_file_store_config(&def).unwrap();
+        }
+
+        // A name that is not one of the three is refused, saying what is.
+        let mut odd = local.clone();
+        odd.attributes.insert(
+            crate::ATTR_SYNC_CONTENTS.to_owned(),
+            serde_json::json!("everything"),
+        );
+        let err = validate_file_store_config(&odd).unwrap_err().to_string();
+        assert!(
+            err.contains("everything") && err.contains("include"),
+            "{err}"
+        );
+
+        // A git store's files are never copied, so `include` is refused there
+        // and the other two are not.
+        let git = FileStoreDef::git("web", "git@github.com:o/r.git");
+        let err =
+            validate_file_store_config(&git.clone().with_sync_contents(SyncContents::Include))
+                .unwrap_err()
+                .to_string();
+        assert!(
+            err.contains("`web`") && err.contains("pinned commit"),
+            "{err}"
+        );
+        validate_file_store_config(&git.clone().with_sync_contents(SyncContents::Exclude)).unwrap();
+        validate_file_store_config(&git.with_sync_contents(SyncContents::Auto)).unwrap();
     }
 }

@@ -110,7 +110,7 @@ fn heading(line: &str) -> Option<(u8, String)> {
         return None;
     }
     let text = rest.trim().trim_end_matches('#').trim_end();
-    Some((hashes as u8, text.to_owned()))
+    Some((u8::try_from(hashes).ok()?, text.to_owned()))
 }
 
 /// GitHub's anchor for a heading: lower case, punctuation dropped, spaces to `-`.

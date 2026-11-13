@@ -13,7 +13,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // registry the dispatcher runs — and then reloads the live set, so the list
     // an admin is looking at is the set that will fire.
 
-    reg.register_admin("listTriggers", {
+    reg.handle(sc_api::handler_ids::LIST_TRIGGERS, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |_ctx| {
@@ -47,14 +47,21 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     // Masked (§11.1): `send_email`'s `smtp_password` is a
                     // secret setting, and this list is what the editor reads.
                     let shown = dispatcher.registry().redact_trigger(&catalog, t);
-                    out.push(trigger_json_with(&shown, problem, workflow));
+                    let mut row = trigger_json_with(&shown, problem, workflow);
+                    // Off, a pending request, or approved for what it is now
+                    // (TODO-type-hardening H8.10): what the list marks.
+                    let system = dispatcher.system_state(&catalog, t).await?;
+                    if let Json::Object(map) = &mut row {
+                        map.insert("system_state".to_owned(), json!(system.as_str()));
+                    }
+                    out.push(row);
                 }
                 Ok(HandlerResponse::ok(Json::Array(out)))
             }
         }
     });
 
-    reg.register_admin("createTrigger", {
+    reg.handle(sc_api::handler_ids::CREATE_TRIGGER, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -92,7 +99,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateTrigger", {
+    reg.handle(sc_api::handler_ids::UPDATE_TRIGGER, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -104,6 +111,13 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let Some(stored) = load_trigger(&catalog, id).await? else {
                     return Err(Error::not_found(format!("no trigger with id {id}")));
                 };
+                // Approved for what it was before this edit? Asked before the
+                // edit is saved (TODO-type-hardening H8.10).
+                let was_approved = dispatcher
+                    .system_state(&catalog, &stored)
+                    .await?
+                    .approved()
+                    .is_some();
                 // The id is the path's, not the body's — the row's identity is
                 // not something a payload gets to reassign.
                 let mut trigger = trigger_from_body(id, &ctx.body)?;
@@ -132,14 +146,113 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     )
                     .await?;
                 }
+                // A change a person makes in an admin session re-approves a
+                // trigger that was approved: they are looking at what they
+                // saved. Anyone else's change leaves the approval for the old
+                // configuration, which lapses. And one that no longer asks to
+                // run as system forgets its approval (TODO-type-hardening H8.10).
+                reapprove(
+                    &catalog,
+                    &dispatcher,
+                    &ctx.who.editor(),
+                    &trigger,
+                    was_approved,
+                )
+                .await?;
                 dispatcher.reload(&catalog).await?;
+                let trigger = load_trigger(&catalog, id).await?.unwrap_or(trigger);
                 let shown = dispatcher.registry().redact_trigger(&catalog, &trigger);
                 Ok(HandlerResponse::ok(trigger_json(&shown, None)))
             }
         }
     });
 
-    reg.register_admin("deleteTrigger", {
+    // Approve and revoke running as system (TODO-type-hardening H8.10). Only a
+    // person: `approve_system_trigger` refuses a delegated editor, which is what
+    // an MCP client's endpoint tool or the catalog's admin host would be.
+    reg.handle(sc_api::handler_ids::APPROVE_TRIGGER_SYSTEM, {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let dispatcher = triggers_of(&apps)?;
+                let id = parse_trigger_id(ctx.path_param("id")?)?;
+                let Some(trigger) = load_trigger(&catalog, id).await? else {
+                    return Err(Error::not_found(format!("no trigger with id {id}")));
+                };
+                if !trigger.runs_as_system() {
+                    return Err(Error::invalid(format!(
+                        "trigger `{}` does not ask to run as system; turn on its \
+                         `runs_as_system` setting first",
+                        trigger.name
+                    )));
+                }
+                let hash = dispatcher.configuration_hash(&catalog, &trigger).await?;
+                sc_action::approve_system_trigger(&catalog, &ctx.who.editor(), id, &hash).await?;
+                sc_log::log_info!(
+                    "trigger `{}`: approved to run as system by {}",
+                    trigger.name,
+                    ctx.user()
+                        .map_or_else(|| "the operator".to_owned(), |u| u.id().to_string())
+                );
+                dispatcher.reload(&catalog).await?;
+                approval_answer(&catalog, &dispatcher, id).await
+            }
+        }
+    });
+
+    // The administrators' notices (TODO-type-hardening H8.6).
+    reg.handle(sc_api::handler_ids::LIST_ADMIN_NOTICES, {
+        let catalog = catalog.clone();
+        move |_ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let notices = crate::notices::list_notices(&catalog).await?;
+                Ok(HandlerResponse::ok(
+                    serde_json::to_value(notices)
+                        .map_err(|e| Error::msg(format!("admin notices: {e}")))?,
+                ))
+            }
+        }
+    });
+    reg.handle(sc_api::handler_ids::DISMISS_ADMIN_NOTICE, {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = ctx.path_param("id")?.to_owned();
+                let dismissed = crate::notices::dismiss_notice(&catalog, &id).await?;
+                if !dismissed {
+                    return Err(Error::not_found(format!("there is no notice `{id}`")));
+                }
+                Ok(HandlerResponse::ok(json!({ "dismissed": true })))
+            }
+        }
+    });
+
+    reg.handle(sc_api::handler_ids::REVOKE_TRIGGER_SYSTEM, {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let dispatcher = triggers_of(&apps)?;
+                let id = parse_trigger_id(ctx.path_param("id")?)?;
+                if load_trigger(&catalog, id).await?.is_none() {
+                    return Err(Error::not_found(format!("no trigger with id {id}")));
+                }
+                // Revoking narrows, so anyone with admin authority may.
+                sc_action::clear_system_approval(&catalog, id).await?;
+                dispatcher.reload(&catalog).await?;
+                approval_answer(&catalog, &dispatcher, id).await
+            }
+        }
+    });
+
+    reg.handle(sc_api::handler_ids::DELETE_TRIGGER, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -162,7 +275,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("runTrigger", {
+    reg.handle(sc_api::handler_ids::RUN_TRIGGER, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -181,7 +294,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 // admin who pressed the button. A failing action comes back as
                 // an error — a 200 carrying a hidden failure is the thing a
                 // "test this now" button exists to prevent.
-                let caller = admin_caller(ctx.user());
+                let caller = admin_caller(&ctx.who);
                 let result = dispatcher
                     .run_trigger(
                         &catalog,
@@ -195,7 +308,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("testRunTrigger", {
+    reg.handle(sc_api::handler_ids::TEST_RUN_TRIGGER, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -207,7 +320,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let trigger = load_trigger(&catalog, id)
                     .await?
                     .ok_or_else(|| Error::not_found(format!("no trigger with id {id}")))?;
-                let caller = admin_caller(ctx.user());
+                let caller = admin_caller(&ctx.who);
                 // A table trigger has no occurrence of its own when a person
                 // presses a button, so one is borrowed: a row picked at random
                 // from the table it fires on. Read *before* the run and sent
@@ -261,7 +374,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listActions", {
+    reg.handle(sc_api::handler_ids::LIST_ACTIONS, {
         let apps = apps.clone();
         let catalog = catalog.clone();
         move |ctx| {
@@ -332,7 +445,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // listed and still editable — with its issues beside it, because editing it
     // is the repair — and what it cannot do is start a run.
 
-    reg.register_admin("getWorkflow", {
+    reg.handle(sc_api::handler_ids::GET_WORKFLOW, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -376,7 +489,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("saveWorkflow", {
+    reg.handle(sc_api::handler_ids::SAVE_WORKFLOW, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -420,7 +533,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // not a deletion of the versions in between — a run suspended on any of them
     // still has to be able to load the one it is pinned to tomorrow, which is
     // the whole reason the table is append-only (decision 2).
-    reg.register_admin("revertWorkflow", {
+    reg.handle(sc_api::handler_ids::REVERT_WORKFLOW, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -467,7 +580,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listWorkflowRuns", {
+    reg.handle(sc_api::handler_ids::LIST_WORKFLOW_RUNS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -495,7 +608,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("resumeRun", {
+    reg.handle(sc_api::handler_ids::RESUME_RUN, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -532,7 +645,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("cancelRun", {
+    reg.handle(sc_api::handler_ids::CANCEL_RUN, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -556,7 +669,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("retryRun", {
+    reg.handle(sc_api::handler_ids::RETRY_RUN, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -800,23 +913,73 @@ async fn check_stream_channel(
 async fn random_row(
     catalog: &Catalog,
     table: Option<&str>,
-    caller: &sc_catalog::Principal,
+    caller: &sc_catalog::AdminPrincipal,
 ) -> Result<Option<Json>> {
     let Some(name) = table else {
         return Ok(None);
     };
     let table = catalog.require(name)?;
     let count =
-        rows::count_rows_where(catalog, &table, None, sc_access::admin_access(caller)?).await?;
+        rows::count_rows_where(catalog, &table, None, sc_access::admin_access(caller)).await?;
     if count <= 0 {
         return Ok(None);
     }
-    let offset = (uuid::Uuid::new_v4().as_u128() % count as u128) as u64;
+    // `count` is positive (checked above), and the remainder is less than it,
+    // so both conversions hold.
+    let below = u128::try_from(count).unwrap_or(1);
+    let offset = u64::try_from(uuid::Uuid::new_v4().as_u128() % below).unwrap_or(0);
     let query = rows::RowQuery::new().limit(1).offset(offset);
     let read =
-        rows::list_rows_query(catalog, &table, &query, sc_access::admin_access(caller)?).await?;
+        rows::list_rows_query(catalog, &table, &query, sc_access::admin_access(caller)).await?;
     Ok(match read {
         Json::Array(rows) => rows.into_iter().next(),
         _ => None,
     })
+}
+
+/// After a trigger is saved: keep a person's edit of an approved trigger
+/// approved for what it is now, and forget the approval of one that no longer
+/// asks to run as system (TODO-type-hardening H8.10). A delegated editor's edit
+/// changes nothing here, so a changed configuration's approval lapses.
+async fn reapprove(
+    catalog: &Catalog,
+    dispatcher: &sc_action::TriggerDispatcher,
+    editor: &sc_catalog::Editor,
+    trigger: &Trigger,
+    was_approved: bool,
+) -> Result<()> {
+    if !trigger.runs_as_system() {
+        if trigger.system_approval.is_some()
+            || load_trigger(catalog, trigger.id)
+                .await?
+                .is_some_and(|t| t.system_approval.is_some())
+        {
+            sc_action::clear_system_approval(catalog, trigger.id).await?;
+        }
+        return Ok(());
+    }
+    if was_approved && editor.is_person() {
+        let hash = dispatcher.configuration_hash(catalog, trigger).await?;
+        sc_action::approve_system_trigger(catalog, editor, trigger.id, &hash).await?;
+    }
+    Ok(())
+}
+
+/// The trigger as it now stands, with its system state: what approving and
+/// revoking answer.
+async fn approval_answer(
+    catalog: &Catalog,
+    dispatcher: &sc_action::TriggerDispatcher,
+    id: TriggerId,
+) -> Result<HandlerResponse> {
+    let trigger = load_trigger(catalog, id)
+        .await?
+        .ok_or_else(|| Error::not_found(format!("no trigger with id {id}")))?;
+    let system = dispatcher.system_state(catalog, &trigger).await?;
+    let shown = dispatcher.registry().redact_trigger(catalog, &trigger);
+    let mut out = trigger_json(&shown, None);
+    if let Json::Object(map) = &mut out {
+        map.insert("system_state".to_owned(), json!(system.as_str()));
+    }
+    Ok(HandlerResponse::ok(out))
 }

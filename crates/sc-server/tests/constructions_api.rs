@@ -1228,7 +1228,7 @@ async fn a_demoted_admin_stops_the_construction_before_its_next_task() -> sc_err
     .await?;
     let app = app_of(&c.path);
     sc_construct::mark_running(&c.catalog, app, second.id(), None).await?;
-    sc_auth::update_user(
+    let _changed = sc_auth::update_user(
         &c.catalog,
         second.id(),
         sc_auth::UserUpdate {

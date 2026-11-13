@@ -73,6 +73,10 @@
 //! application, and sharing with another `staff` user. Then an ownership
 //! formula gives `staff` the newer houses only, and every count, box and test
 //! in both applications is of those rows, against the admin's 200.
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 
 use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_types::Role;
@@ -237,6 +241,8 @@ async fn serve(
     registry.register(Arc::new(crate::posterior_api::Sampler))?;
     models.set_registry(Arc::new(registry));
     let dispatcher = install_triggers(&catalog, default_js_evaluator(), &agents, &models).await?;
+    // Off by default for the first release; these tests are about it.
+    sc_server::install_analytics_framework()?;
     let apps = Arc::new(
         AppMounts::new(catalog.clone())
             .with_base_domain(base_domain.map(str::to_owned))

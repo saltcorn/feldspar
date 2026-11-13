@@ -132,6 +132,21 @@ impl TrustedSql {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// A Postgres `DO` block around `body` (PL/pgSQL this program composed),
+    /// dollar-quoted with a tag that does not occur in `body` (security review
+    /// 2026-11 D4). A body carries names as string literals, and a name a
+    /// database already has may contain `$sc$`: with a fixed tag, such a name
+    /// would end the block early and the rest would run as SQL.
+    pub fn do_block(body: &str) -> TrustedSql {
+        let mut tag = "$sc$".to_owned();
+        let mut n: u32 = 0;
+        while body.contains(&tag) {
+            n = n.saturating_add(1);
+            tag = format!("$sc{n}$");
+        }
+        TrustedSql(format!("DO {tag} {body} {tag}"))
+    }
 }
 
 impl From<&'static str> for TrustedSql {

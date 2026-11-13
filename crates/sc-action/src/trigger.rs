@@ -60,6 +60,60 @@ impl std::fmt::Display for TriggerId {
 /// because the answer is `true` for almost every trigger almost always.
 pub const ATTR_ENABLED: &str = "enabled";
 
+/// The attribute holding whether a trigger **runs as system** once a person
+/// approves it (TODO-type-hardening H8.10, §7.3a). Sparse: absent is off. The
+/// setting alone elevates nothing; with no matching [`SystemApproval`] it is a
+/// pending request.
+pub const ATTR_RUNS_AS_SYSTEM: &str = "runs_as_system";
+
+/// A person's approval of a trigger to run as system (TODO-type-hardening
+/// H8.10): the hash of the configuration they approved, who they were and
+/// when. Stored in its own columns of `_fd_triggers`, which
+/// [`save_trigger`](crate::save_trigger) never writes, so an edit cannot carry
+/// an approval with it; a change to the configuration makes the hash stop
+/// matching and the approval lapse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemApproval {
+    /// [`Trigger::configuration_hash`] of what was approved.
+    pub hash: String,
+    /// The approver's user id, or `None` for the operator at the CLI.
+    pub by: Option<uuid::Uuid>,
+    /// When.
+    pub at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Where a trigger stands with running as system (TODO-type-hardening H8.10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SystemState {
+    /// It does not ask to.
+    Off,
+    /// It asks to and no person has approved its current configuration — never,
+    /// or not since it last changed. It runs at its cause's authority.
+    Pending,
+    /// A person approved its current configuration: its action's own
+    /// statements run at system authority.
+    Approved(sc_catalog::ApprovedTrigger),
+}
+
+impl SystemState {
+    /// The approval, when there is a matching one.
+    pub fn approved(&self) -> Option<&sc_catalog::ApprovedTrigger> {
+        match self {
+            SystemState::Approved(approved) => Some(approved),
+            SystemState::Off | SystemState::Pending => None,
+        }
+    }
+
+    /// How the admin UI and a tool spell it: `off`, `pending` or `approved`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SystemState::Off => "off",
+            SystemState::Pending => "pending",
+            SystemState::Approved(_) => "approved",
+        }
+    }
+}
+
 /// What a trigger does when it fires: one configured action, or a **workflow**.
 ///
 /// The discriminator is stored in `_fd_triggers.body`, and reading is strict in
@@ -185,6 +239,12 @@ pub struct Trigger {
     /// Sparse per-trigger values (§9): [`ATTR_ENABLED`] and the periodic timing
     /// ([`Schedule`](crate::Schedule)).
     pub attributes: Attrs,
+    /// A person's approval of this trigger to run as system, when there is one
+    /// ([`SystemApproval`]) — matching its current configuration or not, which
+    /// [`system_state`](Trigger::system_state) decides. Like
+    /// [`last_run_at`](Trigger::last_run_at) it is not part of the definition
+    /// an edit saves.
+    pub system_approval: Option<SystemApproval>,
     /// When the scheduler last fired this trigger, for a periodic one (§10.2).
     ///
     /// **Not part of the admin's definition**, which is why it is a field of its
@@ -246,6 +306,7 @@ impl Trigger {
             body,
             min_role: None,
             attributes: Attrs::new(),
+            system_approval: None,
             last_run_at: None,
         }
     }
@@ -377,6 +438,61 @@ impl Trigger {
             .get(ATTR_ENABLED)
             .and_then(Json::as_bool)
             .unwrap_or(true)
+    }
+
+    /// Whether the trigger asks to run as system ([`ATTR_RUNS_AS_SYSTEM`]).
+    pub fn runs_as_system(&self) -> bool {
+        self.attributes
+            .get(ATTR_RUNS_AS_SYSTEM)
+            .and_then(Json::as_bool)
+            .unwrap_or(false)
+    }
+
+    /// Ask, or stop asking, to run as system. Off removes the key (§9).
+    pub fn set_runs_as_system(&mut self, on: bool) {
+        if on {
+            self.attributes
+                .insert(ATTR_RUNS_AS_SYSTEM.into(), Json::Bool(true));
+        } else {
+            self.attributes.remove(ATTR_RUNS_AS_SYSTEM);
+        }
+    }
+
+    /// The hash an approval to run as system is bound to (TODO-type-hardening
+    /// H8.10): SHA-256 over the trigger's event, table, `only_if`, body, action
+    /// and action configuration — its code, for a code body — and, for a
+    /// workflow, `workflow`, the fingerprint of its current definition
+    /// ([`WorkflowEngine::fingerprint`](crate::WorkflowEngine::fingerprint)).
+    /// Its name, description, `min_role`, enabled switch and timing are not
+    /// in it: changing them changes nothing the approver read.
+    pub fn configuration_hash(&self, workflow: Option<&str>) -> String {
+        use sha2::Digest;
+        // `serde_json`'s map is ordered, so this text is canonical.
+        let canonical = serde_json::json!({
+            "event": self.when.as_str(),
+            "table": self.channel,
+            "only_if": self.only_if,
+            "body": self.body.as_str(),
+            "action": self.action(),
+            "configuration": self.configuration(),
+            "workflow": workflow,
+        })
+        .to_string();
+        let digest = sha2::Sha256::digest(canonical.as_bytes());
+        digest.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Where this trigger stands with running as system, given the hash of
+    /// its configuration now ([`configuration_hash`](Trigger::configuration_hash)).
+    pub fn system_state(&self, current: &str) -> SystemState {
+        if !self.runs_as_system() {
+            return SystemState::Off;
+        }
+        let approved = self.system_approval.as_ref().map(|a| a.hash.as_str());
+        match sc_catalog::ApprovedTrigger::verified(&self.name, approved, current) {
+            Some(approved) => SystemState::Approved(approved),
+            None => SystemState::Pending,
+        }
     }
 
     /// Enable or disable the trigger. Enabling **removes** the key rather than

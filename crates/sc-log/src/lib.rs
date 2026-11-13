@@ -182,6 +182,52 @@ pub fn log(level: Verbosity, args: fmt::Arguments<'_>) {
     emit(Stream::Err, args.to_string());
 }
 
+/// What a panic's payload says: the message of `panic!("…")` or of a failed
+/// `assert!`, or a placeholder for a payload that is neither.
+///
+/// For the places a panic is caught and reported — the HTTP layer's 500, a
+/// supervised loop's restart — so each says what went wrong the same way.
+pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&'static str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("a panic with no message")
+}
+
+/// The line [`install_panic_hook`]'s hook prints for one panic.
+fn panic_line(info: &std::panic::PanicHookInfo<'_>) -> String {
+    let thread = std::thread::current();
+    let name = thread.name().unwrap_or("unnamed");
+    let at = info
+        .location()
+        .map(|l| format!(" at {}:{}:{}", l.file(), l.line(), l.column()))
+        .unwrap_or_default();
+    format!(
+        "feldspar: a bug: thread `{name}` panicked{at}: {}",
+        panic_message(info.payload())
+    )
+}
+
+/// Report every panic through this crate's log, as one line saying where it
+/// happened (security review 2026-11 F-3, TODO-type-hardening H5.2).
+///
+/// Installed by the binary at start. A panic in a request handler is answered
+/// with a 500 and the server goes on (sc-server's panic boundary); a panic in
+/// a background loop is restarted (`sc_catalog::supervise`). Neither is
+/// silent: this is the line that says it happened and where. It is printed at
+/// every verbosity — a panic is a bug — and is followed by the backtrace when
+/// `RUST_BACKTRACE` asks for one, as the default hook's would be.
+pub fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        emit(Stream::Err, panic_line(info));
+        let backtrace = std::backtrace::Backtrace::capture();
+        if backtrace.status() == std::backtrace::BacktraceStatus::Captured {
+            emit(Stream::Err, backtrace.to_string());
+        }
+    }));
+}
+
 /// Echo one statement, if the SQL log is on.
 ///
 /// `binds` are the values that will be sent with it. They are printed —
@@ -452,6 +498,29 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn a_panic_is_logged_as_one_line_saying_where() {
+        let _log = capture::guard(Verbosity::Error);
+        install_panic_hook();
+        let caught = std::panic::catch_unwind(|| {
+            std::panic::panic_any(String::from("the sky fell"));
+        });
+        // Back to the default hook, so a failing test elsewhere in this binary
+        // still prints as usual.
+        drop(std::panic::take_hook());
+        let payload = caught.unwrap_err();
+        assert_eq!(panic_message(payload.as_ref()), "the sky fell");
+        let lines = capture::take();
+        let line = lines
+            .iter()
+            .find(|l| l.contains("the sky fell"))
+            .unwrap_or_else(|| panic!("no panic line in {lines:?}"));
+        assert!(line.starts_with("feldspar: a bug: thread `"), "{line}");
+        assert!(line.contains("panicked at "), "{line}");
+        assert!(line.contains("lib.rs:"), "the location is named: {line}");
+        assert_eq!(panic_message(&42_u8), "a panic with no message");
+    }
 
     /// The switches are process-wide, so the tests that move them take turns —
     /// through the same guard every other crate's tests use.

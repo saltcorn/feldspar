@@ -71,7 +71,7 @@ fn formula<'t>(
     caller: &Caller<'_>,
 ) -> std::result::Result<Option<&'t Formula>, Denied> {
     if ownership::meets(caller.user, table.access.min_role_write)
-        || caller.context.role.meets(table.access.min_role_write)
+        || caller.context.role().meets(table.access.min_role_write)
     {
         return Ok(None);
     }
@@ -102,7 +102,7 @@ pub async fn create(
     };
     // The defaults first, so the ownership check sees the row that would be
     // written (`rows::fill_defaults`).
-    let body = &rows::fill_defaults(cat, table, body, caller.context.user.as_ref()).await?;
+    let body = &rows::fill_defaults(cat, table, body, caller.context.user()).await?;
     if let Some(f) = formula {
         // An insert is checked against the proposed row, `_insert` folded true
         // (§7.3) — WITH CHECK semantics at runtime.
@@ -174,13 +174,13 @@ pub async fn update(
     // the row out of the caller's ownership.
     let changes = rows::coerce_row_values(table, body)?;
     let merged = ownership::merged_row(table, &existing, &changes);
-    if !ownership::row_allowed(
+    if !ownership::update_allowed(
         cat,
         table,
         f,
-        Operation::Update,
         caller.user,
         caller.evaluator,
+        &existing,
         &merged,
     )
     .await?
@@ -191,7 +191,7 @@ pub async fn update(
     }
     // The translated predicate rides in the UPDATE's WHERE when it can, closing
     // the check-to-write race.
-    let guard = ownership::write_guard(cat, table, f, Operation::Update, caller.user)?;
+    let guard = ownership::update_guard(cat, table, f, caller.user, &existing)?;
     Ok(Ok(rows::update_row_guarded_in(
         cat,
         table,

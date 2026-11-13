@@ -109,6 +109,16 @@ impl Nearest {
     }
 }
 
+/// Whether `field` is a vector of either precision (`vector(n)`, `halfvec(n)`).
+fn is_vector(field: &DataField) -> bool {
+    field
+        .base
+        .type_
+        .as_basic()
+        .and_then(BasicType::vector_dimensions)
+        .is_some()
+}
+
 /// The vector field `name` of `table` the caller may read, and its dimensions.
 pub fn vector_field<'t>(table: &'t Table, name: &str) -> Result<(&'t DataField, u32)> {
     let Some(field) = visible_field(table, name) else {
@@ -118,12 +128,14 @@ pub fn vector_field<'t>(table: &'t Table, name: &str) -> Result<(&'t DataField, 
         )));
     };
     match field.base.type_.as_basic() {
-        Some(BasicType::Vector(n)) if *n > 0 && !field.is_calc() => Ok((field, *n)),
+        Some(basic) if basic.vector_dimensions().is_some_and(|n| n > 0) && !field.is_calc() => {
+            Ok((field, basic.vector_dimensions().unwrap_or_default()))
+        }
         _ => {
             let vectors: Vec<String> = table
                 .fields
                 .iter()
-                .filter(|f| matches!(f.base.type_.as_basic(), Some(BasicType::Vector(_))))
+                .filter(|f| is_vector(f))
                 .map(|f| format!("`{}`", f.base.name))
                 .collect();
             Err(Error::invalid(format!(
@@ -166,6 +178,9 @@ pub(crate) async fn prepare<'q>(
     let distance = Expr::VectorDistance(Box::new(VectorDistance {
         column: Expr::qcol(table.name.clone(), field.base.name.clone()),
         to,
+        // A `halfvec` column is compared with a `halfvec`: pgvector has no
+        // `<=>` between the two precisions, and its index is on the column's.
+        half: matches!(field.base.type_.as_basic(), Some(BasicType::HalfVector(_))),
     }));
     // A row with no vector is near nothing, so it is not one of the nearest;
     // a zero vector has no direction, and its distance (NaN on Postgres, NULL
@@ -288,10 +303,12 @@ pub async fn embed_texts_metered(
     texts: &[String],
 ) -> Result<sc_llm::Embeddings> {
     let name = &field.base.name;
-    let dimensions = match field.base.type_.as_basic() {
-        Some(BasicType::Vector(n)) => *n,
-        _ => 0,
-    };
+    let dimensions = field
+        .base
+        .type_
+        .as_basic()
+        .and_then(BasicType::vector_dimensions)
+        .unwrap_or_default();
     let config = embed_config(field);
     let Some(model) = config.model else {
         return Err(Error::invalid(format!(
@@ -325,7 +342,12 @@ pub async fn embed_texts_metered(
 fn embedded_fields(table: &Table) -> impl Iterator<Item = (&DataField, String)> {
     table.fields.iter().filter_map(|f| {
         let from = embed_config(f).from?;
-        matches!(f.base.type_.as_basic(), Some(BasicType::Vector(n)) if *n > 0).then_some((f, from))
+        f.base
+            .type_
+            .as_basic()
+            .and_then(BasicType::vector_dimensions)
+            .is_some_and(|n| n > 0)
+            .then_some((f, from))
     })
 }
 
@@ -360,6 +382,7 @@ async fn formula_text(
             row: bound,
             user: None,
             ambient: Default::default(),
+            now: chrono::Utc::now(),
         })
         .await?;
     Ok(match json {

@@ -189,6 +189,22 @@ export async function uploadBackup(file: File): Promise<UploadedBackup | LockedB
   return (await res.json()) as UploadedBackup | LockedBackup;
 }
 
+/** An uploaded structure zip: the token `planSyncZipDeploy` and
+ * `syncZipDeploy` name it by, and how many files it holds. */
+export type UploadedStructureZip = { id: string; files: number };
+
+/**
+ * Hand a structure zip (`feldspar backup --structure-only`) to the server, which
+ * reads it, refuses one that is not a structure zip, and keeps it for Source
+ * control to plan and deploy (APP_SYNC_PROPOSAL §7.4). Nothing is applied by
+ * this.
+ */
+export async function uploadStructureZip(file: File): Promise<UploadedStructureZip> {
+  const res = await browserFetch("/source-control/upload", { method: "POST", body: file });
+  if (!res.ok) throw await rawError("uploadStructureZip", res);
+  return (await res.json()) as UploadedStructureZip;
+}
+
 /**
  * The HTTP status embedded in an error thrown by the generated client, if any.
  * The client throws `Error("<name> failed: <status>[: <server message>]")`, so

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use sc_api::{AuthRequirement, Endpoint, EndpointSet, Method, PathSpec};
+use sc_api::{Endpoint, EndpointSet, Method, PathSpec};
 use sc_auth::{SessionStore, User};
 use sc_server::{
     CONTENT_SECURITY_POLICY, HandlerRegistry, HandlerResponse, SESSION_COOKIE, ServerConfig,
@@ -24,61 +24,92 @@ use uuid::Uuid;
 /// A small endpoint set exercising every dispatch path.
 fn test_endpoints() -> EndpointSet {
     let mut set = EndpointSet::new();
-    set.register(
-        Endpoint::new("ping", Method::Get, PathSpec::root().lit("api/ping"))
-            .auth(AuthRequirement::Public),
-    );
-    set.register(
-        Endpoint::new("echo", Method::Post, PathSpec::root().lit("api/echo"))
-            .auth(AuthRequirement::Public),
-    );
-    set.register(
-        Endpoint::new("bulk", Method::Get, PathSpec::root().lit("api/bulk"))
-            .auth(AuthRequirement::Public),
-    );
-    set.register(
-        Endpoint::new("secret", Method::Get, PathSpec::root().lit("api/secret"))
-            .auth(AuthRequirement::admin()),
-    );
-    set.register(
-        Endpoint::new("login", Method::Post, PathSpec::root().lit("api/login"))
-            .auth(AuthRequirement::Public),
-    );
-    set.register(
-        Endpoint::new("logout", Method::Post, PathSpec::root().lit("api/logout"))
-            .auth(AuthRequirement::LoggedIn),
-    );
+    set.register(Endpoint::new(
+        sc_api::HandlerId::<sc_api::Anyone>::new("ping"),
+        Method::Get,
+        PathSpec::root().lit("api/ping"),
+    ));
+    set.register(Endpoint::new(
+        sc_api::HandlerId::<sc_api::Anyone>::new("echo"),
+        Method::Post,
+        PathSpec::root().lit("api/echo"),
+    ));
+    set.register(Endpoint::new(
+        sc_api::HandlerId::<sc_api::Anyone>::new("bulk"),
+        Method::Get,
+        PathSpec::root().lit("api/bulk"),
+    ));
+    set.register(Endpoint::new(
+        sc_api::HandlerId::<sc_api::AdminOnly>::new("secret"),
+        Method::Get,
+        PathSpec::root().lit("api/secret"),
+    ));
+    set.register(Endpoint::new(
+        sc_api::HandlerId::<sc_api::Anyone>::new("login"),
+        Method::Post,
+        PathSpec::root().lit("api/login"),
+    ));
+    set.register(Endpoint::new(
+        sc_api::HandlerId::<sc_api::SignedIn>::new("logout"),
+        Method::Post,
+        PathSpec::root().lit("api/logout"),
+    ));
+    set.register(Endpoint::new(
+        sc_api::HandlerId::<sc_api::Anyone>::new("boom"),
+        Method::Get,
+        PathSpec::root().lit("api/boom"),
+    ));
     set
 }
 
 fn test_registry() -> HandlerRegistry {
     let mut reg = HandlerRegistry::new();
-    reg.register("ping", |_ctx| async {
-        Ok(HandlerResponse::ok(json!({ "pong": true })))
-    });
-    reg.register(
-        "echo",
+    reg.handle(
+        sc_api::HandlerId::<sc_api::Anyone>::new("ping"),
+        |_ctx| async { Ok(HandlerResponse::ok(json!({ "pong": true }))) },
+    );
+    reg.handle(
+        sc_api::HandlerId::<sc_api::Anyone>::new("echo"),
         |ctx| async move { Ok(HandlerResponse::ok(ctx.body)) },
     );
-    reg.register("bulk", |_ctx| async {
-        let rows: Vec<Value> = (0..500)
-            .map(|i| json!({ "id": i, "title": "A slide of the presentation" }))
-            .collect();
-        Ok(HandlerResponse::ok(json!(rows)))
-    });
-    reg.register_admin("secret", |_ctx| async {
-        Ok(HandlerResponse::ok(json!({ "ok": true })))
-    });
-    reg.register("login", |_ctx| async {
-        let admin = User::new(Uuid::new_v4(), Role::ADMIN);
-        Ok(HandlerResponse::start_session(
-            admin,
-            json!({ "role": Role::ADMIN }),
-        ))
-    });
-    reg.register_signed_in("logout", |_ctx| async {
-        Ok(HandlerResponse::end_session(json!({ "ok": true })))
-    });
+    reg.handle(
+        sc_api::HandlerId::<sc_api::Anyone>::new("bulk"),
+        |_ctx| async {
+            let rows: Vec<Value> = (0..500)
+                .map(|i| json!({ "id": i, "title": "A slide of the presentation" }))
+                .collect();
+            Ok(HandlerResponse::ok(json!(rows)))
+        },
+    );
+    reg.handle(
+        sc_api::HandlerId::<sc_api::AdminOnly>::new("secret"),
+        |_ctx| async { Ok(HandlerResponse::ok(json!({ "ok": true }))) },
+    );
+    reg.handle(
+        sc_api::HandlerId::<sc_api::Anyone>::new("login"),
+        |_ctx| async {
+            let admin = User::new(Uuid::new_v4(), Role::ADMIN);
+            // No database here, so no second factor to ask for: a test's waiver.
+            Ok(HandlerResponse::start_verified_session(
+                sc_auth::FullyAuthenticated::waived(admin, sc_auth::SecondFactorWaiver::Test),
+                json!({ "role": Role::ADMIN }),
+            ))
+        },
+    );
+    reg.handle(
+        sc_api::HandlerId::<sc_api::SignedIn>::new("logout"),
+        |_ctx| async { Ok(HandlerResponse::end_session(json!({ "ok": true }))) },
+    );
+    reg.handle(
+        sc_api::HandlerId::<sc_api::Anyone>::new("boom"),
+        |_ctx| async {
+            let rows: Vec<Value> = Vec::new();
+            // A bug: what the panic boundary is for.
+            #[allow(clippy::indexing_slicing, reason = "the panic under test")]
+            let first = rows[0].clone();
+            Ok(HandlerResponse::ok(first))
+        },
+    );
     reg
 }
 
@@ -409,7 +440,7 @@ async fn an_application_session_is_no_admin_session_on_the_admin_host() {
     };
 
     let app_token = sessions
-        .login_in(admin.clone(), sc_auth::SessionScope::App)
+        .login_in(admin.clone(), sc_auth::SessionScope::App(Uuid::new_v4()))
         .await
         .unwrap();
     assert!(app_token.starts_with(sc_auth::APP_TOKEN_PREFIX));
@@ -424,10 +455,12 @@ async fn an_application_session_is_no_admin_session_on_the_admin_host() {
 }
 
 /// A handler for an `admin()` endpoint must be registered behind the admin
-/// gate, so it is handed admin authority: one registered with plain
-/// `register` is a router that does not build, not a route that runs the
-/// handler for whoever asks (code quality Q2.7). A `LoggedIn` endpoint's
-/// handler likewise needs a gate that hands it a user.
+/// gate, so it is handed admin authority: declared and registered under one
+/// `HandlerId<AdminOnly>` it always is (H6.1), and one registered under a
+/// second id of the same name and another type (`HandlerId<Anyone>`) is a
+/// router that does not build, not a route that runs the handler for whoever
+/// asks (code quality Q2.7). A `LoggedIn` endpoint's handler likewise needs a
+/// gate that hands it a user.
 #[tokio::test]
 async fn an_admin_endpoint_cannot_be_served_by_an_open_handler() {
     let build = |reg: HandlerRegistry| {
@@ -441,16 +474,18 @@ async fn an_admin_endpoint_cannot_be_served_by_an_open_handler() {
     assert!(build(test_registry()).is_ok());
 
     let mut open_admin = test_registry();
-    open_admin.register("secret", |_ctx| async {
-        Ok(HandlerResponse::ok(json!({ "ok": true })))
-    });
+    open_admin.handle(
+        sc_api::HandlerId::<sc_api::Anyone>::new("secret"),
+        |_ctx| async { Ok(HandlerResponse::ok(json!({ "ok": true }))) },
+    );
     let err = build(open_admin).expect_err("an open handler for an admin endpoint");
     assert!(err.to_string().contains("`secret`"), "{err}");
 
     let mut open_logout = test_registry();
-    open_logout.register("logout", |_ctx| async {
-        Ok(HandlerResponse::end_session(json!({ "ok": true })))
-    });
+    open_logout.handle(
+        sc_api::HandlerId::<sc_api::Anyone>::new("logout"),
+        |_ctx| async { Ok(HandlerResponse::end_session(json!({ "ok": true }))) },
+    );
     let err = build(open_logout).expect_err("an open handler for a LoggedIn endpoint");
     assert!(err.to_string().contains("`logout`"), "{err}");
 
@@ -901,4 +936,40 @@ async fn requests_are_logged_at_info_and_not_below_it() {
         "{:?}",
         logged_at[1]
     );
+}
+
+/// A handler that panics is answered with a 500 in the usual `{error}` shape,
+/// with the security headers, and the server goes on serving
+/// (TODO-type-hardening H5.2).
+#[tokio::test]
+async fn a_panicking_handler_is_a_500_and_the_server_keeps_serving() {
+    let (router, _) = test_router();
+    let response = router
+        .clone()
+        .oneshot(Request::get("/api/boom").body(Body::empty()).unwrap())
+        .await
+        .expect("answered, not unwound");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::X_CONTENT_TYPE_OPTIONS)
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff")
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    let error = body["error"].as_str().unwrap();
+    assert!(error.contains("bug"), "{error}");
+    // What the panic said stays in the log.
+    assert!(!error.contains("index out of bounds"), "{error}");
+
+    let (status, _, body) = call(
+        &router,
+        Request::get("/api/ping").body(Body::empty()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }

@@ -15,7 +15,7 @@
 // before this script was evaluated:
 //
 //   __scDone(id, jsonText)             a call answered
-//   __scFail(id, message, stack)       a call threw
+//   __scFail(id, message, stack, refused)  a call threw (refused: with the server's refusal)
 //
 // The `id` is the host's, not this script's: many calls are in flight at once
 // and a slow module's action does not hold anybody else's, which is what the id
@@ -47,7 +47,7 @@
 // installs back:
 //
 //   __scAsk(callId, askId, requestJson)   a host call, from inside a call
-//   __scAnswer(askId, ok, text)           its answer, later
+//   __scAnswer(askId, ok, text, refused)  its answer, later
 //
 // The `callId` is the one the request arrived with, because that is what says
 // **whose** authority the ask runs under: the caller of that call is where the
@@ -167,6 +167,13 @@ console.error = speak("error");
 const asks = new Map();
 let nextAsk = 1;
 
+/** The errors this script rejected an ask with because the server refused the
+ * caller's authority (`__scAnswer`'s `refused`). A call that fails with one of
+ * them fails as that refusal (`__scFail`'s fourth argument), not as the
+ * module's own error. A WeakSet in this script's scope, so a module can neither
+ * add its own errors to it nor see it. */
+const refusals = new WeakSet();
+
 /** The module each call in flight is of, by the call's token: what `askFor`
  * binds an ask to. */
 const callOwners = new Map();
@@ -178,12 +185,14 @@ const callOwners = new Map();
  * a promise this file made — and an answer for an ask nobody is waiting on is
  * dropped rather than reported: the call it belonged to was given up on, and
  * its caller has already been told why. */
-globalThis.__scAnswer = (askId, ok, text) => {
+globalThis.__scAnswer = (askId, ok, text, refused) => {
   const pending = asks.get(askId);
   if (!pending) return;
   asks.delete(askId);
   if (!ok) {
-    pending.reject(new Error(text || "the server refused without saying why"));
+    const error = new Error(text || "the server refused without saying why");
+    if (refused) refusals.add(error);
+    pending.reject(error);
     return;
   }
   let value = null;
@@ -2346,6 +2355,7 @@ async function evalFrameworks(plugin, configuration) {
       checks: Array.isArray(impl.checks) ? impl.checks.filter((c) => typeof c === "string") : [],
       scaffolds: typeof impl.scaffold === "function",
       targets: impl.targets && typeof impl.targets === "object" ? impl.targets : {},
+      settings_tabs: Array.isArray(impl.settings_tabs) ? impl.settings_tabs : null,
     });
   }
   return { frameworks, set, issues };
@@ -5644,14 +5654,14 @@ globalThis.__scModuleHost = (id, request) => {
       pending = handle(request);
     } catch (e) {
       callOwners.delete(id);
-      fail(id, (e && e.message) || String(e), (e && e.stack) || null);
+      fail(id, (e && e.message) || String(e), (e && e.stack) || null, refusals.has(e));
       return;
     }
     pending.then(
       (value) => answer(id, value),
       (e) => {
         callOwners.delete(id);
-        fail(id, (e && e.message) || String(e), (e && e.stack) || null);
+        fail(id, (e && e.message) || String(e), (e && e.stack) || null, refusals.has(e));
       },
     );
   });

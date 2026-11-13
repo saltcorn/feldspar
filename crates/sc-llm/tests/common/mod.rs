@@ -13,7 +13,10 @@
 //! under test is not being tested here, the client is, and this needs to be able
 //! to send responses no framework would let it — a body cut off mid-event, a
 //! `Content-Length` that lies.
-
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 #![allow(dead_code)]
 
 use std::net::SocketAddr;

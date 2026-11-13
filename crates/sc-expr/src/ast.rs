@@ -174,47 +174,63 @@ pub enum BinaryOp {
 /// Lower a swc expression into an [`Ast`], refusing — by name — everything
 /// outside the formula language.
 pub(crate) fn lower(e: &swc::Expr) -> Result<Ast> {
+    lower_at(e, 1)
+}
+
+/// How deeply a formula may nest (parentheses, operators, calls, members):
+/// far beyond any formula a person writes, and shallow enough that every
+/// recursive walk over the tree (lowering, evaluation, translation, `Drop`)
+/// stays well inside a thread's stack (security review 2026-11, D1).
+pub const MAX_FORMULA_DEPTH: usize = 512;
+
+/// [`lower`] at nesting level `depth`: refused once that passes
+/// [`MAX_FORMULA_DEPTH`], before recursing any further.
+fn lower_at(e: &swc::Expr, depth: usize) -> Result<Ast> {
+    if depth > MAX_FORMULA_DEPTH {
+        return Err(crate::formula::too_deep());
+    }
+    let d = depth + 1;
     match e {
-        swc::Expr::Paren(p) => lower(&p.expr),
+        swc::Expr::Paren(p) => lower_at(&p.expr, d),
         swc::Expr::Ident(i) => Ok(Ast::Ident(i.sym.to_string())),
         swc::Expr::Lit(lit) => lower_lit(lit),
         swc::Expr::Bin(b) => Ok(Ast::Binary {
             op: lower_binop(b.op)?,
-            l: Box::new(lower(&b.left)?),
-            r: Box::new(lower(&b.right)?),
+            l: Box::new(lower_at(&b.left, d)?),
+            r: Box::new(lower_at(&b.right, d)?),
         }),
         swc::Expr::Unary(u) => Ok(Ast::Unary {
             op: lower_unop(u.op)?,
-            expr: Box::new(lower(&u.arg)?),
+            expr: Box::new(lower_at(&u.arg, d)?),
         }),
         swc::Expr::Cond(c) => Ok(Ast::Cond {
-            test: Box::new(lower(&c.test)?),
-            cons: Box::new(lower(&c.cons)?),
-            alt: Box::new(lower(&c.alt)?),
+            test: Box::new(lower_at(&c.test, d)?),
+            cons: Box::new(lower_at(&c.cons, d)?),
+            alt: Box::new(lower_at(&c.alt, d)?),
         }),
-        swc::Expr::Member(m) => lower_member(m, false),
+        swc::Expr::Member(m) => lower_member(m, false, d),
         swc::Expr::OptChain(o) => match &*o.base {
-            swc::OptChainBase::Member(m) => lower_member(m, true),
+            swc::OptChainBase::Member(m) => lower_member(m, true, d),
             swc::OptChainBase::Call(c) => Ok(Ast::Call {
-                callee: Box::new(lower(&c.callee)?),
-                args: lower_args(&c.args)?,
+                callee: Box::new(lower_at(&c.callee, d)?),
+                args: lower_args(&c.args, d)?,
                 optional: true,
             }),
         },
         swc::Expr::Call(c) => {
             let callee = match &c.callee {
-                swc::Callee::Expr(e) => lower(e)?,
+                swc::Callee::Expr(e) => lower_at(e, d)?,
                 swc::Callee::Super(_) | swc::Callee::Import(_) => {
                     return Err(unsupported("`super`/`import` calls"));
                 }
             };
             Ok(Ast::Call {
                 callee: Box::new(callee),
-                args: lower_args(&c.args)?,
+                args: lower_args(&c.args, d)?,
                 optional: false,
             })
         }
-        swc::Expr::Arrow(a) => lower_arrow(a),
+        swc::Expr::Arrow(a) => lower_arrow(a, d),
         swc::Expr::Array(a) => {
             let mut elems = Vec::with_capacity(a.elems.len());
             for elem in &a.elems {
@@ -224,7 +240,7 @@ pub(crate) fn lower(e: &swc::Expr) -> Result<Ast> {
                 if elem.spread.is_some() {
                     return Err(unsupported("spread (`...`)"));
                 }
-                elems.push(lower(&elem.expr)?);
+                elems.push(lower_at(&elem.expr, d)?);
             }
             Ok(Ast::Array(elems))
         }
@@ -236,7 +252,11 @@ pub(crate) fn lower(e: &swc::Expr) -> Result<Ast> {
                     None => return Err(unsupported("template literals with invalid escapes")),
                 }
             }
-            let exprs = t.exprs.iter().map(|e| lower(e)).collect::<Result<_>>()?;
+            let exprs = t
+                .exprs
+                .iter()
+                .map(|e| lower_at(e, d))
+                .collect::<Result<_>>()?;
             Ok(Ast::Template { quasis, exprs })
         }
         // Everything below is refused by name: a formula is one pure expression.
@@ -245,7 +265,7 @@ pub(crate) fn lower(e: &swc::Expr) -> Result<Ast> {
         swc::Expr::Seq(_) => Err(unsupported("comma expressions")),
         swc::Expr::New(n) if matches!(&*n.callee, swc::Expr::Ident(i) if &*i.sym == "Date") => {
             Ok(Ast::NewDate(match &n.args {
-                Some(args) => lower_args(args)?,
+                Some(args) => lower_args(args, d)?,
                 None => Vec::new(),
             }))
         }
@@ -302,14 +322,14 @@ fn banned_member(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn lower_member(m: &swc::MemberExpr, optional: bool) -> Result<Ast> {
+fn lower_member(m: &swc::MemberExpr, optional: bool, d: usize) -> Result<Ast> {
     let prop = match &m.prop {
         swc::MemberProp::Ident(i) => {
             banned_member(&i.sym)?;
             MemberProp::Static(i.sym.to_string())
         }
         swc::MemberProp::Computed(c) => {
-            let key = lower(&c.expr)?;
+            let key = lower_at(&c.expr, d)?;
             if let Ast::Str(name) = &key {
                 banned_member(name)?;
             }
@@ -318,24 +338,24 @@ fn lower_member(m: &swc::MemberExpr, optional: bool) -> Result<Ast> {
         swc::MemberProp::PrivateName(_) => return Err(unsupported("private names (`#x`)")),
     };
     Ok(Ast::Member {
-        obj: Box::new(lower(&m.obj)?),
+        obj: Box::new(lower_at(&m.obj, d)?),
         prop,
         optional,
     })
 }
 
-fn lower_args(args: &[swc::ExprOrSpread]) -> Result<Vec<Ast>> {
+fn lower_args(args: &[swc::ExprOrSpread], d: usize) -> Result<Vec<Ast>> {
     args.iter()
         .map(|a| {
             if a.spread.is_some() {
                 return Err(unsupported("spread (`...`)"));
             }
-            lower(&a.expr)
+            lower_at(&a.expr, d)
         })
         .collect()
 }
 
-fn lower_arrow(a: &swc::ArrowExpr) -> Result<Ast> {
+fn lower_arrow(a: &swc::ArrowExpr, d: usize) -> Result<Ast> {
     if a.is_async || a.is_generator {
         return Err(unsupported("async/generator arrows"));
     }
@@ -348,7 +368,7 @@ fn lower_arrow(a: &swc::ArrowExpr) -> Result<Ast> {
         })
         .collect::<Result<Vec<_>>>()?;
     let body = match &*a.body {
-        swc::BlockStmtOrExpr::Expr(e) => lower(e)?,
+        swc::BlockStmtOrExpr::Expr(e) => lower_at(e, d)?,
         swc::BlockStmtOrExpr::BlockStmt(_) => {
             return Err(unsupported("arrow functions with a block body"));
         }

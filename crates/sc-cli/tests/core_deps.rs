@@ -7,7 +7,10 @@
 //!  2. the chosen runtime actually works — a `#[tokio::test]` drives the tokio
 //!     multi-threaded runtime end to end. If the runtime decision regressed
 //!     (e.g. tokio dropped), this test would not compile.
-
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 // This whole file is test code, so `expect()`/`unwrap()` are appropriate. The
 // `allow-expect-in-tests` clippy config only exempts calls inside `#[test]`
 // functions; the free helpers below are not, so opt the module out explicitly.

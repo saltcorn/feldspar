@@ -70,7 +70,12 @@ pub async fn call(
     args: &Json,
     ctx: &mut TraitContext<'_>,
 ) -> Result<Json> {
-    let ceiling = config_count(config, CFG_MAX_RESULTS, DEFAULT_MAX_RESULTS as u64)? as usize;
+    let ceiling = usize::try_from(config_count(
+        config,
+        CFG_MAX_RESULTS,
+        DEFAULT_MAX_RESULTS as u64,
+    )?)
+    .unwrap_or(usize::MAX);
     let args = arguments(args, &[ARG_PATTERN, ARG_DIR])?;
     let pattern = args.string_or_empty(ARG_PATTERN)?;
     let rel_dir = args.string_or_empty(ARG_DIR)?;

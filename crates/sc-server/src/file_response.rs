@@ -84,27 +84,11 @@ pub(crate) fn parse_range(value: &str, size: u64) -> RangeAsk {
 }
 
 /// `Content-Disposition` for `filename`: `inline` or `attachment`, with an
-/// ASCII `filename` for old clients and the exact name as `filename*`.
+/// ASCII `filename` for old clients and the exact name as `filename*` — the
+/// one rendering of [`sc_http::DownloadName`] (security review 2026-11 D7),
+/// which also takes CR, LF and path separators out of the name.
 pub(crate) fn content_disposition(filename: &str, attachment: bool) -> String {
-    let kind = if attachment { "attachment" } else { "inline" };
-    let ascii: String = filename
-        .chars()
-        .map(|c| match c {
-            ' '..='~' if c != '"' && c != '\\' => c,
-            _ => '_',
-        })
-        .collect();
-    let mut encoded = String::new();
-    for byte in filename.as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' => encoded.push(*byte as char),
-            b'!' | b'#' | b'$' | b'&' | b'+' | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~' => {
-                encoded.push(*byte as char);
-            }
-            other => encoded.push_str(&format!("%{other:02X}")),
-        }
-    }
-    format!("{kind}; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
+    sc_http::DownloadName::sanitised(filename).disposition(attachment)
 }
 
 /// The `Content-Security-Policy` every piece of user content carries
@@ -363,6 +347,10 @@ pub(crate) async fn serve(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 mod tests {
     use super::*;
     use std::sync::Arc;
@@ -459,6 +447,22 @@ mod tests {
         assert_eq!(parse_range("items=0-1", 1000), RangeAsk::Whole);
         assert_eq!(parse_range("bytes=x-y", 1000), RangeAsk::Whole);
         assert_eq!(parse_range("bytes=9-3", 1000), RangeAsk::Whole);
+    }
+
+    /// A name from an application's code (`code_reply`'s `filename`) or an
+    /// upload's attributes is whatever somebody typed: CR/LF, a quote, a `;`
+    /// or a path separator in it must not reach the header as itself
+    /// (security review 2026-11 D7, H6.3).
+    #[test]
+    fn a_hostile_name_is_sanitised_in_the_header() {
+        let header = content_disposition("../a\\b\r\nSet-Cookie: x=1\"; filename=evil.exe", true);
+        assert!(!header.contains(['\r', '\n']), "{header}");
+        assert_eq!(
+            header,
+            "attachment; filename=\".._a_b__Set-Cookie: x=1_; filename=evil.exe\"; \
+             filename*=UTF-8''.._a_b__Set-Cookie%3A%20x%3D1%22%3B%20filename%3Devil.exe"
+        );
+        assert!(HeaderValue::from_str(&header).is_ok());
     }
 
     #[test]

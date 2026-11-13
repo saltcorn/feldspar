@@ -456,8 +456,14 @@ async fn the_react_framework_is_offered_first_and_brings_its_own_defaults() -> s
         .collect();
     // Saltcorn UI and the Analytics UI follow them: compiled in, and
     // constructed rather than built; then `none`, the application with no UI
-    // at all.
-    assert_eq!(names, ["react", "code", "saltcorn-ui", "analytics", "none"]);
+    // at all. The Analytics UI is off for the first release
+    // (`ANALYTICS_FRAMEWORK_ENABLED`), but the framework registry is
+    // process-wide and the Analytics tests in this binary register it, so
+    // whether it is listed here depends on test order; it is left out of the
+    // comparison (the unit test in `apps.rs` checks that a server does not
+    // offer it).
+    let names: Vec<&str> = names.into_iter().filter(|n| *n != "analytics").collect();
+    assert_eq!(names, ["react", "code", "saltcorn-ui", "none"]);
 
     // Each carries the label and the sentence the picker shows. Without these the
     // admin UI could only distinguish the two by special-casing the name `react`,
@@ -1032,6 +1038,43 @@ async fn a_build_with_after_build_checks_records_a_run() -> sc_error::Result<()>
     Ok(())
 }
 
+/// TODO-type-hardening H3.3 (security review 2026-11 #16): the admin host
+/// takes a console administrator's proof, and checks the user it names again —
+/// a proof for an account that is not an enabled administrator runs nothing.
+#[tokio::test]
+async fn the_admin_host_refuses_a_proof_for_a_user_who_is_not_an_admin() -> sc_error::Result<()> {
+    let tmp = TempDir::new("admin-host-proof");
+    let (_router, catalog, _db) = setup(&tmp).await?;
+    let host = catalog
+        .admin_host()
+        .expect("building the router installs the admin host");
+    sc_auth::save_role(&catalog, &sc_auth::RoleDef::new(Role::of(40), "Staff")).await?;
+    let staff = create_user(&catalog, "staff@example.com", "correct-horse", Role::of(40)).await?;
+    let admin = create_user(&catalog, "admin@example.com", "correct-horse", Role::ADMIN).await?;
+
+    let for_staff =
+        sc_catalog::ConsoleAdmin::at_console(Some(staff.fields_json()), "test: a forged proof");
+    let err = host
+        .list_applications(&for_staff)
+        .await
+        .expect_err("a proof naming a role-40 user");
+    assert!(
+        err.to_string().contains("not an enabled administrator"),
+        "{err}"
+    );
+
+    let for_admin =
+        sc_catalog::ConsoleAdmin::at_console(Some(admin.fields_json()), "test: an admin's proof");
+    assert!(host.list_applications(&for_admin).await?.is_empty());
+
+    // Disabled since the proof was made: refused too. (Another admin first:
+    // the last one cannot be disabled.)
+    create_user(&catalog, "second@example.com", "correct-horse", Role::ADMIN).await?;
+    let _changed = sc_auth::set_user_disabled(&catalog, admin.id(), true).await?;
+    assert!(host.list_applications(&for_admin).await.is_err());
+    Ok(())
+}
+
 /// The administrative tools reach the admin handlers through the catalog's
 /// [`AdminHost`](sc_catalog::AdminHost), one typed method per operation
 /// (TODO-code-quality Q5.3): each runs the handler's own function, so it
@@ -1044,11 +1087,12 @@ async fn the_admin_host_runs_each_operation_through_its_handler() -> sc_error::R
         .admin_host()
         .expect("building the router installs the admin host");
 
-    assert!(host.list_applications(None).await?.is_empty());
+    let system = sc_catalog::ConsoleAdmin::system("test: the admin host");
+    assert!(host.list_applications(&system).await?.is_empty());
 
     let suggested = host
         .backend_operation(
-            None,
+            &system,
             sc_catalog::BackendOperation {
                 backend: sc_files::LOCAL_BACKEND.to_owned(),
                 operation: sc_files::OP_SUGGEST_DIR.to_owned(),
@@ -1064,7 +1108,7 @@ async fn the_admin_host_runs_each_operation_through_its_handler() -> sc_error::R
 
     let missing = uuid::Uuid::new_v4();
     let err = host
-        .update_application(None, missing, json!({ "name": "x" }))
+        .update_application(&system, missing, json!({ "name": "x" }))
         .await
         .expect_err("there is no such application");
     assert!(
@@ -1072,12 +1116,85 @@ async fn the_admin_host_runs_each_operation_through_its_handler() -> sc_error::R
         "the handler answered, not a lookup: {err}"
     );
     let err = host
-        .build_application(None, missing)
+        .build_application(&system, missing)
         .await
         .expect_err("there is no such application");
     assert!(
         !err.to_string().contains("no handler"),
         "the handler answered, not a lookup: {err}"
     );
+    Ok(())
+}
+
+/// **An application on a framework this server does not have is kept, not
+/// lost.** An upgrade can leave one behind: a framework switched off in a
+/// release (the Analytics UI, for the first one), or a module's that was
+/// uninstalled. It is still listed, says `framework_known: false` (the admin UI
+/// shows "Unknown framework" on its settings), is neither mounted at boot nor
+/// built, and can still be deleted. The other applications are unaffected.
+#[tokio::test]
+async fn an_application_on_an_unknown_framework_is_listed_but_not_served() -> sc_error::Result<()> {
+    let tmp = TempDir::new("unknown-framework");
+    let (router, catalog, db) = setup(&tmp).await?;
+    create_user(&catalog, "admin@example.com", "correct-horse", Role::ADMIN).await?;
+    let mut admin = Client::new(router.clone(), BASE_DOMAIN);
+    admin.login("admin@example.com", "correct-horse").await;
+
+    std::fs::create_dir_all(tmp.path().join("public")).unwrap();
+    let mut ids = HashMap::new();
+    for subdomain in ["kept", "retired"] {
+        let (status, created) = admin
+            .send(
+                "POST",
+                "/api/applications",
+                Some(json!({ "name": subdomain, "subdomain": subdomain,
+                             "framework": { "name": "none",
+                                            "config": { "store": "apps", "source": "public" } } })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        ids.insert(subdomain, created["id"].as_str().unwrap().to_owned());
+    }
+    // What an older server left in the table: no save path would write it,
+    // since saving checks the framework.
+    db.execute(
+        "UPDATE _fd_applications SET framework = '{\"name\":\"retired-framework\",\"config\":{}}' \
+         WHERE subdomain = 'retired'",
+    )
+    .await?;
+
+    // Listed, and marked.
+    let (status, listed) = admin.send("GET", "/api/applications", None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let known = |subdomain: &str| {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["subdomain"] == json!(subdomain))
+            .unwrap_or_else(|| panic!("`{subdomain}` is listed: {listed}"))["framework_known"]
+            .clone()
+    };
+    assert_eq!(known("kept"), json!(true));
+    assert_eq!(known("retired"), json!(false));
+
+    // Not built: the refusal names the framework.
+    let (status, refused) = admin
+        .send("POST", &format!("/api/applications/{}/build", ids["retired"]), None)
+        .await;
+    assert!(!status.is_success(), "{status} {refused}");
+    assert!(refused.to_string().contains("retired-framework"), "{refused}");
+
+    // Not mounted at boot; the other application is.
+    let apps = AppMounts::new(catalog.clone()).with_base_domain(Some(BASE_DOMAIN.to_owned()));
+    sc_server::mount_all(&apps).await;
+    assert!(apps.get("kept").is_some(), "the known application mounts");
+    assert!(apps.get("retired").is_none(), "the unknown one is not served");
+
+    // And it can still be deleted.
+    let (status, deleted) = admin
+        .send("DELETE", &format!("/api/applications/{}", ids["retired"]), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{deleted}");
     Ok(())
 }

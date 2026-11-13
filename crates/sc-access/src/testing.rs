@@ -5,7 +5,7 @@ use sc_catalog::{AccessRules, DataField, DbId, Table, TableSource};
 use sc_types::{Attrs, BasicType, TypeRef};
 
 /// A table with `fields`, whose primary key is `id` when it has such a column.
-pub fn table_of(name: &str, fields: Vec<DataField>) -> Table {
+pub(crate) fn table_of(name: &str, fields: Vec<DataField>) -> Table {
     let primary_key = fields
         .iter()
         .filter(|f| f.primary_key)
@@ -30,17 +30,17 @@ pub fn table_of(name: &str, fields: Vec<DataField>) -> Table {
 }
 
 /// A nullable text column.
-pub fn plain_field(name: &str) -> DataField {
+pub(crate) fn plain_field(name: &str) -> DataField {
     DataField::plain(name, TypeRef::Basic(BasicType::Text))
 }
 
 /// A column of an explicit basic type.
-pub fn typed_field(name: &str, ty: BasicType) -> DataField {
+pub(crate) fn typed_field(name: &str, ty: BasicType) -> DataField {
     DataField::plain(name, TypeRef::Basic(ty))
 }
 
 /// A required integer primary key.
-pub fn id_field() -> DataField {
+pub(crate) fn id_field() -> DataField {
     DataField::plain("id", TypeRef::Basic(BasicType::Int))
         .required()
         .primary_key()

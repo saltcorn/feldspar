@@ -33,7 +33,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::compile::{map_src, stop_error};
-use crate::process::{self, KillGroupOnDrop, Tail, Watch};
+use crate::process::{self, Tail, Watch};
 use crate::provider::config_keys::*;
 
 /// CmdStan's `sig_figs` for every run (§13).
@@ -244,6 +244,10 @@ impl RunSettings {
 }
 
 /// `2` rather than `2.0`, `0.95` as itself.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+)]
 fn number(x: f64) -> String {
     if x.fract() == 0.0 && x.abs() < 1e15 {
         format!("{}", x as i64)
@@ -426,12 +430,15 @@ async fn run_chain(
         .await
         .with_context(|| format!("creating {}", log_path.display()))?;
     let started = Instant::now();
-    let mut child = process::command(run.exe)
-        .args(run.settings.arguments(chain))
-        .current_dir(run.dir)
+    let mut command = process::command(run.exe);
+    // CmdStan's arguments are `key=value` words, never options.
+    for arg in run.settings.arguments(chain) {
+        command.positional(sc_proc::Operand::new(arg)?);
+    }
+    command.cwd(run.dir);
+    let mut child = command
         .spawn()
         .with_context(|| format!("running the compiled program {}", run.exe.display()))?;
-    let group = KillGroupOnDrop(child.id());
     let mut lines = process::output_lines(&mut child);
     let mut tail = Tail::default();
     loop {
@@ -448,7 +455,7 @@ async fn run_chain(
                 None => break,
             },
             why = watch.until_stopped() => {
-                group.kill();
+                child.kill_group();
                 return Err(stop_error(why, watch));
             }
         }
@@ -456,7 +463,7 @@ async fn run_chain(
     let status = tokio::select! {
         status = child.wait() => status.context("waiting for a chain")?,
         why = watch.until_stopped() => {
-            group.kill();
+            child.kill_group();
             return Err(stop_error(why, watch));
         }
     };

@@ -71,10 +71,22 @@
 //! is frequently a user the plugin looked up rather than the event's caller. So
 //! a plan may say `{ "user": id }`, which loads that user and goes through the
 //! very same `*_as` functions, at that user's own role; and `"public"`, which is
-//! the public role with nobody in it. Neither can be an escalation — the body
-//! already runs as admin and could read everything by saying nothing — and a
-//! named user who does not exist is an error naming the id, never a quiet fall
-//! back to the default.
+//! the public role with nobody in it. A named user who does not exist is an
+//! error naming the id, never a quiet fall back to the default. And a named user
+//! may hold **no more authority than the run's cause** (TODO-type-hardening
+//! H8.2, `Principal::narrowed`), on every table: the system or an administrator
+//! may name anyone, a role-80 caller only themselves — a code query that passed
+//! a request-supplied id to `forUser` would otherwise run as that user, an
+//! administrator included.
+//!
+//! # Row-level security (§7.3a)
+//!
+//! On a table with RLS nothing elevates. The admin authority above is
+//! `Principal::elevated` over the run's caller, so the policies read the cause:
+//! the event's user, or the system for a scheduled trigger. An explicit
+//! `asAdmin()` over such a table is refused naming it, so a body is told why
+//! instead of silently getting fewer rows; row history, which is read from the
+//! change log past the policies, is read there as the cause.
 //!
 //! Events differ in whom they have to delegate to, and that difference is
 //! honoured rather than hidden: a table event or a directly-run trigger carries
@@ -128,7 +140,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use async_trait::async_trait;
 use sc_access::Scoped;
 use sc_auth::User;
-use sc_catalog::{Authority as ScopedAuthority, Catalog, Principal, SharedTx, Table, Unchecked};
+use sc_catalog::{
+    AdminPrincipal, Authority as ScopedAuthority, Catalog, Principal, SharedTx, Table, Unchecked,
+};
 use sc_error::{Error, Repr, Result};
 use sc_expr::{CodeHost, DEFAULT_MAX_HOST_CALLS, JsEvaluator};
 use serde_json::Value as Json;
@@ -222,6 +236,10 @@ pub struct TableHost<'a> {
     /// trigger, the caller's for a body answering a request
     /// ([`defaulting_to`](TableHost::defaulting_to)).
     default_authority: Authority,
+    /// The admin authority to act at in place of elevating over the caller:
+    /// a trigger's action a person approved to run as system
+    /// ([`acting_as`](TableHost::acting_as), TODO-type-hardening H8.10).
+    admin: Option<AdminPrincipal>,
 }
 
 impl<'a> TableHost<'a> {
@@ -229,14 +247,26 @@ impl<'a> TableHost<'a> {
     pub fn new(catalog: &'a Catalog) -> TableHost<'a> {
         TableHost {
             catalog,
-            caller: Principal::anonymous(Role::PUBLIC),
+            caller: Principal::anonymous(),
             limits: HostLimits::default(),
             evaluator: None,
             executor: rows::Executor::Pooled,
             calls: AtomicU32::new(0),
             viewer_only: false,
             default_authority: Authority::Admin,
+            admin: None,
         }
+    }
+
+    /// Act at `admin`'s authority where a plan is the admin's, in place of
+    /// elevating over the caller: what the body of a trigger a person approved
+    /// to run as system is given (`ActionContext::admin_principal`,
+    /// TODO-type-hardening H8.10). Only that trigger's own statements: a write
+    /// still raises an event caused by the caller.
+    #[must_use]
+    pub fn acting_as(mut self, admin: AdminPrincipal) -> TableHost<'a> {
+        self.admin = Some(admin);
+        self
     }
 
     /// Run a plan that names no authority under `authority` instead of the
@@ -268,8 +298,8 @@ impl<'a> TableHost<'a> {
     /// `asUser()` in a scheduled trigger honestly means.
     #[must_use]
     pub fn caused_by(mut self, role: Role, user: Option<Json>) -> TableHost<'a> {
-        self.caller.role = role;
-        self.caller.user = user;
+        let chain = self.caller.chain().to_vec();
+        self.caller = Principal::recorded(role, user).chained(chain);
         self
     }
 
@@ -281,10 +311,19 @@ impl<'a> TableHost<'a> {
     /// [`chained`]: TableHost::chained
     #[must_use]
     pub fn for_caller(mut self, caller: &Principal) -> TableHost<'a> {
-        self.caller.role = caller.role;
-        self.caller.user = caller.user.clone();
-        self.caller.chain = caller.chain.clone();
+        // The caller itself, so its cause travels with it (TODO-type-hardening
+        // H8.1): what the admin authority is elevated over.
+        self.caller = caller.clone();
         self
+    }
+
+    /// Attach an administrator's authority as the caller: what a module's
+    /// webhook and service run as (TODO-type-hardening H3.6). The proof is a
+    /// named [`AdminPrincipal`], listed in the system-authority inventory,
+    /// rather than an admin role written into `caused_by`.
+    #[must_use]
+    pub fn for_admin(self, admin: &AdminPrincipal) -> TableHost<'a> {
+        self.for_caller(admin.principal())
     }
 
     /// Make the caller's authority the only one a plan runs under — what a
@@ -314,7 +353,7 @@ impl<'a> TableHost<'a> {
     /// Attach the trigger chain that led here.
     #[must_use]
     pub fn chained(mut self, chain: Vec<String>) -> TableHost<'a> {
-        self.caller.chain = chain;
+        self.caller = self.caller.chained(chain);
         self
     }
 
@@ -331,7 +370,7 @@ impl<'a> TableHost<'a> {
         // decides the role every name in the plan is resolved *at*, so a
         // delegated read of a table the caller may not reach through a key is
         // refused by the same guard a REST embed is.
-        let actor = self.actor(&plan.authority).await?;
+        let actor = self.actor_on(&plan.authority, &plan.table).await?;
         if plan.render && !matches!(plan.op, Op::Select) {
             return Err(Error::invalid(format!(
                 "the statement of a `{}` of `{}` is not something to ask for: only a read \
@@ -388,7 +427,7 @@ impl<'a> TableHost<'a> {
                 self.catalog,
                 &read.table,
                 &read.table.name,
-                principal.role,
+                principal.role(),
                 user.as_ref(),
             ) {
                 Ok(ownership::AggregateGuard::Predicate(Some(pred))) => {
@@ -447,17 +486,67 @@ impl<'a> TableHost<'a> {
             // never `Default` (`defaulting_to` resolves it on the way in).
             Authority::Default | Authority::Admin => Ok(Actor::Admin(self.admin())),
             Authority::User => Ok(self.delegated(
-                self.caller.role,
-                User::from_json(self.caller.role, self.caller.user.as_ref())?,
+                self.caller.role(),
+                User::from_json(self.caller.role(), self.caller.user())?,
             )),
             // The public role with nobody in it, which the seam can already
             // express and which no lookup can improve on.
             Authority::Public => Ok(self.delegated(Role::PUBLIC, None)),
+            // Never more than the cause (TODO-type-hardening H8.2, §7.3a):
+            // only the system or an administrator may name somebody else.
             Authority::Named(id) => {
                 let user = load_named_user(self.catalog, &id).await?;
-                Ok(self.delegated(user.role(), Some(user)))
+                let principal =
+                    Principal::narrowed(&self.caller, user.role(), Some(user.fields_json()))?;
+                // Held to the role the narrowing settled on: naming oneself in
+                // an application that serves one at a lower role is that role.
+                let user = user.capped_at(principal.role());
+                Ok(Actor::Caller {
+                    principal,
+                    user: Some(user),
+                })
             }
         }
+    }
+
+    /// [`actor`](TableHost::actor) for an operation on `table`, refusing an
+    /// explicit `asAdmin()` there when the table has row-level security
+    /// (TODO-type-hardening H8.2, §7.3a).
+    ///
+    /// The database would hold anyway — an admin actor is elevated over this
+    /// run's cause, and the policies read the cause — so this layer is for the
+    /// message: the body is told why, instead of silently getting fewer rows
+    /// than it asked for. Only the explicit `asAdmin()` is refused; the default
+    /// authority of a trigger's body is the same elevation, and on an RLS
+    /// table it simply sees what its cause sees.
+    async fn actor_on(&self, authority: &Authority, table: &str) -> Result<Actor> {
+        if !self.viewer_only && matches!(authority, Authority::Admin) {
+            refuse_admin_on_rls(self.catalog, table)?;
+        }
+        self.actor(authority).await
+    }
+
+    /// The admin actor's **cause**, as a delegated actor — what an operation
+    /// that does not go through the database's policies (row history, read
+    /// from the change log) acts as on a table with row-level security, so it
+    /// shows exactly what the policies would (TODO-type-hardening H8.2). The
+    /// admin actor itself when its cause is an administrator or the system.
+    fn as_cause_on(&self, actor: Actor, table: &str) -> Result<Actor> {
+        let Actor::Admin(admin) = &actor else {
+            return Ok(actor);
+        };
+        let rls = self
+            .catalog
+            .get(table)
+            .ok()
+            .flatten()
+            .is_some_and(|t| t.rls_enabled);
+        if !rls || admin.policy_role().is_admin() {
+            return Ok(actor);
+        }
+        let role = admin.policy_role();
+        let user = User::from_json(role, admin.policy_user())?;
+        Ok(self.delegated(role, user))
     }
 
     /// [`actor`](TableHost::actor) under [`viewer_only`](TableHost::viewer_only):
@@ -469,8 +558,8 @@ impl<'a> TableHost<'a> {
     fn viewer_actor(&self, authority: &Authority) -> Result<Actor> {
         let caller = || -> Result<Actor> {
             Ok(self.delegated(
-                self.caller.role,
-                User::from_json(self.caller.role, self.caller.user.as_ref())?,
+                self.caller.role(),
+                User::from_json(self.caller.role(), self.caller.user())?,
             ))
         };
         match authority {
@@ -483,7 +572,7 @@ impl<'a> TableHost<'a> {
                 };
                 let own = self
                     .caller
-                    .user
+                    .user()
                     .as_ref()
                     .and_then(|u| u.get("id"))
                     .and_then(Json::as_str);
@@ -526,7 +615,7 @@ impl<'a> TableHost<'a> {
         if read.cursor.is_some()
             && let Actor::Caller { principal, user } = actor
         {
-            self.streamable(&read.table, principal.role, user.as_ref())?;
+            self.streamable(&read.table, principal.role(), user.as_ref())?;
         }
         // For a delegated read, §7.3's rule, in the one place it lives: the
         // formula narrows the rows in the `WHERE` where it can and row by row
@@ -569,7 +658,7 @@ impl<'a> TableHost<'a> {
     async fn aggregate(&self, plan: &Plan, actor: &Actor) -> Result<Json> {
         let agg = plan::aggregate(self.catalog, plan, &self.limits, actor.role())?;
         if let Actor::Caller { principal, user } = actor {
-            self.delegable_aggregate(&agg.table, principal.role, user.as_ref())?;
+            self.delegable_aggregate(&agg.table, principal.role(), user.as_ref())?;
         }
         let values = self
             .scope(actor)
@@ -632,7 +721,7 @@ impl<'a> TableHost<'a> {
         // escape hatch is admitted on — admin-authored SQL whose only row rule
         // is the policies the caller context reaches.
         let access = match &actor {
-            Actor::Admin(context) => sc_access::admin_access(context)?,
+            Actor::Admin(context) => sc_access::admin_access(context),
             Actor::Caller { principal, .. } => Unchecked::vouched(principal, CODE_SQL_RULE),
         };
         let rows = match &self.executor {
@@ -761,11 +850,14 @@ impl<'a> TableHost<'a> {
     }
 
     /// The caller every statement of this run carries: **admin, in the event's
-    /// user's name**, with the trigger chain that led here.
-    fn admin(&self) -> Principal {
-        Principal::new(Role::ADMIN, self.caller.user.clone())
-            .chained(self.caller.chain.clone())
-            .in_current_origin()
+    /// user's name**, with the trigger chain that led here — elevated over the
+    /// caller, so on a table with row-level security it sees what the caller's
+    /// cause sees and no more (TODO-type-hardening H8.1).
+    fn admin(&self) -> AdminPrincipal {
+        match &self.admin {
+            Some(admin) => admin.clone().chained(self.caller.chain().to_vec()),
+            None => Principal::elevated(&self.caller, CODE_ADMIN_RULE),
+        }
     }
 
     /// A delegated actor: `user` at `role`, as §7.3's rule takes them, with the
@@ -774,7 +866,7 @@ impl<'a> TableHost<'a> {
     fn delegated(&self, role: Role, user: Option<User>) -> Actor {
         Actor::Caller {
             principal: ownership::principal_at(role, user.as_ref())
-                .chained(self.caller.chain.clone()),
+                .chained(self.caller.chain().to_vec()),
             user,
         }
     }
@@ -784,7 +876,7 @@ impl<'a> TableHost<'a> {
     /// admin, the ownership rule for a delegated caller.
     fn scope<'s>(&'s self, actor: &'s Actor) -> Scoped<'s> {
         let scoped = match actor {
-            Actor::Admin(context) => Scoped::new(self.catalog, ScopedAuthority::Caller(context)),
+            Actor::Admin(context) => Scoped::new(self.catalog, ScopedAuthority::from(context)),
             Actor::Caller { principal, user } => {
                 Scoped::new(self.catalog, ScopedAuthority::Caller(principal))
                     .with_user(user.as_ref())
@@ -882,6 +974,26 @@ impl<'a> TableHost<'a> {
     }
 }
 
+/// Refuse an explicit `asAdmin()` over `table` when it has row-level security
+/// (TODO-type-hardening H8.2, §7.3a): the one message every surface of a code
+/// body (`db`, `trigger`, `models`) gives.
+pub(crate) fn refuse_admin_on_rls(catalog: &Catalog, table: &str) -> Result<()> {
+    let rls = catalog
+        .get(table)
+        .ok()
+        .flatten()
+        .is_some_and(|t| t.rls_enabled);
+    if rls {
+        return Err(Error::invalid(format!(
+            "`{table}` has row-level security, so `asAdmin()` cannot reach it: on a table with \
+             row-level security code runs with the authority of whoever caused it (the system's \
+             for a scheduled trigger), never more. Remove `asAdmin()`; to act as one user, use \
+             `asUser(id)`"
+        )));
+    }
+    Ok(())
+}
+
 /// The user a `{ user: id }` authority names, loaded.
 ///
 /// **Where users live and nowhere else**: a caller that named somebody is
@@ -923,7 +1035,7 @@ pub(crate) async fn load_named_user(catalog: &Catalog, id: &Json) -> Result<User
 /// §7.3's rule takes.
 enum Actor {
     /// Admin, in the event's user's name, with the chain that led here.
-    Admin(Principal),
+    Admin(AdminPrincipal),
     /// The event's caller (or the public role, or a named user). `user` is
     /// `None` for an event that carries nobody — a scheduled or startup
     /// trigger — which then reads as the public role.
@@ -942,10 +1054,16 @@ impl Actor {
     fn role(&self) -> Role {
         match self {
             Actor::Admin(_) => Role::ADMIN,
-            Actor::Caller { principal, .. } => principal.role,
+            Actor::Caller { principal, .. } => principal.role(),
         }
     }
 }
+
+/// What stands behind a code body's admin actor (an undelegated plan, or
+/// `asAdmin()`): a code body is server-side configuration an administrator
+/// wrote, and runs as admin in its event's user's name unless it narrows
+/// (§10.3). Listed in the system-authority inventory.
+pub(crate) const CODE_ADMIN_RULE: &str = "a code body's admin actor (admin-authored configuration)";
 
 /// What stands behind a delegated `db.sql()`'s unchecked statement: the SQL is
 /// the body's own — server-side configuration an administrator wrote, the
@@ -984,7 +1102,17 @@ impl CodeHost for TableHost<'_> {
             return history::answer(self, request).await;
         }
         let plan: Plan = serde_json::from_value(request).map_err(refuse)?;
-        self.run(&plan).await
+        // The values this terminal presents, and no others: the plan's own
+        // `.withRequest(…)`, or nothing (TODO-type-hardening H7.6).
+        let presented = match &plan.request {
+            Some(values) => sc_expr::RequestValues::new(values.iter())?,
+            None => sc_expr::RequestValues::default(),
+        };
+        let origin = sc_catalog::Origin {
+            request: presented,
+            ..sc_catalog::current_origin()
+        };
+        sc_catalog::with_origin(origin, self.run(&plan)).await
     }
 }
 

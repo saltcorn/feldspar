@@ -40,9 +40,7 @@ use sc_module::{RouteRequest, WEBHOOK_MAX_BODY, WebhookRequest};
 use serde_json::{Value as Json, json};
 
 use crate::modules::RouteLookup;
-use crate::router::{
-    AppState, Resolved, json_error, parse_query, request_client_ip, resolve_app, session_user,
-};
+use crate::router::{AppState, Resolved, json_error, parse_query, request_client_ip, resolve_app};
 use crate::security::AnonymousCaller;
 use sc_backup::schedule::{Frequency, load_schedules, load_statuses};
 
@@ -122,7 +120,7 @@ pub(crate) async fn route(
         Ok(caller) => caller,
         Err(refused) => return *refused,
     };
-    if declared.api_token && caller.user.is_none() {
+    if declared.api_token && caller.user().is_none() {
         return json_error(StatusCode::UNAUTHORIZED, "Unauthorized");
     }
 
@@ -152,7 +150,9 @@ pub(crate) async fn route(
             *response.status_mut() =
                 StatusCode::from_u16(answer.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             for (k, v) in answer.headers {
-                if let (Ok(k), Ok(v)) = (HeaderName::try_from(k), HeaderValue::from_str(&v)) {
+                if let (Ok(k), Ok(v)) = (HeaderName::try_from(k), HeaderValue::from_str(&v))
+                    && !ADMIN_HOST_SECURITY_HEADERS.contains(&k.as_str())
+                {
                     response.headers_mut().insert(k, v);
                 }
             }
@@ -208,10 +208,37 @@ async fn route_caller(
             ))),
         };
     }
-    Ok(session_user(state, jar)
-        .await?
-        .map_or(nobody, |user| sc_access::principal_of(Some(&user))))
+    // Through the admin host's own session check: an application's session is
+    // no session here, whatever its user's role (security review 2026-11, #5).
+    let session =
+        crate::session::Session::<crate::session::AdminScope>::on_admin_host(&state.sessions, jar)
+            .await
+            .map_err(|failed| Box::new(failed.into_response()))?;
+    Ok(session.map_or(nobody, |session| {
+        sc_access::principal_of(Some(&session.into_user().into_user()))
+    }))
 }
+
+/// The response headers a module's answer may not set: the admin origin's
+/// own security policy, which the router's layers add to a response that does
+/// not state one. A module route answers on the admin host, where a policy of
+/// the module's choosing (a permissive CSP, framing allowed) would let a
+/// module's page script reach every admin endpoint (security review 2026-11,
+/// #5).
+const ADMIN_HOST_SECURITY_HEADERS: [&str; 12] = [
+    "content-security-policy",
+    "content-security-policy-report-only",
+    "x-frame-options",
+    "x-content-type-options",
+    "referrer-policy",
+    "permissions-policy",
+    "strict-transport-security",
+    "cross-origin-opener-policy",
+    "cross-origin-embedder-policy",
+    "cross-origin-resource-policy",
+    "access-control-allow-origin",
+    "access-control-allow-credentials",
+];
 
 /// Whether `request` is a `POST` to a module route that declared `noCsrf` —
 /// which the CSRF layer then lets through as the anonymous caller, as it does

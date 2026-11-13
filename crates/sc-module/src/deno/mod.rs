@@ -1295,6 +1295,10 @@ impl DenoModuleHost {
     }
 
     /// Start a worker for `permissions` and return its index.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "unbounded: control messages to one worker, sent by the pool that admits jobs to it"
+    )]
     fn spawn(&self, pool: &mut Pool, permissions: &ModulePermissions) -> usize {
         let index = pool
             .workers
@@ -1431,6 +1435,10 @@ impl DenoModuleHost {
     /// [`send_with`](DenoModuleHost::send_with) under `bounds` — which is
     /// where a service's call, with neither a clock nor a budget, differs from
     /// every other.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "unbounded: a job's asks to the host, each awaited by the module code that sent it"
+    )]
     async fn send_bounded(
         &self,
         index: usize,
@@ -1544,6 +1552,7 @@ impl DenoModuleHost {
                             ask: ask.id,
                             ok: false,
                             text: over_budget(),
+                            refused: false,
                         });
                         continue;
                     }
@@ -1561,18 +1570,24 @@ impl DenoModuleHost {
                             module_files,
                             asks: asks_of,
                         };
-                        let (ok, text) = match serve(surfaces, ask.request).await {
+                        let (ok, text, refused) = match serve(surfaces, ask.request).await {
                             Ok(value) => (
                                 true,
                                 serde_json::to_string(&value)
                                     .unwrap_or_else(|_| "null".to_owned()),
+                                false,
                             ),
-                            Err(e) => (false, e.to_string()),
+                            Err(e) => (false, e.to_string(), e.auth_message().is_some()),
                         };
                         // A worker that has stopped is a call that is already
                         // being failed by name on the reply channel, so there is
                         // nothing here to report.
-                        let _ = control.send(Control::Answer { ask: ask.id, ok, text });
+                        let _ = control.send(Control::Answer {
+                            ask: ask.id,
+                            ok,
+                            text,
+                            refused,
+                        });
                         ask.id
                     });
                 }
@@ -1618,6 +1633,7 @@ impl Drop for PendingAsks {
                 text: "the call this request belongs to was given up on before this server \
                        could answer it"
                     .to_owned(),
+                refused: false,
             });
         }
     }

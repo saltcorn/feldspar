@@ -12,24 +12,30 @@ use crate::router::log_failure;
 const INTERVAL_SECS: u64 = 3600;
 
 /// Clean the change log every hour, for the life of the process.
+/// Supervised ([`sc_catalog::supervise`]): a pass that panics is logged and the
+/// loop starts again.
 pub(crate) fn spawn_change_log_cleanup(apps: Arc<crate::apps::AppMounts>) {
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(INTERVAL_SECS));
-        loop {
-            tick.tick().await;
-            let Some(catalog) = apps.catalog() else {
-                continue;
-            };
-            match sc_catalog::retention::clean_change_log(catalog, chrono::Utc::now()).await {
-                Ok(done) if done == Default::default() => {}
-                Ok(done) => sc_log::log_info!(
-                    "change log cleanup: removed {} entries, {} files, {} changesets, {} sync keys",
-                    done.entries,
-                    done.files,
-                    done.changesets,
-                    done.sync_keys
-                ),
-                Err(e) => log_failure("cleaning the change log", &e),
+    sc_catalog::supervise("the change log cleanup", move || {
+        let apps = Arc::clone(&apps);
+        async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(INTERVAL_SECS));
+            loop {
+                tick.tick().await;
+                let Some(catalog) = apps.catalog() else {
+                    continue;
+                };
+                match sc_catalog::retention::clean_change_log(catalog, chrono::Utc::now()).await {
+                    Ok(done) if done == Default::default() => {}
+                    Ok(done) => sc_log::log_info!(
+                        "change log cleanup: removed {} entries, {} files, {} changesets, {} \
+                         sync keys",
+                        done.entries,
+                        done.files,
+                        done.changesets,
+                        done.sync_keys
+                    ),
+                    Err(e) => log_failure("cleaning the change log", &e),
+                }
             }
         }
     });

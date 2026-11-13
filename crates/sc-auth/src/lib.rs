@@ -23,6 +23,13 @@
 //! an authenticator app's codes and recovery codes, asked for after a password
 //! when an account turned it on or its role requires it.
 //!
+//! **Signing in is typestate** ([`signin`](crate::PasswordVerified), security
+//! review 2026-11 §2): a session starts from a [`FullyAuthenticated`] alone —
+//! a [`PasswordVerified`] completed with a [`SecondFactorProof`] or a
+//! [`NoSecondFactorNeeded`], or a named [`SecondFactorWaiver`]. Every
+//! credential change raises the account's [`AuthEpoch`], which ends the
+//! sessions and sign-ins from before it ([`CredentialsChanged`]).
+//!
 //! Roles live in [`_fd_roles`](ROLES_TABLE) and `users.role` is a foreign key
 //! onto it (§7.1, §9): a role is a row carrying a name and role-specific
 //! settings, not a bare integer with a convention attached.
@@ -44,6 +51,26 @@
 //! lists `users` alone. A module that needs them declares them (`core_tables`
 //! — the payments module does), and the first write made without them creates
 //! them; until then every read answers as if they were empty.
+//!
+//! `unreachable_pub` (security review 2026-11, F-15): an item is `pub` only
+//! when another crate calls it. A primitive that skips the guarded entry
+//! points stays `pub(crate)`, so a handler elsewhere cannot reach past the
+//! guard by importing it.
+//!
+//! Indexing, string slicing and unchecked arithmetic are warned about here
+//! (security review 2026-11, §6; TODO-type-hardening H1.7) when built with
+//! `--cfg feldspar_advisory_lints` (the CI `clippy-advisory` job): this crate
+//! handles request input, where each is a panic a request can cause. Advisory
+//! until the existing hits are fixed, so they do not fail `-D warnings`.
+#![warn(unreachable_pub)]
+#![cfg_attr(
+    feldspar_advisory_lints,
+    warn(
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::arithmetic_side_effects
+    )
+)]
 
 /// This crate's own tables' access to the primary database
 /// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
@@ -56,6 +83,7 @@ pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> = sc_catalog::U
 mod check_user;
 mod create;
 mod credits;
+mod epoch;
 mod first_user;
 mod grants;
 mod guest;
@@ -66,7 +94,9 @@ mod password;
 mod password_tokens;
 mod roles;
 mod second_factor;
+mod secret_types;
 mod session;
+mod signin;
 mod tokens;
 mod user;
 mod users;
@@ -86,6 +116,7 @@ pub use credits::{
     debit_credits, grant_credits, list_credit_buckets, list_credit_entries, revoke_credits,
     set_low_balance_threshold,
 };
+pub use epoch::{AUTH_EPOCHS_TABLE, AuthEpoch, CredentialsChanged, current_epoch};
 pub use first_user::{any_user_exists, create_first_user, first_user_token_matches};
 pub use grants::{
     COL_GRANT_CREATED_AT, COL_GRANT_EXPIRES_AT, COL_GRANT_ID, COL_GRANT_NOTE, COL_GRANT_REVOKED_AT,
@@ -96,18 +127,17 @@ pub use grants::{
 };
 pub use guest::{
     DEFAULT_GUEST_SESSION_DAYS, GUEST_SESSIONS_TABLE, GuestSession, StartedGuestSession,
-    bootstrap_guest_sessions, end_guest_session, guest_session, start_guest_session,
-    sweep_guest_sessions,
+    end_guest_session, guest_session, start_guest_session,
 };
 pub use login::{authenticate, authenticate_admin};
 pub use lookup::{first_user_with_role, load_base_user, load_user, load_user_by_email};
 pub use manage::{
-    UserUpdate, claim_unproven_account, delete_user, set_user_disabled, set_user_password,
-    update_user,
+    UserChanged, UserUpdate, claim_unproven_account, delete_user, set_user_disabled,
+    set_user_password, update_user,
 };
 pub use password::{
-    HashScheme, RANDOM_PASSWORD_LENGTH, hash_password, is_valid_hash, needs_rehash,
-    random_password, verify_password,
+    HashScheme, RANDOM_PASSWORD_LENGTH, hash_password, is_valid_hash, random_password,
+    verify_password,
 };
 pub use password_tokens::{
     COL_CREATED_AT as COL_PASSWORD_TOKEN_CREATED_AT,
@@ -115,31 +145,37 @@ pub use password_tokens::{
     COL_TOKEN_HASH as COL_PASSWORD_TOKEN_HASH, COL_USER as COL_PASSWORD_TOKEN_USER,
     INVITE_TTL_DAYS, InviteOutcome, PASSWORD_TOKEN_BYTES, PASSWORD_TOKENS_TABLE,
     PasswordTokenPurpose, RESET_TTL_MINUTES, SECOND_FACTOR_TTL_MINUTES, VERIFY_TTL_HOURS,
-    bootstrap_password_tokens, create_invited_user, delete_password_tokens_for_user, invite_user,
-    issue_password_token, password_token_holder, password_token_issued_within,
-    redeem_email_verification, redeem_password_token, spend_password_token,
-    sweep_expired_password_tokens, user_email, user_has_password,
+    delete_password_tokens_for_user, invite_user, issue_password_token,
+    password_token_issued_within, redeem_email_verification, redeem_password_token, user_email,
+    user_has_password,
 };
 pub use roles::{
     COL_ATTRIBUTES as COL_ROLE_ATTRIBUTES, COL_DESCRIPTION as COL_ROLE_DESCRIPTION,
     COL_NAME as COL_ROLE_NAME, ROLES_TABLE, RoleDef, bootstrap_roles, delete_role, list_roles,
-    load_role, load_role_by_name, save_role,
+    load_role, save_role, users_with_role,
 };
 pub use second_factor::{
-    ATTR_REQUIRE_SECOND_FACTOR, CODE_DIGITS, RECOVERY_CODE_COUNT, RECOVERY_CODES_TABLE,
-    SECOND_FACTOR_TABLE, STEP_SECONDS, SecondFactorNeeded, SecondFactorStatus,
-    begin_second_factor_setup, bootstrap_second_factor, decode_secret, disable_second_factor,
-    finish_second_factor_setup, hotp, issue_second_factor_challenge, matching_step, new_secret,
-    otpauth_url, qr_svg, regenerate_recovery_codes, requires_second_factor,
+    ATTR_REQUIRE_SECOND_FACTOR, Attempt, AttemptPermit, CODE_DIGITS, MAX_GUESSES, PendingChallenge,
+    RECOVERY_CODE_COUNT, RECOVERY_CODES_TABLE, SECOND_FACTOR_TABLE, STEP_SECONDS,
+    SecondFactorEnabled, SecondFactorNeeded, SecondFactorRemoved, SecondFactorStatus,
+    SpentChallenge, begin_second_factor_setup, decode_secret, disable_second_factor,
+    finish_second_factor_setup, issue_second_factor_challenge, otpauth_url, qr_svg,
+    regenerate_recovery_codes, requires_second_factor, reserve_attempt,
     role_requires_second_factor, second_factor_challenge, second_factor_enabled,
     second_factor_needed, second_factor_status, second_factor_users, spend_second_factor_challenge,
-    time_step, totp_at, verify_second_factor,
+    totp_at, verify_second_factor,
 };
+pub use secret_types::{ChallengeToken, RecoveryCode, TotpSecret};
 pub use session::{
-    APP_TOKEN_PREFIX, CACHE_CAPACITY, CACHE_TTL_SECONDS, COL_EXPIRES_AT as COL_SESSION_EXPIRES_AT,
-    COL_TOKEN_HASH as COL_SESSION_TOKEN_HASH, COL_USER as COL_SESSION_USER, DEFAULT_TTL_HOURS,
-    SESSIONS_TABLE, SessionEnded, SessionListener, SessionScope, SessionStore, bootstrap_sessions,
-    changeset_session_key, changeset_token_key, create_session, delete_sessions_for_user,
+    APP_TOKEN_PREFIX, CACHE_CAPACITY, CACHE_TTL_SECONDS, COL_AUTH_EPOCH as COL_SESSION_AUTH_EPOCH,
+    COL_EXPIRES_AT as COL_SESSION_EXPIRES_AT, COL_TOKEN_HASH as COL_SESSION_TOKEN_HASH,
+    COL_USER as COL_SESSION_USER, DEFAULT_TTL_HOURS, LiveSession, SESSIONS_TABLE, SessionEnded,
+    SessionListener, SessionScope, SessionStore, changeset_session_key, changeset_token_key,
+    create_session, delete_sessions_for_user, delete_sessions_lacking_second_factor,
+};
+pub use signin::{
+    FirstFactor, FullyAuthenticated, NoSecondFactorNeeded, PasswordVerified, SecondFactor,
+    SecondFactorProof, SecondFactorWaiver,
 };
 pub use tokens::{
     API_TOKENS_TABLE, ApiCaller, ApiToken, COL_CREATED_AT as COL_TOKEN_CREATED_AT,
@@ -148,8 +184,8 @@ pub use tokens::{
     COL_REVOKED_AT as COL_TOKEN_REVOKED_AT, COL_TOKEN_HASH as COL_API_TOKEN_HASH,
     COL_USER as COL_TOKEN_USER, GRANT_ROUTES_ONLY, LAST_USED_THROTTLE_SECONDS, MintedApiToken,
     NewApiToken, TOKEN_BYTES, TOKEN_PREFIX, authenticate_api_token, authenticate_route_token,
-    bearer_secret_hash, bootstrap_api_tokens, list_api_tokens, load_api_token, mint_api_token,
-    new_bearer_secret, revoke_api_token, sweep_expired_api_tokens,
+    bearer_secret_hash, list_api_tokens, load_api_token, mint_api_token, new_bearer_secret,
+    revoke_api_token,
 };
 pub use user::{AuthenticatedUser, User, role_of};
 

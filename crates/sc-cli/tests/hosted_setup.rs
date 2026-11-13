@@ -5,6 +5,10 @@
 //! Driven through the **real binary** against a **real Postgres**: what each
 //! claims is about the rows another process — the running server — reads.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use sc_types::Role;
 use std::io::Write;
 use std::path::{Path, PathBuf};

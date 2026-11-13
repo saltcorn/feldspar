@@ -6,6 +6,10 @@
 //! Needs `npm`, which is what installs the fixture module, and skips without
 //! it, as `module_seams.rs` does.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -535,5 +539,96 @@ async fn a_route_reads_the_machine_the_startups_and_the_backups() -> sc_error::R
     assert_eq!(after["lastBackup"], json!("2026-10-26T02:00:00.000Z"));
     // The most frequent schedule's, by v1's name.
     assert_eq!(after["frequency"], json!("Daily"));
+    Ok(())
+}
+
+/// A module route answers on the admin host, so it is held to the admin
+/// host's rules (security review 2026-11, #5): an application's session is
+/// nobody there, whatever its user's role, and the module cannot replace the
+/// admin origin's security headers.
+#[tokio::test]
+async fn an_applications_session_is_nobody_and_the_admin_policy_stands() -> sc_error::Result<()> {
+    if !have_npm() {
+        eprintln!("skipping: npm is not on the PATH");
+        return Ok(());
+    }
+    let mut server = setup().await?;
+    let installed = server
+        .admin
+        .send(
+            "POST",
+            "/api/modules",
+            &[],
+            Some(json!({
+                "source": "local",
+                "location": fixture("route-module").display().to_string(),
+            })),
+        )
+        .await;
+    assert_eq!(installed.status, StatusCode::CREATED, "{}", installed.text);
+
+    // The admin signs in to an application, which issues an application's
+    // session; carried to the admin host, it is no session for a module route.
+    server.apps.mount(MountedApp::new_with(
+        Application::new("Club", "club", FrameworkRef::new("code"))
+            .with_api(sc_app::ApiConfig::new("rest", "/api"))
+            .with_table(sc_auth::USERS_TABLE.to_owned()),
+        Arc::new(CodeFramework::new(
+            "code",
+            AssetBundle::new().with("index.html", "<!doctype html>"),
+        )),
+        &server.catalog,
+        server.apps.evaluator(),
+        server.apps.triggers(),
+    )?)?;
+    let mut app = Client {
+        router: server.router.clone(),
+        cookies: HashMap::new(),
+        keeps_cookies: true,
+    };
+    let club = [("host", "club.example.com")];
+    app.send("GET", "/", &club, None).await;
+    let login = app
+        .send(
+            "POST",
+            "/api/login",
+            &club,
+            Some(json!({ "email": "admin@example.com", "password": "hunter2pass" })),
+        )
+        .await;
+    assert_eq!(login.status, StatusCode::OK, "{}", login.text);
+    let token = app.cookies.get("sc_session").cloned().expect("a session");
+    assert!(token.starts_with(sc_auth::APP_TOKEN_PREFIX), "{token}");
+    let mut replayed = server.nobody();
+    replayed.cookies.insert("sc_session".to_owned(), token);
+    let theirs = replayed
+        .send("GET", &format!("{BASE}/whoami"), &[], None)
+        .await;
+    assert_eq!(theirs.status, StatusCode::OK, "{}", theirs.text);
+    assert_eq!(theirs.json()["role_id"], Value::Null, "{}", theirs.text);
+    // The admin's own session still is the admin.
+    let mine = server
+        .admin
+        .send("GET", &format!("{BASE}/whoami"), &[], None)
+        .await;
+    assert_eq!(mine.json()["role_id"], json!(1), "{}", mine.text);
+
+    // The module's CSP and framing are dropped for the admin origin's; its
+    // own header is kept.
+    let policy = server
+        .admin
+        .send("GET", &format!("{BASE}/policy"), &[], None)
+        .await;
+    assert_eq!(policy.status, StatusCode::OK, "{}", policy.text);
+    let csp = policy.headers[header::CONTENT_SECURITY_POLICY]
+        .to_str()
+        .unwrap();
+    assert_ne!(csp, "default-src *");
+    assert!(
+        csp.contains("default-src 'self'") || csp.contains("default-src 'none'"),
+        "{csp}"
+    );
+    assert_eq!(policy.headers[header::X_FRAME_OPTIONS], "DENY");
+    assert_eq!(policy.headers["x-module"], "kept");
     Ok(())
 }

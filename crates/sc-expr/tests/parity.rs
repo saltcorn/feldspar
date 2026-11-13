@@ -177,6 +177,7 @@ async fn check(
             row: row.bindings(),
             user: user.map(user_map),
             ambient: Default::default(),
+            now: chrono::Utc::now(),
         })
         .await
         .unwrap_or_else(|e| panic!("{src}: reified: {e}"));
@@ -560,6 +561,7 @@ async fn guc_mode_matches_reified_against_a_real_setting() {
                 row: row.bindings(),
                 user: user.map(user_map),
                 ambient: Default::default(),
+                now: chrono::Utc::now(),
             })
             .await
             .unwrap_or_else(|e| panic!("{src}: reified: {e}"));
@@ -730,6 +732,7 @@ async fn symbolic_and_reified_agree_on_the_ambient_objects() {
                 row: row.bindings(),
                 user: Some(user_map(&user)),
                 ambient,
+                now: chrono::Utc::now(),
             })
             .await
             .unwrap_or_else(|e| panic!("{src}: reified: {e}"));

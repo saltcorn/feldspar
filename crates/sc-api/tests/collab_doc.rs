@@ -63,7 +63,7 @@ async fn a_document_field_is_never_read_and_never_written_through_an_api() -> Re
     assert!(body.is_collab_doc(), "the overlay made it a document");
 
     // Written: every API path refuses it, whoever asks.
-    let admin = Principal::new(Role::ADMIN, None);
+    let admin = Principal::recorded(Role::ADMIN, None);
     refused_as_a_document(
         rows::create_row(
             &catalog,

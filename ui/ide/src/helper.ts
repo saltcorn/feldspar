@@ -11,6 +11,9 @@ export interface ClientOptions {
   baseUrl?: string;
   /** Fetch implementation to use (defaults to global `fetch`). */
   fetch?: typeof fetch;
+  /** Values every request presents to the tables' ownership formulas as `_request`
+   * (`{ token }` from a share link), and the live connection too. */
+  request?: Record<string, string>;
   /** How the live connection behaves, for an application that exposes streams. */
   live?: LiveOptions;
 }
@@ -46,6 +49,19 @@ function csrfToken(): string | undefined {
     if (plain !== undefined) return plain;
   }
   return rememberedCsrf;
+}
+
+/** `fetchImpl`, sending `values` as `X-Sc-Request-<key>` headers on every
+ * request: what a table's ownership formula reads as `_request` (a share
+ * link's token). Headers rather than the query string, so a token stays out of
+ * logs and history. */
+export function presenting(fetchImpl: typeof fetch, values: Record<string, string> | undefined): typeof fetch {
+  if (!values || Object.keys(values).length === 0) return fetchImpl;
+  return ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const headers = new Headers(init?.headers);
+    for (const [key, value] of Object.entries(values)) headers.set("x-sc-request-" + key, value);
+    return fetchImpl(input, { ...init, headers });
+  }) as typeof fetch;
 }
 
 /** `fetchImpl`, remembering the CSRF token each response names — how a client
@@ -531,6 +547,9 @@ export interface LiveOptions {
   maxDelay?: number;
   /** The least time between two presence states sent, in milliseconds (the latest wins). */
   presenceInterval?: number;
+  /** Values the connection presents to ownership formulas as `_request`, sent as a
+   * `present` frame each time it opens. */
+  request?: Record<string, string>;
 }
 
 /** The live socket's URL: `path` on the client's base URL, as `ws:` or `wss:`. */
@@ -986,6 +1005,9 @@ export class LiveConnection {
       this.opened = true;
       this.attempt = 0;
       this.setStatus("open");
+      if (this.options.request && Object.keys(this.options.request).length > 0) {
+        this.send({ type: "present", values: this.options.request });
+      }
       this.entries.forEach((entry, sub) => {
         entry.ready = false;
         // A document waits for its next `doc_sync` before it edits again.

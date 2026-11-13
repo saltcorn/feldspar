@@ -21,6 +21,10 @@
 //! cargo test -p sc-api --test typescript_typecheck
 //! ```
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -634,17 +638,21 @@ fn generated_query_parameter_client_type_checks() -> std::io::Result<()> {
 
     let set = EndpointSet::new()
         .with(
-            Endpoint::new("listBooks", Method::Get, PathSpec::root().lit("api/books"))
-                .query([
-                    QueryParam::new("select", ValueType::Text),
-                    QueryParam::new("limit", ValueType::Int),
-                    QueryParam::new("published", ValueType::Text).repeated(),
-                ])
-                .output(TypeSchema::array(TypeSchema::json())),
+            Endpoint::new(
+                sc_api::HandlerId::<sc_api::SignedIn>::new("listBooks"),
+                Method::Get,
+                PathSpec::root().lit("api/books"),
+            )
+            .query([
+                QueryParam::new("select", ValueType::Text),
+                QueryParam::new("limit", ValueType::Int),
+                QueryParam::new("published", ValueType::Text).repeated(),
+            ])
+            .output(TypeSchema::array(TypeSchema::json())),
         )
         .with(
             Endpoint::new(
-                "searchBooks",
+                sc_api::HandlerId::<sc_api::SignedIn>::new("searchBooks"),
                 Method::Get,
                 PathSpec::root().lit("api/search"),
             )

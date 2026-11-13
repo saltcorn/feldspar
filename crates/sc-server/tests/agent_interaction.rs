@@ -13,6 +13,10 @@
 //!    chosen prompt (predefined, or a row of a table) is in the system prompt,
 //!    and the chosen model answers in place of the agent's own.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use crate::support::{Socket, next_frame};
 use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};

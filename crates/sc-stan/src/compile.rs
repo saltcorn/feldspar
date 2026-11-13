@@ -38,8 +38,9 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::cmdstan::CmdStan;
-use crate::process::{self, KillGroupOnDrop, Stopped, Tail, Watch};
+use crate::process::{self, Stopped, Tail, Watch};
 use crate::program::Program;
+use sc_proc::Operand;
 
 /// The fixed options every program is compiled with, folded into the key so a
 /// change to them is a recompile. There are none beyond CmdStan's defaults:
@@ -208,9 +209,12 @@ impl CompileCache {
 
         let mut command = process::command(&self.make);
         command
-            .arg(format!("STANCFLAGS=--include-paths={}", src.display()))
-            .arg(&target)
-            .current_dir(&cmdstan.dir);
+            .positional(Operand::new(format!(
+                "STANCFLAGS=--include-paths={}",
+                src.display()
+            ))?)
+            .positional(Operand::path(&target))
+            .cwd(&cmdstan.dir);
         let mut child = command.spawn().with_context(|| {
             format!(
                 "running `{}` in the CmdStan directory {}",
@@ -218,7 +222,6 @@ impl CompileCache {
                 cmdstan.dir.display()
             )
         })?;
-        let group = KillGroupOnDrop(child.id());
         let mut lines = process::output_lines(&mut child);
         let mut log = String::new();
         let mut tail = Tail::default();
@@ -233,7 +236,7 @@ impl CompileCache {
                     None => break,
                 },
                 why = watch.until_stopped() => {
-                    group.kill();
+                    child.kill_group();
                     return Err(stop_error(why, watch));
                 }
             }
@@ -241,7 +244,7 @@ impl CompileCache {
         let status = tokio::select! {
             status = child.wait() => status.context("waiting for make")?,
             why = watch.until_stopped() => {
-                group.kill();
+                child.kill_group();
                 return Err(stop_error(why, watch));
             }
         };

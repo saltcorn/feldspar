@@ -309,27 +309,27 @@ type Mutation {
 	"""
 	Insert one row of `departments`.
 	"""
-	insert_departments(object: DepartmentsInsertInput!): Departments
+	insert_departments(object: DepartmentsInsertInput!, request: JSON): Departments
 	"""
 	Update the row of `departments` with this primary key.
 	"""
-	update_departments_by_pk(pk_columns: DepartmentsPkColumns!, set: DepartmentsSetInput!): Departments
+	update_departments_by_pk(pk_columns: DepartmentsPkColumns!, set: DepartmentsSetInput!, request: JSON): Departments
 	"""
 	Delete the row of `departments` with this primary key, returning the columns it had.
 	"""
-	delete_departments_by_pk(id: BigInt!): Departments
+	delete_departments_by_pk(id: BigInt!, request: JSON): Departments
 	"""
 	Insert one row of `employees`.
 	"""
-	insert_employees(object: EmployeesInsertInput!): Employees
+	insert_employees(object: EmployeesInsertInput!, request: JSON): Employees
 	"""
 	Update the row of `employees` with this primary key.
 	"""
-	update_employees_by_pk(pk_columns: EmployeesPkColumns!, set: EmployeesSetInput!): Employees
+	update_employees_by_pk(pk_columns: EmployeesPkColumns!, set: EmployeesSetInput!, request: JSON): Employees
 	"""
 	Delete the row of `employees` with this primary key, returning the columns it had.
 	"""
-	delete_employees_by_pk(id: BigInt!): Employees
+	delete_employees_by_pk(id: BigInt!, request: JSON): Employees
 }
 
 enum OrderDirection {
@@ -341,27 +341,27 @@ type Query {
 	"""
 	Rows of `departments`.
 	"""
-	departments(where: DepartmentsBoolExp, search: String, order_by: [DepartmentsOrderBy!], limit: Int, offset: Int): [Departments!]!
+	departments(where: DepartmentsBoolExp, search: String, order_by: [DepartmentsOrderBy!], limit: Int, offset: Int, request: JSON): [Departments!]!
 	"""
 	The row of `departments` with this primary key.
 	"""
-	departments_by_pk(id: BigInt!): Departments
+	departments_by_pk(id: BigInt!, request: JSON): Departments
 	"""
 	Aggregates over the rows of `departments`.
 	"""
-	departments_aggregate(where: DepartmentsBoolExp): DepartmentsAggregate!
+	departments_aggregate(where: DepartmentsBoolExp, request: JSON): DepartmentsAggregate!
 	"""
 	Rows of `employees`.
 	"""
-	employees(where: EmployeesBoolExp, search: String, order_by: [EmployeesOrderBy!], limit: Int, offset: Int): [Employees!]!
+	employees(where: EmployeesBoolExp, search: String, order_by: [EmployeesOrderBy!], limit: Int, offset: Int, request: JSON): [Employees!]!
 	"""
 	The row of `employees` with this primary key.
 	"""
-	employees_by_pk(id: BigInt!): Employees
+	employees_by_pk(id: BigInt!, request: JSON): Employees
 	"""
 	Aggregates over the rows of `employees`.
 	"""
-	employees_aggregate(where: EmployeesBoolExp): EmployeesAggregate!
+	employees_aggregate(where: EmployeesBoolExp, request: JSON): EmployeesAggregate!
 }
 
 input StringComparison {

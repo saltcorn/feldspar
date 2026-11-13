@@ -9,6 +9,10 @@
 //! This **runs** the generated module under Node with a stubbed `fetch`, like
 //! `generated_client_csrf.rs`. Skips when `node` is absent.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use std::process::Command;
 
 use sc_api::{

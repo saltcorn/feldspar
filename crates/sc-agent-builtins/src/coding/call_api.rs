@@ -244,7 +244,7 @@ async fn sender(config: &Attrs, args: &Json, ctx: &TraitContext<'_>) -> Result<O
     if named.eq_ignore_ascii_case(PUBLIC) {
         return Ok(None);
     }
-    if let Some(me) = &ctx.caller.user {
+    if let Some(me) = ctx.caller.user_ref() {
         if email_of(me).is_some_and(|email| email.eq_ignore_ascii_case(named)) {
             return Ok(Some(me.clone()));
         }

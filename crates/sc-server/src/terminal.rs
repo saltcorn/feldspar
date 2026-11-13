@@ -54,6 +54,10 @@
 //! module's is what that crate does not know about: which directory, which
 //! environment, and ending everything the program started when the socket
 //! closes ([`pty::Session::kill`]). Off Unix the route refuses with a reason.
+//!
+//! May use `unsafe` (the workspace denies it) for the `killpg`/`kill` calls
+//! that end a terminal's process tree.
+#![allow(unsafe_code)]
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -85,6 +89,11 @@ pub const TERMINAL_ROUTE: &str = "/ide/terminal/{store}";
 /// open IDE page whether or not anyone is looking at it, while a terminal is a
 /// session someone opened on purpose, and each one can run a build.
 pub const MAX_TERMINALS: usize = 4;
+
+/// The largest message the terminal's page may send (TODO-type-hardening
+/// H5.1): keystrokes, a resize, or a paste — a megabyte of pasted text is
+/// already more than a terminal can take in at once.
+const MESSAGE_LIMIT: crate::ws::MessageLimit = crate::ws::MessageLimit::mib(1);
 
 /// The executable, as `PATH` lookup would find it.
 pub(crate) const CLAUDE_BIN: &str = "claude";
@@ -379,6 +388,11 @@ async fn terminal_off(catalog: &Catalog) -> Option<String> {
     }
 }
 
+/// The system reason the terminal's store is opened under: a shell over the
+/// whole tree, started for the admin session the route admits. Listed in the
+/// system-authority inventory (security review 2026-11, A2).
+const TERMINAL_ROOT: &str = "Claude Code terminal: the store's directory, for an admin session";
+
 /// The directory `dir` of `store` on this server's disk, or why there is none.
 ///
 /// A program in a terminal is over the whole tree, as the language server is,
@@ -390,11 +404,7 @@ fn local_dir(catalog: &Catalog, store: &str, dir: &str) -> Result<PathBuf, Strin
         return Err(format!("the file store {store} is not connected"));
     }
     let handle = catalog
-        .checked_file_store(
-            store,
-            None,
-            sc_files::FileCaller::new(sc_types::Role::ADMIN, None),
-        )
+        .admin_file_store(store, &sc_catalog::AdminPrincipal::system(TERMINAL_ROOT))
         .map_err(failed)?;
     let store_root = handle
         .local_root()
@@ -602,23 +612,29 @@ pub(crate) async fn claude_status(catalog: &Catalog, option: Option<&Path>) -> s
     }
 }
 
+/// The Development tab asking the Claude Code it found for its version.
+const VERSION_PROBE: sc_proc::SystemTask = sc_proc::SystemTask::new("Claude Code version probe");
+
 /// The first line `program --version` prints, run with the environment a
 /// terminal's program gets.
 async fn claude_version(program: &Path) -> Result<String, String> {
-    let mut command = tokio::process::Command::new(program);
-    command
-        .arg("--version")
-        .env_clear()
-        .envs(program_env())
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true);
-    if let Some(path) = path_with_dir_of(program, std::env::var_os("PATH").as_deref()) {
-        command.env("PATH", path);
+    let mut command = sc_proc::HostCommand::new(
+        sc_proc::Program::path(program),
+        &VERSION_PROBE,
+        sc_proc::Timeout::after(VERSION_TIMEOUT),
+    );
+    command.arg("--version");
+    for (name, value) in program_env() {
+        let name = sc_proc::EnvName::new(name).map_err(|e| e.to_string())?;
+        command.env(name, value);
     }
-    let output = tokio::time::timeout(VERSION_TIMEOUT, command.output())
-        .await
-        .map_err(|_| format!("{} --version did not answer", program.display()))?
-        .map_err(|e| format!("{} could not be run: {e}", program.display()))?;
+    if let Some(path) = path_with_dir_of(program, std::env::var_os("PATH").as_deref()) {
+        command.env(sc_proc::EnvName::fixed("PATH"), path);
+    }
+    let output = command.output().await.map_err(|e| match e.is_timeout() {
+        true => format!("{} --version did not answer", program.display()),
+        false => format!("{} could not be run: {e}", program.display()),
+    })?;
     let first = |bytes: &[u8]| {
         String::from_utf8_lossy(bytes)
             .lines()
@@ -744,7 +760,7 @@ pub(crate) async fn terminal_upgrade(
                     let changes = watch(&store, &place);
                     match Launch::prepare(exe, place.dir, wiring, token) {
                         Ok(launch) => {
-                            return ws.on_upgrade(move |socket| {
+                            return crate::ws::upgrade(ws, MESSAGE_LIMIT, move |socket| {
                                 bridge(socket, launch, store, changes, admin, permit)
                             });
                         }
@@ -757,7 +773,9 @@ pub(crate) async fn terminal_upgrade(
             },
         },
     };
-    ws.on_upgrade(move |socket| refuse(socket, refusal))
+    crate::ws::upgrade(ws, crate::ws::REFUSAL, move |socket| {
+        refuse(socket, refusal)
+    })
 }
 
 /// The environment the program starts with: the allow-listed part of the
@@ -785,7 +803,9 @@ async fn anthropic_provider(catalog: &Catalog) -> Option<(String, Option<String>
         .iter()
         .filter(|p| p.backend == sc_llm::ANTHROPIC_BACKEND)
         .find_map(|p| {
-            let key = p.setting(sc_llm::CFG_API_KEY)?.trim();
+            // The key's use: the CLI's environment.
+            let key = p.api_key();
+            let key = key.expose().as_str();
             let base = p
                 .setting(sc_llm::CFG_BASE_URL)
                 .map(str::trim)
@@ -1041,8 +1061,10 @@ async fn bridge(
         let line = format!("{notice}\r\n");
         let _ = socket.send(Message::Binary(line.into_bytes().into())).await;
     }
+    let who = admin.session().console().spawn_proof();
     let mut session = match pty::spawn(
         &launch.program,
+        &who,
         &launch.args,
         &launch.dir,
         &launch.env,
@@ -1228,22 +1250,25 @@ mod pty {
     /// what it started.
     pub(super) fn spawn(
         program: &Path,
+        who: &sc_proc::AdminProof,
         args: &[OsString],
         dir: &Path,
         env: &[(String, String)],
         size: TerminalSize,
     ) -> pty_process::Result<Session> {
+        let env = env
+            .iter()
+            .map(|(k, v)| {
+                let name = sc_proc::EnvName::new(k.as_str())
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+                Ok((name, v.clone()))
+            })
+            .collect::<std::io::Result<Vec<_>>>()?;
         let (pty, pts) = pty_process::open()?;
         pty.resize(pty_process::Size::new(size.rows, size.cols))?;
         // `spawn` takes the terminal's other end and drops the parent's copies,
         // so reading `pty` ends once the child and its descendants let go.
-        let child = pty_process::Command::new(program)
-            .args(args)
-            .current_dir(dir)
-            .env_clear()
-            .envs(env.iter().map(|(k, v)| (k, v)))
-            .kill_on_drop(true)
-            .spawn(pts)?;
+        let child = sc_proc::spawn_on_pty(program, who, args, dir, &env, pts)?;
         let pid = child.id().and_then(|p| libc::pid_t::try_from(p).ok());
         Ok(Session { pty, child, pid })
     }

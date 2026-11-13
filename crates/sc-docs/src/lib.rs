@@ -155,7 +155,8 @@ impl Library {
                     *counts.entry(term).or_default() += 1;
                     len += 1;
                 }
-                let entry = entries.len() as u32;
+                // A compiled-in library is a few thousand sections at most.
+                let entry = u32::try_from(entries.len()).unwrap_or(u32::MAX);
                 for (term, tf) in counts {
                     postings.entry(term).or_default().push((entry, tf));
                 }

@@ -61,11 +61,10 @@ at least one book whose `published` is empty — a null is a case worth seeing.
 | File store | `apps` |
 | Project directory | `library` |
 | Tables | `authors`, `books` |
-| APIs (Provider / Mount) | `REST` / `/api` |
 
-Save. The server scaffolds the project and mounts the app at `http://library.localhost:3032`.
+**Create application**. A new application serves REST at `/api`, on its **API** tab. The server scaffolds the project and mounts the app at `http://library.localhost:3032`.
 
-**The REST row has one setting**, rendered from what the provider declares about itself:
+**The REST row has one setting** (the application's **API** tab), rendered from what the provider declares about itself:
 **Row cap per list read**, default **500**. It is the largest page a list read will answer
 with — an absent `limit` *becomes* the cap and a larger one is clamped to it, so no caller can
 ask this API for a million rows by leaving a parameter out. Every provider's settings work this way (§13.4): the

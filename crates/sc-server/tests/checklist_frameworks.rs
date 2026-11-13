@@ -8,6 +8,10 @@
 //!   and runs a core step through the host, and is refused what it did not
 //!   declare. Needs `npm`, which installs the fixture module.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use std::path::PathBuf;
 use std::sync::Arc;
 

@@ -14,8 +14,9 @@
 //! no local directory: both get the diff only.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::Duration;
+
+use sc_proc::{Git, Operand, RepoRoot, SpawnAuthority, SystemTask, Timeout};
 
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
@@ -58,8 +59,9 @@ pub async fn work_tree(scope: &FileScope, catalog: &Catalog) -> Option<PathBuf> 
     if !dir.is_dir() {
         return None;
     }
-    let top = git(&dir, &["rev-parse", "--show-toplevel"]).await.ok()?;
-    let top = Path::new(top.trim()).canonicalize().ok()?;
+    // The work tree `.git` names: what `git rev-parse --show-toplevel` says
+    // once git is told where the repository is.
+    let top = RepoRoot::enclosing(&dir)?.path().canonicalize().ok()?;
     top.starts_with(store_dir).then_some(top)
 }
 
@@ -97,12 +99,16 @@ pub fn clean_message(message: &str, fallback: &str) -> String {
 /// Stage and commit the paths `diff` changed under the scope, in the work
 /// tree at `top`. Returns the new commit's short hash, or `None` when git had
 /// nothing to commit.
+///
+/// On `who`'s authority: the run's administrator, or [`FEATURE_COMMIT`] for a
+/// run with none (git with its hooks off, over the paths the run changed).
 pub async fn commit(
     top: &Path,
     scope: &FileScope,
     catalog: &Catalog,
     diff: &RunDiff,
     message: &str,
+    who: &impl SpawnAuthority,
 ) -> Result<Option<String>> {
     let (store, _) = scope.connect(catalog).await?;
     let mut rels: Vec<&str> = diff.files.iter().map(|f| f.path.as_str()).collect();
@@ -127,18 +133,25 @@ pub async fn commit(
     // No hooks: a repository whose `core.hooksPath` is inside the working tree
     // (husky's `.husky/`) has hooks the agent may have just written, and they
     // would run as the server (security review #16).
-    let mut add = vec!["-c", NO_HOOKS, "add", "--all", "--"];
-    add.extend(paths.iter().map(String::as_str));
-    git(top, &add).await?;
+    git(
+        who,
+        top,
+        &["-c", NO_HOOKS, "add", "--all"],
+        None,
+        Some(&paths),
+    )
+    .await?;
     // Asked of git directly rather than read off a failed commit's wording:
     // the paths may be unchanged (the feature's edits undone, or already
     // committed), and then there is nothing to commit.
-    if !has_staged_changes(top, &paths).await? {
+    if !has_staged_changes(who, top, &paths).await? {
         return Ok(None);
     }
     // Only these paths: whatever else is staged stays staged, uncommitted.
-    let mut args: Vec<&str> = vec!["-c", NO_HOOKS];
-    let identity = git(top, &["config", "user.email"]).await.is_ok();
+    let mut args: Vec<&'static str> = vec!["-c", NO_HOOKS];
+    let identity = git(who, top, &["config", "user.email"], None, None)
+        .await
+        .is_ok();
     if !identity {
         args.extend([
             "-c",
@@ -147,20 +160,22 @@ pub async fn commit(
             "user.email=saltcorn@localhost",
         ]);
     }
-    args.extend(["commit", "--quiet", "--no-verify", "-m", message, "--"]);
-    args.extend(paths.iter().map(String::as_str));
-    git(top, &args).await?;
-    let hash = git(top, &["rev-parse", "--short", "HEAD"]).await?;
+    args.extend(["commit", "--quiet", "--no-verify"]);
+    git(who, top, &args, Some(message), Some(&paths)).await?;
+    let hash = git(who, top, &["rev-parse", "--short", "HEAD"], None, None).await?;
     Ok(Some(hash.trim().to_owned()))
 }
 
 /// Whether the index differs from `HEAD` at any of `paths` — what a commit of
 /// those paths would record. In a repository with no commit yet, the index is
 /// compared with the empty tree, so anything staged counts.
-async fn has_staged_changes(dir: &Path, paths: &[String]) -> Result<bool> {
-    let mut args = vec!["diff", "--cached", "--quiet", "--"];
-    args.extend(paths.iter().map(String::as_str));
-    let output = run_git(dir, &args).await?;
+async fn has_staged_changes(
+    who: &impl SpawnAuthority,
+    dir: &Path,
+    paths: &[String],
+) -> Result<bool> {
+    let args = ["diff", "--cached", "--quiet"];
+    let output = run_git(who, dir, &args, None, Some(paths)).await?;
     // `--quiet` exits 1 when there are differences and 0 when there are none;
     // anything else is git failing.
     match output.status.code() {
@@ -171,29 +186,57 @@ async fn has_staged_changes(dir: &Path, paths: &[String]) -> Result<bool> {
 }
 
 /// A git command's stdout in `dir`, or its failure with git's own words.
-async fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = run_git(dir, args).await?;
+async fn git(
+    who: &impl SpawnAuthority,
+    dir: &Path,
+    args: &[&'static str],
+    message: Option<&str>,
+    paths: Option<&[String]>,
+) -> Result<String> {
+    let output = run_git(who, dir, args, message, paths).await?;
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
     }
     Err(git_failure(args, &output))
 }
 
-/// Run git in `dir` with no prompt and a time limit, whatever its exit status.
-async fn run_git(dir: &Path, args: &[&str]) -> Result<std::process::Output> {
-    let run = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
+/// A run without an administrator committing its feature: git, hooks off,
+/// over the paths the run changed, with its message after `-m`.
+pub const FEATURE_COMMIT: SystemTask = SystemTask::new("implement_feature: commit the run's paths");
+
+/// Run `git args… [-m message] [-- paths…]` in `dir` with no prompt and a time
+/// limit, whatever its exit status.
+async fn run_git(
+    who: &impl SpawnAuthority,
+    dir: &Path,
+    args: &[&'static str],
+    message: Option<&str>,
+    paths: Option<&[String]>,
+) -> Result<std::process::Output> {
+    // Against the work tree's own repository, never one git discovers from
+    // `dir`, which a user below admin may write (security review 2026-11, #1).
+    let repo = RepoRoot::enclosing(dir)
+        .ok_or_else(|| Error::invalid(format!("{} is not in a git work tree", dir.display())))?;
+    if !dir.is_dir() {
+        return Err(Error::invalid(format!(
+            "{} is not a directory",
+            dir.display()
+        )));
+    }
+    let mut git = Git::new(&repo, who, Timeout::after(GIT_TIMEOUT));
+    git.cwd(dir)
         .args(["-c", "core.quotepath=false"])
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .output();
-    tokio::time::timeout(GIT_TIMEOUT, run)
-        .await
-        .map_err(|_| Error::invalid(format!("`git {}` timed out", args.join(" "))))?
-        .map_err(|e| Error::invalid(format!("git could not be run: {e}")))
+        .args(args.iter().copied());
+    if let Some(message) = message {
+        git.flag_value("-m", message);
+    }
+    if let Some(paths) = paths {
+        git.operands(paths.iter().map(Operand::path));
+    }
+    git.output().await.map_err(|e| match e.is_timeout() {
+        true => Error::invalid(format!("`git {}` timed out", args.join(" "))),
+        false => Error::invalid(format!("git could not be run: {e}")),
+    })
 }
 
 /// A git command that exited unsuccessfully, with git's own words.
@@ -215,6 +258,10 @@ fn git_failure(args: &[&str], output: &std::process::Output) -> Error {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: makes the repository the commit runs in"
+)]
 mod tests {
     use super::*;
 
@@ -231,7 +278,14 @@ mod tests {
     async fn staged_changes_are_asked_of_git_not_read_off_a_message() {
         let dir = std::env::temp_dir().join(format!("sc-commit-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        git(&dir, &["init", "--quiet"]).await.unwrap();
+        // `git` runs against an existing work tree only, so the repository is
+        // made directly.
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        assert!(init.success());
         let ident = [
             "-c",
             "user.name=t",
@@ -243,28 +297,30 @@ mod tests {
         let a = dir.join("a.txt").to_string_lossy().into_owned();
         let paths = vec![a.clone()];
 
+        let who = &FEATURE_COMMIT;
+        let add = ["add", "--all"];
         // No commit yet and nothing staged; then a new file staged.
-        assert!(!has_staged_changes(&dir, &paths).await.unwrap());
+        assert!(!has_staged_changes(who, &dir, &paths).await.unwrap());
         std::fs::write(&a, "one").unwrap();
-        git(&dir, &["add", "--all", "--", &a]).await.unwrap();
-        assert!(has_staged_changes(&dir, &paths).await.unwrap());
+        git(who, &dir, &add, None, Some(&paths)).await.unwrap();
+        assert!(has_staged_changes(who, &dir, &paths).await.unwrap());
 
         let mut commit = ident.to_vec();
-        commit.extend(["commit", "--quiet", "-m", "first"]);
-        git(&dir, &commit).await.unwrap();
+        commit.extend(["commit", "--quiet"]);
+        git(who, &dir, &commit, Some("first"), None).await.unwrap();
         // Committed: nothing left. Rewritten to the same text: still nothing.
-        assert!(!has_staged_changes(&dir, &paths).await.unwrap());
+        assert!(!has_staged_changes(who, &dir, &paths).await.unwrap());
         std::fs::write(&a, "one").unwrap();
-        git(&dir, &["add", "--all", "--", &a]).await.unwrap();
-        assert!(!has_staged_changes(&dir, &paths).await.unwrap());
+        git(who, &dir, &add, None, Some(&paths)).await.unwrap();
+        assert!(!has_staged_changes(who, &dir, &paths).await.unwrap());
         // A deletion staged is a change.
         std::fs::remove_file(&a).unwrap();
-        git(&dir, &["add", "--all", "--", &a]).await.unwrap();
-        assert!(has_staged_changes(&dir, &paths).await.unwrap());
+        git(who, &dir, &add, None, Some(&paths)).await.unwrap();
+        assert!(has_staged_changes(who, &dir, &paths).await.unwrap());
 
         // git failing (here: no such directory) is an error, not "no changes".
         let missing = dir.join("missing");
-        assert!(has_staged_changes(&missing, &paths).await.is_err());
+        assert!(has_staged_changes(who, &missing, &paths).await.is_err());
 
         std::fs::remove_dir_all(&dir).ok();
     }

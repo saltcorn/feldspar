@@ -95,6 +95,7 @@ fn vue() -> FrameworkDecl {
         )),
         checks: vec!["typecheck".to_owned()],
         scaffolds: true,
+        settings_tabs: None,
         targets: Vec::new(),
     }
 }

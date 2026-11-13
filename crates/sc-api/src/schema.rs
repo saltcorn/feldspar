@@ -75,7 +75,7 @@ impl ValueType {
             BasicType::Time => ValueType::Time,
             BasicType::Timestamp => ValueType::Timestamp,
             BasicType::Geometry(_) => ValueType::Geometry,
-            BasicType::Vector(_) => ValueType::Vector,
+            BasicType::Vector(_) | BasicType::HalfVector(_) => ValueType::Vector,
             BasicType::Other(_) => ValueType::Text,
         }
     }

@@ -6,15 +6,19 @@
 //
 // The rest of the form covers the other pieces of an application record: its
 // subdomain, its table and file-store subsets, its enabled APIs, its static
-// directories, and its CSP.
+// directories, its roles and its CSP.
 //
-// A framework whose applications have views and pages (Saltcorn UI) has a dozen
-// settings that are the running application's — the menu, the login form, the
-// languages, the home page per role. Those are not on this form: a new
-// application takes their defaults, and an existing one edits them on its own
-// App settings tab, which is this same screen showing only them.
+// **Tabs** (TODO UX2.1): the record is shown in the framework's settings tabs,
+// each holding named parts of it ("groups") — a React app's Framework, Data,
+// Triggers & Streams, API, Security and Development; a Saltcorn UI app's Site,
+// Data, Users & Security and Advanced. The server sends the layout, so this
+// screen still knows no framework; `settingsTabs.ts` has the arithmetic.
+//
+// **Autosave** (TODO UX2.2): an existing application has no Save button; each
+// change is saved as it is made (`autosave.ts`). A new application is created
+// from its first tab, with the rest at their defaults.
 
-import { useEffect, useState, type FormEvent } from "react";
+import { Fragment, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import Alert from "react-bootstrap/Alert";
 import Button from "react-bootstrap/Button";
 import Card from "react-bootstrap/Card";
@@ -94,7 +98,9 @@ import {
 } from "../agentExposures";
 import { CustomQueries } from "./CustomQueries";
 import { ApplicationTabs } from "./ApplicationViews";
-import { appTabs, settingsOnOwnTab } from "../views";
+import { ApplicationTranslations } from "./Translations";
+import { Autosaver, TYPING_DELAY_MS, type SaveState } from "../autosave";
+import { fieldsOnTab, formTab, groupsToRender, type SettingsTab } from "../settingsTabs";
 import { T, useT } from "../i18n";
 
 type FrameworkInfo = ListFrameworksResponse[number];
@@ -177,13 +183,13 @@ const NO_FILE_PICKERS: FileSetting[] = [];
 
 export function ApplicationForm({
   appId,
-  tab = "settings",
+  tab,
 }: {
   appId?: string;
-  /** Which of the application's tabs this is: the record, or the framework's
-   * own settings when they have a tab of their own. Both save the whole
-   * application, so each tab keeps what the other one holds. */
-  tab?: "settings" | "app-settings";
+  /** Which of the application's settings tabs is open, by id; the first when
+   * unset. Every tab is this one form over the whole record, so switching
+   * tabs keeps what the others hold. */
+  tab?: string;
 }) {
   const { t } = useT();
   const [frameworks, setFrameworks] = useState<FrameworkInfo[] | null>(null);
@@ -215,6 +221,9 @@ export function ApplicationForm({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [subdomain, setSubdomain] = useState("");
+  // The subdomain as last committed (on leaving its box): what an existing
+  // application saves.
+  const [committedSubdomain, setCommittedSubdomain] = useState("");
   const [frameworkName, setFrameworkName] = useState("");
   const [config, setConfig] = useState<Record<string, string>>({});
   const [tables, setTables] = useState<string[]>([]);
@@ -328,6 +337,7 @@ export function ApplicationForm({
           setName(existing.name);
           setDescription(existing.description);
           setSubdomain(existing.subdomain);
+          setCommittedSubdomain(existing.subdomain);
           setFrameworkName(existing.framework.name);
           setConfig(readConfig(existing.framework.config));
           setTables(existing.tables);
@@ -380,13 +390,24 @@ export function ApplicationForm({
   // The framework picked in the form (e.g. React Native), as the server
   // describes it: its label, settings, build targets and file pickers.
   const selectedFramework = frameworks?.find((f) => f.name === frameworkName);
-  const ownTab = settingsOnOwnTab(selectedFramework);
+  // Its settings tabs (TODO UX2.1): the framework says which there are and
+  // what each holds, and this screen renders the one open. A new application
+  // is created from the first tab alone; the rest take their defaults.
+  const layout: SettingsTab[] =
+    selectedFramework?.settings_tabs ?? stored?.settings_tabs ?? [];
+  const current = formTab(layout, appId ? tab : undefined);
+  // A framework whose applications have views and pages has settings that are
+  // the running application's — its menu, login form and languages — which
+  // nobody can fill in before the views they name exist. A new application
+  // takes their defaults; they are on its tabs once it is created.
+  const deferSettings = !appId && Boolean(selectedFramework?.has_views);
   // The framework's settings, and each build target's own (an APK's build
   // type and signing), which get a card of their own below the framework's.
   const settings = splitTargetSettings(
     selectedFramework?.config_spec ?? [],
     selectedFramework?.targets ?? [],
   );
+  const tabSettings = current ? fieldsOnTab(settings.general, layout, current.id) : [];
   // Load the matching files from the app's store for each file picker (icon,
   // keystore); if listing fails, its choices just stay empty. `filePickers`
   // comes from state, so it is a stable dependency.
@@ -425,99 +446,157 @@ export function ApplicationForm({
         : t("Choose the application's file store first; its files are offered here."),
     ]),
   );
-  const appSettingsHref = stored
-    ? appTabs(stored).find((t) => t.id === "app-settings")?.href
-    : undefined;
+
+  // The whole record, as the form holds it. An existing application's
+  // subdomain is the one last committed (on leaving the box), not the one
+  // being typed: a new subdomain moves the application and its builder agent,
+  // so `my` on the way to `myapp` must not be saved.
+  const body: CreateApplicationRequest = {
+    name: name.trim(),
+    description: description.trim(),
+    subdomain: (appId ? committedSubdomain : subdomain).trim(),
+    framework: {
+      name: frameworkName,
+      config: buildConfig(selectedFramework?.config_spec ?? [], config),
+    },
+    extra_frameworks: [],
+    tables,
+    // Only connected tables can serve a row API; one unticked drops out.
+    api_tables: apiTables.filter((t) => tables.includes(t)),
+    file_stores: fileStores,
+    triggers,
+    streams,
+    apis: apiRowsToRequest(apis, allProviders),
+    static_dirs: staticDirsToRequest(staticDirs),
+    uploads: uploadRowsToRequest(uploads),
+    agents: agentRowsToRequest(agents),
+    // An empty box means "no opinion", and is sent as no field at all so the
+    // *framework's* default policy applies (§2.2) — a React app gets the one
+    // fitted to what Vite emits. Sending `default-src 'self'` because a
+    // textarea was pre-filled would silently overrule that.
+    csp: csp.trim() ? textToCsp(csp) : undefined,
+    // What is stored is kept — the form edits one attribute of the bag —
+    // with the content-security suggestions switched on.
+    attributes: withCodingAgent(
+      {
+        ...attributesOf(stored?.attributes),
+        csp_sources: cspSources,
+        guest_sessions: guestSessions,
+        guest_session_days: Number.parseInt(guestDays, 10) || 30,
+        check_after_build: checkAfterBuild,
+        constructor_provider: constructorProvider || undefined,
+      },
+      codingAgent,
+    ),
+    min_role: minRole,
+    max_role: maxRole,
+    access_if: accessIf.trim(),
+  };
+  const bodyKey = JSON.stringify(body);
+
+  // Autosave (TODO UX2.2): an existing application is saved as it is edited —
+  // a switch, a choice or a button at once, typing after a pause — one save at
+  // a time (`Autosaver`). The `stored` row follows each save, so the tabs
+  // follow a change of framework.
+  const [saveState, setSaveState] = useState<SaveState>({ kind: "idle" });
+  const saverRef = useRef<Autosaver<CreateApplicationRequest> | null>(null);
+  if (appId && !saverRef.current) {
+    saverRef.current = new Autosaver<CreateApplicationRequest>(
+      async (b) => {
+        const saved = await api.updateApplication(appId, b);
+        // The listing's extras (Claude Code's availability) are not in the
+        // answer, and have not changed.
+        setStored((prev) => (prev ? { ...prev, ...saved } : prev));
+      },
+      setSaveState,
+      (err) => errorMessage(err, "Could not save the application."),
+    );
+  }
+  // How soon the change just made is saved: set by the event that made it.
+  const delayRef = useRef(TYPING_DELAY_MS);
+  const baselined = useRef(false);
+  useEffect(() => {
+    const saver = saverRef.current;
+    if (!saver || !stored) return;
+    if (!baselined.current) {
+      // The first body after loading is the stored application: not a change.
+      saver.baseline(body);
+      baselined.current = true;
+      return;
+    }
+    saver.change(body, delayRef.current);
+    delayRef.current = TYPING_DELAY_MS;
+    // `body` is a new object every render; its JSON is what changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bodyKey, stored !== null]);
+  // Leaving the screen saves what is waiting.
+  useEffect(
+    () => () => {
+      void saverRef.current?.flush();
+    },
+    [],
+  );
+  /** A switch, a choice or a click is saved at once; typing waits. */
+  const noteChange = (target: EventTarget) => {
+    if (target instanceof HTMLSelectElement) delayRef.current = 0;
+    else if (target instanceof HTMLButtonElement) delayRef.current = 0;
+    else if (
+      target instanceof HTMLInputElement &&
+      (target.type === "checkbox" || target.type === "radio")
+    ) {
+      delayRef.current = 0;
+    }
+  };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (appId) {
+      // Enter in a box: commit what it holds and save it now.
+      setCommittedSubdomain(subdomain);
+      delayRef.current = 0;
+      void saverRef.current?.flush();
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const body: CreateApplicationRequest = {
-        name: name.trim(),
-        description: description.trim(),
-        subdomain: subdomain.trim(),
-        framework: {
-          name: frameworkName,
-          config: buildConfig(selectedFramework?.config_spec ?? [], config),
-        },
-        extra_frameworks: [],
-        tables,
-        // Only connected tables can serve a row API; one unticked above drops out.
-        api_tables: apiTables.filter((t) => tables.includes(t)),
-        file_stores: fileStores,
-        triggers,
-        streams,
-        apis: apiRowsToRequest(apis, allProviders),
-        static_dirs: staticDirsToRequest(staticDirs),
-        uploads: uploadRowsToRequest(uploads),
-        agents: agentRowsToRequest(agents),
-        // An empty box means "no opinion", and is sent as no field at all so the
-        // *framework's* default policy applies (§2.2) — a React app gets the one
-        // fitted to what Vite emits. Sending `default-src 'self'` because a
-        // textarea was pre-filled would silently overrule that.
-        csp: csp.trim() ? textToCsp(csp) : undefined,
-        // What is stored is kept — the form edits one attribute of the bag —
-        // with the content-security suggestions switched on.
-        attributes: withCodingAgent(
-          {
-            ...attributesOf(stored?.attributes),
-            csp_sources: cspSources,
-            guest_sessions: guestSessions,
-            guest_session_days: Number.parseInt(guestDays, 10) || 30,
-            check_after_build: checkAfterBuild,
-            constructor_provider: constructorProvider || undefined,
-          },
-          codingAgent,
-        ),
-        min_role: minRole,
-        max_role: maxRole,
-        access_if: accessIf.trim(),
-      };
-      if (appId) {
-        await api.updateApplication(appId, body);
-      } else {
-        const created = await api.createApplication(body);
-        // Creating a React application also creates its project on the server
-        // (§2.3), and creating any application creates the agent that builds it
-        // (§13.3). Both are news the admin should see, and so is either one being
-        // refused — on an application that was still created, because the row is
-        // valid either way. The list screen owns the banner, so the message is
-        // handed to it rather than shown here on a screen about to unmount.
-        const done: string[] = [];
-        const refused: string[] = [];
-        const stores = createdStoresText(created.created_file_stores);
-        if (stores) done.push(stores);
-        if (created.scaffolded) done.push(created.scaffolded);
-        // The server starts the first build itself, so the application serves on
-        // its subdomain without anybody pressing anything — the Build button is
-        // for the build after that, and for one that failed.
-        if (created.building) {
-          done.push(
-            "Its first build has started; it serves on its subdomain when that finishes.",
-          );
-        }
-        if (created.scaffold_error) refused.push(created.scaffold_error);
-        if (created.agent) {
-          done.push(
-            `Its builder agent, ${created.agent}, is ready to chat with.`,
-          );
-        }
-        if (created.agent_error) refused.push(created.agent_error);
-        if (done.length || refused.length) {
-          setNotice({
-            ok: refused.length === 0,
-            title: refused.length
-              ? `Application created, but not everything with it — ${created.name}`
-              : `Application created — ${created.name}`,
-            text: [...refused, ...done].join(" "),
-          });
-        }
+      const created = await api.createApplication(body);
+      // Creating a React application also creates its project on the server
+      // (§2.3), and creating any application creates the agent that builds it
+      // (§13.3). Both are news the admin should see, and so is either one being
+      // refused — on an application that was still created, because the row is
+      // valid either way. The list screen owns the banner, so the message is
+      // handed to it rather than shown here on a screen about to unmount.
+      const done: string[] = [];
+      const refused: string[] = [];
+      const stores = createdStoresText(created.created_file_stores);
+      if (stores) done.push(stores);
+      if (created.scaffolded) done.push(created.scaffolded);
+      // The server starts the first build itself, so the application serves on
+      // its subdomain without anybody pressing anything — the Build button is
+      // for the build after that, and for one that failed.
+      if (created.building) {
+        done.push(
+          "Its first build has started; it serves on its subdomain when that finishes.",
+        );
+      }
+      if (created.scaffold_error) refused.push(created.scaffold_error);
+      if (created.agent) {
+        done.push(`Its builder agent, ${created.agent}, is ready to chat with.`);
+      }
+      if (created.agent_error) refused.push(created.agent_error);
+      if (done.length || refused.length) {
+        setNotice({
+          ok: refused.length === 0,
+          title: refused.length
+            ? `Application created, but not everything with it — ${created.name}`
+            : `Application created — ${created.name}`,
+          text: [...refused, ...done].join(" "),
+        });
       }
       navigate("/applications");
     } catch (err) {
-      setError(errorMessage(err, "Could not save the application."));
+      setError(errorMessage(err, "Could not create the application."));
     } finally {
       setBusy(false);
     }
@@ -540,59 +619,19 @@ export function ApplicationForm({
     );
   }
 
-  return (
-    <>
-      <PageHeader
-        pretitle={t("Applications")}
-        title={appId ? "Edit application" : "New application"}
-        actions={
-          <Button
-            variant="outline-secondary"
-            onClick={() => navigate("/applications")}
-          >
-            <IconArrowLeft className="icon-2" />
-            <T text="Back" />
-          </Button>
-        }
-      />
-      <PageBody>
-        {stored && <ApplicationTabs app={stored} active={tab} />}
-        {error && <Alert variant="danger">{error}</Alert>}
+  const setSetting = (name: string, v: string) => setConfig((c) => ({ ...c, [name]: v }));
+  const storeChoices = (value: string) =>
+    storeOptions(fileStores, value).map((o) => ({
+      value: o.value,
+      label: o.declared ? o.value : t("{name} (not a declared store)", { name: o.value }),
+    }));
 
-        {tab === "app-settings" ? (
-          <Form onSubmit={submit}>
-            {ownTab ? (
-              <Card className="mb-3">
-                <Card.Header>
-                  {t("{framework} settings", {
-                    framework: selectedFramework?.label || frameworkName,
-                  })}
-                </Card.Header>
-                <Card.Body>
-                  <SettingsFields
-                    spec={selectedFramework?.config_spec ?? []}
-                    values={config}
-                    onChange={(name, v) =>
-                      setConfig((c) => ({ ...c, [name]: v }))
-                    }
-                  />
-                </Card.Body>
-              </Card>
-            ) : (
-              // Reached by typing the address, or after switching the
-              // application to a framework whose settings are on its form.
-              <Alert variant="info">
-                <T text="This application's framework settings are on its Settings tab." />
-              </Alert>
-            )}
-            {ownTab && (
-              <Button type="submit" disabled={busy}>
-                {busy ? "Saving…" : "Save changes"}
-              </Button>
-            )}
-          </Form>
-        ) : (
-          <Form onSubmit={submit}>
+  /** Each part of the form, by the group id a settings tab names it with. */
+  const renderGroup = (group: string): ReactNode => {
+    switch (group) {
+      case "identity":
+        return (
+          <>
             <Row>
               <Col md={6}>
                 <Form.Group className="mb-3" controlId="appName">
@@ -611,6 +650,7 @@ export function ApplicationForm({
                     value={subdomain}
                     required
                     onChange={(e) => setSubdomain(e.target.value)}
+                    onBlur={() => setCommittedSubdomain(subdomain)}
                   />
                   <Form.Text muted>
                     {subdomain.trim() === "@"
@@ -624,7 +664,6 @@ export function ApplicationForm({
                 </Form.Group>
               </Col>
             </Row>
-
             <Form.Group className="mb-3" controlId="appDescription">
               <Form.Label><T text="Description" /></Form.Label>
               <Form.Control
@@ -632,357 +671,337 @@ export function ApplicationForm({
                 onChange={(e) => setDescription(e.target.value)}
               />
             </Form.Group>
-
-            <Card className="mb-3">
-              <Card.Header><T text="Framework" /></Card.Header>
-              <Card.Body>
-                {/* One choice per framework, each with the name and sentence the
-                  *server* supplied. Two frameworks are not two equal names in a
-                  dropdown — one creates the project for you and the other hands you
-                  the paths — and that difference has to reach the admin. It does so
-                  as data: the label, the description and the order all come from
-                  the registry (§2.2/§2.4), so this screen presents the distinction
-                  without knowing which framework is which. The first offered is the
-                  one an admin should take, and is what a new application starts on. */}
-                <fieldset className="mb-3">
-                  <legend className="form-label"><T text="Framework" /></legend>
-                  {frameworks.map((f) => (
-                    <Form.Check
-                      key={f.name}
-                      type="radio"
-                      name="framework"
-                      id={`framework-${f.name}`}
-                      className="mb-2"
-                      checked={f.name === frameworkName}
-                      onChange={() => setFrameworkName(f.name)}
-                      label={
-                        <>
-                          <span className="fw-semibold">
-                            {f.label || f.name}
-                          </span>
-                          {f.description && (
-                            <div className="text-muted small">
-                              {f.description}
-                            </div>
-                          )}
-                        </>
-                      }
-                    />
-                  ))}
-                </fieldset>
-
-                {/* The framework's own settings, rendered from its config_spec — no
-                  framework-specific code lives here. Picking the first framework
-                  shows its two settings and picking the other shows five, with no
-                  branch in this file: the spec is the branch. */}
-                {ownTab ? (
-                  <Form.Text muted>
-                    {/* One sentence with a hole in it, not three fragments: a
-                      translator has to be able to move the link. */}
-                    {appId ? (
-                      <T
-                        text="Its menu, login form, languages and other settings are on the application’s {tab} tab."
-                        values={{
-                          tab: appSettingsHref ? (
-                            <a href={appSettingsHref}>{t("App settings")}</a>
-                          ) : (
-                            t("App settings")
-                          ),
-                        }}
-                      />
-                    ) : (
-                      <T
-                        text="Its menu, login form, languages and other settings are on the application’s {tab} tab, once it is created."
-                        values={{ tab: t("App settings") }}
-                      />
-                    )}
-                  </Form.Text>
-                ) : (
-                  <SettingsFields
-                    spec={settings.general}
-                    values={config}
-                    onChange={(name, v) =>
-                      setConfig((c) => ({ ...c, [name]: v }))
-                    }
-                    // A new application's store picker ends with "create one":
-                    // the server names it after the subdomain and puts it in
-                    // the directory "Suggest a directory" would pick. A file
-                    // picker here (an app icon both platforms share) offers
-                    // the store's files, as a target's do.
-                    extraOptions={{
-                      ...fileExtraOptions,
-                      ...newStoreOptions(
-                        selectedFramework?.file_store_settings ?? [],
-                        !appId,
-                        t("Create a new local file store"),
-                      ),
-                    }}
-                    pickerHints={filePickerHints}
-                  />
-                )}
-              </Card.Body>
-            </Card>
-
-            {/* Each build target's own settings, as the framework declared
-              them — no target-specific code here either. They are saved with
-              the application and used by the target's next build; the
-              sidebar's button only starts it. */}
-            {!ownTab &&
-              settings.targets.map((target) => (
-                <Card className="mb-3" key={target.name}>
-                  <Card.Header>{target.label}</Card.Header>
-                  <Card.Body>
-                    <SettingsFields
-                      spec={target.spec}
-                      values={config}
-                      idPrefix={`target-${target.name}`}
-                      onChange={(name, v) =>
-                        setConfig((c) => ({ ...c, [name]: v }))
-                      }
-                      extraOptions={fileExtraOptions}
-                      pickerHints={filePickerHints}
-                      // A target's settings may depend on the framework's.
-                      conditionSpec={selectedFramework?.config_spec ?? []}
-                    />
-                    <TargetOperationButtons
-                      appId={appId}
-                      target={target.name}
-                      operations={target.operations}
-                      spec={selectedFramework?.config_spec ?? []}
-                      values={config}
-                      onSettings={(changed) =>
-                        setConfig((c) => ({ ...c, ...changed }))
-                      }
-                    />
-                  </Card.Body>
-                </Card>
-              ))}
-
-            <Row>
-              <Col md={6}>
-                <Form.Group className="mb-3">
-                  <Form.Label htmlFor="appTables"><T text="Tables" /></Form.Label>
-                  {/* The catalog, ticked — not a comma-separated list typed from
-                    memory. A table's label is worth showing beside its name for
-                    the same reason the tables screen shows it: the name is what
-                    the app addresses and the label is what it is. */}
-                  <MultiSelect
-                    id="appTables"
-                    options={allTables.map((table) => ({
-                      value: table.name,
-                      description:
-                        table.label && table.label !== table.name
-                          ? table.label
-                          : table.description,
-                    }))}
-                    selected={tables}
-                    onChange={setTables}
-                    emptyText="This server has no tables yet."
-                  />
-                  <Form.Text muted>
-                    <T text="The tables this app's custom queries, views and streams may use. Connecting a table publishes no endpoint for it." />
-                  </Form.Text>
-                </Form.Group>
-                <Form.Group className="mb-3">
-                  <Form.Label htmlFor="appApiTables"><T text="Tables with a row API" /></Form.Label>
-                  <MultiSelect
-                    id="appApiTables"
-                    options={tables.map((table) => ({ value: table }))}
-                    selected={apiTables.filter((t) => tables.includes(t))}
-                    onChange={setApiTables}
-                    emptyText="Connect a table above first."
-                  />
-                  <Form.Text muted>
-                    <T text="Serve generic list, read, create, update and delete routes for these tables. Leave this empty unless the app needs generic row access: custom queries expose only what each page does." />
-                  </Form.Text>
-                </Form.Group>
-              </Col>
-              <Col md={6}>
-                <Form.Group className="mb-3">
-                  <Form.Label htmlFor="appFileStores"><T text="File stores" /></Form.Label>
-                  <MultiSelect
-                    id="appFileStores"
-                    options={allFileStores.map((s) => ({
-                      value: s.name,
-                      // A store that is configured but unreachable is still a
-                      // legitimate choice — the app names it, and the connection is
-                      // the store's own problem to fix — so it is offered with the
-                      // fact attached rather than withheld.
-                      description: s.connected
-                        ? s.description
-                        : [s.description, "not connected"]
-                            .filter(Boolean)
-                            .join(" — "),
-                    }))}
-                    selected={fileStores}
-                    onChange={setFileStores}
-                    emptyText="This server has no file stores yet."
-                  />
-                  <Form.Text muted>
-                    <T text="The file stores this app may access." />
-                  </Form.Text>
-                </Form.Group>
-              </Col>
-            </Row>
-
-            <Card className="mb-3">
-              <Card.Header><T text="Triggers" /></Card.Header>
-              <Card.Body>
-                {allTriggers.length === 0 && (
-                  <div className="text-muted">
-                    <T text="No triggers are configured on this server." />
-                  </div>
-                )}
-                {allTriggers.map((trigger) => (
+          </>
+        );
+      case "framework":
+        return (
+          <Card className="mb-3">
+            <Card.Header><T text="Framework" /></Card.Header>
+            <Card.Body>
+              {/* One choice per framework, each with the name and sentence the
+                *server* supplied. Two frameworks are not two equal names in a
+                dropdown — one creates the project for you and the other hands you
+                the paths — and that difference has to reach the admin. It does so
+                as data: the label, the description and the order all come from
+                the registry (§2.2/§2.4), so this screen presents the distinction
+                without knowing which framework is which. The first offered is the
+                one an admin should take, and is what a new application starts on. */}
+              <fieldset>
+                <legend className="visually-hidden"><T text="Framework" /></legend>
+                {frameworks.map((f) => (
                   <Form.Check
-                    key={trigger.id}
-                    type="checkbox"
-                    id={`trigger-${trigger.id}`}
+                    key={f.name}
+                    type="radio"
+                    name="framework"
+                    id={`framework-${f.name}`}
                     className="mb-2"
-                    checked={triggers.includes(trigger.name)}
-                    onChange={(e) =>
-                      setTriggers((current) =>
-                        e.target.checked
-                          ? [...current, trigger.name]
-                          : current.filter((n) => n !== trigger.name),
-                      )
-                    }
+                    checked={f.name === frameworkName}
+                    onChange={() => setFrameworkName(f.name)}
                     label={
                       <>
-                        <span className="fw-semibold">{trigger.name}</span>
-                        {isPublic(trigger.min_role) && <PublicBadge className="ms-2" />}
-                        <div className="text-muted small">
-                          {/* A workflow body has no action to name (§10.3). */}
-                          {t("{body} · on {event} · {access}", {
-                            body: trigger.action ?? "workflow",
-                            event: trigger.when,
-                            // Same vocabulary the trigger form uses: 1 is admin,
-                            // 100 is public, and no role set means admins only.
-                            access:
-                              trigger.min_role == null
-                                ? t("admins only (no minimum role set)")
-                                : t("minimum role {role}", {
-                                    role: trigger.min_role,
-                                  }),
-                          })}
-                        </div>
+                        <span className="fw-semibold">{f.label || f.name}</span>
+                        {f.description && (
+                          <div className="text-muted small">{f.description}</div>
+                        )}
                       </>
                     }
                   />
                 ))}
-                {/* An app that names a trigger the server no longer has will not
-                  mount, so a stale selection is shown rather than dropped on the
-                  floor by a picker that only knows about triggers that exist. */}
-                {triggers
-                  .filter((name) => !allTriggers.some((t) => t.name === name))
-                  .map((name) => (
-                    <div key={name} className="text-danger small mb-2">
-                      <span className="fw-semibold">{name}</span> <T text="— no trigger of that name exists here, so this application will not mount until it is removed or the trigger is recreated." />
-                      <Button
-                        size="sm"
-                        variant="outline-danger"
-                        className="ms-2"
-                        onClick={() =>
-                          setTriggers((current) =>
-                            current.filter((n) => n !== name),
-                          )
-                        }
-                      >
-                        <T text="Remove" />
-                      </Button>
-                    </div>
-                  ))}
+              </fieldset>
+              {deferSettings && (
                 <Form.Text muted>
-                  <T
-                    text="Each ticked trigger is exposed as {route} on this app, guarded by the trigger’s own minimum role."
-                    values={{
-                      route: <code>POST {"{api mount}"}/actions/{"{name}"}</code>,
-                    }}
-                  />
+                  <T text="Its menu, login form, languages and other settings are on the application’s tabs, once it is created." />
                 </Form.Text>
-              </Card.Body>
-            </Card>
-
-            <Card className="mb-3">
-              <Card.Header><T text="Streams" /></Card.Header>
-              <Card.Body>
-                {allStreams.length === 0 && (
-                  <div className="text-muted">
-                    <T text="No streams are configured on this server." />
-                  </div>
-                )}
-                {allStreams.map((s) => (
-                  <Form.Check
-                    key={s.id}
-                    type="checkbox"
-                    id={`stream-${s.id}`}
-                    className="mb-2"
-                    checked={streams.includes(s.name)}
-                    onChange={(e) =>
-                      setStreams((current) =>
-                        e.target.checked
-                          ? [...current, s.name]
-                          : current.filter((n) => n !== s.name),
-                      )
-                    }
-                    label={
-                      <>
-                        <span className="fw-semibold">{s.name}</span>
-                        {isPublic(s.min_role) && <PublicBadge className="ms-2" />}
-                        <div className="text-muted small">
-                          {s.provider}
-                          {s.enabled ? "" : " · disabled"} ·{" "}
-                          {/* The stream's own floor, in the vocabulary the rest
-                            of the admin UI uses: no role set means admins. */}
-                          {s.min_role == null
-                            ? "admins only (no minimum role set)"
-                            : `minimum role ${s.min_role}`}
-                        </div>
-                      </>
-                    }
-                  />
-                ))}
-                {/* A named stream that is gone is shown rather than dropped, for
-                  the reason a stale trigger is: the app keeps naming it until
-                  somebody decides otherwise. */}
-                {streams
-                  .filter((name) => !allStreams.some((s) => s.name === name))
-                  .map((name) => (
-                    <div key={name} className="text-danger small mb-2">
-                      <span className="fw-semibold">{name}</span> <T text="— no stream of that name exists here, so this application cannot observe it until it is removed or the stream is recreated." />
-                      <Button
-                        size="sm"
-                        variant="outline-danger"
-                        className="ms-2"
-                        onClick={() =>
-                          setStreams((current) =>
-                            current.filter((n) => n !== name),
-                          )
-                        }
-                      >
-                        <T text="Remove" />
-                      </Button>
-                    </div>
-                  ))}
-                <Form.Text muted>
-                  <T
-                    text="A page subscribes to each ticked stream over the application’s one live socket at {route}, guarded by the stream’s own minimum role, and it appears in this app’s generated client as {call}."
-                    values={{
-                      route: <code>{"{api mount}"}/live</code>,
-                      call: <code>client.live.{"{name}"}.subscribe()</code>,
-                    }}
-                  />
-                </Form.Text>
-              </Card.Body>
-            </Card>
-
-            <ApiRows
-              rows={apis}
-              providers={allProviders}
-              tables={tables}
-              onChange={setApis}
+              )}
+            </Card.Body>
+          </Card>
+        );
+      case "settings":
+        // The framework's own settings for this tab, rendered from its
+        // config_spec — no framework-specific code lives here. Picking the
+        // first framework shows its two settings and picking the other shows
+        // five, with no branch in this file: the spec is the branch.
+        if (deferSettings || tabSettings.length === 0) return null;
+        return (
+          <Card className="mb-3">
+            <Card.Header>
+              {t("{framework} settings", {
+                framework: selectedFramework?.label || frameworkName,
+              })}
+            </Card.Header>
+            <Card.Body>
+              <SettingsFields
+                spec={tabSettings}
+                values={config}
+                onChange={setSetting}
+                // A setting on one tab may depend on one on another.
+                conditionSpec={selectedFramework?.config_spec ?? []}
+                // A new application's store picker ends with "create one":
+                // the server names it after the subdomain and puts it in
+                // the directory "Suggest a directory" would pick. A file
+                // picker here (an app icon both platforms share) offers
+                // the store's files, as a target's do.
+                extraOptions={{
+                  ...fileExtraOptions,
+                  ...newStoreOptions(
+                    selectedFramework?.file_store_settings ?? [],
+                    !appId,
+                    t("Create a new local file store"),
+                  ),
+                }}
+                pickerHints={filePickerHints}
+              />
+            </Card.Body>
+          </Card>
+        );
+      case "targets":
+        // Each build target's own settings, as the framework declared them —
+        // no target-specific code here either. They are saved with the
+        // application and used by the target's next build; the sidebar's
+        // button only starts it.
+        if (deferSettings) return null;
+        return settings.targets.map((target) => (
+          <Card className="mb-3" key={target.name}>
+            <Card.Header>{target.label}</Card.Header>
+            <Card.Body>
+              <SettingsFields
+                spec={target.spec}
+                values={config}
+                idPrefix={`target-${target.name}`}
+                onChange={setSetting}
+                extraOptions={fileExtraOptions}
+                pickerHints={filePickerHints}
+                // A target's settings may depend on the framework's.
+                conditionSpec={selectedFramework?.config_spec ?? []}
+              />
+              <TargetOperationButtons
+                appId={appId}
+                target={target.name}
+                operations={target.operations}
+                spec={selectedFramework?.config_spec ?? []}
+                values={config}
+                onSettings={(changed) => setConfig((c) => ({ ...c, ...changed }))}
+              />
+            </Card.Body>
+          </Card>
+        ));
+      case "tables":
+        return (
+          <Form.Group className="mb-3">
+            <Form.Label htmlFor="appTables"><T text="Tables" /></Form.Label>
+            {/* The catalog, ticked — not a comma-separated list typed from
+              memory. A table's label is worth showing beside its name for
+              the same reason the tables screen shows it: the name is what
+              the app addresses and the label is what it is. */}
+            <MultiSelect
+              id="appTables"
+              options={allTables.map((table) => ({
+                value: table.name,
+                description:
+                  table.label && table.label !== table.name ? table.label : table.description,
+              }))}
+              selected={tables}
+              onChange={setTables}
+              emptyText="This server has no tables yet."
             />
-
+            <Form.Text muted>
+              <T text="The tables this app's custom queries, views and streams may use. Connecting a table publishes no endpoint for it." />
+            </Form.Text>
+          </Form.Group>
+        );
+      case "row_api":
+        return (
+          <Form.Group className="mb-3">
+            <Form.Label htmlFor="appApiTables"><T text="Tables with a row API" /></Form.Label>
+            <MultiSelect
+              id="appApiTables"
+              options={tables.map((table) => ({ value: table }))}
+              selected={apiTables.filter((t) => tables.includes(t))}
+              onChange={setApiTables}
+              emptyText="Connect a table to the application first."
+            />
+            <Form.Text muted>
+              <T text="Serve generic list, read, create, update and delete routes for these tables. Leave this empty unless the app needs generic row access: custom queries expose only what each page does." />
+            </Form.Text>
+          </Form.Group>
+        );
+      case "file_stores":
+        return (
+          <Form.Group className="mb-3">
+            <Form.Label htmlFor="appFileStores"><T text="File stores" /></Form.Label>
+            <MultiSelect
+              id="appFileStores"
+              options={allFileStores.map((s) => ({
+                value: s.name,
+                // A store that is configured but unreachable is still a
+                // legitimate choice — the app names it, and the connection is
+                // the store's own problem to fix — so it is offered with the
+                // fact attached rather than withheld.
+                description: s.connected
+                  ? s.description
+                  : [s.description, "not connected"].filter(Boolean).join(" — "),
+              }))}
+              selected={fileStores}
+              onChange={setFileStores}
+              emptyText="This server has no file stores yet."
+            />
+            <Form.Text muted>
+              <T text="The file stores this app may access." />
+            </Form.Text>
+          </Form.Group>
+        );
+      case "triggers":
+        return (
+          <Card className="mb-3">
+            <Card.Header><T text="Triggers" /></Card.Header>
+            <Card.Body>
+              {allTriggers.length === 0 && (
+                <div className="text-muted">
+                  <T text="No triggers are configured on this server." />
+                </div>
+              )}
+              {allTriggers.map((trigger) => (
+                <Form.Check
+                  key={trigger.id}
+                  type="checkbox"
+                  id={`trigger-${trigger.id}`}
+                  className="mb-2"
+                  checked={triggers.includes(trigger.name)}
+                  onChange={(e) =>
+                    setTriggers((current) =>
+                      e.target.checked
+                        ? [...current, trigger.name]
+                        : current.filter((n) => n !== trigger.name),
+                    )
+                  }
+                  label={
+                    <>
+                      <span className="fw-semibold">{trigger.name}</span>
+                      {isPublic(trigger.min_role) && <PublicBadge className="ms-2" />}
+                      <div className="text-muted small">
+                        {/* A workflow body has no action to name (§10.3). */}
+                        {t("{body} · on {event} · {access}", {
+                          body: trigger.action ?? "workflow",
+                          event: trigger.when,
+                          // Same vocabulary the trigger form uses: 1 is admin,
+                          // 100 is public, and no role set means admins only.
+                          access:
+                            trigger.min_role == null
+                              ? t("admins only (no minimum role set)")
+                              : t("minimum role {role}", { role: trigger.min_role }),
+                        })}
+                      </div>
+                    </>
+                  }
+                />
+              ))}
+              {/* An app that names a trigger the server no longer has will not
+                mount, so a stale selection is shown rather than dropped on the
+                floor by a picker that only knows about triggers that exist. */}
+              {triggers
+                .filter((name) => !allTriggers.some((t) => t.name === name))
+                .map((name) => (
+                  <div key={name} className="text-danger small mb-2">
+                    <span className="fw-semibold">{name}</span> <T text="— no trigger of that name exists here, so this application will not mount until it is removed or the trigger is recreated." />
+                    <Button
+                      size="sm"
+                      variant="outline-danger"
+                      className="ms-2"
+                      onClick={() => setTriggers((current) => current.filter((n) => n !== name))}
+                    >
+                      <T text="Remove" />
+                    </Button>
+                  </div>
+                ))}
+              <Form.Text muted>
+                <T
+                  text="Each ticked trigger is exposed as {route} on this app, guarded by the trigger’s own minimum role."
+                  values={{
+                    route: <code>POST {"{api mount}"}/actions/{"{name}"}</code>,
+                  }}
+                />
+              </Form.Text>
+            </Card.Body>
+          </Card>
+        );
+      case "streams":
+        return (
+          <Card className="mb-3">
+            <Card.Header><T text="Streams" /></Card.Header>
+            <Card.Body>
+              {allStreams.length === 0 && (
+                <div className="text-muted">
+                  <T text="No streams are configured on this server." />
+                </div>
+              )}
+              {allStreams.map((s) => (
+                <Form.Check
+                  key={s.id}
+                  type="checkbox"
+                  id={`stream-${s.id}`}
+                  className="mb-2"
+                  checked={streams.includes(s.name)}
+                  onChange={(e) =>
+                    setStreams((current) =>
+                      e.target.checked
+                        ? [...current, s.name]
+                        : current.filter((n) => n !== s.name),
+                    )
+                  }
+                  label={
+                    <>
+                      <span className="fw-semibold">{s.name}</span>
+                      {isPublic(s.min_role) && <PublicBadge className="ms-2" />}
+                      <div className="text-muted small">
+                        {s.provider}
+                        {s.enabled ? "" : " · disabled"} ·{" "}
+                        {/* The stream's own floor, in the vocabulary the rest
+                          of the admin UI uses: no role set means admins. */}
+                        {s.min_role == null
+                          ? "admins only (no minimum role set)"
+                          : `minimum role ${s.min_role}`}
+                      </div>
+                    </>
+                  }
+                />
+              ))}
+              {/* A named stream that is gone is shown rather than dropped, for
+                the reason a stale trigger is: the app keeps naming it until
+                somebody decides otherwise. */}
+              {streams
+                .filter((name) => !allStreams.some((s) => s.name === name))
+                .map((name) => (
+                  <div key={name} className="text-danger small mb-2">
+                    <span className="fw-semibold">{name}</span> <T text="— no stream of that name exists here, so this application cannot observe it until it is removed or the stream is recreated." />
+                    <Button
+                      size="sm"
+                      variant="outline-danger"
+                      className="ms-2"
+                      onClick={() => setStreams((current) => current.filter((n) => n !== name))}
+                    >
+                      <T text="Remove" />
+                    </Button>
+                  </div>
+                ))}
+              <Form.Text muted>
+                <T
+                  text="A page subscribes to each ticked stream over the application’s one live socket at {route}, guarded by the stream’s own minimum role, and it appears in this app’s generated client as {call}."
+                  values={{
+                    route: <code>{"{api mount}"}/live</code>,
+                    call: <code>client.live.{"{name}"}.subscribe()</code>,
+                  }}
+                />
+              </Form.Text>
+            </Card.Body>
+          </Card>
+        );
+      case "apis":
+        return (
+          <ApiRows rows={apis} providers={allProviders} tables={tables} onChange={setApis} />
+        );
+      case "static_dirs":
+        return (
+          <>
             <RepeatableRows
               title={t("Static directories")}
               rows={staticDirs}
@@ -991,19 +1010,13 @@ export function ApplicationForm({
                 {
                   key: "store",
                   label: t("Store"),
-                  // The stores *this application* declares, from the picker
-                  // twenty lines above rather than from the server's full list:
-                  // the server refuses a static directory outside the subset, so
-                  // anything else here would be a choice that cannot be saved.
-                  options: (value) =>
-                    storeOptions(fileStores, value).map((o) => ({
-                      value: o.value,
-                      label: o.declared
-                        ? o.value
-                        : t("{name} (not a declared store)", { name: o.value }),
-                    })),
+                  // The stores *this application* declares rather than the
+                  // server's full list: the server refuses a static directory
+                  // outside the subset, so anything else here would be a
+                  // choice that cannot be saved.
+                  options: storeChoices,
                   emptyText: t(
-                    "Tick a file store above to serve a directory from it.",
+                    "Add a file store to the application to serve a directory from it.",
                   ),
                 },
                 { key: "path", label: t("Path"), placeholder: "handbook" },
@@ -1014,7 +1027,11 @@ export function ApplicationForm({
             <Form.Text muted className="d-block mb-3">
               <T text="A directory is served at the app's own sub-path — `/docs/guide.png` for the store's `handbook/guide.png`. A file still has to be readable by whoever asks: a mount says where files appear, not that they are public." />
             </Form.Text>
-
+          </>
+        );
+      case "uploads":
+        return (
+          <>
             <RepeatableRows
               title={t("Upload slots")}
               rows={uploads}
@@ -1025,14 +1042,8 @@ export function ApplicationForm({
                   label: t("Store"),
                   // The application's own stores, for the static directories'
                   // reason: the server refuses a slot outside the subset.
-                  options: (value) =>
-                    storeOptions(fileStores, value).map((o) => ({
-                      value: o.value,
-                      label: o.declared
-                        ? o.value
-                        : t("{name} (not a declared store)", { name: o.value }),
-                    })),
-                  emptyText: t("Tick a file store above to upload into it."),
+                  options: storeChoices,
+                  emptyText: t("Add a file store to the application to upload into it."),
                 },
                 { key: "folder", label: t("Folder"), placeholder: "drops" },
                 { key: "min_role", label: t("Min role"), placeholder: "1" },
@@ -1055,7 +1066,11 @@ export function ApplicationForm({
                 }}
               />
             </Form.Text>
-
+          </>
+        );
+      case "agents":
+        return (
+          <>
             <RepeatableRows
               title={t("Agents")}
               rows={agents}
@@ -1114,7 +1129,11 @@ export function ApplicationForm({
                 }}
               />
             </Form.Text>
-
+          </>
+        );
+      case "csp":
+        return (
+          <>
             <Form.Group className="mb-3" controlId="appCsp">
               <Form.Label>Content-Security-Policy</Form.Label>
               <Form.Control
@@ -1127,7 +1146,6 @@ export function ApplicationForm({
                 <T text="One directive per line, e.g. `default-src: 'self'`. Leave empty to use the framework's own default policy." />
               </Form.Text>
             </Form.Group>
-
             {(cspSuggestions.length > 0 || cspSources.length > 0) && (
               <Form.Group className="mb-3">
                 <Form.Label>
@@ -1176,8 +1194,12 @@ export function ApplicationForm({
                 </Form.Text>
               </Form.Group>
             )}
-
-            <h5 className="mt-4">
+          </>
+        );
+      case "access":
+        return (
+          <>
+            <h5 className="mt-2">
               <T text="Who may use this application" />
             </h5>
             <Row>
@@ -1227,41 +1249,49 @@ export function ApplicationForm({
                 />
               </Form.Text>
             </Form.Group>
-
-            <Form.Group className="mb-3" controlId="appGuestSessions">
-              <Form.Check
-                type="switch"
-                checked={guestSessions}
-                onChange={(e) => setGuestSessions(e.target.checked)}
-                label={t("Guest sessions: visitors who are not signed in may keep rows of their own")}
+          </>
+        );
+      case "guest_sessions":
+        return (
+          <Form.Group className="mb-3" controlId="appGuestSessions">
+            <Form.Check
+              type="switch"
+              checked={guestSessions}
+              onChange={(e) => setGuestSessions(e.target.checked)}
+              label={t("Guest sessions: visitors who are not signed in may keep rows of their own")}
+            />
+            {guestSessions && (
+              <Row className="mt-2">
+                <Col md={4}>
+                  <Form.Label>
+                    <T text="A guest session lasts (days)" />
+                  </Form.Label>
+                  <Form.Control
+                    type="number"
+                    min={1}
+                    max={3650}
+                    value={guestDays}
+                    onChange={(e) => setGuestDays(e.target.value)}
+                  />
+                </Col>
+              </Row>
+            )}
+            <Form.Text muted>
+              <T
+                text="The application calls {start} when a visitor first needs one — a basket's first item — and a table owns their rows with {formula}. Signing in in the same browser ends it, and the login event names it so a trigger can move the rows to the account."
+                values={{
+                  start: <code>api.startGuestSession()</code>,
+                  formula: <code>session_id === session.id</code>,
+                }}
               />
-              {guestSessions && (
-                <Row className="mt-2">
-                  <Col md={4}>
-                    <Form.Label>
-                      <T text="A guest session lasts (days)" />
-                    </Form.Label>
-                    <Form.Control
-                      type="number"
-                      min={1}
-                      max={3650}
-                      value={guestDays}
-                      onChange={(e) => setGuestDays(e.target.value)}
-                    />
-                  </Col>
-                </Row>
-              )}
-              <Form.Text muted>
-                <T
-                  text="The application calls {start} when a visitor first needs one — a basket's first item — and a table owns their rows with {formula}. Signing in in the same browser ends it, and the login event names it so a trigger can move the rows to the account."
-                  values={{
-                    start: <code>api.startGuestSession()</code>,
-                    formula: <code>session_id === session.id</code>,
-                  }}
-                />
-              </Form.Text>
-            </Form.Group>
-
+            </Form.Text>
+          </Form.Group>
+        );
+      case "coding_agent":
+        // Plan & build's provider sits with the coding agent: both choose what
+        // builds the application.
+        return (
+          <>
             {stored && codingAgent && (
               <Form.Group className="mb-3" controlId="appCodingAgent">
                 <Form.Label>{t("Coding agent")}</Form.Label>
@@ -1288,7 +1318,6 @@ export function ApplicationForm({
                 </Form.Text>
               </Form.Group>
             )}
-
             {frameworkName === "react" && (
               <Form.Group className="mb-3" controlId="appConstructorProvider">
                 <Form.Label>{t("LLM provider for Plan & build")}</Form.Label>
@@ -1313,27 +1342,127 @@ export function ApplicationForm({
                 </Form.Text>
               </Form.Group>
             )}
+          </>
+        );
+      case "checklists":
+        return (
+          <Form.Group className="mb-3" controlId="appCheckAfterBuild">
+            <Form.Check
+              type="switch"
+              checked={checkAfterBuild}
+              onChange={(e) => setCheckAfterBuild(e.target.checked)}
+              label={t("Run this application's checklists after each build")}
+            />
+            <Form.Text muted>
+              <T text="Every enabled checklist runs after a full build, and the build reports how they went. Mail, webhooks and payment calls made during a run are kept on the run instead of sent." />
+            </Form.Text>
+          </Form.Group>
+        );
+      default:
+        // The screens (views, pages, library) are routes of their own, and
+        // the translations editor is shown after the form.
+        return null;
+    }
+  };
 
-            <Form.Group className="mb-3" controlId="appCheckAfterBuild">
-              <Form.Check
-                type="switch"
-                checked={checkAfterBuild}
-                onChange={(e) => setCheckAfterBuild(e.target.checked)}
-                label={t("Run this application's checklists after each build")}
-              />
-              <Form.Text muted>
-                <T text="Every enabled checklist runs after a full build, and the build reports how they went. Mail, webhooks and payment calls made during a run are kept on the run instead of sent." />
-              </Form.Text>
-            </Form.Group>
+  // A new application is created from its first tab, and its tables: a
+  // scaffolded project is generated against the tables it has when it is
+  // created, so they are chosen here rather than after.
+  const groups = current
+    ? createGroups(groupsToRender(current, tabSettings.length > 0), !appId)
+    : [];
+  // The translations editor has its own form and Save, so it goes after this
+  // one rather than inside it.
+  const showTranslations = Boolean(appId) && groups.includes("translations");
 
-            <Button type="submit" disabled={busy}>
-              {busy ? "Saving…" : appId ? "Save changes" : "Create application"}
+  return (
+    <>
+      <PageHeader
+        pretitle={t("Applications")}
+        title={appId ? stored?.name || t("Edit application") : t("New application")}
+        actions={
+          <div className="d-flex align-items-center gap-3">
+            {appId && <SaveStatus state={saveState} />}
+            <Button variant="outline-secondary" onClick={() => navigate("/applications")}>
+              <IconArrowLeft className="icon-2" />
+              <T text="Back" />
             </Button>
-          </Form>
+          </div>
+        }
+      />
+      <PageBody>
+        {stored && (
+          <ApplicationTabs
+            app={{ id: stored.id, settings_tabs: layout }}
+            active={current?.id ?? ""}
+          />
         )}
+        {stored && <UnknownFrameworkAlert app={stored} />}
+        {error && <Alert variant="danger">{error}</Alert>}
+        {saveState.kind === "error" && (
+          <Alert variant="danger">
+            {t("Not saved: {reason}", { reason: saveState.message })}
+          </Alert>
+        )}
+
+        <Form
+          onSubmit={submit}
+          onChangeCapture={(e) => noteChange(e.target)}
+          onClickCapture={(e) => noteChange(e.target)}
+        >
+          {groups.map((group) => (
+            <Fragment key={group}>{renderGroup(group)}</Fragment>
+          ))}
+
+          {!appId && (
+            <Button type="submit" disabled={busy}>
+              {busy ? t("Creating…") : t("Create application")}
+            </Button>
+          )}
+        </Form>
+
+        {showTranslations && appId && <ApplicationTranslations appId={appId} embedded />}
       </PageBody>
     </>
   );
+}
+
+/** The groups a tab shows: for a new application, its tables too. */
+function createGroups(groups: string[], creating: boolean): string[] {
+  return creating && !groups.includes("tables") ? [...groups, "tables"] : groups;
+}
+
+/** Where the form's edits stand, beside the page title. */
+function SaveStatus({ state }: { state: SaveState }) {
+  const { t } = useT();
+  switch (state.kind) {
+    case "pending":
+    case "saving":
+      return (
+        <span className="text-secondary small" role="status">
+          <Spinner animation="border" size="sm" className="me-1" />
+          {t("Saving…")}
+        </span>
+      );
+    case "saved":
+      return (
+        <span className="text-success small" role="status">
+          {t("Saved")}
+        </span>
+      );
+    case "error":
+      return (
+        <span className="text-danger small" role="status">
+          {t("Not saved")}
+        </span>
+      );
+    default:
+      return (
+        <span className="text-secondary small" role="status">
+          {t("Changes save as you edit")}
+        </span>
+      );
+  }
 }
 
 /** The APIs list: one card per enabled provider — its name, its mount, and the
@@ -1698,5 +1827,29 @@ function TargetOperationButtons({
         </Alert>
       )}
     </div>
+  );
+}
+
+/** The red box on an application's settings when this server does not have
+ * its framework — one switched off in this release, or a module's that was
+ * uninstalled. The server keeps the application but does not serve or build
+ * it; nothing is shown for one whose framework it knows. */
+export function UnknownFrameworkAlert({
+  app,
+}: {
+  app: Pick<AppItem, "framework" | "framework_known">;
+}) {
+  const { t } = useT();
+  if (app.framework_known !== false) return null;
+  return (
+    <Alert variant="danger" data-testid="unknown-framework">
+      <Alert.Heading as="h4">
+        <T text="Unknown framework" />
+      </Alert.Heading>
+      {t(
+        "This application uses the framework “{framework}”, which this server does not have. It is not served or built until the framework is available again. You can still delete it.",
+        { framework: app.framework.name },
+      )}
+    </Alert>
   );
 }

@@ -300,15 +300,14 @@ impl OutcomeSpec {
                     .get(components)
                     .and_then(Json::as_u64)
                     .filter(|n| *n > 0)
+                    .and_then(|n| usize::try_from(n).ok())
                     .ok_or_else(|| {
                         Error::invalid(format!(
                             "`{components}`: the number of components must be a positive whole \
                              number"
                         ))
                     })?;
-                Ok(Outcome::Embedding {
-                    dimensions: dimensions as usize,
-                })
+                Ok(Outcome::Embedding { dimensions })
             }
             OutcomeSpec::Test => Ok(Outcome::Test),
             OutcomeSpec::Posterior { prediction } => Ok(Outcome::Posterior {

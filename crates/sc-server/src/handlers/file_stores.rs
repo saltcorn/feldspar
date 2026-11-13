@@ -3,6 +3,7 @@
 use super::*;
 
 /// Register this domain's admin handlers on `reg`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
 
@@ -14,7 +15,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // running with the flag would see an empty list. Stored stores come first,
     // then any connected store with no definition, which reports a null id to
     // say "there is nothing here to edit".
-    reg.register_admin("listFileStores", {
+    reg.handle(sc_api::handler_ids::LIST_FILE_STORES, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -35,9 +36,12 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createFileStore", typed(state, create_file_store));
+    reg.handle(
+        sc_api::handler_ids::CREATE_FILE_STORE,
+        typed(state, create_file_store),
+    );
 
-    reg.register_admin("updateFileStore", {
+    reg.handle(sc_api::handler_ids::UPDATE_FILE_STORE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -76,7 +80,44 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteFileStore", {
+    reg.handle(sc_api::handler_ids::GET_FILE_STORE_SYNC, {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = parse_file_store_id(ctx.path_param("id")?)?;
+                let mut def = load_file_store(&catalog, id)
+                    .await?
+                    .ok_or_else(|| Error::not_found(format!("no file store with id {id:?}")))?;
+                if let Some(raw) = ctx.query_get("contents").filter(|c| !c.is_empty()) {
+                    def = def.with_sync_contents(sc_files::SyncContents::parse(raw)?);
+                }
+                Ok(HandlerResponse::ok(store_sync_json(&catalog, &def).await?))
+            }
+        }
+    });
+
+    // `sync_contents` is the one attribute an admin sets; the rest stay
+    // server-managed, which is why it is not part of `updateFileStore`.
+    reg.handle(sc_api::handler_ids::SET_FILE_STORE_SYNC, {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = parse_file_store_id(ctx.path_param("id")?)?;
+                let existing = load_file_store(&catalog, id)
+                    .await?
+                    .ok_or_else(|| Error::not_found(format!("no file store with id {id:?}")))?;
+                let raw = require_object(&ctx.body)?.non_empty_str_field("sync_contents")?;
+                let def = existing.with_sync_contents(sc_files::SyncContents::parse(raw)?);
+                sc_files::validate_file_store_config(&def)?;
+                save_file_store(&catalog, &def).await?;
+                Ok(HandlerResponse::ok(store_sync_json(&catalog, &def).await?))
+            }
+        }
+    });
+
+    reg.handle(sc_api::handler_ids::DELETE_FILE_STORE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -104,7 +145,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listFileStoreBackends", {
+    reg.handle(sc_api::handler_ids::LIST_FILE_STORE_BACKENDS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -137,13 +178,16 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // Configure scope: against configuration the admin has not saved yet, so the
     // definition is built from the body and thrown away, and what comes back is
     // its config for the form to adopt.
-    reg.register_admin("runBackendOperation", typed(state, backend_operation));
+    reg.handle(
+        sc_api::handler_ids::RUN_BACKEND_OPERATION,
+        typed(state, backend_operation),
+    );
 
     // Instance scope: against a saved store. Whatever the operation changed in
     // the definition is persisted, and the store is reconnected — an operation
     // may be exactly what makes it connectable (a clone), and an admin who has
     // just repaired a store should not have to save again to use it.
-    reg.register_admin("runFileStoreOperation", {
+    reg.handle(sc_api::handler_ids::RUN_FILE_STORE_OPERATION, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -318,6 +362,24 @@ fn ephemeral_file_store_json(catalog: &Catalog, name: &str) -> Result<Json> {
         "connected": true,
         "error": Json::Null,
         "is_git_repo": Some(git),
+    }))
+}
+
+/// What a store's `sync_contents` resolves to (APP_SYNC_PROPOSAL §3.5).
+async fn store_sync_json(catalog: &Catalog, def: &FileStoreDef) -> Result<Json> {
+    let contents = def.sync_contents()?;
+    let applies = def.backend != sc_files::GIT_BACKEND;
+    let uses = sc_sync::store_uses(catalog)
+        .await?
+        .remove(&def.name)
+        .unwrap_or_default();
+    let dirs = sc_sync::resolve(def, &uses)?;
+    Ok(json!({
+        "applies": applies,
+        "sync_contents": contents.as_str(),
+        "synced": if applies { dirs.synced } else { Vec::new() },
+        "excluded": dirs.excluded,
+        "warnings": dirs.warnings.iter().map(sc_sync::StoreWarning::message).collect::<Vec<_>>(),
     }))
 }
 

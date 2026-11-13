@@ -22,6 +22,12 @@
 //! Deferred (see the design): materialised providers (`Snapshot`/`Synced`),
 //! **writable** table providers, and cross-process cache invalidation over a
 //! bus.
+//!
+//! `unreachable_pub` (security review 2026-11, F-15): an item is `pub` only
+//! when another crate calls it. A primitive that skips the guarded entry
+//! points stays `pub(crate)`, so a handler elsewhere cannot reach past the
+//! guard by importing it.
+#![warn(unreachable_pub)]
 
 mod admin_host;
 mod calc;
@@ -35,6 +41,7 @@ mod code_libraries;
 mod constraint;
 mod db_connections;
 mod edited;
+mod editor;
 mod events;
 mod field;
 mod field_meta;
@@ -55,6 +62,7 @@ mod rls;
 pub mod secrets;
 mod services;
 mod spatial;
+mod supervise;
 mod sync;
 mod table;
 mod table_meta;
@@ -62,16 +70,18 @@ mod tx;
 mod vector;
 mod wakeups;
 
-pub use admin_host::{AdminHost, AdminUser, BackendOperation, NewFileStore, TranslationsOf};
+pub use admin_host::{AdminHost, BackendOperation, NewFileStore, TranslationsOf};
 pub use caller::{
-    Authority, CallingApp, Origin, Principal, SystemReason, TaskScope, UNTRUSTED_ORIGIN, Unchecked,
-    current_origin, is_untrusted_chain, spawn_scoped, untrusted_chain, with_origin,
+    ADMIN_MEETS_EVERY_FLOOR, AdminPrincipal, ApprovedTrigger, Authority, CallingApp, Cause,
+    ConsoleAdmin, Origin, Principal, SYSTEM_TRIGGER_RULE, SystemReason, TaskScope,
+    UNTRUSTED_ORIGIN, Unchecked, VerifiedUser, current_origin, is_untrusted_chain, spawn_scoped,
+    untrusted_chain, with_origin,
 };
 pub use catalog::{Catalog, CatalogSchema, DriverInfo, ProvidedTableIssue, SchemaStep};
 pub use change_log::{
     CHANGES_TABLE, ChangeLogFeature, as_text_sql, bootstrap_change_log, change_log_enabled,
-    change_log_key, disable_change_log_sql, enable_change_log_sql, history_enabled,
-    json_distinct_array_sql, json_texts_sql, row_json_sql, set_history_enabled,
+    change_log_key, disable_change_log_sql, enable_change_log_sql, history_enabled, json_texts_sql,
+    row_json_sql, set_history_enabled,
 };
 pub use changeset::{CHANGESETS_TABLE, Changeset, ChangesetSource};
 pub use code_libraries::{
@@ -82,8 +92,8 @@ pub use code_libraries::{
 pub use constraint::{
     ConstraintKind, META_KEY as CONSTRAINT_META_KEY, TableConstraint, VECTOR_INDEX_METHOD,
     constrained_fields, create_constraint_steps, drop_constraint_steps, formula_fields,
-    full_text_columns, full_text_constraint, full_text_expression, indexed_text_search,
-    is_full_text_field, validate_formula, vector_index, violated_constraint,
+    full_text_columns, full_text_constraint, indexed_text_search, is_full_text_field,
+    validate_formula, vector_index, violated_constraint,
 };
 pub use db_connections::{
     BACKENDS, DB_CONNECTIONS_TABLE, DEFAULT_PORT, DEFAULT_SCHEMA, DbConnectionDef, DbConnectionId,
@@ -93,9 +103,9 @@ pub use db_connections::{
     load_db_connection_by_name, save_db_connection,
 };
 pub use edited::{
-    COL_UPDATED_AT, TABLE_EDITS_TABLE, bootstrap_table_edits, forget_table_edit, touch_tables,
-    updated_at_by, updated_at_field, updated_now,
+    COL_UPDATED_AT, TABLE_EDITS_TABLE, touch_tables, updated_at_by, updated_at_field, updated_now,
 };
+pub use editor::{Editor, Operator, Person, RlsTableAccess};
 pub use events::{LIVE_EVENTS, TRIGGER_EVENTS, TableEvents, TableWrite, WriteOp};
 pub use field::{
     DataField, DataFieldKind, DbId, FieldId, FileOnConflict, FileOnDelete, FileStoreId,
@@ -132,6 +142,7 @@ pub use rls::{
 pub use secrets::SecretKey;
 pub use services::{Extensions, Services};
 pub use spatial::bootstrap_spatial;
+pub use supervise::supervise;
 pub use sync::{
     ChangedEntry, SYNC_CLIENTS_TABLE, SYNC_KEYS_TABLE, SyncWatermark, changed_entries,
     changed_keys, set_sync_enabled, sync_enabled, sync_watermark,

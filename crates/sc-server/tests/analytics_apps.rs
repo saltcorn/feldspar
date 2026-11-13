@@ -202,6 +202,8 @@ async fn setup() -> sc_error::Result<(Client, Router, TestDb, PathBuf)> {
     .unwrap();
     std::fs::write(bundle.join("assets/index-1a2b3c4d.js"), "console.log(1)").unwrap();
 
+    // Off by default for the first release; these tests are about it.
+    sc_server::install_analytics_framework()?;
     let apps = Arc::new(
         AppMounts::new(catalog.clone())
             .with_base_domain(Some(BASE_DOMAIN.to_owned()))

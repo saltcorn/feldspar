@@ -8,13 +8,22 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
     let apps = state.apps.clone();
 
-    reg.register_admin("listApplications", typed(state, list_all_applications));
+    reg.handle(
+        sc_api::handler_ids::LIST_APPLICATIONS,
+        typed(state, list_all_applications),
+    );
 
-    reg.register_admin("createApplication", typed(state, create_application));
+    reg.handle(
+        sc_api::handler_ids::CREATE_APPLICATION,
+        typed(state, create_application),
+    );
 
-    reg.register_admin("updateApplication", typed(state, update_application));
+    reg.handle(
+        sc_api::handler_ids::UPDATE_APPLICATION,
+        typed(state, update_application),
+    );
 
-    reg.register_admin("deleteApplication", {
+    reg.handle(sc_api::handler_ids::DELETE_APPLICATION, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -57,14 +66,17 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("buildApplication", typed(state, build_application));
+    reg.handle(
+        sc_api::handler_ids::BUILD_APPLICATION,
+        typed(state, build_application),
+    );
 
     // Deep clean: delete the installed dependencies, then build — which
     // installs them again because they are missing. The removal waits for any
     // build in progress (`sc_app::remove_dependencies`), and a build failure
     // after it is reported as Build reports one; the next build installs again
     // either way, since nothing was put back.
-    reg.register_admin("deepCleanApplication", {
+    reg.handle(sc_api::handler_ids::DEEP_CLEAN_APPLICATION, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -105,7 +117,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // refused here, before anything starts. A build already running for this
     // target answers itself — a second click joins it rather than starting a
     // second Gradle in the same project directory.
-    reg.register_admin("buildApplicationTarget", {
+    reg.handle(sc_api::handler_ids::BUILD_APPLICATION_TARGET, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -189,7 +201,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
 
     // Run an operation a target declares (a keystore generator): the module's
     // files written into the application's store, its settings saved on it.
-    reg.register_admin("runApplicationTargetOperation", {
+    reg.handle(sc_api::handler_ids::RUN_APPLICATION_TARGET_OPERATION, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -237,7 +249,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
 
     // The latest build of a target: what the UI polls while one runs, and asks
     // after a reload to pick up a build that is still going.
-    reg.register_admin("getApplicationTargetBuild", {
+    reg.handle(sc_api::handler_ids::GET_APPLICATION_TARGET_BUILD, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -275,7 +287,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // cannot fail on anything but the store. It is the same call the automatic
     // path makes when a table changes (decision 10), so an admin who wants it
     // now and an admin who changed a column get the same files.
-    reg.register_admin("updateApplicationClient", {
+    reg.handle(sc_api::handler_ids::UPDATE_APPLICATION_CLIENT, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -312,7 +324,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // A GraphQL endpoint answers `200` with its errors in the body, so the
     // provider's response — status and all — is passed through as it stands
     // rather than being re-judged here.
-    reg.register_admin("runApplicationGraphql", {
+    reg.handle(sc_api::handler_ids::RUN_APPLICATION_GRAPHQL, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -368,7 +380,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // Server-query options are resolved here, so the UI receives a concrete list
     // and needs no query evaluator of its own (§1.6). That is what let the
     // `store` setting become a pick-list without waiting for `ui/form-runtime`.
-    reg.register_admin("listFrameworks", {
+    reg.handle(sc_api::handler_ids::LIST_FRAMEWORKS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -412,6 +424,10 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                         "description": say(&info.description, &ctx.locale),
                         "config_spec": spec_json(&spec, &ctx.locale),
                         "has_views": info.name == sc_viewpattern::SALTCORN_UI_FRAMEWORK,
+                        "settings_tabs": sc_app::resolve_settings_tabs(
+                            info.settings_tabs.as_deref(),
+                            info.name == sc_viewpattern::SALTCORN_UI_FRAMEWORK,
+                        ),
                         "file_store_settings": store_settings,
                         "file_settings": file_settings,
                         "targets": targets,
@@ -426,7 +442,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // asking the admin to remember them. This is the *same* list
     // `app_providers_with` switches on, so a name offered here is a name that
     // mounts — which is the whole point of listing them from the server.
-    reg.register_admin("listApiProviders", |ctx| async move {
+    reg.handle(sc_api::handler_ids::LIST_API_PROVIDERS, |ctx| async move {
         let out: Vec<Json> = registered_api_provider_info()
             .into_iter()
             .map(|info| {
@@ -461,7 +477,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // is where Postgres's own message comes from. Deciding it twice would be two
     // answers to "is this query valid", and the one that is wrong is the one
     // nobody is reading until a caller hits it.
-    reg.register_admin("describeCustomQuery", {
+    reg.handle(sc_api::handler_ids::DESCRIBE_CUSTOM_QUERY, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -504,7 +520,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // `/build-agent/*` (`crate::build_agent`) with the token `createBuildHost`
     // answers once; every decision about that token is `sc_app::build_hosts`'s.
 
-    reg.register_admin("listBuildHosts", {
+    reg.handle(sc_api::handler_ids::LIST_BUILD_HOSTS, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -520,7 +536,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createBuildHost", {
+    reg.handle(sc_api::handler_ids::CREATE_BUILD_HOST, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -541,7 +557,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateBuildHost", {
+    reg.handle(sc_api::handler_ids::UPDATE_BUILD_HOST, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -564,7 +580,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteBuildHost", {
+    reg.handle(sc_api::handler_ids::DELETE_BUILD_HOST, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -974,7 +990,11 @@ async fn create_local_file_store(
     name: &str,
     app_name: &str,
 ) -> Result<FileStoreDef> {
-    let mut def = FileStoreDef::new(name, sc_files::LOCAL_BACKEND);
+    // Made for the application's code, so the whole store is the application's
+    // and travels with the installation's structure (APP_SYNC_PROPOSAL §3.5):
+    // this is the one place that intent is known for certain.
+    let mut def = FileStoreDef::new(name, sc_files::LOCAL_BACKEND)
+        .with_sync_contents(sc_files::SyncContents::Include);
     def.description = format!("Created for the application {app_name}");
     run_backend_operation(&mut def, sc_files::OP_SUGGEST_DIR, &sc_types::Attrs::new()).await?;
     check_file_store_saveable(catalog, &def).await?;
@@ -1041,6 +1061,8 @@ pub(crate) async fn build_now(
     mut log: String,
     quick: bool,
 ) -> Result<HandlerResponse> {
+    // Nothing to scaffold or build on a framework this server does not have.
+    crate::apps::refuse_unknown_framework(&app)?;
     // Bring the generated code up to date first — the same call as
     // "Update client", so a project directory that was emptied is
     // scaffolded rather than handed to a bundler with nothing to
@@ -1207,6 +1229,10 @@ fn builds_on_hosts(body: &mut Json, hosts: &[sc_app::BuildHost]) {
 /// Never fatal, in either shape: the row is saved and valid, and a build that
 /// fails is one the admin fixes in the project and re-runs with the Build
 /// button.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: detached on purpose; the work outlives the request that started it and must not run in that request's changeset"
+)]
 async fn serve_new_application(apps: &Arc<AppMounts>, app: &sc_app::Application, body: &mut Json) {
     if sc_app::framework_factory(&app.framework.name).is_some() {
         mount_if_constructed(apps, app, body).await;

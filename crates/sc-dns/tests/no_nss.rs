@@ -13,8 +13,11 @@
 //! which appears in `/proc/self/maps` only when glibc's resolver went looking
 //! for one. They are Linux-only for the same reason: `/proc/self/maps` is where
 //! the evidence is.
+//!
+//! The test calls the C `getaddrinfo` itself, so it may use `unsafe`.
 #![cfg(target_os = "linux")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(unsafe_code)]
 
 use std::ffi::CString;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
@@ -93,18 +96,23 @@ fn localhost_resolves_to_loopback() {
 fn a_named_service_becomes_a_port() {
     let node = CString::new("127.0.0.1").unwrap();
     let service = CString::new("https").unwrap();
+    // SAFETY: `addrinfo` is plain C data, for which all-zero is a valid value.
     let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
     hints.ai_family = libc::AF_INET;
     hints.ai_socktype = libc::SOCK_STREAM;
 
     let mut list: *mut libc::addrinfo = std::ptr::null_mut();
+    // SAFETY: NUL-terminated strings (or null), a valid `hints`, and a live place for the list.
     let code = unsafe { libc::getaddrinfo(node.as_ptr(), service.as_ptr(), &hints, &mut list) };
     assert_eq!(code, 0, "getaddrinfo(127.0.0.1, https) failed with {code}");
 
+    // SAFETY: `getaddrinfo` returned 0, so `list` is the non-null head of its answer.
     let node = unsafe { &*list };
     assert_eq!(node.ai_family, libc::AF_INET);
     let addr = node.ai_addr.cast::<libc::sockaddr_in>();
+    // SAFETY: the family asked for is `AF_INET`, so `ai_addr` is a `sockaddr_in`.
     assert_eq!(u16::from_be(unsafe { (*addr).sin_port }), 443);
+    // SAFETY: `list` came from `getaddrinfo` and is freed once.
     unsafe { libc::freeaddrinfo(list) };
 
     assert!(nss_modules().is_empty());
@@ -119,22 +127,27 @@ fn a_named_service_becomes_a_port() {
 fn a_named_service_survives_ai_canonname() {
     let node = CString::new("localhost").unwrap();
     let service = CString::new("https").unwrap();
+    // SAFETY: `addrinfo` is plain C data, for which all-zero is a valid value.
     let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
     hints.ai_family = libc::AF_INET;
     hints.ai_socktype = libc::SOCK_STREAM;
     hints.ai_flags = libc::AI_CANONNAME;
 
     let mut list: *mut libc::addrinfo = std::ptr::null_mut();
+    // SAFETY: NUL-terminated strings (or null), a valid `hints`, and a live place for the list.
     let code = unsafe { libc::getaddrinfo(node.as_ptr(), service.as_ptr(), &hints, &mut list) };
     assert_eq!(
         code, 0,
         "getaddrinfo(localhost, https, AI_CANONNAME) failed with {code}"
     );
 
+    // SAFETY: `getaddrinfo` returned 0, so `list` is the non-null head of its answer.
     let node = unsafe { &*list };
     let addr = node.ai_addr.cast::<libc::sockaddr_in>();
+    // SAFETY: the family asked for is `AF_INET`, so `ai_addr` is a `sockaddr_in`.
     assert_eq!(u16::from_be(unsafe { (*addr).sin_port }), 443);
     assert!(!node.ai_canonname.is_null(), "AI_CANONNAME set no name");
+    // SAFETY: `list` came from `getaddrinfo` and is freed once.
     unsafe { libc::freeaddrinfo(list) };
 
     assert!(nss_modules().is_empty());
@@ -147,18 +160,22 @@ fn a_named_service_survives_ai_canonname() {
 fn the_failure_codes_are_the_documented_ones() {
     let numeric_only = {
         let node = CString::new("example.com").unwrap();
+        // SAFETY: `addrinfo` is plain C data, for which all-zero is a valid value.
         let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
         hints.ai_flags = libc::AI_NUMERICHOST;
         let mut list: *mut libc::addrinfo = std::ptr::null_mut();
+        // SAFETY: NUL-terminated strings (or null), a valid `hints`, and a live place for the list.
         unsafe { libc::getaddrinfo(node.as_ptr(), std::ptr::null(), &hints, &mut list) }
     };
     assert_eq!(numeric_only, libc::EAI_NONAME);
 
     let bad_family = {
         let node = CString::new("127.0.0.1").unwrap();
+        // SAFETY: `addrinfo` is plain C data, for which all-zero is a valid value.
         let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
         hints.ai_family = libc::AF_UNIX;
         let mut list: *mut libc::addrinfo = std::ptr::null_mut();
+        // SAFETY: NUL-terminated strings (or null), a valid `hints`, and a live place for the list.
         unsafe { libc::getaddrinfo(node.as_ptr(), std::ptr::null(), &hints, &mut list) }
     };
     assert_eq!(bad_family, libc::EAI_FAMILY);

@@ -1,6 +1,6 @@
 # Proposal: Git-linked installations (moving an application between instances)
 
-Status: **approved in outline (2026-10-30)**. The tasks are in [TODO-app-sync.md](../TODO-app-sync.md).
+Status: **approved in outline (2026-10-30)**, amended 2026-11-09 (D6: file store contents; D7: the registry editor). The tasks are in [TODO-app-sync.md](../TODO-app-sync.md).
 
 Decisions taken:
 
@@ -10,7 +10,9 @@ Decisions taken:
 | D2 | The link is a **git remote URL** plus a branch, with its own credentials. It is not a git file store. |
 | D3 | Destructive changes follow §5: opt-in per operation, an automatic safety backup, deferred drops, and a `never` policy. There are no intent files. |
 | D4 | Every instance is a **separate installation**. "Development", "staging" and "production" are only labels. Any number of instances can share a repository, and every instance can do every action its credentials allow. |
-| D5 | **Deploy is blocked while the instance has uncommitted changes.** They must be committed or discarded first. |
+| D5 | **Deploy is blocked while the instance has uncommitted changes.** They must be committed or discarded first. The one exception is a git file store's pinned commit (D6, §3.5). |
+| D6 | The repository holds the installation's **code and configuration, not its content**. A local file store's code and asset directories are in the repo; user content (uploads, `File` field files) never is. A git file store's contents are never copied, because they are already in a git repository: the repo holds its URL, branch and a **pinned commit**. Which directories count is derived from how the structure uses each store, with a per-store `sync_contents` override. A store nothing references is excluded by default (§3.5). |
+| D7 | Source control includes a **registry editor**, like Saltcorn 1's: pick a kind, then an entity, and edit its JSON in the browser. It edits **every** configuration value, including the instance-bound ones that never sync, and it works without a sync link. A save is a one-entity deploy against live, through the same planner and executor, so it is classified, validated and backed up like any deploy. The result is an ordinary local change (§7.6). |
 
 ## 1. What we learned from saltcorn-project-sync
 
@@ -108,7 +110,8 @@ newline, so that git diffs and merges are line-based and local:
   users.json                   the users table's admin-added fields (never rows)
   tables/<table>.json          { id, table settings, fields: [ ... in column order ], constraints }
   db-connections/<name>.json
-  file-stores/<name>.json      definition only, never contents
+  file-stores/<name>.json      definition; for a git store also the pinned commit (3.5)
+  file-stores/<name>/files/... a local store's synced directories (3.5), byte for byte
   code-libraries/<name>.json
   triggers/<name>.json         workflow steps inline
   streams/<name>.json
@@ -171,13 +174,88 @@ blocks: for example, tables on a database connection that has no password yet.
 
 ### 3.4 What is never in the repo
 
-- Rows, users, files, sessions, tokens, runs, the change log, fits and draws, and workflow version
+- Rows, users, sessions, tokens, runs, the change log, fits and draws, and workflow version
   history.
+- File store content: anything §3.5 does not include, and every git store's files.
 - `feldspar.toml`, SSL, build hosts, and the sync link itself.
+
+The registry editor (§7.6) shows and edits the instance-bound items in this list, except
+`feldspar.toml` and the sync link; they are never written to git.
 - Instance-bound settings sections: `ssl`, `email`, `development`, `authentication`, and the
   internal keys such as backup schedules and onboarding. Each settings section gets a `portable`
   flag in `sc-config`. In phase 1, only `localisation` and `maps` are portable.
-- Instance-bound fields of entities: an application's custom domains, and an LLM provider's key.
+- Instance-bound fields of entities: an application's custom domains, an LLM provider's key, a
+  local store's `path`, and a git store's `key_path`, `public_key`, `directory` and `clone_path`
+  attribute.
+
+### 3.5 File stores (D6)
+
+The principle: **the repo holds code and configuration, not content, and nothing that already
+lives in another git repository.** Every store's definition is in the repo (§3.1). What else goes
+in depends on the backend.
+
+**Git stores.** Their files are never copied into the repo. The definition carries:
+
+| Field | In the repo | On deploy |
+|---|---|---|
+| `url` | yes | A store that already exists keeps **this instance's** URL, as `merge_secrets` keeps a secret, so one instance can use SSH and another HTTPS. |
+| `public_url` | yes, optional | A new setting of the git backend: an anonymous HTTPS URL. A **new** store is created with `public_url`, or, if that is empty, with an HTTPS URL derived from `url` for the well-known hosts (`git@github.com:o/r.git` → `https://github.com/o/r.git`; likewise GitLab, Bitbucket, Codeberg), else with `url`. The admin can later switch to SSH with a deploy key, and the instance then keeps its own URL. This is what lets a public repository distribute an open-source application. |
+| `branch` | yes | Applied as any setting. |
+| `commit` | yes: the **pinned commit**, read from the store's checked-out `HEAD` at export, not a stored setting | The store's branch is reset to the pinned commit (§6). |
+| key, directory, clone path | never (§3.4) | |
+
+The commit is pinned because structure and code depend on each other: a deploy that adds a field
+must ship with the code that uses it, so B runs the code A had when it committed, not whatever the
+branch tip is at deploy time.
+
+- **Commit** refuses to pin a commit that is not on the store's remote (B could not fetch it), with
+  a sentence telling the admin to push the store first. Uncommitted work in the store's working
+  tree is not part of the pin and is shown as a warning.
+- **A moved pin is a weak change.** When a builder pushes to the code repository, the live `HEAD`
+  moves, and Status shows it ("code store `web`: 3 commits ahead of the base"). It is committed like
+  any other change, but it **does not block Deploy** (the exception in D5), and a conflict on the
+  pin alone resolves to the tip. Every other field of a git store follows the normal rules.
+- **Deploy blocks** a pin change on a store whose working tree has uncommitted changes or commits
+  that are not on its remote, because resetting it would lose them. The blocker names the store.
+- A new git store that cannot be cloned (no credentials, no public URL) is listed as "needs
+  credentials" in the receipt. As for a missing secret (§3.3), the plan blocks if an application
+  in it is built from that store.
+
+**Local stores.** The contents of a store's **synced directories** go in the repo under
+`file-stores/<name>/files/`, one repo file per store file. Each store has an attribute
+`sync_contents`: `auto` (the default, and the meaning of a missing attribute, so existing
+installations need no migration), `include` or `exclude`.
+
+The structure says what each directory of a store is for:
+
+| Reference | Role |
+|---|---|
+| an application's framework source (store + `source_dir`) | code |
+| an application's `static_dirs` entry (store + `path`) | assets |
+| an application's upload slot (store + `folder`) | content |
+| a `File` field (store + optional `folder`; no folder claims the whole store) | content |
+
+- **`auto`**: the synced directories are the store's code and asset directories. Content folders
+  inside them are left out. If a content claim covers a code or asset directory (a `File` field
+  with no folder on the same store, say), that directory is left out too and Status warns, asking
+  for an explicit setting. A store with no code or asset directory syncs nothing, and Status lists
+  it as "not synced (unclassified)": excluding by default keeps user data out of git when the rules
+  cannot tell, and a missing logo is visible and easy to fix.
+- **`include`**: the whole store, less any folder an upload slot or `File` field names. A `File`
+  field with no folder on an included store is a Status warning, since its uploads would be
+  committed.
+- **`exclude`**: nothing.
+- Always left out: `node_modules`, every application's build `output_dir`, and whatever the
+  project's `.gitignore` ignores (the scaffold writes one). A file over 10 MB is a Status warning,
+  so a video is not committed by accident.
+- `include` on a git store is refused when the definition is saved.
+
+The defaults are set where intent is known: `create_application` sets `include` on the local store
+it creates for an application's code, and the admin UI offers the setting on every local store,
+showing what `auto` resolves to.
+
+A local store's `path` is instance-bound. A new local store is created at the suggested directory
+(`<data dir>/local-stores/<name>`).
 
 ## 4. Status: the three-way diff
 
@@ -200,18 +278,29 @@ For each entity, compare base B, the branch tip R and live L:
 | — (not in B) | present, equal to R | in sync | (hidden), and the base takes it |
 | — (not in B) | present, differs from R | **conflict** | "Conflict" |
 
-Each row can be expanded to a field-level JSON diff. The unit is the entity: textual merges between
+**Files.** Each file in a local store's synced directories is an entity of its own, keyed by store
+and path, and compared by content hash with the same table. A store file has no id, so a moved file
+is a delete and a create. The base records each file's git blob hash, and the mirror keeps those
+objects reachable under a local ref (`refs/feldspar/base`), so Discard can restore them after a
+force-push. A git store's pinned commit follows §3.5 instead of this table's blocking rules.
+
+Each row can be expanded to a field-level JSON diff, or a text diff for a text file. The unit is the entity: textual merges between
 branches belong to git, where one file per entity keeps conflicts small.
 
 **Under D5:**
 
-- **Deploy** requires that no entity is in a local class or a conflict.
+- **Deploy** requires that no entity is in a local class or a conflict. A git store's moved pin is
+  the exception (§3.5).
 - **Commit** of a conflicting entity asks, per entity, *keep mine* or *discard mine*:
   - *Keep mine* commits the live version over the incoming one.
   - *Discard mine* returns live to the base, and the entity becomes incoming.
+  - *Merge in editor* opens the registry editor (§7.6) with mine, theirs and the base side by
+    side. Saving puts the merged version into live, and Commit then commits it over the incoming
+    one.
 
-**Linking.** When an installation is linked, the base is set to the tree at the branch tip. One
-rule covers every starting point:
+**Linking.** When an installation is linked, the base is set to the tree at the branch tip, less
+each entity live does not have (which against the full tip would be a "local delete", and a
+Commit would delete it from the repository). One rule covers every starting point:
 
 | Starting point | What Status shows |
 |---|---|
@@ -227,7 +316,7 @@ to be lost is backed up automatically.**
 | Class | Examples | Default in the plan |
 |---|---|---|
 | **Safe** | create anything. Update views, pages, triggers, applications or settings. Add a field. Relax a constraint. Rename via id. Install or upgrade a module. | ticked |
-| **Metadata delete** | delete a view, page, library item, trigger, stream, agent, translation or application | ticked, listed in a red sub-list. Recoverable from git history |
+| **Metadata delete** | delete a view, page, library item, trigger, stream, agent, translation or application. Delete a file in a local store's synced directories | ticked, listed in a red sub-list. Recoverable from git history |
 | **Can fail** | make a field required, add a unique constraint, change an FK target | ticked. Validated by a `schema_edit` dry run against live data. If it would fail, it **blocks** with the reason, e.g. "312 rows have NULL in `status`" |
 | **Data-destructive** | drop a table or field, delete a role that users hold, delete a file store or database connection definition, remove a module that provides tables or types | **unticked**. The operator must tick each one and type a confirmation |
 | **Unsupported** | change a column's SQL type (which `FieldSettings` cannot do), change a primary key | **blocked**. The message suggests add field, then migrate (§9), then drop |
@@ -254,10 +343,10 @@ Further rules:
 
 ## 6. Deploy
 
-1. Refuse if there is any local change or conflict (D5).
+1. Refuse if there is any local change or conflict (D5), other than a git store's moved pin (§3.5).
 2. Fetch and fast-forward. Read the desired tree from the **tip commit object**.
 3. Check the format version and plan-time blockers, such as missing secrets that the plan depends
-   on.
+   on, or a git store with unpushed or uncommitted work whose pin changes (§3.5).
 4. Plan: the base → tip delta, as an ordered list of classified operations, with a digest.
 5. **Review screen**: grouped by class with counts, expandable diffs, tick boxes for destructive
    operations, and blockers that disable Deploy.
@@ -268,7 +357,8 @@ Further rules:
 8. Apply in dependency order:
    1. modules
    2. roles
-   3. database connections, file stores and code libraries
+   3. database connections, file stores and code libraries. Then each git store is fetched and its
+      branch reset to the pinned commit, and synced files in local stores are written
    4. tables and fields, via `schema_edit::apply` batches (`RenameTable` alone in its batch)
    5. LLM providers and MCP servers
    6. triggers, streams and agents
@@ -294,7 +384,8 @@ from the safety backup, and the receipt says so.
 
 - `_fd_sync`: a single row with the remote URL, branch, subdirectory, credential kind and
   reference, policy, base tree and base commit.
-- `_fd_deployments`: the ledger. Discards and commits are recorded too, each with its kind.
+- `_fd_deployments`: the ledger. Discards, commits and registry saves (§7.6) are recorded too,
+  each with its kind. A registry save also records the entity's before and after JSON.
 
 Both are additive and created by the bootstrap, so no `sc-migrate` migration is needed.
 
@@ -302,17 +393,32 @@ Both are additive and created by the bootstrap, so no `sc-migrate` migration is 
 
 Typed, admin-only endpoints:
 
-- `getSyncLink`, `setSyncLink`, `generateSyncKey`, `testSyncLink`
+- `getSyncLink`, `setSyncLink`, `deleteSyncLink`, `generateSyncKey`, `testSyncLink`
 - `getSyncStatus`, `getSyncEntityDiff`
-- `syncPull`, `syncCommit`, `syncDiscard`, `listSyncBranches`, `switchSyncBranch`
+- `syncPull`, `syncCommit`, `planSyncDiscard`, `syncDiscard`, `listSyncBranches`,
+  `switchSyncBranch`
 - `planSyncDeploy`, `syncDeploy`, `listDeployments`
+- `planSyncZipDeploy`, `syncZipDeploy`: a structure zip (§7.4), uploaded first to the raw route
+  `/source-control/upload` (its body is the file, as a backup upload's is)
+- `listRegistry`, `getRegistryEntity`, `planRegistrySave`, `registrySave` (§7.6)
+- `getFileStoreSync`, `setFileStoreSync`: a store's `sync_contents` and what it resolves to (§3.5)
+
+They are mounted under `/api/source-control/` (the file store pair under `/api/file-stores/{id}/sync`),
+apart from an application's offline-sync endpoints.
 
 All of them are **excluded from the MCP/agent projection**, like backup and clearAll.
 
 ### 7.3 CLI
 
-`feldspar sync status | pull | commit -m MSG | discard KIND:NAME… | deploy [--plan] [--yes]
-[--allow-destructive] | branch [NAME] [--create]`
+`feldspar sync link URL [--branch B] [--subdirectory DIR] | unlink | status | pull |
+commit -m MSG [KIND:NAME…] [--keep-mine KIND:NAME]… | discard KIND:NAME… [--plan] [--yes]
+[--allow-destructive] | deploy [--from FILE.zip] [--plan] [--yes] [--allow-destructive]
+[--full-backup] | branch [NAME] [--create]`
+
+`feldspar backup --structure-only FILE|-` writes the structure zip (§7.4).
+
+`feldspar registry list [KIND] | get KIND/NAME | put KIND/NAME [--plan] [--yes]
+[--allow-destructive] | delete KIND/NAME …`. `put` reads the JSON from standard input.
 
 `--yes` applies only a plan with no blockers. Data-destructive operations are included only with
 `--allow-destructive`.
@@ -326,16 +432,81 @@ With a link, the zip replaces the branch tip and the base rules apply. Without a
 base, so the zip is applied **additively**: it creates and updates, but never deletes. That is
 restore's existing rule.
 
+As built (S6.1): the zip holds the tree's files at its root, with no timestamps, so the same tree
+is the same zip. A zip with no `feldspar-structure.json` is refused, and one that is a backup is
+told to go to restore. The additive target is live with each of the zip's entities put over the
+one it matches, keeping a table's fields and constraints that the zip's version lacks. A zip
+deployed with a link stores the next base with no commit (`base_commit` is null).
+
 ### 7.5 UI
 
-A top-level **Source control** screen with these parts:
+A top-level **Source control** screen. It is in the sidebar whether or not the installation is
+linked; without a link it shows Registry and Link setup only. Its parts:
 
+- **Registry**: the editor of §7.6.
 - **Link setup**: URL, branch, subdirectory, credentials (generate a key or paste a token), policy,
   and a test-connection button.
 - **Status**: grouped as in §4, with per-entity diffs and tick boxes for Commit and Discard.
 - **Controls**: a branch selector, Pull, Commit (with a message box) and Deploy, which opens the
   review.
 - **History**: the ledger.
+
+### 7.6 The registry editor (D7)
+
+Saltcorn 1's registry editor let an experienced operator edit the JSON of most metadata entities
+(configuration, views, pages, tables, triggers) in the browser. The sync tree already is that
+JSON, so the editor is built from the same parts.
+
+**What it covers: the instance tree.** The export (S1) has two modes:
+
+- **Portable**: the §3 tree, for git and zips.
+- **Instance**: the portable tree plus everything instance-bound in §3.4 except `feldspar.toml`
+  and the sync link: every settings section (`ssl`, `email`, `authentication`, `development`,
+  the internal keys), build hosts, and the instance-bound fields of entities (custom domains, store
+  paths, git store keys and directories). These values are marked **"this instance only"** in the
+  editor and are never written to git.
+
+Secrets are shown as `SECRET_SENTINEL` in both modes. Leaving the sentinel keeps the stored value
+(`merge_secrets`); typing a new value replaces it. The editor never shows a stored secret.
+
+**Picking.** A tree by kind, then name, following §3.1, with a filter box. Instance-only kinds and
+sections are listed with the same mark.
+
+**Editing.** The entity's JSON opens in the admin UI's Monaco editor (`CodeEditor.tsx`), validated
+as you type wherever the admin API's types provide a schema. With a link, side tabs show the diff
+against the base and against the branch tip.
+
+**Saving is a one-entity deploy against live:**
+
+1. The target is the instance tree with this entity replaced (or added, or removed).
+2. The planner (§5, §6) plans it, and the editor shows the normal review: classified operations,
+   destructive ticks, typed confirmation and blockers. Removing a field from a table's JSON is a
+   data-destructive drop, unticked; changing a column's SQL type is blocked with the
+   add-migrate-drop suggestion. Instance-bound values are applied, which a deploy never does.
+3. Confirm carries the plan digest. The server takes the sync lock and re-plans, so an entity that
+   changed since it was opened is **stale** and nothing is applied.
+4. The executor applies it, writing the safety backup first if the plan drops data.
+5. The entity is re-exported. If what is stored differs from what was typed (a normalised value,
+   a stripped field), the editor shows the stored version and says what changed.
+6. The save is recorded in the ledger with its before and after JSON. "Restore this version" in
+   History is another registry save.
+
+**New** creates an entity from JSON (an id is generated when none is given). **Delete** is
+classified as in §5.
+
+**After a save** the change is in live, exactly as if it had been saved from the entity's own
+admin screen. With a link it is an ordinary local change: it shows in Status as "Local", goes into
+the next Commit (or is discarded) like any other, and blocks Deploy until then (D5). Instance-only
+values are not in the portable tree, so editing them never creates a local change, wherever they
+are edited. They are in backups, which hold every settings section.
+
+**Merging.** For an entity in conflict, *Merge in editor* (§4) opens the editor with mine, theirs
+and the base. The saved result is the live version, and Commit commits it.
+
+**Who.** Admin only, and excluded from the MCP projection (§7.2). Agents have their own tools.
+
+The registry needs the export, the planner and the executor (S1–S3) but nothing from git, so it is
+built as its own milestone before the link (TODO, milestone R).
 
 ## 8. Relation to F5 (partial restore and application export)
 

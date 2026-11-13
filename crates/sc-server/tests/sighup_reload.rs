@@ -9,6 +9,10 @@
 //! It is a **separate binary** on purpose: a signal is process-wide, so raising
 //! one inside a test binary shared with other tests would fire their reloads too.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

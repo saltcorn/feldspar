@@ -176,6 +176,10 @@ impl Bucket {
         self.tokens + elapsed * self.rate.refill() >= f64::from(self.rate.max)
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the wait is finite, at least one second, and saturates at u64::MAX seconds"
+    )]
     fn limited(&self) -> Limited {
         let wait = (1.0 - self.tokens).max(0.0) / self.rate.refill();
         // Less a hair, so floating-point dust does not round 1.0000001 s up

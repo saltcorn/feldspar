@@ -24,6 +24,10 @@
 //!   the page used it (an A/B test); the A/B queries the runtime makes run on
 //!   the real host, and the Analytics workspace reports on the two tables.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 
 use sc_api::auth::CSRF_COOKIE;
 use sc_catalog::Authority;
@@ -1058,7 +1062,7 @@ async fn the_ab_workspace_reports_on_the_two_tables_for_its_site() -> sc_error::
     let spec: sc_analytics::plot::TableSpec =
         serde_json::from_value(panel["content"]["spec"].clone()).unwrap();
     let RenderedTable::Table(table) =
-        render_table(&server.catalog, &sc_dataset::Caller::admin(), &spec).await?
+        render_table(&server.catalog, &sc_dataset::Caller::system("test"), &spec).await?
     else {
         panic!("the rates table did not render");
     };

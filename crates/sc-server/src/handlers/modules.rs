@@ -15,7 +15,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // usable on a running server, which is the whole point of installing one
     // from a form rather than from a deploy.
 
-    reg.register_admin("listModules", {
+    reg.handle(sc_api::handler_ids::LIST_MODULES, {
         let apps = apps.clone();
         move |ctx| {
             let apps = apps.clone();
@@ -28,7 +28,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("installModule", {
+    reg.handle(sc_api::handler_ids::INSTALL_MODULE, {
         let apps = apps.clone();
         move |ctx| {
             let apps = apps.clone();
@@ -40,7 +40,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateModule", {
+    reg.handle(sc_api::handler_ids::UPDATE_MODULE, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -104,7 +104,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteModule", {
+    reg.handle(sc_api::handler_ids::DELETE_MODULE, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -122,7 +122,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("reloadModules", {
+    reg.handle(sc_api::handler_ids::RELOAD_MODULES, {
         let apps = apps.clone();
         move |_ctx| {
             let apps = apps.clone();

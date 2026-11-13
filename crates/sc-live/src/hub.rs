@@ -585,11 +585,7 @@ impl LiveHub {
             message: "your session ended, so this connection is closed; sign in again".to_owned(),
         };
         for entry in lock(&self.connections).values() {
-            let covered = match ended {
-                SessionEnded::Token(token) => entry.info.session.as_deref() == Some(*token),
-                SessionEnded::User(user) => entry.info.user == Some(*user),
-                SessionEnded::All => entry.info.session.is_some(),
-            };
+            let covered = ended.covers(entry.info.session.as_deref(), entry.info.user);
             if covered {
                 entry.close.send_replace(Some(reason.clone()));
             }
@@ -1000,6 +996,18 @@ impl Connection {
         self.caller.set_guest_session(session);
     }
 
+    /// Set the values the connection presents to ownership formulas
+    /// (TODO-type-hardening H7.6): what every verdict for it reads as
+    /// `_request`, here and in a `table_changes` fan-out.
+    pub fn set_request(&self, values: sc_expr::RequestValues) {
+        self.caller.set_request(values);
+    }
+
+    /// The values the connection presents.
+    pub fn request(&self) -> sc_expr::RequestValues {
+        self.caller.request()
+    }
+
     /// What resolves when the hub closes this connection — a session end.
     /// Owned separately from the connection, so a socket's loop can wait on it
     /// beside everything else the connection is doing.
@@ -1291,6 +1299,10 @@ struct Fanout {
 }
 
 impl Fanout {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "tokio::spawn and unbounded: a stream's fan-out router, for as long as the stream runs; commands are subscriptions attaching and leaving, sent by the hub under its lock"
+    )]
     fn start(running: Arc<RunningStream>, counters: Arc<ChangeCounters>) -> Arc<Fanout> {
         let (commands, inbox) = mpsc::unbounded_channel();
         tokio::spawn(route(Arc::clone(&running), inbox, counters));

@@ -317,6 +317,10 @@ pub fn linear_curve(sums: &LinearSums, se: bool, level: f64) -> Option<Vec<Curve
 /// distance to the `q`-th nearest point where `q = ⌊n·span⌋` (span below 1),
 /// or by the largest distance times √span (span of 1 or more) — Cleveland's
 /// loess, as R's `loess(family = "gaussian")` computes it.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+)]
 fn loess_weights(xs: &[f64], x0: f64, span: f64) -> Vec<f64> {
     let n = xs.len();
     let mut d: Vec<f64> = xs.iter().map(|x| (x - x0).abs()).collect();
@@ -535,6 +539,10 @@ pub fn loess_curve(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 mod tests {
     use super::*;
     use serde_json::Value;

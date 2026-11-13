@@ -19,6 +19,10 @@
 //!   tells each of those subscribers `resync`;
 //! - `revoked` ends a subscription; closing the last one closes the socket.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use std::process::Command;
 
 use sc_api::{StreamExport, TypeSchema};

@@ -198,7 +198,7 @@ impl Action for Firer {
         let dispatcher = ctx
             .triggers()
             .ok_or_else(|| Error::config("no dispatcher in this context"))?;
-        let caller = Principal::new(Role::ADMIN, None).chained(ctx.chain.clone());
+        let caller = Principal::recorded(Role::ADMIN, None).chained(ctx.chain.clone());
         dispatcher
             .run_trigger(
                 ctx.catalog,

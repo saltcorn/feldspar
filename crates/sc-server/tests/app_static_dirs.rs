@@ -629,10 +629,7 @@ async fn list_assets_returns_the_urls_the_router_serves() -> sc_error::Result<()
     assert!(!without.contains(&tool), "{without:?}");
 
     let call = async |args: serde_json::Value, role: Role| -> sc_error::Result<serde_json::Value> {
-        let caller = RunCaller {
-            role,
-            ..RunCaller::system()
-        };
+        let caller = RunCaller::system().capped_at(role);
         let mut state = serde_json::Value::Null;
         let mut ctx = TraitContext {
             catalog: &catalog,
@@ -733,10 +730,7 @@ async fn list_assets_returns_the_urls_the_router_serves() -> sc_error::Result<()
     // The cap says how many there were and how to narrow, as `find_files` does.
     let mut capped = config.clone();
     capped.insert("max_results".to_owned(), json!(1));
-    let caller = RunCaller {
-        role: Role::ADMIN,
-        ..RunCaller::system()
-    };
+    let caller = RunCaller::system().capped_at(Role::ADMIN);
     let mut state = serde_json::Value::Null;
     let mut ctx = TraitContext {
         catalog: &catalog,

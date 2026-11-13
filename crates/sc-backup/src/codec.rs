@@ -165,6 +165,72 @@ pub fn field_kind_json(kind: &DataFieldKind) -> Json {
     }
 }
 
+/// One constraint as [`constraint_json`] writes it, keeping the name it had — a
+/// restored or deployed constraint reports itself by the same name a violation
+/// would have named before. Shared by a restore and a structure deploy.
+pub fn constraint_from_body(obj: &Map<String, Json>) -> Result<TableConstraint> {
+    let text = |key: &str| {
+        obj.get(key)
+            .and_then(Json::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    let fields: Vec<String> = obj
+        .get("fields")
+        .and_then(Json::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Json::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let type_name = obj
+        .get("type")
+        .and_then(Json::as_str)
+        .ok_or_else(|| Error::invalid("a constraint entry needs a `type`"))?;
+    let kind = match type_name {
+        "unique" => ConstraintKind::Unique { fields },
+        "index" if fields.is_empty() => {
+            return Err(Error::invalid(
+                "an index over an expression is not one this restore can recreate; \
+                 add it by hand",
+            ));
+        }
+        "index" => ConstraintKind::Index {
+            fields,
+            expression: None,
+            method: text("method").unwrap_or_else(|| "btree".to_owned()),
+        },
+        "full_text_search" => ConstraintKind::FullTextSearch {
+            language: text("language").unwrap_or_else(|| "english".to_owned()),
+        },
+        "vector_index" => ConstraintKind::VectorIndex {
+            field: fields
+                .into_iter()
+                .next()
+                .ok_or_else(|| Error::invalid("a vector index entry needs its `fields`"))?,
+        },
+        "formula" => ConstraintKind::Formula {
+            formula: text("formula")
+                .ok_or_else(|| Error::invalid("a row constraint entry needs a `formula`"))?,
+        },
+        other => {
+            return Err(Error::invalid(format!(
+                "`{other}` is not a constraint type"
+            )));
+        }
+    };
+    let name = obj
+        .get("name")
+        .and_then(Json::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let mut constraint = TableConstraint::new(name, kind);
+    constraint.error_message = text("error_message");
+    Ok(constraint)
+}
+
 /// Parse the optional `kind` object of a create/update request into a
 /// [`DataFieldKind`], defaulting to `Plain` when absent or null.
 pub fn parse_field_kind(obj: &Map<String, Json>) -> Result<DataFieldKind> {
@@ -299,6 +365,10 @@ pub fn application_json(app: &Application) -> Json {
         "installs": sc_app::framework_factory(&app.framework.name).is_none()
             && app_source_from_config(&app.framework).is_ok_and(|s| s.build.install.is_some()),
         "has_views": app.framework.name == sc_viewpattern::SALTCORN_UI_FRAMEWORK,
+        "settings_tabs": sc_app::framework_settings_tabs(
+            &app.framework.name,
+            app.framework.name == sc_viewpattern::SALTCORN_UI_FRAMEWORK,
+        ),
         "targets": sc_app::framework_build_targets(&app.framework.name)
             .into_iter()
             .map(|t| {
@@ -1405,6 +1475,15 @@ pub fn trigger_json_with(
         // The scheduler's record, RFC 3339 — what the list shows so an admin can
         // see that a nightly job is actually running.
         "last_run_at": trigger.last_run_at.map(|t| t.to_rfc3339()),
+        // Whether it asks to run as system, and a person's approval when it has
+        // one (TODO-type-hardening H8.10). Whether that approval is for the
+        // configuration it has now is `system_state`, which the list adds.
+        "runs_as_system": trigger.runs_as_system(),
+        "system_approval": trigger.system_approval.as_ref().map(|a| json!({
+            "hash": a.hash,
+            "by": a.by,
+            "at": a.at.to_rfc3339(),
+        })),
         // The workflow half, null on an action body and on a workflow whose
         // versions the caller did not read.
         "workflow_version": Json::Null,
@@ -1490,9 +1569,35 @@ pub fn trigger_from_body(id: TriggerId, body: &Json) -> Result<Trigger> {
             trigger.attributes.insert(key.to_owned(), json!(n));
         }
     }
+    // Asking to run as system is a setting anybody may make; it elevates
+    // nothing until a person approves (TODO-type-hardening H8.10).
+    if obj.get("runs_as_system").and_then(Json::as_bool) == Some(true) {
+        trigger.set_runs_as_system(true);
+    }
     // `last_run_at` is deliberately not read: it is the scheduler's record of
-    // what happened, and an edit must not be able to rewrite history.
+    // what happened, and an edit must not be able to rewrite history. Nor is
+    // `system_approval`: only a person's approval writes one
+    // (`system_approval_from_json` is for a person's restore).
     Ok(trigger)
+}
+
+/// The approval a backup's trigger carries (`trigger_json`'s
+/// `system_approval`), for a restore a person makes (TODO-type-hardening
+/// H8.10); `None` when it has none or it does not read.
+pub fn system_approval_from_json(body: &Json) -> Option<sc_action::SystemApproval> {
+    let approval = body.get("system_approval")?.as_object()?;
+    Some(sc_action::SystemApproval {
+        hash: approval.get("hash")?.as_str()?.to_owned(),
+        by: approval
+            .get("by")
+            .and_then(Json::as_str)
+            .and_then(|by| by.parse().ok()),
+        at: approval
+            .get("at")
+            .and_then(Json::as_str)
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .map_or_else(chrono::Utc::now, |at| at.with_timezone(&chrono::Utc)),
+    })
 }
 
 /// A [`Stream`](sc_stream::Stream) from a `saveStream` body.
@@ -1660,6 +1765,7 @@ pub fn form_field_json(field: &FormField) -> Json {
         "create_only": field.create_only,
         "code_language": field.code_language,
         "section": field.section,
+        "tab": field.tab,
         "sublabel": field.sublabel,
         "help_topic": field.help_topic,
         "pattern": field.pattern,

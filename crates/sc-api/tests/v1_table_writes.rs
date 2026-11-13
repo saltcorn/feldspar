@@ -98,7 +98,11 @@ async fn v1_with(cat: &Catalog, triggers: Option<&TriggerRunHost<'_>>, body: &st
     // With the formula engine behind it, because §7.3's write rule decides on
     // the row — the proposed one for an insert, and both the old and the new for
     // an update — and deciding on a row is what the evaluator is for.
+    // Caused by an administrator, who may name any user (`forUser`, a
+    // write's user argument): naming somebody is narrowing only from a cause
+    // with at least their authority (TODO-type-hardening H8.2).
     let host = TableHost::new(cat)
+        .caused_by(Role::ADMIN, None)
         .with_evaluator(Some(Arc::new(DenoEvaluator::new()) as Arc<dyn JsEvaluator>));
     let snapshot = schema_snapshot(cat)?;
     let runtime = CodeRuntime::with_workers(1);

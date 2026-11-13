@@ -8962,8 +8962,9 @@ dependencies = [
 
 [[package]]
 name = "sc-access"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
+ "chrono",
  "sc-auth",
  "sc-catalog",
  "sc-db",
@@ -8983,7 +8984,7 @@ dependencies = [
 
 [[package]]
 name = "sc-action"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "chrono",
@@ -8999,13 +9000,14 @@ dependencies = [
  "sc-types",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "uuid",
 ]
 
 [[package]]
 name = "sc-action-builtins"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -9035,7 +9037,7 @@ dependencies = [
 
 [[package]]
 name = "sc-agent"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "chrono",
@@ -9064,7 +9066,7 @@ dependencies = [
 
 [[package]]
 name = "sc-agent-builtins"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -9097,6 +9099,7 @@ dependencies = [
  "sc-log",
  "sc-mcp",
  "sc-net",
+ "sc-proc",
  "sc-query",
  "sc-repomap",
  "sc-test-harness",
@@ -9111,7 +9114,7 @@ dependencies = [
 
 [[package]]
 name = "sc-analytics"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "chrono",
  "sc-catalog",
@@ -9134,7 +9137,7 @@ dependencies = [
 
 [[package]]
 name = "sc-api"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-graphql",
  "async-trait",
@@ -9179,7 +9182,7 @@ dependencies = [
 
 [[package]]
 name = "sc-app"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "bytes",
@@ -9197,10 +9200,12 @@ dependencies = [
  "sc-expr",
  "sc-files",
  "sc-i18n",
+ "sc-proc",
  "sc-query",
  "sc-stream",
  "sc-test-harness",
  "sc-types",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "tokio",
@@ -9209,7 +9214,7 @@ dependencies = [
 
 [[package]]
 name = "sc-auth"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "argon2 0.5.3",
  "base64 0.22.1",
@@ -9220,6 +9225,7 @@ dependencies = [
  "lru 0.12.5",
  "qrcode",
  "rust_decimal",
+ "sc-auth",
  "sc-catalog",
  "sc-db",
  "sc-db-postgres",
@@ -9239,7 +9245,7 @@ dependencies = [
 
 [[package]]
 name = "sc-backup"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -9273,6 +9279,7 @@ dependencies = [
  "sc-mcp",
  "sc-model",
  "sc-module",
+ "sc-net",
  "sc-query",
  "sc-stream",
  "sc-test-harness",
@@ -9289,7 +9296,7 @@ dependencies = [
 
 [[package]]
 name = "sc-catalog"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "aes-gcm 0.10.3",
  "async-trait",
@@ -9303,6 +9310,7 @@ dependencies = [
  "sc-expr",
  "sc-files",
  "sc-log",
+ "sc-proc",
  "sc-query",
  "sc-test-harness",
  "sc-types",
@@ -9313,7 +9321,7 @@ dependencies = [
 
 [[package]]
 name = "sc-check"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "chrono",
@@ -9346,7 +9354,7 @@ dependencies = [
 
 [[package]]
 name = "sc-cli"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "axum",
@@ -9381,13 +9389,17 @@ dependencies = [
  "sc-mcp",
  "sc-migrate",
  "sc-module",
+ "sc-net",
+ "sc-proc",
  "sc-python",
  "sc-query",
  "sc-server",
  "sc-stan",
+ "sc-sync",
  "sc-test-harness",
  "sc-types",
  "sc-viewpattern",
+ "sc-workflow",
  "serde",
  "serde_json",
  "tokio",
@@ -9399,7 +9411,7 @@ dependencies = [
 
 [[package]]
 name = "sc-config"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "base64 0.22.1",
  "sc-catalog",
@@ -9418,7 +9430,7 @@ dependencies = [
 
 [[package]]
 name = "sc-config-file"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "libc",
  "sc-error",
@@ -9428,7 +9440,7 @@ dependencies = [
 
 [[package]]
 name = "sc-construct"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "chrono",
  "sc-catalog",
@@ -9446,7 +9458,7 @@ dependencies = [
 
 [[package]]
 name = "sc-dataset"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "chrono",
  "sc-auth",
@@ -9468,7 +9480,7 @@ dependencies = [
 
 [[package]]
 name = "sc-db"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "futures",
@@ -9482,12 +9494,13 @@ dependencies = [
 
 [[package]]
 name = "sc-db-postgres"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "bytes",
  "chrono",
  "deadpool-postgres",
+ "half",
  "rust_decimal",
  "sc-db",
  "sc-error",
@@ -9502,7 +9515,7 @@ dependencies = [
 
 [[package]]
 name = "sc-db-sqlite"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "chrono",
@@ -9519,7 +9532,7 @@ dependencies = [
 
 [[package]]
 name = "sc-dns"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "hickory-resolver",
  "libc",
@@ -9529,7 +9542,7 @@ dependencies = [
 
 [[package]]
 name = "sc-docs"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "minijinja",
  "pulldown-cmark",
@@ -9539,7 +9552,7 @@ dependencies = [
 
 [[package]]
 name = "sc-email"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "lettre",
@@ -9558,7 +9571,7 @@ dependencies = [
 
 [[package]]
 name = "sc-error"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "serde",
  "serde_json",
@@ -9566,11 +9579,12 @@ dependencies = [
 
 [[package]]
 name = "sc-expr"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "argon2 0.5.3",
  "async-trait",
  "base64 0.22.1",
+ "chrono",
  "deno_core",
  "getrandom 0.3.4",
  "hmac 0.12.1",
@@ -9582,18 +9596,21 @@ dependencies = [
  "sc-types",
  "serde_json",
  "sha2 0.10.9",
+ "stacker",
  "swc_common 24.0.0",
  "swc_ecma_ast 26.0.0",
  "swc_ecma_parser 42.0.0",
  "tokio",
  "tokio-postgres",
+ "uuid",
 ]
 
 [[package]]
 name = "sc-files"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "fsquirrel",
@@ -9601,6 +9618,7 @@ dependencies = [
  "mime_guess",
  "regex-lite",
  "sc-error",
+ "sc-proc",
  "sc-types",
  "serde",
  "serde_json",
@@ -9609,8 +9627,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-http"
+version = "0.1.1-dev"
+dependencies = [
+ "http",
+]
+
+[[package]]
 name = "sc-i18n"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "icu_locale_core",
@@ -9626,7 +9651,7 @@ dependencies = [
 
 [[package]]
 name = "sc-live"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -9653,7 +9678,7 @@ dependencies = [
 
 [[package]]
 name = "sc-llm"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -9666,6 +9691,7 @@ dependencies = [
  "sc-db-postgres",
  "sc-error",
  "sc-log",
+ "sc-net",
  "sc-query",
  "sc-test-harness",
  "sc-types",
@@ -9677,14 +9703,14 @@ dependencies = [
 
 [[package]]
 name = "sc-log"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "sc-error",
 ]
 
 [[package]]
 name = "sc-mcp"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -9703,7 +9729,7 @@ dependencies = [
 
 [[package]]
 name = "sc-migrate"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "chrono",
  "futures",
@@ -9719,7 +9745,7 @@ dependencies = [
 
 [[package]]
 name = "sc-model"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "chrono",
@@ -9745,7 +9771,7 @@ dependencies = [
 
 [[package]]
 name = "sc-module"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -9770,9 +9796,11 @@ dependencies = [
  "sc-error",
  "sc-expr",
  "sc-files",
+ "sc-http",
  "sc-live",
  "sc-log",
  "sc-model",
+ "sc-proc",
  "sc-query",
  "sc-stream",
  "sc-test-harness",
@@ -9787,7 +9815,7 @@ dependencies = [
 
 [[package]]
 name = "sc-net"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "reqwest",
  "sc-error",
@@ -9795,8 +9823,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-proc"
+version = "0.1.1-dev"
+dependencies = [
+ "libc",
+ "pty-process",
+ "sc-error",
+ "sc-log",
+ "tokio",
+]
+
+[[package]]
 name = "sc-python"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "futures",
@@ -9812,6 +9851,7 @@ dependencies = [
  "sc-files",
  "sc-model",
  "sc-module",
+ "sc-proc",
  "sc-query",
  "sc-test-harness",
  "sc-types",
@@ -9822,7 +9862,7 @@ dependencies = [
 
 [[package]]
 name = "sc-query"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "chrono",
  "rust_decimal",
@@ -9834,7 +9874,7 @@ dependencies = [
 
 [[package]]
 name = "sc-ratelimit"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "chrono",
  "sc-types",
@@ -9842,7 +9882,7 @@ dependencies = [
 
 [[package]]
 name = "sc-repomap"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "sha2 0.10.9",
  "tree-sitter",
@@ -9854,7 +9894,7 @@ dependencies = [
 
 [[package]]
 name = "sc-server"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "axum",
@@ -9904,6 +9944,7 @@ dependencies = [
  "sc-error",
  "sc-expr",
  "sc-files",
+ "sc-http",
  "sc-i18n",
  "sc-live",
  "sc-llm",
@@ -9912,11 +9953,14 @@ dependencies = [
  "sc-migrate",
  "sc-model",
  "sc-module",
+ "sc-net",
+ "sc-proc",
  "sc-python",
  "sc-query",
  "sc-ratelimit",
  "sc-stan",
  "sc-stream",
+ "sc-sync",
  "sc-test-harness",
  "sc-types",
  "sc-viewpattern",
@@ -9935,7 +9979,7 @@ dependencies = [
 
 [[package]]
 name = "sc-stan"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "bytes",
@@ -9947,6 +9991,8 @@ dependencies = [
  "sc-error",
  "sc-files",
  "sc-model",
+ "sc-net",
+ "sc-proc",
  "sc-types",
  "serde",
  "serde_json",
@@ -9957,7 +10003,7 @@ dependencies = [
 
 [[package]]
 name = "sc-stream"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -9981,8 +10027,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-sync"
+version = "0.1.1-dev"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "flate2",
+ "ignore",
+ "sc-action",
+ "sc-action-builtins",
+ "sc-agent",
+ "sc-agent-builtins",
+ "sc-analytics",
+ "sc-api",
+ "sc-app",
+ "sc-auth",
+ "sc-backup",
+ "sc-catalog",
+ "sc-check",
+ "sc-config",
+ "sc-dataset",
+ "sc-db",
+ "sc-error",
+ "sc-files",
+ "sc-i18n",
+ "sc-llm",
+ "sc-mcp",
+ "sc-model",
+ "sc-module",
+ "sc-query",
+ "sc-stream",
+ "sc-test-harness",
+ "sc-types",
+ "sc-viewpattern",
+ "sc-workflow",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.10.9",
+ "similar",
+ "tokio",
+ "uuid",
+ "zip",
+]
+
+[[package]]
 name = "sc-test-harness"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "deadpool-postgres",
  "sc-catalog",
@@ -9992,15 +10084,17 @@ dependencies = [
  "sc-error",
  "tokio",
  "tokio-postgres",
+ "toml",
  "uuid",
 ]
 
 [[package]]
 name = "sc-types"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "half",
  "regex-lite",
  "rust_decimal",
  "sc-error",
@@ -10013,7 +10107,7 @@ dependencies = [
 
 [[package]]
 name = "sc-viewpattern"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "bytes",
@@ -10028,6 +10122,7 @@ dependencies = [
  "sc-error",
  "sc-expr",
  "sc-files",
+ "sc-http",
  "sc-i18n",
  "sc-query",
  "sc-test-harness",
@@ -10040,7 +10135,7 @@ dependencies = [
 
 [[package]]
 name = "sc-workflow"
-version = "0.1.0"
+version = "0.1.1-dev"
 dependencies = [
  "async-trait",
  "chrono",
