@@ -165,38 +165,6 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 - [x] AC5.4 Tests: the attention item and its link; the progress badge; the onboarding path's
   last step.
 
-## AC6 — Running tasks on a Claude subscription
-
-Every task today is an `sc_agent` run against an LLM provider's API, paid per token. An admin
-with a Claude subscription can have Claude Code do the work instead, logged in on the server.
-Needs AC3 only, so it can come before AC4 and AC5.
-
-- [ ] AC6.1 A second task backend beside the API one, chosen per construction: the runner starts
-  `claude -p` (found as the IDE terminal finds it, `--claude-cli`) with the agent's prompt, the
-  task's brief and Feldspar's own MCP server (`sc-server` `mcp.rs`) as its only tools. The MCP
-  token is issued for the admin who started the construction, so the tools run with that admin's
-  rights. `AgentDriver` becomes two implementations; `next_step`, the store and the endpoints stay
-  as they are. Claude Code runs the loop, so:
-  - the task stores Claude Code's session id where it stores run ids, and a restart resumes with
-    `claude --resume <id>`, never a second session;
-  - stop kills the process;
-  - the transcript (`--output-format stream-json`) is kept with the task, since it is not in the
-    agent's run history, and AC4 links to it there.
-
-  Offered only where Claude Code is installed and logged in. It fits an admin running Feldspar on
-  their own machine. Check Anthropic's terms before offering it on a hosted server, where it would
-  run on its users' subscriptions. Using the subscription's login token against the API directly
-  is ruled out: the terms do not allow it.
-- [ ] AC6.2 Cheaper API runs, for constructions that stay on the API:
-  - prompt caching: the Anthropic adapter marks `cache_control` already. Check that a task's
-    long, stable parts (system prompt, tool list, briefing) are what gets cached;
-  - planning tasks with the agent's `cheap` model (e.g. Haiku) instead of the executor;
-  - a `max_steps` limit on the construction and builder agents, so a task that goes in circles
-    fails instead of running on.
-- [ ] AC6.3 Tests: a fake `claude` script (as `sc-server/tests/ide_terminal.rs` writes one) that
-  calls one MCP tool and answers; a stop kills it; a restart resumes its session; a planning run
-  uses the `cheap` model.
-
 ---
 
 ## Later (not planned yet)
@@ -210,6 +178,54 @@ From v1, once AC1–AC5 work:
 - `module` tasks (install a module);
 - seed data;
 - Saltcorn UI applications, after O1.3.
+
+### Running tasks on a Claude subscription (was AC6)
+
+Deferred because of Anthropic's usage terms: a subscription may only carry its owner's own,
+ordinary use, so the backend would need a Claude Code login per admin and could not be
+offered on a hosted server without Anthropic's agreement, and long unattended builds run into
+the plan limits. The design as it stood:
+
+Every task today is an `sc_agent` run against an LLM provider's API, paid per token. An admin
+with a Claude subscription can have Claude Code do the work instead, logged in on the server.
+
+- AC6.1 A second task backend beside the API one, chosen per construction: the runner starts
+  `claude -p` (found as the IDE terminal finds it, `--claude-cli`) with the agent's prompt, the
+  task's brief and Feldspar's own MCP server (`sc-server` `mcp.rs`) as its only tools. The MCP
+  token is issued for the admin who started the construction, so the tools run with that admin's
+  rights. `AgentDriver` becomes two implementations; `next_step`, the store and the endpoints stay
+  as they are. Claude Code runs the loop, so:
+  - the task stores Claude Code's session id where it stores run ids, and a restart resumes with
+    `claude --resume <id>`, never a second session;
+  - stop kills the process;
+  - the transcript (`--output-format stream-json`) is kept with the task, since it is not in the
+    agent's run history, and AC4 links to it there.
+
+  Anthropic's terms (code.claude.com/docs/en/legal-and-compliance) allow a user to sign in to the
+  unmodified Claude Code with their own subscription, but not a product routing requests through
+  plan credentials on its users' behalf, or collecting, storing or passing on their tokens. So:
+  - each admin has their own Claude Code login: a config directory of their own on the server
+    (`CLAUDE_CONFIG_DIR`), and a construction's `claude -p` runs under its starter's directory,
+    never another admin's or a shared one;
+  - the admin logs in through `claude` itself (e.g. in the IDE terminal). Feldspar only asks
+    whether they are logged in; it never reads, copies or forwards the credentials, and using the
+    login token against the API directly is ruled out;
+  - the backend is offered only to an admin with a login of their own, and a resumed run uses
+    the same admin's session;
+  - it fits an admin running Feldspar on their own machine. A hosted server keeps the API backend
+    as the default; ask Anthropic before offering subscriptions there (running Claude Code in a
+    hosted product needs the Commercial Terms, and the host may not pay for its users' usage).
+  Plan limits assume ordinary individual use, so long unattended builds hit them sooner.
+- AC6.2 Cheaper API runs, for constructions that stay on the API:
+  - prompt caching: the Anthropic adapter marks `cache_control` already. Check that a task's
+    long, stable parts (system prompt, tool list, briefing) are what gets cached;
+  - planning tasks with the agent's `cheap` model (e.g. Haiku) instead of the executor;
+  - a `max_steps` limit on the construction and builder agents, so a task that goes in circles
+    fails instead of running on.
+- AC6.3 Tests: a fake `claude` script (as `sc-server/tests/ide_terminal.rs` writes one) that
+  calls one MCP tool and answers; a stop kills it; a restart resumes its session; it runs under
+  the starter's `CLAUDE_CONFIG_DIR`, and an admin without a login of their own is not offered the
+  backend; a planning run uses the `cheap` model.
 
 ## Open questions
 
