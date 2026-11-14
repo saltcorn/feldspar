@@ -2,6 +2,14 @@
 
 Changes in reverse chronological order.
 
+## Settings tabs are underlined instead of pills
+
+The tab strips along the top of the global Settings screen and of each application's settings
+(`ApplicationTabs`) use Tabler's `nav nav-underline` instead of `nav nav-pills`. Under Tabler the
+pills barely stood out from the page. Now the open tab is bold with a line under it. Only the class
+changes. The View editor's step indicator keeps its pills, because it shows progress and is not a
+set of tabs. Test: `ui/admin/src/screens/ApplicationTabs.test.tsx`.
+
 ## Shorter help text across the admin UI and Settings, translated
 
 108 long sublabels, field help, screen intros, empty states, confirm prompts and warnings are

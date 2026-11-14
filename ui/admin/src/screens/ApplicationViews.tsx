@@ -71,7 +71,7 @@ type Renaming = {
 
 /** The tabs across the top of an application's screens: its framework's
  * settings tabs (TODO UX2.1). Links rather than state, because each tab is its
- * own route. Tabler's `.nav-pills`, as the Settings screen uses, with nothing
+ * own route. Tabler's `.nav-underline`, as the Settings screen uses, with nothing
  * but classes doing the work under the admin's CSP. `active` is a tab's id or
  * the screen showing (`translations`), which highlights the tab holding it. */
 export function ApplicationTabs({
@@ -86,7 +86,7 @@ export function ApplicationTabs({
   if (tabs.length < 2) return null;
   const current = activeTabId(app.settings_tabs, active);
   return (
-    <ul className="nav nav-pills mb-3">
+    <ul className="nav nav-underline mb-3">
       {tabs.map((tab) => (
         <li className="nav-item" key={tab.id}>
           <a
