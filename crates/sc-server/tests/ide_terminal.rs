@@ -609,8 +609,8 @@ async fn a_session_token_is_refused_from_another_machine() -> Result<()> {
 }
 
 /// In an application's directory the session gets its framework's builder
-/// prompt; the CLI keeps its login in the installation's data directory, and
-/// an Anthropic provider's key is passed.
+/// prompt; the CLI keeps its login in the admin's own directory under the
+/// installation's data directory, and an Anthropic provider's key is passed.
 #[tokio::test]
 async fn an_application_session_gets_its_prompt_login_and_key() -> Result<()> {
     let claude = StandIn::new();
@@ -640,9 +640,51 @@ async fn an_application_session_gets_its_prompt_login_and_key() -> Result<()> {
         + 1;
     assert!(args[at].contains("site"), "{}", args[at]);
     let env = claude.env();
-    assert!(env["CLAUDE_CONFIG_DIR"].ends_with("/claude"), "{env:?}");
+    assert!(
+        env["CLAUDE_CONFIG_DIR"].ends_with(&format!("/claude/{}", server.admin_id)),
+        "{env:?}"
+    );
     assert_eq!(env["ANTHROPIC_API_KEY"], "sk-ant-test");
     assert!(!env.contains_key("DATABASE_URL"));
+    Ok(())
+}
+
+/// Each admin's terminal runs on their own Claude Code login: a second admin
+/// gets a directory of their own, never the first one's (Anthropic's terms
+/// allow a person's own subscription, not one shared by a product's users).
+#[tokio::test]
+async fn each_admin_has_their_own_claude_code_login() -> Result<()> {
+    let claude = StandIn::new();
+    let server = serve(&claude.program, true).await?;
+    let first = {
+        let _socket = server.open("").await;
+        claude.args().await;
+        claude.env()["CLAUDE_CONFIG_DIR"].clone()
+    };
+    std::fs::remove_file(claude.dir.join("args"))?;
+
+    let other = sc_auth::create_user(
+        &server.catalog,
+        "second@example.com",
+        "hunter2pass",
+        sc_types::Role::ADMIN,
+    )
+    .await?;
+    let other_id = other.id();
+    let session = server.sessions.login(other).await?;
+    let _socket = server
+        .connect("/ide/terminal/code", Some(&session))
+        .await
+        .expect("the handshake succeeds");
+    claude.args().await;
+    let second = claude.env()["CLAUDE_CONFIG_DIR"].clone();
+
+    assert!(
+        first.ends_with(&format!("/claude/{}", server.admin_id)),
+        "{first}"
+    );
+    assert!(second.ends_with(&format!("/claude/{other_id}")), "{second}");
+    assert_ne!(first, second);
     Ok(())
 }
 

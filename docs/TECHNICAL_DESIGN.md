@@ -6718,10 +6718,17 @@ shape:
   config is a temporary file outside the store, deleted with the session. **Nothing is written
   into the store**, so a git-backed store gets no `.mcp.json` to ignore or accidentally commit.
 - **Environment**: an allow-list of the server's own, never the whole of it, because the
-  server's environment holds the database credentials. Then `CLAUDE_CONFIG_DIR=<data dir>/claude`, so the CLI's login belongs to the
-  installation and does not mix with the login of the operator's own Unix account. When an LLM
+  server's environment holds the database credentials. Then
+  `CLAUDE_CONFIG_DIR=<data dir>/claude/<admin's user id>` (`terminal::claude_config_dir`): each
+  admin has a login and conversations of their own, apart from other admins' and from the
+  operator's own Unix account. Never one login for the installation: Anthropic's terms
+  (code.claude.com/docs/en/legal-and-compliance) let a person sign in to the unmodified Claude
+  Code with their own subscription, but not a product route other people's requests through one,
+  so a second admin must not work on the first one's subscription. The login goes through the
+  CLI's own flow, and the server never reads, copies or forwards what it stores. When an LLM
   provider of the Anthropic type is configured, its key is passed as `ANTHROPIC_API_KEY` and
-  nothing is asked. Otherwise the first session shows the CLI's own `/login`, once.
+  nothing is asked: the key's owner pays for its use by the installation's admins, which the
+  terms allow. Otherwise each admin's first session shows the CLI's own `/login`, once.
 - **Executable**: `ServerConfig::claude_cli`, defaulting to `claude` on `PATH`, like
   `language_server`.
 - **Bound**: a fixed number of concurrent sessions across the installation, for the language

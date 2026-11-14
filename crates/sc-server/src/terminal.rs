@@ -43,9 +43,10 @@
 //! **session token** ([`SessionTokens`]), in a file outside the store that goes
 //! with the session; `--strict-mcp-config`, so the session sees those and
 //! nothing an operator configured elsewhere; and, in an application's directory, its
-//! framework's builder-agent prompt. Its login lives in the installation's data
-//! directory (`CLAUDE_CONFIG_DIR`), and an Anthropic provider's key, when there
-//! is one, is passed so nothing is asked.
+//! framework's builder-agent prompt. Its login and conversations live in a
+//! directory of the admin's own under the installation's data directory
+//! (`CLAUDE_CONFIG_DIR`, [`claude_config_dir`]), and an Anthropic provider's
+//! key, when there is one, is passed so nothing is asked.
 //!
 //! ## What is ours and what is not
 //!
@@ -754,7 +755,9 @@ pub(crate) async fn terminal_upgrade(
                             Some(catalog) => anthropic_provider(catalog).await,
                             None => None,
                         },
-                        config_dir: sc_files::data_dir().ok().map(|d| d.join("claude")),
+                        config_dir: sc_files::data_dir()
+                            .ok()
+                            .map(|d| claude_config_dir(&d, admin.session().user().user().id())),
                     };
                     // Before the program starts, so nothing it writes first is missed.
                     let changes = watch(&store, &place);
@@ -843,7 +846,8 @@ struct Wiring {
     prompt: Option<String>,
     /// An Anthropic provider's key and base URL.
     api_key: Option<(String, Option<String>)>,
-    /// Where the CLI keeps its login: the installation's, not the Unix user's.
+    /// Where the CLI keeps its login: the admin's own ([`claude_config_dir`]),
+    /// not the Unix user's.
     config_dir: Option<PathBuf>,
 }
 
@@ -963,6 +967,18 @@ impl Launch {
             _mcp_config: mcp_config,
         })
     }
+}
+
+/// Where Claude Code keeps `admin`'s login and conversations: a directory of
+/// their own under the installation's data directory (`data_dir`).
+///
+/// Never one shared by every admin: Anthropic's terms let a person sign in to
+/// Claude Code with their own subscription, not a product route other people's
+/// work through it, so a second admin's terminal must not run on the first
+/// one's login (design §12.1). Their conversations stay apart too, so
+/// `--continue` never resumes somebody else's.
+pub(crate) fn claude_config_dir(data_dir: &Path, admin: Uuid) -> PathBuf {
+    data_dir.join("claude").join(admin.to_string())
 }
 
 /// Whether Claude Code, keeping its state in `config_dir`, has a conversation
