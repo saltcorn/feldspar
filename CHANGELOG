@@ -2,6 +2,15 @@
 
 Changes in reverse chronological order.
 
+## Agents: tabs for the agents area and for each agent
+
+Agents, LLM providers and MCP servers are now tabs at the top of each list, instead of buttons
+in the agents list's header, and an agent's chat, runs, memories and settings share a header
+with a tab for each. An agent's settings, which used to be one long page, are split into
+General, Instructions, What it can do and Limits, with Save in the header. The main, strong and
+cheap models sit together on General, and each trait folds to a one-line summary. What is saved
+is unchanged, and the form's labels are now translated.
+
 ## Admin sidebar: no growing gap above the logo on a tall screen
 
 On a tall viewport the admin sidebar's logo and wordmark drifted down, with a gap above them

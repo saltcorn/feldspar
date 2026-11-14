@@ -16,9 +16,9 @@ import Modal from "react-bootstrap/Modal";
 import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
-import { navigate } from "../App";
 import { IconPlus, IconTrash } from "../icons";
-import { PageBody, PageHeader } from "../layout";
+import { PageBody } from "../layout";
+import { AgentAreaHeader, AgentAreaTabs } from "./AgentHeader";
 import {
   bodyFromForm,
   emptyForm,
@@ -160,22 +160,16 @@ export function McpServers() {
 
   return (
     <>
-      <PageHeader
-        pretitle={t("Automation")}
-        title={t("MCP servers")}
-        actions={
-          <>
-            <Button variant="outline-secondary" onClick={() => navigate("/agents")}>
-              <T text="Agents" />
-            </Button>
-            <Button onClick={() => open(emptyForm())}>
-              <IconPlus className="icon-2" />
-              <T text="New MCP server" />
-            </Button>
-          </>
+      <AgentAreaHeader
+        action={
+          <Button onClick={() => open(emptyForm())}>
+            <IconPlus className="icon-2" />
+            <T text="New MCP server" />
+          </Button>
         }
       />
       <PageBody>
+        <AgentAreaTabs active="mcp-servers" />
         {error && (
           <Alert variant="danger" dismissible onClose={() => setError(null)}>
             {error}

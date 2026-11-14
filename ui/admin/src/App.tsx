@@ -991,8 +991,12 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
       <FileManager store={decodeURIComponent(filesMatch[1])} initialDir={dir} />
     );
   }
-  if (path === "/agents/new") {
-    return <AgentForm />;
+  // The form's tabs: `new` and `edit` are its first, `new/<tab>` and
+  // `edit/<tab>` the others (`agentForm.ts` AGENT_TABS). Only those names
+  // after `new`, so an agent called "new" keeps its chat, runs and memory.
+  const newAgentMatch = path.match(/^\/agents\/new(?:\/(instructions|traits|limits))?$/);
+  if (newAgentMatch) {
+    return <AgentForm tab={newAgentMatch[1]} />;
   }
   // A chat is addressed by the agent's **name**, not its id: it is what the run
   // history is keyed by (§11.4) and what the socket's `start` carries, so a
@@ -1011,9 +1015,14 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   if (agentMemoryMatch) {
     return <AgentMemory agent={decodeURIComponent(agentMemoryMatch[1])} />;
   }
-  const agentEditMatch = path.match(/^\/agents\/([^/]+)\/edit$/);
+  const agentEditMatch = path.match(/^\/agents\/([^/]+)\/edit(?:\/([^/]+))?$/);
   if (agentEditMatch) {
-    return <AgentForm agentId={decodeURIComponent(agentEditMatch[1])} />;
+    return (
+      <AgentForm
+        agentId={decodeURIComponent(agentEditMatch[1])}
+        tab={agentEditMatch[2]}
+      />
+    );
   }
   if (path.startsWith("/agents")) {
     return <Agents />;

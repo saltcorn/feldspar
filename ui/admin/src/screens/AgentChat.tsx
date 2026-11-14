@@ -120,6 +120,7 @@ import {
   IconX,
 } from "../icons";
 import { StatusBadge, useDocumentTitle, type Tone } from "../layout";
+import { AgentTabs } from "./AgentHeader";
 import { RunBar } from "./RunPanel";
 import { T, useT } from "../i18n";
 
@@ -484,9 +485,12 @@ export function AgentChat({
             >
               <IconArrowLeft className="icon-2" />
             </button>
-            <div className="me-auto overflow-hidden">
+            <div className="overflow-hidden">
               <div className="fw-medium text-truncate">{agent}</div>
             </div>
+            {/* The same tabs as the agent's other screens, on the bar's one line. */}
+            <AgentTabs agent={agent} active="chat" compact />
+            <div className="me-auto" />
             {status}
             <button
               type="button"

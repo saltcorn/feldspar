@@ -30,7 +30,8 @@ import { api, errorMessage } from "../api";
 import type { ListLlmProvidersResponse } from "../client";
 import { navigate } from "../App";
 import { IconPlus } from "../icons";
-import { PageBody, PageHeader } from "../layout";
+import { PageBody } from "../layout";
+import { AgentAreaHeader, AgentAreaTabs } from "./AgentHeader";
 import { asString } from "../settings";
 import { T, useT } from "../i18n";
 
@@ -103,10 +104,8 @@ export function LlmProviders() {
 
   return (
     <>
-      <PageHeader
-        pretitle={t("Automation")}
-        title={t("LLM providers")}
-        actions={
+      <AgentAreaHeader
+        action={
           <Button onClick={() => navigate("/llm-providers/new")}>
             <IconPlus className="icon-2" />
             <T text="New provider" />
@@ -114,6 +113,7 @@ export function LlmProviders() {
         }
       />
       <PageBody>
+        <AgentAreaTabs active="llm-providers" />
         {error && <Alert variant="danger">{error}</Alert>}
 
         <div className="card">

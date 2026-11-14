@@ -6,9 +6,14 @@ import { AgentRuns } from "./AgentRuns";
 describe("AgentRuns", () => {
   const html = renderToStaticMarkup(<AgentRuns agent="help desk" />);
 
-  it("titles the page with the agent and links to its chat", () => {
-    expect(html).toContain("help desk · runs");
+  it("titles the page with the agent", () => {
+    expect(html).toContain('<div class="page-pretitle">Agent</div>');
+    expect(html).toContain('<h2 class="page-title">help desk</h2>');
+  });
+
+  it("shows the agent's tabs, with this screen's open", () => {
     expect(html).toContain('href="#/agents/help%20desk/chat"');
+    expect(html).toMatch(/class="nav-link active" aria-current="page" href="#\/agents\/help%20desk\/runs"/);
   });
 
   it("lists each run on one line with who started it", () => {

@@ -13,10 +13,9 @@ import Form from "react-bootstrap/Form";
 import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
-import { navigate } from "../App";
 import type { ListAgentMemoriesResponse, ListUsersResponse } from "../client";
-import { IconArrowLeft } from "../icons";
-import { PageBody, PageHeader, StatusBadge } from "../layout";
+import { PageBody, StatusBadge } from "../layout";
+import { AgentHeader, AgentTabs } from "./AgentHeader";
 import { when } from "./WorkflowRuns";
 import { T, useT } from "../i18n";
 
@@ -77,25 +76,9 @@ export function AgentMemory({ agent }: { agent: string }) {
 
   return (
     <>
-      <PageHeader
-        pretitle="Agent"
-        title={`${agent} · ${t("memory")}`}
-        actions={
-          <>
-            <Button variant="outline-secondary" onClick={() => navigate("/agents")}>
-              <IconArrowLeft className="icon-2" />
-              <T text="Back" />
-            </Button>
-            <Button
-              variant="outline-secondary"
-              href={`#/agents/${encodeURIComponent(agent)}/runs`}
-            >
-              <T text="Runs" />
-            </Button>
-          </>
-        }
-      />
+      <AgentHeader agent={agent} section="memory" />
       <PageBody>
+        <AgentTabs agent={agent} active="memory" />
         {error && <Alert variant="danger">{error}</Alert>}
 
         <Form
