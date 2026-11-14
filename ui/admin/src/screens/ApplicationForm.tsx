@@ -805,7 +805,7 @@ export function ApplicationForm({
               emptyText="This server has no tables yet."
             />
             <Form.Text muted>
-              <T text="The tables this app's custom queries, views and streams may use. Connecting a table publishes no endpoint for it." />
+              <T text="Limit the application to accessing these tables. API access is set under API" />
             </Form.Text>
           </Form.Group>
         );

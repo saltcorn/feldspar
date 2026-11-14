@@ -3741,3 +3741,24 @@ a.pd-created:hover {
   padding-top: 1rem;
   border-top: var(--tblr-border-width) solid var(--tblr-border-color);
 }
+
+/* Source control → Registry: the file list and the editor are two panes of
+   the tabbed card, divided by a rule — under the list on a narrow screen,
+   beside it from lg up. */
+.registry-tree-pane {
+  border-bottom: var(--tblr-border-width) solid var(--tblr-border-color);
+}
+@media (min-width: 992px) {
+  .registry-tree-pane {
+    border-bottom: 0;
+    border-inline-end: var(--tblr-border-width) solid var(--tblr-border-color);
+  }
+}
+
+/* Source control → the Status tab's count of changed entries: one width for
+   0 to 999, so the tabs after it stay put as the count loads and changes. */
+.sync-count-badge {
+  min-width: 2.75em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
