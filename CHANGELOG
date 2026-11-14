@@ -2,6 +2,16 @@
 
 Changes in reverse chronological order.
 
+## IDE terminal: each admin signs in to Claude Code with their own account
+
+Claude Code in the IDE's terminal now keeps each admin's login and conversations apart, in a
+directory of their own under the installation's data directory. Before, all admins shared one
+login: whoever signed in first, every other admin's terminal ran on that person's Claude
+subscription, which Anthropic's terms do not allow, and `--continue` could resume another admin's
+conversation. Each admin now signs in once with their own account, unless an Anthropic LLM
+provider's key is configured, which is used as before. Logins and conversations from the shared
+directory are not carried over.
+
 ## Admin sidebar: no growing gap above the logo on a tall screen
 
 On a tall viewport the admin sidebar's logo and wordmark drifted down, with a gap above them
