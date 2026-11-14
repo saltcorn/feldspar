@@ -74,7 +74,7 @@ export function Applications() {
     if (
       !window.confirm(
         t(
-          'Deep clean "{name}"? Its node_modules is deleted and every dependency is downloaded and installed again before it is built. This can take several minutes.',
+          'Deep clean "{name}"? Deletes node_modules, reinstalls all dependencies and rebuilds. This can take several minutes.',
           { name: app.name },
         ),
       )

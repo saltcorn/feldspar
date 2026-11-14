@@ -676,7 +676,7 @@ export function AgentForm({ agentId, tab: rawTab }: { agentId?: string; tab?: st
             {creditsOpen && (
               <Card.Body id="agent-credits">
                 <p className="text-muted small">
-                  <T text="Charge the person using this agent for its model calls, from their LLM credits. A run stops when they run out. Blank rates are not metered, and an admin is never charged." />
+                  <T text="Charge the user's LLM credits for this agent's model calls; a run stops when they run out. Blank rates are free, and admins are never charged." />
                 </p>
                 {numberBoxes(CREDITS, 6)}
               </Card.Body>

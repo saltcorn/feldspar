@@ -47,17 +47,15 @@ pub fn localisation_section() -> ConfigSection {
                 FormField::new(DEFAULT_LOCALE, BasicType::Text)
                     .label("Default language")
                     .default_value("en"),
-                "A BCP-47 language tag (en, fr, pt-BR, zh-Hans). Used when a request asks for \
-                 no language, or for one that is not enabled. It is always served, whether or \
-                 not it is listed below.",
+                "BCP-47 tag (en, pt-BR, zh-Hans) used when a request asks for none, or for one \
+                 not enabled. Always served.",
             ),
             ConfigDef::help(
                 FormField::new(ENABLED_LOCALES, BasicType::Text)
                     .label("Enabled languages")
                     .default_value(""),
-                "Comma-separated BCP-47 tags — en, fr, ar. A request is negotiated into one of \
-                 these and never into anything else. Leave it empty (or list one) for a server \
-                 that does no negotiation at all.",
+                "Comma-separated BCP-47 tags, e.g. en, fr, ar. Requests are matched to one of \
+                 these. Empty or one tag: no negotiation.",
             ),
         ],
     }

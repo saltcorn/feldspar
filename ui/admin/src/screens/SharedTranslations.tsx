@@ -174,7 +174,7 @@ export function SharedTranslations() {
         <div className="card mb-3">
           <div className="card-body">
             <p className="text-muted">
-              <T text="Strings every application shares, translated once. An application serves these under its own translations: a string it translates itself wins, and one it does not is taken from here. No rebuild is needed." />
+              <T text="Strings shared by all applications, translated once. An app's own translation wins. No rebuild needed." />
             </p>
             <div className="d-flex flex-wrap gap-2 align-items-center">
               {data.locales.map((l) => (

@@ -836,7 +836,7 @@ function PermissionsModal({
           )}
           {inherited && (
             <div className="text-muted small mt-2">
-              <T text="Stricter than the rule set here, because a parent folder or the store itself restricts it. Access is cumulative down the path, so a rule here can only ever tighten it further." />
+              <T text="Already stricter here, because a parent folder or the store restricts it. Access only tightens down the path." />
             </div>
           )}
         </div>

@@ -190,11 +190,11 @@ export function LlmProviders() {
         </div>
 
         <p className="text-muted small mt-3">
-          <T text="API keys are stored in the Saltcorn database and are never sent back to this screen — an existing key shows as ••••••••. They are not encrypted at rest, so treat database access as key access." />
+          <T text="API keys are stored unencrypted in the database and never shown again (••••••••). Database access means key access." />
         </p>
         {providers?.some((p) => p.from_config_file) && (
           <p className="text-muted small">
-            <T text="A provider marked configuration file is set in the server's feldspar.toml. Its key stays in that file — it is not stored in the database or included in backups — and it can only be changed there." />
+            <T text="Configuration-file providers are set in feldspar.toml. Their keys stay there, out of the database and backups." />
           </p>
         )}
       </PageBody>

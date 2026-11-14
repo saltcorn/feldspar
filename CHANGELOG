@@ -11,6 +11,20 @@ General, Instructions, What it can do and Limits, with Save in the header. The m
 cheap models sit together on General, and each trait folds to a one-line summary. What is saved
 is unchanged, and the form's labels are now translated.
 
+## Shorter help text across the admin UI and Settings, translated
+
+108 long sublabels, field help, screen intros, empty states, confirm prompts and warnings are
+rewritten shorter: every live message over 140 characters in the `admin` domain (81) and in the
+admin-facing parts of the `core` domain (27: Settings sections, OAuth provider fields, API and
+framework choices, git and file-store fields, the analytics app and role-grants descriptions).
+Warnings and the facts an admin needs to act (what is deleted, what runs with system authority,
+what cannot be undone) are kept. Removed are restated context, things the form already shows and
+long lead-ins. Agent tool descriptions, which an LLM reads, are not changed. Placeholders are
+unchanged in every message. All 108 new messages are translated in `ar`, `de`, `es`, `fr` and
+`zh-Hans`. The old messages stay in the catalogues as unused entries, as `feldspar i18n` keeps
+orphans. The role-grants table's description is set only when the table is created, so an
+existing installation keeps the old wording. `feldspar i18n check` passes with no mismatches.
+
 ## Admin UI: Source control's Status tab no longer appears late
 
 Status and History are the first tabs of Source control when the installation is linked, but the

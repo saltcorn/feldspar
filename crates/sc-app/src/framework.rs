@@ -433,9 +433,8 @@ fn builtin_framework_info() -> Vec<FrameworkInfo> {
         FrameworkInfo {
             name: REACT_FRAMEWORK.to_owned(),
             label: "React".to_owned(),
-            description: "Saltcorn creates the project, generates a typed client and \
-                          hooks for your tables, installs its dependencies and builds \
-                          it. Pick a file store and a name."
+            description: "Saltcorn creates and builds the project, with a typed client and hooks \
+                          for your tables."
                 .to_owned(),
             serves_ui: true,
             settings_tabs: None,
@@ -443,9 +442,8 @@ fn builtin_framework_info() -> Vec<FrameworkInfo> {
         FrameworkInfo {
             name: CODE_FRAMEWORK.to_owned(),
             label: "Code (bring your own build)".to_owned(),
-            description: "Any bundler, any layout. You create the project and state \
-                          where its source, output and build command are — for a \
-                          project React's conventions do not fit."
+            description: "Any bundler, any layout. You say where the source, output and build \
+                          command are."
                 .to_owned(),
             serves_ui: true,
             settings_tabs: None,

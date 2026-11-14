@@ -131,7 +131,7 @@ export function CodeLibraries() {
       <PageHeader pretitle="Settings · Development" title={t("Code library")} />
       <PageBody>
         <p className="text-muted">
-          <T text="Shared JavaScript for code queries and triggers. Import a library with lib(name); an application's own library wins over an instance-wide one of the same name, and triggers see instance-wide libraries only. A library runs with the importing code's own db, fs, fetch and user." />
+          <T text="Shared JavaScript for code queries and triggers, imported with lib(name). An app's library overrides an instance-wide one of the same name; triggers see instance-wide libraries only. Runs with the importer's db, fs, fetch and user." />
         </p>
         {error && (
           <Alert variant="danger" className="code-library-error" style={{ whiteSpace: "pre-wrap" }}>
