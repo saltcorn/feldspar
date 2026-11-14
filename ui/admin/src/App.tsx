@@ -84,7 +84,7 @@ import { Login } from "./screens/Login";
 import { Roles } from "./screens/Roles";
 import { AccountSecurity } from "./screens/SecondFactor";
 import { Settings, settingsTabFromPath } from "./screens/Settings";
-import { SourceControlPage } from "./screens/SourceControlPage";
+import { SourceControlPage, sourceControlPageKey } from "./screens/SourceControlPage";
 import { CodeLibraries } from "./screens/CodeLibraries";
 import { SharedTranslations } from "./screens/SharedTranslations";
 import { StreamForm } from "./screens/StreamForm";
@@ -1089,7 +1089,7 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   if (path === "/source-control") {
     return (
       <SourceControlPage
-        key={route}
+        key={sourceControlPageKey(route)}
         initialPath={query.get("path") ?? undefined}
         initialTab={query.get("tab") ?? undefined}
         merge={query.get("merge") === "1"}

@@ -189,7 +189,7 @@ export function Streams() {
               {streams?.length === 0 && (
                 <tr>
                   <td colSpan={7} className="text-muted">
-                    <T text="No streams yet. A stream is a provider — an MQTT broker, a polled feed — with its settings filled in." />
+                    <T text="No streams yet. A stream is a provider (e.g. an MQTT broker or a polled feed) with its settings filled in." />
                   </td>
                 </tr>
               )}

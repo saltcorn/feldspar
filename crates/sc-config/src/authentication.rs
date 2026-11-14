@@ -86,11 +86,9 @@ pub fn authentication_section() -> ConfigSection {
                 FormField::new(SHARED_SESSION_COOKIE, BasicType::Bool)
                     .label("Share sign-in between applications")
                     .default_value(false),
-                "Scope the session cookie to the base domain, so signing in to the admin UI or \
-                 to any application signs in to all of them, with a password or with an \
-                 identity provider. Every application's pages are then sent the cookie, \
-                 including its own client code's requests to the admin API. Changing this \
-                 signs everyone out, you included.",
+                "Scope the session cookie to the base domain, so sign-in sessions \
+                 are shared between all applications and the admin UI, with passwords or with \
+                 identity providers. Changing this signs everyone out.",
             ),
             // Live too: the next session started gets it. A session already
             // started keeps the expiry it was given.
@@ -109,16 +107,13 @@ pub fn authentication_section() -> ConfigSection {
                     .default_value(true),
                 "Give the session cookie an expiry of the session lifetime, so a sign-in \
                  survives closing and reopening the browser. A sign-in form's \"Remember me\", \
-                 left unticked, still ends that sign-in with the browser. Turn this off where \
-                 people share a computer, such as a kiosk, so closing the browser signs them \
-                 out. Applies to sign-ins after saving.",
+                 left unticked, still ends that sign-in with the browser.",
             ),
             ConfigDef::help(
                 FormField::new(SECOND_FACTOR_ISSUER, BasicType::Text)
                     .label("Name in authenticator apps")
                     .default_value(""),
-                "What an authenticator app lists an account set up here under. Blank, it is \
-                 this server's domain. Applies to accounts set up after saving.",
+                "Defaults to this server's domain.",
             ),
         ],
     }
