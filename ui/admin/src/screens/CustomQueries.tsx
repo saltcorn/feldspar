@@ -182,12 +182,12 @@ export function CustomQueries({
         {open === null && (
           <div className="alert alert-secondary small mb-3">
             <AlertBody>
-            <T text="Each query becomes one endpoint on this API and one typed method on the app’s generated client. A SQL query’s return type is taken from the columns Postgres reports; a JavaScript or Python query returns whatever its body returns." />{" "}
+            <T text="Each query is an API endpoint and a typed client method. SQL return types come from Postgres's columns; JavaScript and Python return what the body returns." />{" "}
             {/* Two sentences, each whole, each with its emphasis as a hole: a
               translator can move the emphasised clause, which is the thing three
               fragments would have made impossible. */}
             <T
-              text="{claim} raw SQL does not go through the row layer, so ownership formulae, rich-type coercion and File-field rules do not apply to it, and a write inside one raises no table event."
+              text="{claim} raw SQL bypasses the row layer: no ownership formulae, type coercion or File-field rules, and writes raise no table events."
               values={{
                 claim: (
                   <strong>
@@ -197,7 +197,7 @@ export function CustomQueries({
               }}
             />{" "}
             <T
-              text="What still applies is the role floor below — {default} — and the caller’s database context, so a row-level-security policy still decides what the query can see."
+              text="Still applied: the role floor below ({default}) and the caller's database context, so row-level security still filters."
               values={{
                 default: (
                   <em>
@@ -207,7 +207,7 @@ export function CustomQueries({
               }}
             />{" "}
             <T
-              text="A JavaScript or Python query runs as a trigger’s code does, with the administrator’s authority over the tables unless it asks for the caller’s with {asUser}."
+              text="Runs like trigger code, with admin authority over tables unless it calls {asUser}."
               values={{ asUser: <code>db.asUser()</code> }}
             />
             </AlertBody>
@@ -500,7 +500,7 @@ export function QueryEditor({
                 />
                 <div className="query-panel-footer">
                   <T
-                    text="The body of a function. The request is {body} (its JSON body) and {query} (its query string), the caller is {user}, and what it returns is the response."
+                    text="A function body. Request: {body} (JSON body), {query} (query string). Caller: {user}. The return value is the response."
                     values={{
                       body: <code>body</code>,
                       query: <code>query</code>,
@@ -556,7 +556,7 @@ export function QueryEditor({
               <div className="p-3 text-secondary small">
                 {needsParamsNote(query) ? (
                   <span data-testid="undeclared-params-note">
-                    <T text="None declared. The client method still sends its arguments, typed as an open object, and the code reads all of them — but nothing is typed or checked. Declare the parameters the code reads to type the client method and have each converted before the body runs." />
+                    <T text="None declared: the client sends untyped, unchecked arguments. Declare parameters to type the client method and convert values before the body runs." />
                   </span>
                 ) : (
                   <T text="None." />
@@ -659,7 +659,7 @@ export function QueryEditor({
               </Form.Control.Feedback>
               <div className="query-panel-footer">
                 <T
-                  text="Optional. What the body returns, so the client method is typed instead of {unknown}: a type name ({names}) or {object}, {array}, {optional} and {union}. Checked in previews only."
+                  text="Optional. Types the client method's result instead of {unknown}: a type name ({names}) or {object}, {array}, {optional}, {union}. Checked in previews only."
                   values={{
                     unknown: <code>unknown</code>,
                     names: <code>string, int, float, bool, json, uuid, date, timestamp</code>,

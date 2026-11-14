@@ -121,7 +121,7 @@ export function OAuthProvidersPanel() {
             <T text="External identity providers" />
           </h3>
           <p className="card-subtitle text-secondary mb-0">
-            <T text="OAuth 2.0 providers people can sign in with, on the admin UI and in applications. The lifetime and sharing above apply to these sign-ins too." />
+            <T text="OAuth 2.0 sign-in providers for the admin UI and applications. The session settings above apply." />
           </p>
         </div>
         <div className="card-actions">

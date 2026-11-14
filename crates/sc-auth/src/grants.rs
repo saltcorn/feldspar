@@ -233,8 +233,8 @@ pub async fn bootstrap_role_grants(catalog: &Catalog) -> Result<Table> {
         let mut meta = TableMeta::new(ROLE_GRANTS_TABLE)
             .label("Role grants")
             .description(
-                "Roles users hold for a while, beside their base role: subscriptions, trials \
-                 and grants made by hand. Written by Feldspar; each user reads their own.",
+                "Temporary roles held beside the base role: subscriptions, trials, manual \
+                 grants. Each user reads their own.",
             )
             .access(Role::ADMIN, Role::ADMIN);
         meta.set_ownership_formula(Some(ROLE_GRANTS_OWNERSHIP));

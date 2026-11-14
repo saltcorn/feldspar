@@ -629,7 +629,7 @@ function Review({
             ))}
             {planned.policy?.destructive === "never" && counts.data_destructive > 0 && (
               <p className="small text-secondary">
-                <T text="This instance's policy keeps what loses data from being ticked here; only feldspar sync deploy --allow-destructive on the server can apply it." />
+                <T text="This instance's policy blocks data-losing changes here. Use feldspar sync deploy --allow-destructive on the server." />
               </p>
             )}
             {ops.some((op) => op.class === "data_destructive" && !ticked.has(op.id)) && (
@@ -751,7 +751,7 @@ export function ZipTab({ linked, onDeployed }: { linked: boolean; onDeployed: ()
         </Card.Title>
         <p className="text-secondary small">
           {linked ? (
-            <T text="The zip takes the branch tip's place: it is planned and applied as a deploy is, what it does not have is deleted (what loses data stays unticked), and it is refused while this instance has uncommitted changes." />
+            <T text="The zip replaces the branch tip and is applied like a deploy: anything missing from it is deleted (data-losing changes stay unticked). Refused while there are uncommitted changes." />
           ) : (
             <T text="This installation is not linked, so the zip is applied additively." />
           )}{" "}

@@ -368,7 +368,7 @@ function SyncedContents({ storeId }: { storeId: string }) {
       <Card.Body>
         {!shown.applies ? (
           <p className="small text-secondary mb-0">
-            <T text="This store's files are not copied into source control: it is a repository of its own, and what is committed is its URL, its branch and the commit it is checked out at. Give it a public URL that other instances can clone without this instance's credentials." />
+            <T text="Not copied into source control: this store is its own repository, and only its URL, branch and commit are recorded. Use a public URL other instances can clone." />
           </p>
         ) : (
           <>

@@ -978,7 +978,7 @@ function CreditsDialog({ user, onClose }: { user: UserRow | null; onClose: () =>
               onChange={(e) => setThreshold(e.target.value)}
             />
             <Form.Text muted>
-              <T text="When an agent's call takes the balance below this, a low_balance entry is written for the application's triggers (an automatic top-up, say). Blank for none." />
+              <T text="When an agent call takes the balance below this, a low_balance entry is written for triggers (e.g. auto top-up). Blank: none." />
             </Form.Text>
           </Form.Group>
           <Button type="submit" variant="outline-primary" disabled={busy}>

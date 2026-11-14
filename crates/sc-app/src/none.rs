@@ -87,10 +87,8 @@ impl FrameworkFactory for NoneFactory {
         FrameworkInfo {
             name: NONE_FRAMEWORK.to_owned(),
             label: "None".to_owned(),
-            description: "No UI framework and no build step: the application is its APIs, \
-                          its static directories and its streams. A coding agent works in \
-                          the file store you pick — to write the HTML and CSS a static \
-                          directory serves, say."
+            description: "No UI framework or build step: just APIs, static directories and \
+                          streams. A coding agent can work in the chosen file store."
                 .to_owned(),
             serves_ui: false,
             settings_tabs: None,

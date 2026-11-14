@@ -222,7 +222,7 @@ export function BackupTab() {
                       password hashes, a file store's credentials and the TLS private
                       key, so the file is exactly as sensitive as the database. */}
                   <p className="form-hint mt-3 mb-0 text-secondary">
-                    <T text="A backup contains everything needed to restore this installation, including password hashes, file-store credentials and the SSL private key." />
+                    <T text="Backups include password hashes, file-store credentials and the SSL private key. Store them as securely as a database dump." />
                   </p>
                 </>
               )}
@@ -427,7 +427,7 @@ function PasswordFields({
     <>
       <h4 className="mb-1"><T text="Password protection" /></h4>
       <p className="text-secondary small mb-3">
-        <T text="Optional. Encrypts the backup with AES-256, which 7-Zip and other standard zip tools open with the same password. A lost password cannot be recovered." />
+        <T text="Optional. AES-256 encryption that 7-Zip and standard zip tools can open. A lost password cannot be recovered." />
       </p>
       <div className="row">
         <Form.Group className="col-sm-6 mb-3" controlId={`${idPrefix}-password`}>
@@ -713,7 +713,7 @@ function IncludeFields({
                 <span className="fw-semibold"><T text="Modules" /></span>
                 <div className="text-muted small">
                   {t(
-                    "{count} installed modules, with their settings and permissions. A restore reinstalls each one from where it came, so the server needs npm or pip and whatever the module was installed from.",
+                    "{count} modules with settings and permissions. Restoring reinstalls them from their sources, so it needs npm or pip.",
                     { count: contents.modules },
                   )}
                 </div>
@@ -795,7 +795,7 @@ function IncludeFields({
                 <span className="fw-semibold"><T text="Model fits" /></span>
                 <div className="text-muted small">
                   {t(
-                    "{count} fitted model instances, with their output frames and posterior draws. These can be large; without them a restored model has to be fitted again.",
+                    "{count} fitted models with output frames and posterior draws. Can be large; without them, models must be refitted.",
                     { count: contents.fits },
                   )}
                 </div>
@@ -1255,7 +1255,7 @@ function AutomatedBackups({
 
               <h4 className="mb-1"><T text="What each backup includes" /></h4>
               <p className="text-secondary small mb-3">
-                <T text="With an All box ticked, every one of that kind is included, including any created later. Otherwise anything created later is included unless you untick it here." />
+                <T text="An All box includes everything of that kind, now and later. Without it, untick what to leave out." />
               </p>
               {errors.include && (
                 <Alert variant="danger">

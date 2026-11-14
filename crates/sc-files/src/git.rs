@@ -1949,9 +1949,9 @@ pub(crate) fn git_operations() -> Vec<Operation> {
         Operation::new(OP_GENERATE_KEY, OperationScope::Configure)
             .label("Generate deploy key")
             .description(
-                "Creates an SSH key for this repository and fills in the settings below. \
-                 Add the public key to the repository's deploy keys — with write access if \
-                 you want to push — before saving, because saving clones the repository.",
+                "Creates an SSH key and fills in the settings below. Add the public key as a \
+                 deploy key (with write access to push) before saving, because saving clones the \
+                 repository.",
             ),
         Operation::new(OP_STATUS, OperationScope::Instance)
             .label("Refresh status")
@@ -2000,8 +2000,7 @@ pub(crate) fn git_operations() -> Vec<Operation> {
         Operation::new(OP_DISCARD, OperationScope::Instance)
             .label("Discard changes")
             .description(
-                "Throws away unstaged changes: edited files go back to their staged or \
-                 committed contents and untracked files are deleted. This cannot be undone.",
+                "Discards unstaged changes and deletes untracked files. This cannot be undone.",
             )
             .input([FormField::new(ARG_PATHS, BasicType::Text)
                 .label("Paths, one per line")

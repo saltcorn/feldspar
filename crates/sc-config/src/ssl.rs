@@ -128,9 +128,8 @@ pub fn ssl_section() -> ConfigSection {
     ConfigSection {
         name: SSL_SECTION,
         label: "SSL / TLS certificates",
-        description: "How this server obtains the certificates it serves HTTPS with — for the \
-                      admin UI and for every application. Changes take effect when the server \
-                      restarts.",
+        description: "How this server gets HTTPS certificates for the admin UI and all \
+                      applications. Takes effect on restart.",
         // This instance's own: never in the installation's structure (§3.4).
         portable: false,
         fields: vec![
@@ -139,9 +138,8 @@ pub fn ssl_section() -> ConfigSection {
                     .label("Certificate source")
                     .options([MODE_OFF, MODE_LETSENCRYPT, MODE_CUSTOM])
                     .default_value(MODE_OFF),
-                "off serves plain HTTP (right behind a TLS-terminating proxy, and for local \
-                 development). letsencrypt obtains and renews certificates automatically. \
-                 custom serves the certificate below.",
+                "off: plain HTTP (behind a TLS proxy, or local development). letsencrypt: \
+                 automatic certificates. custom: the certificate below.",
             ),
             ConfigDef::help(
                 FormField::new(ACME_CONTACT_EMAIL, BasicType::Text).label("ACME contact email"),
@@ -151,9 +149,9 @@ pub fn ssl_section() -> ConfigSection {
                 FormField::new(ACME_DIRECTORY_URL, BasicType::Text)
                     .label("ACME directory URL")
                     .default_value(LETSENCRYPT_PRODUCTION),
-                "Any ACME CA, not only Let's Encrypt. Use \
-                 https://acme-staging-v02.api.letsencrypt.org/directory while testing: its \
-                 certificates are untrusted, and its rate limits are not.",
+                "Any ACME CA. For testing use \
+                 https://acme-staging-v02.api.letsencrypt.org/directory (untrusted certificates, \
+                 relaxed rate limits).",
             ),
             ConfigDef::help(
                 FormField::new(SSL_EXTRA_DOMAINS, BasicType::Text)

@@ -363,7 +363,7 @@ export function AgentForm({ agentId }: { agentId?: string }) {
             <Card.Header><T text="Roles" /></Card.Header>
             <Card.Body>
               <p className="text-muted small">
-                <T text="The model above is the" /> <strong><T text="executor" /></strong><T text=", which does the work. A planned coding agent plans on the strong model and hands small jobs to the cheap one; an agent with neither set uses its own model for everything." />
+                <T text="The model above is the" /> <strong><T text="executor" /></strong><T text=", which does the work. Planned coding agents plan on the strong model and give small jobs to the cheap one; with neither set, the agent's own model does everything." />
               </p>
               <Row>
                 {ROLES.map((role) => (
@@ -406,7 +406,7 @@ export function AgentForm({ agentId }: { agentId?: string }) {
             <Card.Header><T text="LLM credits" /></Card.Header>
             <Card.Body>
               <p className="text-muted small">
-                <T text="Charge the person using this agent for its model calls, from their LLM credits. A run stops when they run out. Blank rates are not metered, and an admin is never charged." />
+                <T text="Charge the user's LLM credits for this agent's model calls; a run stops when they run out. Blank rates are free, and admins are never charged." />
               </p>
               <Row>
                 {CREDITS.map((attr) => (

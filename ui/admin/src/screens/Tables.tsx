@@ -212,7 +212,7 @@ export function Tables() {
             <AlertBody>
               <Alert.Heading className="h6"><T text="Settings without a table" /></Alert.Heading>
               <p className="mb-2">
-                <T text="These stored settings name tables that are not in the database. They are kept in case the table comes back — recreating it restores its access rules — but nothing is using them right now." />
+                <T text="Settings for tables not in the database, kept so a recreated table gets its access rules back. Unused for now." />
               </p>
               <ul className="mb-0 list-unstyled">
                 {orphans.map((o) => (
@@ -300,7 +300,7 @@ export function Tables() {
                       <StatusBadge
                         tone="secondary"
                         className="ms-2"
-                        title={t("Declared by the module {module}, which reads and writes it. You can add fields, edit rows and set triggers; the module's own fields cannot be deleted while it is installed.", { module: table.module })}
+                        title={t("Declared by {module}, which reads and writes it. You can add fields, edit rows and add triggers, but not delete the module's fields while it's installed.", { module: table.module })}
                       >
                         {table.module}
                       </StatusBadge>
@@ -468,7 +468,7 @@ function NewTableModal({
                   ))}
                 </Form.Select>
                 <Form.Text className="text-muted">
-                  <T text="One of Saltcorn’s own tables, added to this list so its rows and settings can be edited. It starts admin-only. Its fields are Saltcorn’s and cannot be changed, and removing it from the list never drops it." />
+                  <T text="A Saltcorn system table, listed so its rows and settings can be edited. Admin-only at first, with fixed fields. Removing it from the list never drops it." />
                 </Form.Text>
               </Form.Group>
             )}
@@ -507,7 +507,7 @@ function NewTableModal({
                     ))}
                   </Form.Select>
                   <Form.Text className="text-muted">
-                    <T text="The rows come from the module, not from a database. Saltcorn reads them; it does not create, change or delete them, and the columns are the provider’s to decide." />
+                    <T text="Rows come from the module, and Saltcorn only reads them. The provider decides the columns." />
                   </Form.Text>
                 </Form.Group>
 
@@ -545,7 +545,7 @@ function NewTableModal({
                     }}
                   />
                   <Form.Text className="text-muted">
-                    <T text="GeoJSON, a zipped Shapefile (the .shp with its .dbf and .prj) or a GeoPackage. The attributes become fields, the shapes a geometry field, reprojected to longitude and latitude. Needs PostGIS." />
+                    <T text="GeoJSON, zipped Shapefile (.shp, .dbf, .prj) or GeoPackage. Attributes become fields, and shapes a longitude/latitude geometry field. Needs PostGIS." />
                   </Form.Text>
                 </Form.Group>
                 <Form.Group controlId="new-table-geo-layer">
@@ -576,7 +576,7 @@ function NewTableModal({
                   }}
                 />
                 <Form.Text className="text-muted">
-                  <T text="The columns become the table’s fields — named and typed from the header and the values under it — and every row is imported. A row the file’s own columns will not take is reported and no table is created." />
+                  <T text="Fields are named and typed from the header and values, and all rows are imported. If a row doesn't fit, it's reported and no table is created." />
                 </Form.Text>
               </Form.Group>
             )}

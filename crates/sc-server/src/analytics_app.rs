@@ -164,9 +164,8 @@ impl FrameworkFactory for AnalyticsFactory {
         FrameworkInfo {
             name: ANALYTICS_FRAMEWORK.to_owned(),
             label: "Analytics".to_owned(),
-            description: "Part of the Analytics UI for your users: dashboards and reports you \
-                          made, or a self-serve explorer over the tables you pick. They read \
-                          only the rows their role and the ownership formulas let them."
+            description: "Dashboards, reports or a self-serve explorer for your users. They see \
+                          only rows their role and ownership formulas allow."
                 .to_owned(),
             serves_ui: true,
             settings_tabs: None,

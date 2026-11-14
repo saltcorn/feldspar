@@ -329,9 +329,8 @@ impl FrameworkFactory for SaltcornUiFactory {
         FrameworkInfo {
             name: SALTCORN_UI_FRAMEWORK.to_owned(),
             label: "Saltcorn UI".to_owned(),
-            description: "Views and pages you configure here, rendered by the server with \
-                          Saltcorn 1's own List, Show, Edit, Feed and Filter. Nothing to write \
-                          and nothing to build: pick the tables it shows."
+            description: "Views and pages rendered by the server with Saltcorn 1's List, Show, \
+                          Edit, Feed and Filter. Nothing to write or build."
                 .to_owned(),
             serves_ui: true,
             settings_tabs: Some(saltcorn_ui_settings_tabs()),
