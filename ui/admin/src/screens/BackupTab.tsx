@@ -207,12 +207,7 @@ export function BackupTab() {
               {selection === null ? (
                 <Spinner animation="border" role="status" size="sm" />
               ) : (
-                <>
-                  <p className="text-secondary mb-3">
-                    {t("Currently included: {summary}", {
-                      summary: summarise(selection, contents),
-                    })}
-                  </p>
+                <>                  
                   <div className="btn-list">
                     <Button onClick={() => setChoosing(true)} disabled={busy !== null}>
                       <IconDownload /> <T text="Backup now" />
