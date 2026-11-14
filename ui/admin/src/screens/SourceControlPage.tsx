@@ -19,7 +19,7 @@
 // and says where that differs from what was typed. New and Delete go through
 // the same review.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Alert from "react-bootstrap/Alert";
 import Button from "react-bootstrap/Button";
 import Card from "react-bootstrap/Card";
@@ -70,6 +70,65 @@ import { HistoryTab, LinkTab, StatusTab, ZipTab } from "./SyncPanels";
 
 type Tab = "status" | "history" | "registry" | "zip" | "link";
 
+/** The tabs, by whether the installation is linked to a repository: Status and
+ * History come first when it is, and there are none while that is not known,
+ * so a tab never appears in front of the others once the page is shown. */
+export function sourceControlTabs(linked: boolean | null): Tab[] {
+  if (linked === null) return [];
+  return linked ? ["status", "history", "registry", "zip", "link"] : ["registry", "zip", "link"];
+}
+
+// Whether the installation is linked, as last learnt. The page is remounted on
+// every tab change (it is keyed by the route), so without this the tabs would
+// start unknown each time; the browser's copy covers a reload. It is only a
+// first guess: the page asks the server (the link alone, which is quick, not
+// the status) and goes by the answer.
+const LINKED_KEY = "feldspar.sourceControl.linked";
+let lastLinked: boolean | null = null;
+
+function rememberedLinked(): boolean | null {
+  if (lastLinked !== null) return lastLinked;
+  try {
+    const stored = localStorage.getItem(LINKED_KEY);
+    return stored === null ? null : stored === "1";
+  } catch {
+    return null;
+  }
+}
+
+export function rememberLinked(linked: boolean) {
+  lastLinked = linked;
+  try {
+    localStorage.setItem(LINKED_KEY, linked ? "1" : "0");
+  } catch {
+    // No browser storage: the in-memory copy still covers tab changes.
+  }
+}
+
+/** The tab a route asks for: a path to open is the Registry's. */
+function requestedTab(initialPath?: string, initialTab?: string): Tab | null {
+  return initialPath ? "registry" : ((initialTab as Tab | undefined) ?? null);
+}
+
+/** What App keys the page on: its route without the tab, so a tab change
+ * keeps the page and a different file to open (`path`, `merge`) starts a new
+ * one. */
+export function sourceControlPageKey(route: string): string {
+  const at = route.indexOf("?");
+  if (at < 0) return route;
+  const query = new URLSearchParams(route.slice(at + 1));
+  query.delete("tab");
+  const rest = query.toString();
+  return rest ? `${route.slice(0, at)}?${rest}` : route.slice(0, at);
+}
+
+/** The route of a tab. */
+const tabHref = (k: Tab) => `#/source-control?tab=${k}`;
+
+// The page stays mounted while only the tab in its route changes (App keys it
+// on the route without `tab`), so what it has loaded — the status and its
+// count, the Registry's open file — survives a tab change. It follows the
+// route's tab, and fetches the status again, quietly, on going back to Status.
 export function SourceControlPage({
   initialPath,
   initialTab,
@@ -81,29 +140,63 @@ export function SourceControlPage({
 }) {
   const { t } = useT();
   const [status, setStatus] = useState<GetSyncStatusResponse | null>(null);
+  const [linked, setLinked] = useState<boolean | null>(rememberedLinked);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab | null>(
-    initialPath ? "registry" : (initialTab as Tab | undefined) ?? null,
-  );
+  const [tab, setTab] = useState<Tab | null>(() => requestedTab(initialPath, initialTab));
+  // Follow the route when its tab changes (a tab clicked, Back, the sidebar's
+  // link with no tab), not on the first render, which the state starts from.
+  const routeTab = requestedTab(initialPath, initialTab);
+  const lastRouteTab = useRef(routeTab);
+  useEffect(() => {
+    if (lastRouteTab.current === routeTab) return;
+    lastRouteTab.current = routeTab;
+    setTab(routeTab);
+  }, [routeTab]);
+  // Switch tab from inside the page (Status or History opening the
+  // Registry), and put it in the route so a reload or Back agrees.
+  const goTo = useCallback((k: Tab) => {
+    setTab(k);
+    if (window.location.hash !== tabHref(k)) window.location.hash = tabHref(k);
+  }, []);
   // What the registry is to open: a path from Status, or a version from
   // History to save back.
   const [target, setTarget] = useState<{ path?: string; merge?: boolean; restore?: unknown } | null>(
     initialPath ? { path: initialPath, merge } : null,
   );
 
+  const learnLinked = useCallback((value: boolean) => {
+    rememberLinked(value);
+    setLinked(value);
+  }, []);
   const load = useCallback(async () => {
     try {
-      setStatus(await api.getSyncStatus());
+      const got = await api.getSyncStatus();
+      setStatus(got);
+      learnLinked(got.linked);
       setError(null);
     } catch (e) {
       setError(errorMessage(e, t("Could not load Status.")));
     }
-  }, [t]);
-  useEffect(() => void load(), [load]);
+  }, [t, learnLinked]);
+  useEffect(() => {
+    // The link answers whether there is a Status tab long before the status
+    // (which compares the instance with the branch) is ready.
+    api
+      .getSyncLink()
+      .then((info) => learnLinked(Boolean(info.link)))
+      .catch(() => {});
+    void load();
+  }, [load, learnLinked]);
 
-  const linked = status?.linked ?? false;
-  const tabs: Tab[] = linked ? ["status", "history", "registry", "zip", "link"] : ["registry", "zip", "link"];
-  const shown: Tab = tab && tabs.includes(tab) ? tab : tabs[0];
+  const tabs = sourceControlTabs(linked);
+  const shown: Tab | null = tab && tabs.includes(tab) ? tab : (tabs[0] ?? null);
+  // Back on Status from another tab: fetch it again in the background, keeping
+  // what is shown (and the count) until the new one is in.
+  const lastShown = useRef(shown);
+  useEffect(() => {
+    if (shown === "status" && lastShown.current !== null && lastShown.current !== "status") void load();
+    lastShown.current = shown;
+  }, [shown, load]);
   const label = (k: Tab) =>
     k === "status"
       ? t("Status")
@@ -119,54 +212,80 @@ export function SourceControlPage({
     <>
       <PageHeader pretitle={t("Administration")} title={t("Source control")} />
       <PageBody>
-        <Nav variant="tabs" className="mb-3" activeKey={shown}>
-          {tabs.map((k) => (
-            <Nav.Item key={k}>
-              {/* A tab is a route of its own (the page is keyed by it), so it
-                  can be linked to and survives a reload. */}
-              <Nav.Link eventKey={k} href={`#/source-control?tab=${k}`} data-testid={`sync-tab-${k}`}>
-                {label(k)}
-                {k === "status" && status && status.entries.length > 0 && (
-                  <StatusBadge tone="blue" className="ms-2">
-                    {status.entries.length}
-                  </StatusBadge>
-                )}
-              </Nav.Link>
-            </Nav.Item>
-          ))}
-        </Nav>
-        {error && <Alert variant="danger">{error}</Alert>}
-        {shown === "status" && status && (
-          <StatusTab
-            status={status}
-            onReload={load}
-            onOpenRegistry={(path, m) => {
-              setTarget({ path, merge: m });
-              setTab("registry");
-            }}
-          />
-        )}
-        {shown === "history" && (
-          <HistoryTab
-            onRestore={(path, value) => {
-              setTarget({ path, restore: value });
-              setTab("registry");
-            }}
-          />
-        )}
-        {shown === "registry" && (
-          <RegistryTab
-            key={JSON.stringify(target)}
-            initialPath={target?.path}
-            merge={target?.merge}
-            restore={target?.restore}
-            onSaved={load}
-          />
-        )}
-        {shown === "zip" && <ZipTab linked={linked} onDeployed={load} />}
-        {shown === "link" && <LinkTab onLinked={load} />}
+        {/* A tabbed card (Tabler's card-header-tabs, which react-bootstrap
+            gives a Nav in a Card.Header): the tabs sit in the card's header
+            and the open tab is its body. Deploy a zip, Link
+            setup, History, Registry (a file list and an editor, side by side)
+            and Status (the branch bar, the groups of changes, the commit
+            form as the footer) fill the card themselves, with no cards
+            inside it. */}
+        <Card data-testid="sync-card">
+          <Card.Header>
+            <Nav variant="tabs" activeKey={shown ?? undefined} onSelect={(k) => k && setTab(k as Tab)}>
+              {tabs.map((k) => (
+                <Nav.Item key={k}>
+                  {/* A tab is a route of its own, so it can be linked to and
+                      survives a reload. The click switches it too, as the
+                      route may already say this tab (Status opened the
+                      Registry before the route followed). */}
+                  <Nav.Link eventKey={k} href={tabHref(k)} data-testid={`sync-tab-${k}`}>
+                    {label(k)}
+                    {k === "status" && <ChangedCount count={status?.entries.length ?? 0} />}
+                  </Nav.Link>
+                </Nav.Item>
+              ))}
+            </Nav>
+          </Card.Header>
+          {error && (
+            <Card.Body className="pb-0">
+              <Alert variant="danger">{error}</Alert>
+            </Card.Body>
+          )}
+          {/* Blank, not a spinner, until the status is in. */}
+          {shown === "status" && !status && !error && <Card.Body data-testid="sync-status-loading" />}
+          {shown === "status" && status && (
+            <StatusTab
+              status={status}
+              onReload={load}
+              onOpenRegistry={(path, m) => {
+                setTarget({ path, merge: m });
+                goTo("registry");
+              }}
+            />
+          )}
+          {shown === "history" && (
+            <HistoryTab
+              onRestore={(path, value) => {
+                setTarget({ path, restore: value });
+                goTo("registry");
+              }}
+            />
+          )}
+          {shown === "registry" && (
+            <RegistryTab
+              key={JSON.stringify(target)}
+              initialPath={target?.path}
+              merge={target?.merge}
+              restore={target?.restore}
+              onSaved={load}
+            />
+          )}
+          {shown === "zip" && <ZipTab linked={linked ?? false} onDeployed={load} />}
+          {shown === "link" && <LinkTab onLinked={load} />}
+        </Card>
       </PageBody>
     </>
+  );
+}
+
+/** How many entries differ from the branch, on the Status tab. It is always
+ * there, a grey 0 while the status loads or when nothing differs, and of a
+ * fixed width, so the tabs do not move when the count comes in. */
+export function ChangedCount({ count }: { count: number }) {
+  return (
+    <StatusBadge tone={count > 0 ? "blue" : "secondary"} className="ms-2 sync-count-badge">
+      {count}
+    </StatusBadge>
   );
 }
 
@@ -301,76 +420,80 @@ function RegistryTab({
     }
   };
 
+  // Above the editor, or the hint when no entry is open.
+  const notices = (
+    <>
+      {error && (
+        <Alert variant="danger" onClose={() => setError(null)} dismissible>
+          {error}
+        </Alert>
+      )}
+      {receipt && <SavedNotice receipt={receipt} onClose={() => setReceipt(null)} />}
+    </>
+  );
+
   return (
-    <Row className="g-3">
-      <Col lg={4}>
-        <Card>
-          <Card.Header className="d-flex gap-2 align-items-center">
-            <Form.Control
-              size="sm"
-              type="search"
-              placeholder={t("Filter")}
-              aria-label={t("Filter the registry")}
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-            />
-            <Button size="sm" variant="outline-primary" onClick={() => setCreating(true)}>
-              <IconPlus /> <T text="New" />
-            </Button>
-          </Card.Header>
-          <div style={{ maxHeight: "70vh", overflowY: "auto" }} data-testid="registry-tree">
-            {entries === null ? (
-              <Card.Body className="text-secondary">
-                <T text="Loading…" />
-              </Card.Body>
-            ) : groups.length === 0 ? (
-              <Card.Body className="text-secondary">
-                <T text="Nothing matches the filter." />
-              </Card.Body>
-            ) : (
-              groups.map((group) => (
-                <div key={group.kind}>
-                  <div className="px-3 pt-2 pb-1 small fw-bold text-secondary text-uppercase">
-                    {kindLabel(group.kind, t)}
-                    {group.instanceOnly && <InstanceOnlyBadge className="ms-2" />}
-                  </div>
-                  <ListGroup variant="flush">
-                    {group.entries.map((e) => (
-                      <ListGroup.Item
-                        key={e.path}
-                        action
-                        active={current?.path === e.path}
-                        onClick={() => void openPath(e.path)}
-                        className="d-flex justify-content-between align-items-center py-1"
-                        title={e.path}
-                      >
-                        <span className="text-truncate">{entryLabel(e)}</span>
-                        {wholeInstanceOnly(e) && !group.instanceOnly ? (
-                          <InstanceOnlyBadge />
-                        ) : instanceOnlyKeys(e).length > 0 ? (
-                          <StatusBadge tone="secondary" title={instanceOnlyKeys(e).join(", ")}>
-                            <T text="some values this instance only" />
-                          </StatusBadge>
-                        ) : null}
-                      </ListGroup.Item>
-                    ))}
-                  </ListGroup>
+    <Row className="g-0">
+      <Col lg={4} className="registry-tree-pane">
+        <div className="d-flex gap-2 align-items-center px-3 py-2 border-bottom">
+          <Form.Control
+            size="sm"
+            type="search"
+            placeholder={t("Filter")}
+            aria-label={t("Filter the registry")}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
+          <Button size="sm" variant="outline-primary" onClick={() => setCreating(true)}>
+            <IconPlus /> <T text="New" />
+          </Button>
+        </div>
+        <div style={{ maxHeight: "70vh", overflowY: "auto" }} data-testid="registry-tree">
+          {entries === null ? (
+            <Card.Body className="text-secondary">
+              <T text="Loading…" />
+            </Card.Body>
+          ) : groups.length === 0 ? (
+            <Card.Body className="text-secondary">
+              <T text="Nothing matches the filter." />
+            </Card.Body>
+          ) : (
+            groups.map((group) => (
+              <div key={group.kind}>
+                <div className="px-3 pt-2 pb-1 small fw-bold text-secondary text-uppercase">
+                  {kindLabel(group.kind, t)}
+                  {group.instanceOnly && <InstanceOnlyBadge className="ms-2" />}
                 </div>
-              ))
-            )}
-          </div>
-        </Card>
+                <ListGroup variant="flush">
+                  {group.entries.map((e) => (
+                    <ListGroup.Item
+                      key={e.path}
+                      action
+                      active={current?.path === e.path}
+                      onClick={() => void openPath(e.path)}
+                      className="d-flex justify-content-between align-items-center py-1"
+                      title={e.path}
+                    >
+                      <span className="text-truncate">{entryLabel(e)}</span>
+                      {wholeInstanceOnly(e) && !group.instanceOnly ? (
+                        <InstanceOnlyBadge />
+                      ) : instanceOnlyKeys(e).length > 0 ? (
+                        <StatusBadge tone="secondary" title={instanceOnlyKeys(e).join(", ")}>
+                          <T text="some values this instance only" />
+                        </StatusBadge>
+                      ) : null}
+                    </ListGroup.Item>
+                  ))}
+                </ListGroup>
+              </div>
+            ))
+          )}
+        </div>
       </Col>
       <Col lg={8}>
-        {error && (
-          <Alert variant="danger" onClose={() => setError(null)} dismissible>
-            {error}
-          </Alert>
-        )}
-        {receipt && <SavedNotice receipt={receipt} onClose={() => setReceipt(null)} />}
         {current ? (
-          <Card>
-            <Card.Header className="d-flex justify-content-between align-items-center gap-2">
+          <>
+            <div className="d-flex justify-content-between align-items-center gap-2 px-3 py-2 border-bottom">
               <div className="text-truncate">
                 <code>{current.path}</code>
                 {fresh && (
@@ -390,8 +513,9 @@ function RegistryTab({
                   <T text="Save" />
                 </Button>
               </div>
-            </Card.Header>
+            </div>
             <Card.Body>
+              {notices}
               {editing && wholeInstanceOnly(editing) && (
                 <p className="small text-secondary">
                   <T text="This is this instance's alone: it is never written to git, and editing it is never a local change." />
@@ -466,13 +590,14 @@ function RegistryTab({
                 <T text="A secret shows as the mask: leave it to keep the stored value, or type a new one to replace it." />
               </p>
             </Card.Body>
-          </Card>
+          </>
         ) : (
-          <Card>
-            <Card.Body className="text-secondary">
+          <Card.Body>
+            {notices}
+            <div className="text-secondary">
               <T text="Pick an entry to see and edit its JSON." />
-            </Card.Body>
-          </Card>
+            </div>
+          </Card.Body>
         )}
       </Col>
       {review && (
