@@ -128,80 +128,83 @@ export function StatusTab({
 
   return (
     <>
-      <Card className="mb-3">
-        <Card.Body className="d-flex flex-wrap gap-3 align-items-center">
-          <div className="text-truncate" title={status.link?.url}>
-            <IconGitBranch /> <code>{status.link?.url}</code>
-            {status.link?.subdirectory && <code>/{status.link.subdirectory}</code>}
-          </div>
-          <BranchSelector current={branch} onSwitched={onReload} />
-          <div className="small text-secondary" data-testid="sync-tip">
-            {t("Branch tip {tip}, base {base}", {
-              tip: shortCommit(status.tip),
-              base: shortCommit(status.base_commit),
-            })}
-          </div>
-          <div className="ms-auto d-flex gap-2">
-            <Button
-              size="sm"
-              variant="outline-secondary"
-              disabled={busy !== null}
-              onClick={() =>
-                void run("pull", async () => {
-                  const pulled = await api.syncPull();
-                  if (pulled.before === pulled.tip) return t("The branch is where it was.");
-                  return pulled.forced
-                    ? t("The remote was force-pushed; the branch is reset to {tip}.", { tip: shortCommit(pulled.tip) })
-                    : t("Pulled {tip}.", { tip: shortCommit(pulled.tip) });
-                })
-              }
-            >
-              <IconArrowDown /> {busy === "pull" ? t("Pulling…") : t("Pull")}
-            </Button>
-            <Button
-              size="sm"
-              disabled={busy !== null || refusal !== null}
-              title={refusal ?? undefined}
-              onClick={() => setDeploying(true)}
-              data-testid="sync-deploy"
-            >
-              <T text="Deploy" />
-            </Button>
-          </div>
-        </Card.Body>
-      </Card>
+      {/* Status is laid out in the tabbed card itself: the branch bar, the
+          groups of changes (each a shaded heading row over its list), and the
+          commit form as the card's footer. */}
+      <Card.Body className="d-flex flex-wrap gap-3 align-items-center" data-testid="sync-branch-bar">
+        <div className="text-truncate" title={status.link?.url}>
+          <IconGitBranch /> <code>{status.link?.url}</code>
+          {status.link?.subdirectory && <code>/{status.link.subdirectory}</code>}
+        </div>
+        <BranchSelector current={branch} onSwitched={onReload} />
+        <div className="small text-secondary" data-testid="sync-tip">
+          {t("Branch tip {tip}, base {base}", {
+            tip: shortCommit(status.tip),
+            base: shortCommit(status.base_commit),
+          })}
+        </div>
+        <div className="ms-auto d-flex gap-2">
+          <Button
+            size="sm"
+            variant="outline-secondary"
+            disabled={busy !== null}
+            onClick={() =>
+              void run("pull", async () => {
+                const pulled = await api.syncPull();
+                if (pulled.before === pulled.tip) return t("The branch is where it was.");
+                return pulled.forced
+                  ? t("The remote was force-pushed; the branch is reset to {tip}.", { tip: shortCommit(pulled.tip) })
+                  : t("Pulled {tip}.", { tip: shortCommit(pulled.tip) });
+              })
+            }
+          >
+            <IconArrowDown /> {busy === "pull" ? t("Pulling…") : t("Pull")}
+          </Button>
+          <Button
+            size="sm"
+            disabled={busy !== null || refusal !== null}
+            title={refusal ?? undefined}
+            onClick={() => setDeploying(true)}
+            data-testid="sync-deploy"
+          >
+            <T text="Deploy" />
+          </Button>
+        </div>
+      </Card.Body>
 
-      {error && (
-        <Alert variant="danger" onClose={() => setError(null)} dismissible>
-          {error}
-        </Alert>
-      )}
-      {notice && (
-        <Alert variant="success" onClose={() => setNotice(null)} dismissible>
-          {notice}
-        </Alert>
-      )}
-      {refusal && <Alert variant="warning">{refusal}</Alert>}
-      {status.warnings.length > 0 && (
-        <Alert variant="warning" data-testid="sync-warnings">
-          <ul className="mb-0">
-            {status.warnings.map((w) => (
-              <li key={w}>{w}</li>
-            ))}
-          </ul>
-        </Alert>
+      {(error || notice || refusal || status.warnings.length > 0) && (
+        <Card.Body className="pt-0">
+          {error && (
+            <Alert variant="danger" onClose={() => setError(null)} dismissible>
+              {error}
+            </Alert>
+          )}
+          {notice && (
+            <Alert variant="success" onClose={() => setNotice(null)} dismissible>
+              {notice}
+            </Alert>
+          )}
+          {refusal && <Alert variant="warning">{refusal}</Alert>}
+          {status.warnings.length > 0 && (
+            <Alert variant="warning" data-testid="sync-warnings">
+              <ul className="mb-0">
+                {status.warnings.map((w) => (
+                  <li key={w}>{w}</li>
+                ))}
+              </ul>
+            </Alert>
+          )}
+        </Card.Body>
       )}
 
       {status.entries.length === 0 ? (
-        <Card className="mb-3">
-          <Card.Body className="text-secondary">
-            <T text="Everything here is the same as the branch." />
-          </Card.Body>
-        </Card>
+        <Card.Body className="text-secondary border-top">
+          <T text="Everything here is the same as the branch." />
+        </Card.Body>
       ) : (
         groupStatus(status.entries).map(({ group, entries }) => (
-          <Card key={group} className="mb-3" data-testid={`sync-group-${group}`}>
-            <Card.Header className="d-flex align-items-center gap-2">
+          <div key={group} className="border-top" data-testid={`sync-group-${group}`}>
+            <div className="d-flex align-items-center gap-2 px-3 py-2 border-bottom bg-surface-tertiary">
               <StatusBadge tone={GROUP_TONE[group]}>{groupLabel(group, t)}</StatusBadge>
               <span className="small text-secondary">{entries.length}</span>
               {group === "conflict" && (
@@ -209,7 +212,7 @@ export function StatusTab({
                   <T text="Tick one to keep mine when committing, or to discard mine; or merge it in the editor." />
                 </span>
               )}
-            </Card.Header>
+            </div>
             <ListGroup variant="flush">
               {entries.map((e) => (
                 <StatusRow
@@ -223,52 +226,50 @@ export function StatusTab({
                 />
               ))}
             </ListGroup>
-          </Card>
+          </div>
         ))
       )}
 
       {status.entries.some(selectable) && (
-        <Card className="mb-3">
-          <Card.Body>
-            <Form.Group className="mb-2">
-              <Form.Label>
-                <T text="Commit message" />
-              </Form.Label>
-              <Form.Control
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                placeholder={t("What changed, and why")}
-                data-testid="sync-message"
-              />
-            </Form.Group>
-            <div className="d-flex gap-2">
-              <Button
-                disabled={busy !== null || commit === null || !message.trim()}
-                onClick={() =>
-                  commit &&
-                  void run("commit", async () => {
-                    const done = await api.syncCommit(commit);
-                    setMessage("");
-                    return [
-                      t("Committed {commit} to {branch}.", { commit: shortCommit(done.commit), branch: done.branch }),
-                      ...done.warnings,
-                    ].join(" ");
-                  })
-                }
-                data-testid="sync-commit"
-              >
-                {busy === "commit" ? t("Committing…") : t("Commit and push ticked ({count})", { count: ticked.length })}
-              </Button>
-              <Button
-                variant="outline-danger"
-                disabled={busy !== null || ticked.length === 0}
-                onClick={() => setDiscarding(ticked)}
-              >
-                {t("Discard ticked ({count})", { count: ticked.length })}
-              </Button>
-            </div>
-          </Card.Body>
-        </Card>
+        <Card.Footer>
+          <Form.Group className="mb-2">
+            <Form.Label>
+              <T text="Commit message" />
+            </Form.Label>
+            <Form.Control
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              placeholder={t("What changed, and why")}
+              data-testid="sync-message"
+            />
+          </Form.Group>
+          <div className="d-flex gap-2">
+            <Button
+              disabled={busy !== null || commit === null || !message.trim()}
+              onClick={() =>
+                commit &&
+                void run("commit", async () => {
+                  const done = await api.syncCommit(commit);
+                  setMessage("");
+                  return [
+                    t("Committed {commit} to {branch}.", { commit: shortCommit(done.commit), branch: done.branch }),
+                    ...done.warnings,
+                  ].join(" ");
+                })
+              }
+              data-testid="sync-commit"
+            >
+              {busy === "commit" ? t("Committing…") : t("Commit and push ticked ({count})", { count: ticked.length })}
+            </Button>
+            <Button
+              variant="outline-danger"
+              disabled={busy !== null || ticked.length === 0}
+              onClick={() => setDiscarding(ticked)}
+            >
+              {t("Discard ticked ({count})", { count: ticked.length })}
+            </Button>
+          </div>
+        </Card.Footer>
       )}
 
       {deploying && (
@@ -743,7 +744,7 @@ export function ZipTab({ linked, onDeployed }: { linked: boolean; onDeployed: ()
   };
 
   return (
-    <Card data-testid="sync-zip">
+    <div data-testid="sync-zip">
       <Card.Body>
         <Card.Title>
           <T text="Deploy a structure zip" />
@@ -803,7 +804,7 @@ export function ZipTab({ linked, onDeployed }: { linked: boolean; onDeployed: ()
           }}
         />
       )}
-    </Card>
+    </div>
   );
 }
 
@@ -864,79 +865,87 @@ export function HistoryTab({ onRestore }: { onRestore: (path: string, value: unk
       .then((r) => setRows(r.deployments))
       .catch((e: unknown) => setError(errorMessage(e, t("Could not load the history."))));
   }, [t]);
-  if (error) return <Alert variant="danger">{error}</Alert>;
-  if (!rows) return <Spinner size="sm" />;
+  if (error)
+    return (
+      <Card.Body>
+        <Alert variant="danger" className="mb-0">
+          {error}
+        </Alert>
+      </Card.Body>
+    );
+  if (!rows)
+    return (
+      <Card.Body>
+        <Spinner size="sm" />
+      </Card.Body>
+    );
   if (rows.length === 0)
     return (
-      <Card>
-        <Card.Body className="text-secondary">
-          <T text="Nothing has been deployed, committed, discarded or saved through the registry yet." />
-        </Card.Body>
-      </Card>
+      <Card.Body className="text-secondary">
+        <T text="Nothing has been deployed, committed, discarded or saved through the registry yet." />
+      </Card.Body>
     );
   return (
-    <Card>
-      <Table responsive className="card-table mb-0" data-testid="sync-history">
-        <thead>
-          <tr>
-            <th>
-              <T text="When" />
-            </th>
-            <th>
-              <T text="What" />
-            </th>
-            <th>
-              <T text="Result" />
-            </th>
-            <th>
-              <T text="Who" />
-            </th>
-            <th>
-              <T text="Commit" />
-            </th>
-            <th>
-              <T text="Summary" />
-            </th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => {
-            const restore = restorable(row);
-            return (
-              <tr key={row.id}>
-                <td className="small text-nowrap">{new Date(row.started_at).toLocaleString()}</td>
-                <td>{ledgerKindLabel(row.kind, t)}</td>
-                <td>
-                  <StatusBadge tone={row.result === "converged" ? "green" : row.result === "drifted" ? "yellow" : "red"}>
-                    {row.result}
-                  </StatusBadge>
-                </td>
-                <td className="small">
-                  {row.actor ?? "—"} <span className="text-secondary">({row.source})</span>
-                </td>
-                <td className="small">
-                  <code>{shortCommit(row.commit)}</code> {row.branch && <span className="text-secondary">{row.branch}</span>}
-                </td>
-                <td className="small">
-                  {ledgerSummary(row, t)}
-                  {row.backups.length > 0 && (
-                    <div className="text-secondary">{t("Backup: {file}", { file: row.backups.join(", ") })}</div>
-                  )}
-                </td>
-                <td>
-                  {restore && (
-                    <Button size="sm" variant="outline-secondary" onClick={() => onRestore(restore.path, restore.value)}>
-                      <T text="Restore this version" />
-                    </Button>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </Table>
-    </Card>
+    <Table responsive className="card-table mb-0" data-testid="sync-history">
+      <thead>
+        <tr>
+          <th>
+            <T text="When" />
+          </th>
+          <th>
+            <T text="What" />
+          </th>
+          <th>
+            <T text="Result" />
+          </th>
+          <th>
+            <T text="Who" />
+          </th>
+          <th>
+            <T text="Commit" />
+          </th>
+          <th>
+            <T text="Summary" />
+          </th>
+          <th />
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => {
+          const restore = restorable(row);
+          return (
+            <tr key={row.id}>
+              <td className="small text-nowrap">{new Date(row.started_at).toLocaleString()}</td>
+              <td>{ledgerKindLabel(row.kind, t)}</td>
+              <td>
+                <StatusBadge tone={row.result === "converged" ? "green" : row.result === "drifted" ? "yellow" : "red"}>
+                  {row.result}
+                </StatusBadge>
+              </td>
+              <td className="small">
+                {row.actor ?? "—"} <span className="text-secondary">({row.source})</span>
+              </td>
+              <td className="small">
+                <code>{shortCommit(row.commit)}</code> {row.branch && <span className="text-secondary">{row.branch}</span>}
+              </td>
+              <td className="small">
+                {ledgerSummary(row, t)}
+                {row.backups.length > 0 && (
+                  <div className="text-secondary">{t("Backup: {file}", { file: row.backups.join(", ") })}</div>
+                )}
+              </td>
+              <td>
+                {restore && (
+                  <Button size="sm" variant="outline-secondary" onClick={() => onRestore(restore.path, restore.value)}>
+                    <T text="Restore this version" />
+                  </Button>
+                )}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </Table>
   );
 }
 
@@ -979,190 +988,188 @@ export function LinkTab({ onLinked }: { onLinked: () => Promise<void> }) {
   const publicKey = info?.credential.kind === "deploy_key" ? info.credential.public_key : null;
 
   return (
-    <Card>
-      <Card.Body>
-        {error && <Alert variant="danger">{error}</Alert>}
-        {notice && <Alert variant="success">{notice}</Alert>}
-        <p className="text-secondary small">
-          <T text="Link this installation's structure to a branch of a git repository." />
-        </p>
-        <Row className="g-3">
+    <Card.Body>
+      {error && <Alert variant="danger">{error}</Alert>}
+      {notice && <Alert variant="success">{notice}</Alert>}
+      <p className="text-secondary small">
+        <T text="Link this installation's structure to a branch of a git repository." />
+      </p>
+      <Row className="g-3">
+        <Col md={8}>
+          <Form.Group controlId="sync-url">
+            <Form.Label>
+              <T text="Repository URL" />
+            </Form.Label>
+            <Form.Control
+              value={form.url}
+              onChange={(e) => set({ url: e.target.value })}
+              placeholder="git@github.com:acme/structure.git"
+            />
+          </Form.Group>
+        </Col>
+        <Col md={4}>
+          <Form.Group controlId="sync-branch">
+            <Form.Label>
+              <T text="Branch" />
+            </Form.Label>
+            <Form.Control value={form.branch} onChange={(e) => set({ branch: e.target.value })} />
+          </Form.Group>
+        </Col>
+        <Col md={12}>
+          <Form.Group controlId="sync-subdirectory">
+            <Form.Label>
+              <T text="Subdirectory" />
+            </Form.Label>
+            <Form.Control
+              value={form.subdirectory}
+              onChange={(e) => set({ subdirectory: e.target.value })}
+              placeholder={t("(the top of the repository)")}
+            />
+          </Form.Group>
+        </Col>
+        <Col md={4}>
+          <Form.Group controlId="sync-credential">
+            <Form.Label>
+              <T text="Credentials" />
+            </Form.Label>
+            <Form.Select value={form.credential} onChange={(e) => set({ credential: e.target.value })}>
+              <option value="none">{t("None (a public or local repository)")}</option>
+              <option value="deploy_key">{t("A deploy key generated here (SSH)")}</option>
+              <option value="https_token">{t("An HTTPS token")}</option>
+            </Form.Select>
+          </Form.Group>
+        </Col>
+        {form.credential === "deploy_key" && (
           <Col md={8}>
-            <Form.Group controlId="sync-url">
-              <Form.Label>
-                <T text="Repository URL" />
-              </Form.Label>
-              <Form.Control
-                value={form.url}
-                onChange={(e) => set({ url: e.target.value })}
-                placeholder="git@github.com:acme/structure.git"
-              />
-            </Form.Group>
+            <Form.Label>
+              <T text="Public key" />
+            </Form.Label>
+            {publicKey ? (
+              <pre className="small border rounded p-2 text-wrap text-break mb-1" data-testid="sync-public-key">
+                {publicKey}
+              </pre>
+            ) : (
+              <div className="small text-secondary mb-1">
+                <T text="No key yet." />
+              </div>
+            )}
+            <Button
+              size="sm"
+              variant="outline-secondary"
+              disabled={busy !== null}
+              onClick={() =>
+                void run("key", async () => {
+                  await api.generateSyncKey();
+                  await load();
+                  return t("A new key was generated. Add its public key to the repository as a deploy key, with write access if this instance commits.");
+                })
+              }
+            >
+              {publicKey ? t("Generate a new key") : t("Generate a key")}
+            </Button>
           </Col>
-          <Col md={4}>
-            <Form.Group controlId="sync-branch">
-              <Form.Label>
-                <T text="Branch" />
-              </Form.Label>
-              <Form.Control value={form.branch} onChange={(e) => set({ branch: e.target.value })} />
-            </Form.Group>
-          </Col>
-          <Col md={12}>
-            <Form.Group controlId="sync-subdirectory">
-              <Form.Label>
-                <T text="Subdirectory" />
-              </Form.Label>
-              <Form.Control
-                value={form.subdirectory}
-                onChange={(e) => set({ subdirectory: e.target.value })}
-                placeholder={t("(the top of the repository)")}
-              />
-            </Form.Group>
-          </Col>
-          <Col md={4}>
-            <Form.Group controlId="sync-credential">
-              <Form.Label>
-                <T text="Credentials" />
-              </Form.Label>
-              <Form.Select value={form.credential} onChange={(e) => set({ credential: e.target.value })}>
-                <option value="none">{t("None (a public or local repository)")}</option>
-                <option value="deploy_key">{t("A deploy key generated here (SSH)")}</option>
-                <option value="https_token">{t("An HTTPS token")}</option>
-              </Form.Select>
-            </Form.Group>
-          </Col>
-          {form.credential === "deploy_key" && (
-            <Col md={8}>
-              <Form.Label>
-                <T text="Public key" />
-              </Form.Label>
-              {publicKey ? (
-                <pre className="small border rounded p-2 text-wrap text-break mb-1" data-testid="sync-public-key">
-                  {publicKey}
-                </pre>
-              ) : (
-                <div className="small text-secondary mb-1">
-                  <T text="No key yet." />
-                </div>
-              )}
-              <Button
-                size="sm"
-                variant="outline-secondary"
-                disabled={busy !== null}
-                onClick={() =>
-                  void run("key", async () => {
-                    await api.generateSyncKey();
-                    await load();
-                    return t("A new key was generated. Add its public key to the repository as a deploy key, with write access if this instance commits.");
-                  })
-                }
-              >
-                {publicKey ? t("Generate a new key") : t("Generate a key")}
-              </Button>
+        )}
+        {form.credential === "https_token" && (
+          <>
+            <Col md={4}>
+              <Form.Group controlId="sync-username">
+                <Form.Label>
+                  <T text="Username" />
+                </Form.Label>
+                <Form.Control value={form.username} onChange={(e) => set({ username: e.target.value })} />
+              </Form.Group>
             </Col>
-          )}
-          {form.credential === "https_token" && (
-            <>
-              <Col md={4}>
-                <Form.Group controlId="sync-username">
-                  <Form.Label>
-                    <T text="Username" />
-                  </Form.Label>
-                  <Form.Control value={form.username} onChange={(e) => set({ username: e.target.value })} />
-                </Form.Group>
-              </Col>
-              <Col md={4}>
-                <Form.Group controlId="sync-token">
-                  <Form.Label>
-                    <T text="Token" />
-                  </Form.Label>
-                  <Form.Control
-                    type="password"
-                    value={form.token}
-                    onChange={(e) => set({ token: e.target.value })}
-                    placeholder={info?.credential.kind === "https_token" ? t("(stored; type to replace)") : ""}
-                    autoComplete="new-password"
-                  />
-                </Form.Group>
-              </Col>
-            </>
-          )}
-          <Col md={6}>
-            <Form.Group controlId="sync-destructive">
-              <Form.Label>
-                <T text="Changes that lose data" />
-              </Form.Label>
-              <Form.Select value={form.destructive} onChange={(e) => set({ destructive: e.target.value })}>
-                <option value="confirm">{t("Ticked one by one, with a typed confirmation")}</option>
-                <option value="never">{t("Never from here; only on the server with --allow-destructive")}</option>
-              </Form.Select>
-            </Form.Group>
-          </Col>
-          <Col md={6}>
-            <Form.Group controlId="sync-full-backup">
-              <Form.Label>
-                <T text="Full backup before each deploy" />
-              </Form.Label>
-              <Form.Select value={form.fullBackup} onChange={(e) => set({ fullBackup: e.target.value })}>
-                <option value="off">{t("Off")}</option>
-                <option value="optional">{t("Offered on the review")}</option>
-                <option value="required">{t("Always")}</option>
-              </Form.Select>
-            </Form.Group>
-          </Col>
-        </Row>
-        {problem && <div className="small text-secondary mt-3">{problem}</div>}
-        <div className="d-flex gap-2 mt-3">
+            <Col md={4}>
+              <Form.Group controlId="sync-token">
+                <Form.Label>
+                  <T text="Token" />
+                </Form.Label>
+                <Form.Control
+                  type="password"
+                  value={form.token}
+                  onChange={(e) => set({ token: e.target.value })}
+                  placeholder={info?.credential.kind === "https_token" ? t("(stored; type to replace)") : ""}
+                  autoComplete="new-password"
+                />
+              </Form.Group>
+            </Col>
+          </>
+        )}
+        <Col md={6}>
+          <Form.Group controlId="sync-destructive">
+            <Form.Label>
+              <T text="Changes that lose data" />
+            </Form.Label>
+            <Form.Select value={form.destructive} onChange={(e) => set({ destructive: e.target.value })}>
+              <option value="confirm">{t("Ticked one by one, with a typed confirmation")}</option>
+              <option value="never">{t("Never from here; only on the server with --allow-destructive")}</option>
+            </Form.Select>
+          </Form.Group>
+        </Col>
+        <Col md={6}>
+          <Form.Group controlId="sync-full-backup">
+            <Form.Label>
+              <T text="Full backup before each deploy" />
+            </Form.Label>
+            <Form.Select value={form.fullBackup} onChange={(e) => set({ fullBackup: e.target.value })}>
+              <option value="off">{t("Off")}</option>
+              <option value="optional">{t("Offered on the review")}</option>
+              <option value="required">{t("Always")}</option>
+            </Form.Select>
+          </Form.Group>
+        </Col>
+      </Row>
+      {problem && <div className="small text-secondary mt-3">{problem}</div>}
+      <div className="d-flex gap-2 mt-3">
+        <Button
+          variant="outline-secondary"
+          disabled={busy !== null || problem !== null}
+          onClick={() =>
+            void run("test", async () => {
+              const { branches } = await api.testSyncLink(linkBody(form));
+              return branches.length === 0
+                ? t("The repository answered; it has no branches yet.")
+                : t("The repository answered; its branches: {list}", { list: branches.join(", ") });
+            })
+          }
+        >
+          <IconRefresh /> {busy === "test" ? t("Testing…") : t("Test the connection")}
+        </Button>
+        <Button
+          disabled={busy !== null || problem !== null}
+          onClick={() =>
+            void run("save", async () => {
+              const done = await api.setSyncLink(linkBody(form));
+              await load();
+              await onLinked();
+              return done.base_taken
+                ? t("Linked, at {tip}. Status now compares this instance with the branch.", { tip: shortCommit(done.tip) })
+                : t("The link is saved.");
+            })
+          }
+          data-testid="sync-link-save"
+        >
+          {linked ? t("Save the link") : t("Link")}
+        </Button>
+        {linked && (
           <Button
-            variant="outline-secondary"
-            disabled={busy !== null || problem !== null}
-            onClick={() =>
-              void run("test", async () => {
-                const { branches } = await api.testSyncLink(linkBody(form));
-                return branches.length === 0
-                  ? t("The repository answered; it has no branches yet.")
-                  : t("The repository answered; its branches: {list}", { list: branches.join(", ") });
-              })
-            }
-          >
-            <IconRefresh /> {busy === "test" ? t("Testing…") : t("Test the connection")}
-          </Button>
-          <Button
-            disabled={busy !== null || problem !== null}
-            onClick={() =>
-              void run("save", async () => {
-                const done = await api.setSyncLink(linkBody(form));
+            variant="outline-danger"
+            className="ms-auto"
+            disabled={busy !== null}
+            onClick={() => {
+              if (!window.confirm(t("Unlink? The structure here stays as it is; Status and Deploy go."))) return;
+              void run("unlink", async () => {
+                await api.deleteSyncLink();
                 await load();
                 await onLinked();
-                return done.base_taken
-                  ? t("Linked, at {tip}. Status now compares this instance with the branch.", { tip: shortCommit(done.tip) })
-                  : t("The link is saved.");
-              })
-            }
-            data-testid="sync-link-save"
+                return t("Unlinked.");
+              });
+            }}
           >
-            {linked ? t("Save the link") : t("Link")}
+            <T text="Unlink" />
           </Button>
-          {linked && (
-            <Button
-              variant="outline-danger"
-              className="ms-auto"
-              disabled={busy !== null}
-              onClick={() => {
-                if (!window.confirm(t("Unlink? The structure here stays as it is; Status and Deploy go."))) return;
-                void run("unlink", async () => {
-                  await api.deleteSyncLink();
-                  await load();
-                  await onLinked();
-                  return t("Unlinked.");
-                });
-              }}
-            >
-              <T text="Unlink" />
-            </Button>
-          )}
-        </div>
-      </Card.Body>
-    </Card>
+        )}
+      </div>
+    </Card.Body>
   );
 }

@@ -2,6 +2,48 @@
 
 Changes in reverse chronological order.
 
+## Admin UI: Source control's Status tab no longer appears late
+
+Status and History are the first tabs of Source control when the installation is linked, but the
+screen only knew that from the status call, which compares the instance with the branch and is
+slow. Until it answered, the screen showed the unlinked tabs, so Status and History appeared in
+front a moment later and pushed the others along. This happened on every load and every tab
+change, since the page is remounted per tab. Now the screen learns whether it is linked from the
+link alone (`GET` of the link, which reads the stored link), and remembers the last answer in
+memory (for tab changes) and in the browser's storage (for a reload). With a link, Status is
+always there, its body blank until the status is in. Only when nothing is known (the first visit
+in a browser) does the tab bar start empty, and the tabs then appear at once in their final
+order. `sourceControlTabs` is the rule.
+
+The Status tab's count of changed entries is always shown too (`ChangedCount`): a grey 0 while
+the status loads or when nothing differs, blue with the count otherwise. It has a fixed minimum
+width with tabular digits (`.sync-count-badge`, wide enough for 0 to 999), so the tabs after it
+stay put as the count arrives or changes.
+
+A tab change no longer reloads the page. App keyed `SourceControlPage` on its whole route, tab
+included, so every tab click mounted a fresh page that started with no status: the count dropped
+to 0 and came back, and the slow status call ran again. The key is now the route without `tab`
+(`sourceControlPageKey`), so the page stays mounted and follows the route's tab, and what it has
+loaded (the status and its count, the Registry's open file) survives. On going back to Status from
+another tab the status is fetched again in the background, and what is shown stays until the new
+one is in. A route with a file to open (`path`, `merge`) still starts a new page. Status and History
+opening the Registry now also put `tab=registry` in the route, so a reload or Back agrees with what
+is shown. Tested in `ui/admin/src/screens/SourceControlPage.test.tsx`.
+
+## Admin UI: Source control is a tabbed card
+
+The Source control screen's tabs (Status, History, Registry, Deploy a zip, Link setup) were a
+free-standing tab bar above cards of their own. They now sit in the header of one card, as in
+Tabler's tabbed cards (`card-header-tabs`), and the open tab is that card's body. Deploy a zip and
+Link setup are the card body itself rather than a second card inside it, and History's table is
+the card's table. Registry is two panes of the card, the file list and the editor, divided by a
+rule (`.registry-tree-pane`: below the list on a narrow screen, beside it from `lg` up), each with
+a toolbar row in place of a card header; a save's notice or error sits at the top of the editor
+pane. Status is the card too: the branch bar on top, then each group of changes as a shaded
+heading row (`bg-surface-tertiary`) over its flush list, divided by rules, and the commit form
+as the card's footer. No tab puts a card inside the tabbed card. Tested in
+`ui/admin/src/screens/SourceControlPage.test.tsx`.
+
 ## Shorter help text in the admin UI and Settings → Authentication, translated
 
 Shorter wording for the Home page's getting-started checklist, the hint under an application's
