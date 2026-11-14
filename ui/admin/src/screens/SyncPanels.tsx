@@ -752,7 +752,7 @@ export function ZipTab({ linked, onDeployed }: { linked: boolean; onDeployed: ()
           {linked ? (
             <T text="The zip takes the branch tip's place: it is planned and applied as a deploy is, what it does not have is deleted (what loses data stays unticked), and it is refused while this instance has uncommitted changes." />
           ) : (
-            <T text="This installation is not linked, so the zip is applied additively: what it has is created or updated, and nothing is deleted." />
+            <T text="This installation is not linked, so the zip is applied additively." />
           )}{" "}
           <T text="A structure zip is written by feldspar backup --structure-only." />
         </p>
@@ -984,7 +984,7 @@ export function LinkTab({ onLinked }: { onLinked: () => Promise<void> }) {
         {error && <Alert variant="danger">{error}</Alert>}
         {notice && <Alert variant="success">{notice}</Alert>}
         <p className="text-secondary small">
-          <T text="Link this installation's structure to a branch of a git repository. Commit pushes what changed here; Deploy applies what is on the branch. Data never travels, only the structure." />
+          <T text="Link this installation's structure to a branch of a git repository." />
         </p>
         <Row className="g-3">
           <Col md={8}>

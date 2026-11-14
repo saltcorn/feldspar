@@ -2,6 +2,15 @@
 
 Changes in reverse chronological order.
 
+## Shorter help text in the admin UI and Settings → Authentication, translated
+
+Shorter wording for the Home page's getting-started checklist, the hint under an application's
+connected tables, the empty Streams table, and the Sync screen's zip and link panels (`admin`
+domain). Settings → Authentication's help for the shared sign-in cookie, the persistent session
+cookie and the authenticator-app name changed too (`core` domain). All 11 new messages are
+translated in `ar`, `de`, `es`, `fr` and `zh-Hans`. The old messages stay in the catalogues as
+unused entries, as `feldspar i18n` keeps orphans. `feldspar i18n check` passes with no mismatches.
+
 ## Admin sidebar: no growing gap above the logo on a tall screen
 
 On a tall viewport the admin sidebar's logo and wordmark drifted down, with a gap above them
