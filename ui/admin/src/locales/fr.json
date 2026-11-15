@@ -1175,7 +1175,6 @@
   "Setting back…": "Rétablissement…",
   "Settings": "Paramètres",
   "Settings for tables not in the database, kept so a recreated table gets its access rules back. Unused for now.": "Paramètres de tables absentes de la base de données, conservés pour qu’une table recréée retrouve ses règles d’accès. Inutilisés pour l’instant.",
-  "Settings saved. Certificate and port changes take effect when the server restarts.": "Paramètres enregistrés. Les changements de certificat et de port prennent effet au redémarrage du serveur.",
   "Settings without a table": "Paramètres sans table",
   "Shared JavaScript for code queries and triggers, imported with lib(name). An app's library overrides an instance-wide one of the same name; triggers see instance-wide libraries only. Runs with the importer's db, fs, fetch and user.": "JavaScript partagé pour les requêtes de code et les déclencheurs, importé avec lib(name). La bibliothèque d’une application l’emporte sur une bibliothèque de l’instance du même nom ; les déclencheurs ne voient que les bibliothèques de l’instance. S’exécute avec les db, fs, fetch et user du code importateur.",
   "Shared JavaScript for code queries and triggers. Import a library with lib(name); an application's own library wins over an instance-wide one of the same name, and triggers see instance-wide libraries only. A library runs with the importing code's own db, fs, fetch and user.": "JavaScript partagé pour les requêtes de code et les déclencheurs. Importez une bibliothèque avec lib(name) ; la bibliothèque propre à une application prévaut sur une bibliothèque de même nom partagée à l’échelle de l’instance, et les déclencheurs n’ont accès qu’aux bibliothèques de l’instance. Une bibliothèque s’exécute avec les objets db, fs, fetch et user du code qui l’importe.",
@@ -1820,5 +1819,17 @@
   "Admin UI": "Interface d’administration",
   "Sign in at": "Se connecter sur",
   "Send by Email": "Envoyer par e-mail",
-  "Sent to {address}.": "Envoyé à {address}."
+  "Sent to {address}.": "Envoyé à {address}.",
+  "Apply": "Appliquer",
+  "Applying…": "Application…",
+  "Apply the changes in this card": "Appliquer les modifications de cette carte",
+  "No changes to apply": "Aucune modification à appliquer",
+  "Applied.": "Appliqué.",
+  "Saved when you press Apply.": "Enregistré lorsque vous cliquez sur Appliquer.",
+  "Move the admin UI?": "Déplacer l'interface d'administration ?",
+  "Move": "Déplacer",
+  "Could not save the settings.": "Impossible d'enregistrer les paramètres.",
+  "Could not load the settings.": "Impossible de charger les paramètres.",
+  "The admin UI will be served on the subdomain {subdomain} from now on. This page waits for the new address to answer, then takes you there.": "L'interface d'administration sera désormais servie sur le sous-domaine {subdomain}. Cette page attend que la nouvelle adresse réponde, puis vous y emmène.",
+  "The admin UI will be served on the base domain from now on. This page waits for the new address to answer, then takes you there.": "L'interface d'administration sera désormais servie sur le domaine de base. Cette page attend que la nouvelle adresse réponde, puis vous y emmène."
 }

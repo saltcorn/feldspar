@@ -1184,7 +1184,6 @@
   "Setting back…": "جارٍ الرجوع…",
   "Settings": "الإعدادات",
   "Settings for tables not in the database, kept so a recreated table gets its access rules back. Unused for now.": "إعدادات لجداول غير موجودة في قاعدة البيانات، محفوظة كي يستعيد جدول أُعيد إنشاؤه قواعد الوصول الخاصة به. غير مستخدمة حاليًا.",
-  "Settings saved. Certificate and port changes take effect when the server restarts.": "تم حفظ الإعدادات. تصبح تغييرات الشهادة والمنفذ سارية المفعول عند إعادة تشغيل الخادم.",
   "Settings without a table": "إعدادات بدون جدول",
   "Shared JavaScript for code queries and triggers, imported with lib(name). An app's library overrides an instance-wide one of the same name; triggers see instance-wide libraries only. Runs with the importer's db, fs, fetch and user.": "JavaScript مشترك للاستعلامات البرمجية والمشغّلات، يُستورد بـ lib(name). تتقدم مكتبة التطبيق على مكتبة المثيل التي تحمل الاسم نفسه؛ ولا ترى المشغّلات إلا مكتبات المثيل. تعمل بـ db وfs وfetch وuser الخاصة بالشيفرة المستوردة.",
   "Shared JavaScript for code queries and triggers. Import a library with lib(name); an application's own library wins over an instance-wide one of the same name, and triggers see instance-wide libraries only. A library runs with the importing code's own db, fs, fetch and user.": "شيفرة JavaScript مشتركة للاستعلامات البرمجية والمشغّلات. استورد مكتبة باستخدام lib(name)؛ تكون لمكتبة التطبيق الأولوية على مكتبة بالاسم نفسه على مستوى المثيل، ولا ترى المشغّلات سوى المكتبات على مستوى المثيل. تعمل المكتبة باستخدام db وfs وfetch وuser الخاصة بالشيفرة التي تستوردها.",
@@ -1898,5 +1897,17 @@
   "Admin UI": "واجهة الإدارة",
   "Sign in at": "تسجيل الدخول في",
   "Send by Email": "إرسال بالبريد الإلكتروني",
-  "Sent to {address}.": "أُرسلت إلى {address}."
+  "Sent to {address}.": "أُرسلت إلى {address}.",
+  "Apply": "تطبيق",
+  "Applying…": "جارٍ التطبيق…",
+  "Apply the changes in this card": "تطبيق التغييرات في هذه البطاقة",
+  "No changes to apply": "لا توجد تغييرات لتطبيقها",
+  "Applied.": "تم التطبيق.",
+  "Saved when you press Apply.": "يُحفظ عند الضغط على تطبيق.",
+  "Move the admin UI?": "نقل واجهة الإدارة؟",
+  "Move": "نقل",
+  "Could not save the settings.": "تعذّر حفظ الإعدادات.",
+  "Could not load the settings.": "تعذّر تحميل الإعدادات.",
+  "The admin UI will be served on the subdomain {subdomain} from now on. This page waits for the new address to answer, then takes you there.": "ستُقدَّم واجهة الإدارة من الآن على النطاق الفرعي {subdomain}. تنتظر هذه الصفحة حتى يستجيب العنوان الجديد، ثم تنقلك إليه.",
+  "The admin UI will be served on the base domain from now on. This page waits for the new address to answer, then takes you there.": "ستُقدَّم واجهة الإدارة من الآن على النطاق الأساسي. تنتظر هذه الصفحة حتى يستجيب العنوان الجديد، ثم تنقلك إليه."
 }

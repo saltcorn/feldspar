@@ -1169,7 +1169,6 @@
   "Setting back…": "正在恢复…",
   "Settings": "设置",
   "Settings for tables not in the database, kept so a recreated table gets its access rules back. Unused for now.": "数据库中不存在的表的设置，保留下来以便重新创建的表恢复其访问规则。目前未使用。",
-  "Settings saved. Certificate and port changes take effect when the server restarts.": "设置已保存。证书和端口更改将在服务器重启后生效。",
   "Settings without a table": "不含表的设置",
   "Shared JavaScript for code queries and triggers, imported with lib(name). An app's library overrides an instance-wide one of the same name; triggers see instance-wide libraries only. Runs with the importer's db, fs, fetch and user.": "供代码查询和触发器使用的共享 JavaScript，通过 lib(name) 导入。应用自己的库优先于同名的实例级库；触发器只能看到实例级库。以导入代码的 db、fs、fetch 和 user 运行。",
   "Shared JavaScript for code queries and triggers. Import a library with lib(name); an application's own library wins over an instance-wide one of the same name, and triggers see instance-wide libraries only. A library runs with the importing code's own db, fs, fetch and user.": "供代码查询和触发器共用的 JavaScript。使用 lib(name) 导入库；应用自身的库优先于同名的实例级库，触发器只能访问实例级库。库运行时使用导入它的代码自身的 db、fs、fetch 和 user。",
@@ -1768,5 +1767,17 @@
   "Admin UI": "管理界面",
   "Sign in at": "登录地址",
   "Send by Email": "通过电子邮件发送",
-  "Sent to {address}.": "已发送至 {address}。"
+  "Sent to {address}.": "已发送至 {address}。",
+  "Apply": "应用",
+  "Applying…": "正在应用…",
+  "Apply the changes in this card": "应用此卡片中的更改",
+  "No changes to apply": "没有要应用的更改",
+  "Applied.": "已应用。",
+  "Saved when you press Apply.": "点击“应用”时保存。",
+  "Move the admin UI?": "要移动管理界面吗？",
+  "Move": "移动",
+  "Could not save the settings.": "无法保存设置。",
+  "Could not load the settings.": "无法加载设置。",
+  "The admin UI will be served on the subdomain {subdomain} from now on. This page waits for the new address to answer, then takes you there.": "从现在起，管理界面将在子域名 {subdomain} 上提供。此页面会等待新地址响应，然后带您前往。",
+  "The admin UI will be served on the base domain from now on. This page waits for the new address to answer, then takes you there.": "从现在起，管理界面将在基础域名上提供。此页面会等待新地址响应，然后带您前往。"
 }

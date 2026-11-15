@@ -100,6 +100,7 @@ import { CustomQueries } from "./CustomQueries";
 import { ApplicationTabs } from "./ApplicationViews";
 import { ApplicationTranslations } from "./Translations";
 import { Autosaver, TYPING_DELAY_MS, type SaveState } from "../autosave";
+import { SaveStatus } from "../SaveStatus";
 import { fieldsOnTab, formTab, groupsToRender, type SettingsTab } from "../settingsTabs";
 import { T, useT } from "../i18n";
 
@@ -1386,38 +1387,6 @@ function createGroups(groups: string[], creating: boolean): string[] {
   return creating && !groups.includes("tables") ? [...groups, "tables"] : groups;
 }
 
-/** Where the form's edits stand, beside the page title. */
-function SaveStatus({ state }: { state: SaveState }) {
-  const { t } = useT();
-  switch (state.kind) {
-    case "pending":
-    case "saving":
-      return (
-        <span className="text-secondary small" role="status">
-          <Spinner animation="border" size="sm" className="me-1" />
-          {t("Saving…")}
-        </span>
-      );
-    case "saved":
-      return (
-        <span className="text-success small" role="status">
-          {t("Saved")}
-        </span>
-      );
-    case "error":
-      return (
-        <span className="text-danger small" role="status">
-          {t("Not saved")}
-        </span>
-      );
-    default:
-      return (
-        <span className="text-secondary small" role="status">
-          {t("Changes save as you edit")}
-        </span>
-      );
-  }
-}
 
 /** The APIs list: one card per enabled provider — its name, its mount, and the
  * settings *that provider declares*, rendered by the same `SettingsFields` a

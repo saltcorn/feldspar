@@ -71,7 +71,10 @@ pub fn development_section() -> ConfigSection {
                 "Serve the admin UI on this subdomain (admin → admin.example.com). An \
                  application can then use the base domain with subdomain @. Empty: admin UI on \
                  the base domain.",
-            ),
+            )
+            // Applied, not saved as typed: a save moves the admin UI, and
+            // `a`, `ad`, `adm` are three moves nobody asked for.
+            .applied(),
             ConfigDef::help(
                 FormField::new(LOG_SQL, BasicType::Bool)
                     .label("Log SQL")

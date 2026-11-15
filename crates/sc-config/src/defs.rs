@@ -26,17 +26,44 @@ pub struct ConfigDef {
     pub field: FormField,
     /// A sentence shown under the control. Empty when the label says it all.
     pub help: &'static str,
+    /// Whether the settings screen **holds an edit to this key until the admin
+    /// presses its card's Apply button**, rather than saving it as soon as it
+    /// changes (the screen's default).
+    ///
+    /// For a key that cannot be saved alone: one the server checks together
+    /// with others (`custom` TLS needs a certificate *and* its key; an SMTP
+    /// username needs a password), so saving each as it was typed would be
+    /// refused half-way through a correct edit; or one whose save acts at once
+    /// and should not act on every keystroke (the admin subdomain moves the
+    /// admin UI).
+    pub applied: bool,
 }
 
 impl ConfigDef {
     /// Declare a key with no help text.
     pub fn new(field: FormField) -> ConfigDef {
-        ConfigDef { field, help: "" }
+        ConfigDef {
+            field,
+            help: "",
+            applied: false,
+        }
     }
 
     /// Declare a key with the sentence that goes under its control.
     pub fn help(field: FormField, help: &'static str) -> ConfigDef {
-        ConfigDef { field, help }
+        ConfigDef {
+            field,
+            help,
+            applied: false,
+        }
+    }
+
+    /// The same key, saved with its card's Apply button ([`ConfigDef::applied`]).
+    pub fn applied(self) -> ConfigDef {
+        ConfigDef {
+            applied: true,
+            ..self
+        }
     }
 
     /// The key this definition declares.

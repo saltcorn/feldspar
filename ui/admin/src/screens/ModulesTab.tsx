@@ -32,6 +32,7 @@ import Button from "react-bootstrap/Button";
 import Form from "react-bootstrap/Form";
 
 import { api, errorMessage } from "../api";
+import { ApplyButton } from "../ApplyButton";
 import { AlertBody, StatusBadge } from "../layout";
 import {
   ALL_TOOLCHAINS,
@@ -72,6 +73,7 @@ import {
   type Toolchains,
 } from "../modules";
 import { SettingsFields, buildConfig, initialValues, type FieldSpec } from "../settings";
+import { unsavedNames } from "../settingsSaving";
 import { T, useT } from "../i18n";
 
 export function ModulesTab() {
@@ -565,9 +567,26 @@ function ModuleCard({
   const { t } = useT();
   const status = moduleStatus(module);
   const census = unsupportedSentence(module);
+  const spec = module.config_spec as FieldSpec[];
+  const storedConfig = configValues(module);
   const [values, setValues] = useState<Record<string, string>>(() =>
-    initialValues(module.config_spec as FieldSpec[], configValues(module)),
+    initialValues(spec, storedConfig),
   );
+  // When what is stored changes — this card's Apply landed — the form shows
+  // it, as stored. Keyed on the stored text, so reloading the list for another
+  // module's sake leaves an edit here alone.
+  const storedKey = JSON.stringify(storedConfig);
+  useEffect(() => {
+    setValues(initialValues(spec, storedConfig));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storedKey]);
+  // Whether this card's Apply is the save in flight, for its spinner.
+  const [applying, setApplying] = useState(false);
+  useEffect(() => {
+    if (!busy) setApplying(false);
+  }, [busy]);
+  const dirty = unsavedNames(spec, storedConfig, values).length > 0;
+  const formId = `module-${module.id}-settings`;
   const [open, setOpen] = useState(false);
   const [showPermissions, setShowPermissions] = useState(false);
   const permissions = modulePermissions(module);
@@ -582,6 +601,11 @@ function ModuleCard({
           <div className="text-secondary">{moduleSubtitle(module)}</div>
         </div>
         <div className="card-actions btn-list">
+          {/* A module's settings are saved as one: the module reads them
+              together, and each save reloads it. */}
+          {open && isConfigurable(module) && (
+            <ApplyButton dirty={dirty} busy={busy} applying={applying} form={formId} />
+          )}
           {isConfigurable(module) && (
             <Button
               variant="outline-secondary"
@@ -806,8 +830,11 @@ function ModuleCard({
         {open && isConfigurable(module) && (
           <form
             className="mt-3"
+            id={formId}
             onSubmit={(e) => {
               e.preventDefault();
+              if (!dirty || busy) return;
+              setApplying(true);
               onConfigure(values);
             }}
           >
@@ -821,9 +848,6 @@ function ModuleCard({
                 setValues((current) => ({ ...current, [name]: value }))
               }
             />
-            <Button type="submit" size="sm" disabled={busy}>
-              <T text="Save settings" />
-            </Button>
           </form>
         )}
       </div>

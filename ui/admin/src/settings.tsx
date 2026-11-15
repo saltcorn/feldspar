@@ -224,10 +224,18 @@ export function SettingField({
   extraOptions = [],
   pickerHint,
   pinned,
+  onCommit,
 }: {
   field: FieldSpec;
   value: string;
   onChange: (value: string) => void;
+  /** The admin has finished with a typed value: the control lost focus, or
+   * Enter was pressed in a one-line box (Enter then submits nothing). What a
+   * form that saves as it is edited saves a text setting on, so a half-typed
+   * value is not sent. Given the value, because a secret's control puts the
+   * sentinel back on blur in the same event. Not called by a checkbox or a
+   * select, whose every change is already finished. */
+  onCommit?: (value: string) => void;
   idPrefix?: string;
   locked?: boolean;
   /** Why this setting cannot be edited here at all — a TLS key this host's
@@ -381,6 +389,7 @@ export function SettingField({
           required={field.required}
           readOnly={fixed}
           onChange={(e) => onChange(e.target.value)}
+          onBlur={onCommit ? () => onCommit(value) : undefined}
         />
         {description}
         {fixedHint ?? <Form.Text muted>JSON.</Form.Text>}
@@ -409,6 +418,7 @@ export function SettingField({
           isInvalid={problem !== null}
           onChange={(e) => onChange(e.target.value)}
           onFocus={(e) => e.currentTarget.select()}
+          onBlur={onCommit ? () => onCommit(value) : undefined}
         />
       ) : (
         <Form.Control
@@ -420,6 +430,13 @@ export function SettingField({
                 : "text"
           }
           step={field.type === "float" ? "any" : undefined}
+          // Never the browser's saved sign-in: a settings form with a text box
+          // above a password box (Email's username and password) looks like a
+          // login to it, and a filled-in admin password is an edit nobody
+          // made — one that lights up Apply, and that Apply would save as the
+          // SMTP password. `new-password` is the value browsers honour on a
+          // password box; `off` keeps the box above it from being filled too.
+          autoComplete={field.secret ? "new-password" : "off"}
           value={value}
           required={field.required}
           readOnly={fixed}
@@ -432,7 +449,22 @@ export function SettingField({
           // one. Blurring without typing puts it back, so opening a form and
           // tabbing through it does not silently unset a key.
           onFocus={field.secret ? () => value === SECRET_SENTINEL && onChange("") : undefined}
-          onBlur={field.secret ? () => value === "" && onChange(SECRET_SENTINEL) : undefined}
+          onBlur={() => {
+            const restored = field.secret && value === "";
+            if (restored) onChange(SECRET_SENTINEL);
+            onCommit?.(restored ? SECRET_SENTINEL : value);
+          }}
+          onKeyDown={
+            onCommit
+              ? (e) => {
+                  if (e.key !== "Enter") return;
+                  // Saved here, not submitted: the form this sits in may be a
+                  // card whose Enter applies *other* settings.
+                  e.preventDefault();
+                  onCommit(field.secret && value === "" ? SECRET_SENTINEL : value);
+                }
+              : undefined
+          }
         />
       )}
       {problem && <Form.Control.Feedback type="invalid">{problem}</Form.Control.Feedback>}
