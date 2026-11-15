@@ -60,6 +60,7 @@ const sections = [
         multiline: false,
         secret: false,
         create_only: false,
+        applied: true,
         show_if: [],
         help: "off serves plain HTTP.",
       },
@@ -73,6 +74,7 @@ const sections = [
         multiline: true,
         secret: true,
         create_only: false,
+        applied: true,
         show_if: [],
         help: "Stored in the database.",
       },
@@ -86,6 +88,7 @@ const sections = [
         multiline: false,
         secret: false,
         create_only: false,
+        applied: true,
         show_if: [],
         help: "",
       },
@@ -99,6 +102,7 @@ const sections = [
         multiline: false,
         secret: false,
         create_only: false,
+        applied: true,
         show_if: [],
         help: "",
       },
@@ -194,6 +198,7 @@ const emailSection = {
       multiline: false,
       secret: false,
       create_only: false,
+      applied: true,
       show_if: [],
       help: "The mail server's hostname.",
     },
@@ -217,6 +222,7 @@ const developmentSection = {
       multiline: false,
       secret: false,
       create_only: false,
+      applied: false,
       show_if: [],
       help: "Print every statement this server sends to the database.",
     },
@@ -230,6 +236,7 @@ const developmentSection = {
       multiline: false,
       secret: false,
       create_only: false,
+      applied: false,
       show_if: [],
       help: "info logs every server request.",
     },
@@ -298,9 +305,10 @@ describe("the settings screen's tabs", () => {
     expect(settingsTabs([...sections]).map((t) => t.label)).not.toContain("Build hosts");
   });
 
-  /** Every section's fields are still edited as **one** payload, from whichever
-   * tab is showing: the tabs partition the display, not the transaction. */
-  it("still saves every section's settings in one act", () => {
+  /** A payload may span sections — the autosaved settings of every tab go in
+   * one save — because the server merges whatever it is sent over what it has
+   * stored, whichever tab is showing. */
+  it("builds one payload across sections", () => {
     const spec = allFields([...sections, emailSection]);
     const values = initialValues(
       spec,

@@ -120,7 +120,12 @@ pub fn email_section() -> ConfigSection {
                 "verify: only a trusted certificate for the host. accept_any: any certificate, \
                  still encrypted, but use only on a trusted network.",
             ),
-        ],
+        ]
+        // Applied as one: the server checks these together (`EmailSettings::from_config`), so a
+        // field saved as it was typed would be refused half-way through.
+        .into_iter()
+        .map(ConfigDef::applied)
+        .collect(),
     }
 }
 

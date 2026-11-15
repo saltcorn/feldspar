@@ -180,7 +180,12 @@ pub fn ssl_section() -> ConfigSection {
                 "When TLS is on, answer plain-HTTP requests with a permanent redirect to the \
                  same URL over HTTPS.",
             ),
-        ],
+        ]
+        // Applied as one: the server checks these together (see `check`), so a
+        // field saved as it was typed would be refused half-way through.
+        .into_iter()
+        .map(ConfigDef::applied)
+        .collect(),
     }
 }
 

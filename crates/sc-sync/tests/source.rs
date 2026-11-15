@@ -11,8 +11,10 @@ use sc_error::Result;
 use sc_files::{CFG_BRANCH, CFG_DIR, FileStoreDef};
 use sc_sync::{
     Class, CommitRequest, Confirm, Credential, DEPLOYMENTS_TABLE, LedgerKind, LinkedStatus,
-    OpClass, Outcome, SYNC_TABLE, Source, SourceControl, SyncLink, list_deployments, load_base,
+    OpClass, Outcome, Policy, SYNC_TABLE, Source, SourceControl, SyncLink, list_deployments,
+    load_base,
 };
+use serde_json::json;
 
 use crate::fixture::{Installation, git, put, text_field};
 
@@ -103,6 +105,31 @@ async fn the_bootstrap_is_idempotent_and_an_existing_database_gains_the_sync_tab
     inst.catalog.reload().await?;
     sc_sync::bootstrap(&inst.catalog).await?;
     assert_eq!(sc_sync::load_link(&inst.catalog).await?, Some(link));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_policy_an_older_version_stored_is_read_as_the_one_policy() -> Result<()> {
+    // Older versions let a link forbid data-losing ticks (`never`) and set the
+    // full backup `off` or `required`. There is one policy now: ticked one by
+    // one, and a full backup offered on the review.
+    let inst = Installation::new().await?;
+    let link = SyncLink::new("file:///nowhere.git", "main");
+    sc_sync::link::save_link(&inst.catalog, &link).await?;
+    assert_eq!(
+        inst.text("SELECT policy::text FROM _fd_sync").await,
+        r#"{"destructive": "confirm", "full_backup": "optional"}"#
+    );
+    inst.sql(
+        r#"UPDATE _fd_sync SET policy = '{"destructive": "never", "full_backup": "required"}'"#,
+    )
+    .await?;
+    let loaded = sc_sync::load_link(&inst.catalog).await?.unwrap();
+    assert_eq!(loaded.policy, Policy::default());
+    assert_eq!(
+        serde_json::to_value(loaded.policy).unwrap(),
+        json!({ "destructive": "confirm", "full_backup": "optional" })
+    );
     Ok(())
 }
 

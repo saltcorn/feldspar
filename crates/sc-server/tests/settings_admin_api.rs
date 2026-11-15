@@ -191,6 +191,72 @@ async fn the_screen_is_handed_the_declarations_and_the_values() -> sc_error::Res
     Ok(())
 }
 
+/// The screen saves each setting as it is edited, except the ones it is told
+/// to hold for their card's Apply button: those the server checks together
+/// (every TLS and Email setting) and the admin subdomain, whose save moves the
+/// admin UI. Which is which is the server's to say, so the screen still knows
+/// nothing about any particular setting.
+#[tokio::test]
+async fn the_screen_is_told_which_settings_wait_for_apply() -> sc_error::Result<()> {
+    let (mut client, _catalog, _db) = setup().await?;
+    let (status, body) = client.send("GET", "/api/settings", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let mut held = Vec::new();
+    for section in body["sections"].as_array().unwrap() {
+        for field in section["fields"].as_array().unwrap() {
+            let applied = field["applied"]
+                .as_bool()
+                .unwrap_or_else(|| panic!("`applied` on every field: {field}"));
+            let name = field["name"].as_str().unwrap();
+            match section["name"].as_str().unwrap() {
+                "ssl" | "email" => assert!(applied, "{name} is checked with its section"),
+                _ if applied => held.push(name.to_owned()),
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(held, vec![sc_config::ADMIN_SUBDOMAIN.to_owned()]);
+    Ok(())
+}
+
+/// What makes saving one setting at a time safe: a save names only the
+/// settings it is about, and the rest — another section's, complete and
+/// checked together — are left as stored.
+#[tokio::test]
+async fn a_save_of_one_setting_leaves_the_others_as_stored() -> sc_error::Result<()> {
+    let (mut client, catalog, _db) = setup().await?;
+    let (status, saved) = client
+        .send(
+            "POST",
+            "/api/settings",
+            Some(json!({ "values": {
+                SMTP_HOST: "smtp.example.com",
+                EMAIL_FROM: "app@example.com",
+            }})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+
+    // Not a logging switch: those move the whole test process.
+    let ttl = sc_config::SESSION_TTL_HOURS;
+    let (status, saved) = client
+        .send(
+            "POST",
+            "/api/settings",
+            Some(json!({ "values": { ttl: 12 } })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["values"][ttl], json!(12));
+    assert_eq!(saved["values"][SMTP_HOST], json!("smtp.example.com"));
+    assert_eq!(
+        stored_config(&catalog, EMAIL_FROM).await?,
+        Some(json!("app@example.com"))
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_save_stores_what_the_server_then_serves_with() -> sc_error::Result<()> {
     let (mut client, catalog, _db) = setup().await?;
@@ -606,8 +672,8 @@ async fn a_test_message_is_sent_through_the_stored_settings() -> sc_error::Resul
 /// offer it, and the send goes to the account's own address — never one in the
 /// request — carrying the password and the sign-in URL the dialog chose.
 #[tokio::test]
-async fn credentials_are_mailed_to_the_account_through_the_stored_settings()
--> sc_error::Result<()> {
+async fn credentials_are_mailed_to_the_account_through_the_stored_settings() -> sc_error::Result<()>
+{
     let (mut client, _catalog, _db) = setup().await?;
     let server = TestSmtp::start().await?;
 
@@ -622,7 +688,10 @@ async fn credentials_are_mailed_to_the_account_through_the_stored_settings()
     assert_eq!(st["configured"], json!(false));
     let (status, refused) = client.send("POST", &path, Some(body.clone())).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
-    assert!(refused["error"].as_str().unwrap().contains("Settings"), "{refused}");
+    assert!(
+        refused["error"].as_str().unwrap().contains("Settings"),
+        "{refused}"
+    );
 
     let (status, saved) = client
         .send(
@@ -646,9 +715,16 @@ async fn credentials_are_mailed_to_the_account_through_the_stored_settings()
 
     let received = server.message().await?;
     let transcript = received.transcript();
-    assert!(transcript.contains("RCPT TO:<admin@example.com>"), "{transcript}");
+    assert!(
+        transcript.contains("RCPT TO:<admin@example.com>"),
+        "{transcript}"
+    );
     assert!(received.body.contains("s3cret-Pw"), "{}", received.body);
-    assert!(received.body.contains("https://blog.example.com"), "{}", received.body);
+    assert!(
+        received.body.contains("https://blog.example.com"),
+        "{}",
+        received.body
+    );
 
     // Admin only, like the test message: otherwise anyone could make the
     // server send mail.
