@@ -8,7 +8,7 @@ Decisions taken:
 |---|---|
 | D1 | The unit linked to git is the **whole installation's structure**, not one application. |
 | D2 | The link is a **git remote URL** plus a branch, with its own credentials. It is not a git file store. |
-| D3 | Destructive changes follow §5: opt-in per operation, an automatic safety backup, deferred drops, and a `never` policy. There are no intent files. |
+| D3 | Destructive changes follow §5: opt-in per operation, an automatic safety backup and deferred drops. There are no intent files. |
 | D4 | Every instance is a **separate installation**. "Development", "staging" and "production" are only labels. Any number of instances can share a repository, and every instance can do every action its credentials allow. |
 | D5 | **Deploy is blocked while the instance has uncommitted changes.** They must be committed or discarded first. The one exception is a git file store's pinned commit (D6, §3.5). |
 | D6 | The repository holds the installation's **code and configuration, not its content**. A local file store's code and asset directories are in the repo; user content (uploads, `File` field files) never is. A git file store's contents are never copied, because they are already in a git repository: the repo holds its URL, branch and a **pinned commit**. Which directories count is derived from how the structure uses each store, with a per-store `sync_contents` override. A store nothing references is excluded by default (§3.5). |
@@ -334,12 +334,10 @@ Further rules:
 - **Automatic safety backup.** When any data-destructive operation is ticked, the executor first
   writes a backup with the existing writer. It holds the structure plus the rows of every table or
   column about to be dropped, and its id goes in the receipt.
-- **Instance policy**, stored with the link, so instances can differ:
-  - `destructive`: `confirm` (default) or `never`. With `never`, data-destructive operations
-    cannot be ticked in the UI, and only `feldspar sync deploy --allow-destructive` on the server can
-    do them.
-  - `full_backup`: `off` (default), `optional` or `required`. This is a full backup to the backup
-    schedule's destinations before every deploy.
+- **One policy, the same on every instance**: data-destructive operations are ticked one by one,
+  with a typed confirmation, and the review offers a full backup to the backup schedules'
+  destinations first. (A per-link `destructive: never` and `full_backup: off | required` were
+  dropped; a stored one is read as this.)
 
 ## 6. Deploy
 
@@ -444,8 +442,8 @@ A top-level **Source control** screen. It is in the sidebar whether or not the i
 linked; without a link it shows Registry and Link setup only. Its parts:
 
 - **Registry**: the editor of §7.6.
-- **Link setup**: URL, branch, subdirectory, credentials (generate a key or paste a token), policy,
-  and a test-connection button.
+- **Link setup**: URL, branch, subdirectory, credentials (generate a key or paste a token), and a
+  test-connection button.
 - **Status**: grouped as in §4, with per-entity diffs and tick boxes for Commit and Discard.
 - **Controls**: a branch selector, Pull, Commit (with a message box) and Deploy, which opens the
   review.

@@ -159,7 +159,7 @@ export function Roles() {
               </Table>
             </div>
             <p className="text-muted small mt-3">
-              <T text="Lower numbers are more privileged: 1 is the administrator, 100 is anyone at all. A table’s access rules name the least-privileged role still allowed." />
+              <T text="Lower is more privileged: 1 is admin, 100 is public. Access rules name the least-privileged role allowed." />
             </p>
           </Col>
           <Col lg={5} className="mb-4">

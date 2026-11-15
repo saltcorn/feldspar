@@ -15,35 +15,46 @@
 // setting is a Rust declaration and a redeployed server — there is no matching
 // change here, which is the point of declaring settings as data (§6.2, §13.5).
 //
-// Three behaviours are worth naming because they are not obvious from the code:
+// What is worth naming because it is not obvious from the code:
 //
-// - **A secret arrives as the sentinel** and is posted back unchanged unless the
-//   admin types over it, which is how the private key stays editable without
-//   ever being sent to the browser (`SettingField` handles the input itself).
-// - **Saving is one act**, over the whole bag, from whichever tab is showing.
-//   The tabs partition the *display*, not the transaction: the server validates
-//   the settings together — `custom` mode with no certificate, an SMTP username
-//   with no password — and refuses them whole, so a per-tab save would be a way
-//   to leave half a configuration applied. The message it refuses with is the
-//   server's own, because "the certificate and private key do not match" is
-//   worth more than anything this screen could invent.
-// - **The one act is why the values live in this component** rather than in each
-//   panel: a panel holding its own edits would post a bag missing every other
-//   tab's, which the server would read as "clear them".
+// - **A setting saves as it is edited** (`settingsSaving.ts`): a checkbox or a
+//   choice at once, a typed value when the admin leaves the box or presses
+//   Enter. One save at a time, through the same `Autosaver` an application's
+//   form uses, and each save sends only the settings it is about — the server
+//   merges them over what it has stored.
+// - **Except the settings the server holds for Apply** (`applied`): the TLS and
+//   Email sections, which the server checks together — `custom` mode with no
+//   certificate, an SMTP username with no password — so saving each box as it
+//   was typed would be refused half-way through a correct edit; and the admin
+//   subdomain, whose save moves the admin UI. Their card has an Apply button at
+//   the top right, primary while the card holds unsaved changes and disabled
+//   while it does not. The message a refusal shows is the server's own, because
+//   "the certificate and private key do not match" is worth more than anything
+//   this screen could invent.
+// - **The values live in this component** rather than in each card, so an edit
+//   waiting for Apply survives switching tabs.
+// - **A secret arrives as the sentinel** and is sent back only when the admin
+//   types over it, which is how the private key stays editable without ever
+//   being sent to the browser (`SettingField` handles the input itself).
 //
-// One setting is asked about before it is saved: **Share sign-in between
-// applications** (Authentication). Changing it ends every session, the admin's own
-// included, so the save waits for a confirmation that says so, and afterwards
-// the screen reloads into the sign-in page rather than failing its next call.
+// Two saves are asked about first. **Share sign-in between applications**
+// (Authentication): changing it ends every session, the admin's own included,
+// so the switch waits for a confirmation that says so (Cancel puts it back), and
+// afterwards the screen reloads into the sign-in page rather than failing its
+// next call. And **the admin subdomain**: applying a new one moves this screen
+// to another host, which the confirmation names before it happens.
 
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import Alert from "react-bootstrap/Alert";
 import Button from "react-bootstrap/Button";
 import Modal from "react-bootstrap/Modal";
 import Spinner from "react-bootstrap/Spinner";
 
-import { api } from "../api";
-import { adminMoved } from "../adminAddress";
+import { api, errorMessage } from "../api";
+import { ADMIN_SUBDOMAIN, adminMoved } from "../adminAddress";
+import { ApplyButton } from "../ApplyButton";
+import { Autosaver, type SaveState } from "../autosave";
+import { SaveStatus } from "../SaveStatus";
 import type { GetSettingsResponse } from "../client";
 import { AlertBody, PageBody, PageHeader } from "../layout";
 import { mcpEnabled } from "../mcpTokens";
@@ -55,6 +66,15 @@ import {
   readConfig,
   type FieldSpec,
 } from "../settings";
+import {
+  afterSave,
+  appliedFields,
+  autosavedFields,
+  mixesModes,
+  saveMode,
+  unsavedNames,
+  type SettingSpec,
+} from "../settingsSaving";
 import { AdminMove } from "./AdminMove";
 import { BackupTab } from "./BackupTab";
 import { CodeLibraryPanel } from "./CodeLibraries";
@@ -74,13 +94,13 @@ import { T, useT } from "../i18n";
 /** One section as the API describes it. */
 type Section = GetSettingsResponse["sections"][number];
 
-/** Every field of every section, flattened — the spec the payload is built
- * against, since the save is one bag of values rather than one per section. */
-export function allFields(sections: Section[]): FieldSpec[] {
+/** Every field of every section, flattened — what a field's `show_if` may
+ * name, and what a save's payload is built against. */
+export function allFields(sections: Section[]): SettingSpec[] {
   return sections.flatMap((section) => section.fields);
 }
 
-/** What Save sends: every declared setting, with an emptied box as `null`.
+/** What a save sends: each setting in `spec`, with an emptied box as `null`.
  *
  * `buildConfig` drops an empty optional value, which is right where a config is
  * stored as one bag (the whole bag is replaced, so a dropped key is a cleared
@@ -182,87 +202,196 @@ export function settingsTabPath(tab: SettingsTab): string {
   return `/settings/${encodeURIComponent(tab)}`;
 }
 
+/** One save of the settings that save as they are edited: the payload, and the
+ * form's text it was built from, so the answer can tell which boxes the admin
+ * has typed into since. */
+type AutosaveBody = { values: Record<string, unknown>; form: Record<string, string> };
+
+/** What the autosaver is handed for the form showing `values`: every setting
+ * that saves as it is edited, as the form holds it. Compared against the last
+ * save by the autosaver, so a commit that changed nothing sends nothing. */
+function autosaveBody(spec: SettingSpec[], values: Record<string, string>): AutosaveBody {
+  const fields = autosavedFields(spec);
+  const form: Record<string, string> = {};
+  for (const field of fields) form[field.name] = values[field.name] ?? "";
+  return { values: settingsPayload(fields, values), form };
+}
+
+/** A question the screen is asking before a save. */
+type Confirming = { kind: "sign-out" } | { kind: "move"; section: string } | null;
+
 export function Settings({ requestedTab = null }: { requestedTab?: string | null }) {
   const { t } = useT();
   // The sections are loaded *here* rather than inside a panel because the tab
   // strip is derived from them: a screen whose panels fetched their own could
   // not name its own tabs.
   const [sections, setSections] = useState<Section[] | null>(null);
+  // What the form shows, and what the server last said is *stored*. Mirrored
+  // in refs because a save's answer and the handlers that start one must read
+  // the newest of both, not the render they were created in.
   const [values, setValues] = useState<Record<string, string>>({});
-  // What the server last said is *stored*, as distinct from what the form is
-  // currently showing. A panel below the form acts on the stored configuration —
-  // the MCP token panel offers to mint against a route that is either served or
-  // not — and a ticked-but-unsaved checkbox is neither.
   const [stored, setStored] = useState<Record<string, string>>({});
+  const valuesRef = useRef(values);
+  const storedRef = useRef(stored);
+  const sectionsRef = useRef<Section[]>([]);
   // The keys this host's `feldspar.toml` pins: shown, never editable.
   const [hostKeys, setHostKeys] = useState<string[]>([]);
   const [tab, setTab] = useState<SettingsTab>(BACKUP_TAB);
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveState, setSaveState] = useState<SaveState>({ kind: "idle" });
+  // The card whose Apply is in flight, the last one applied, and why one was
+  // refused — each shown in that card.
+  const [applying, setApplying] = useState<string | null>(null);
+  const [applied, setApplied] = useState<string | null>(null);
+  const [applyError, setApplyError] = useState<{ section: string; message: string } | null>(
+    null,
+  );
   // Whether the last save moved the admin UI to another host, which opens the
   // dialog that waits for the new address and then goes there.
   const [moving, setMoving] = useState(false);
-  // Whether the dialog asking to sign everyone out is open, in front of a save
-  // that would.
-  const [confirming, setConfirming] = useState(false);
+  const [confirming, setConfirming] = useState<Confirming>(null);
 
-  /** Take a settings response as the screen's state. */
-  const adopt = (response: GetSettingsResponse, opening: boolean) => {
-    const config = readConfig(response.values);
-    setSections(response.sections);
-    setValues(initialValues(allFields(response.sections), config));
-    setStored(config);
-    setHostKeys(response.host_keys);
-    if (opening) setTab(initialTab(response.sections, requestedTab));
+  const show = (next: Record<string, string>) => {
+    valuesRef.current = next;
+    setValues(next);
   };
+
+  /** Take a save's answer: what is stored now, and the saved boxes as stored. */
+  const land = (
+    response: GetSettingsResponse,
+    names: string[],
+    sent: Record<string, string>,
+  ): boolean => {
+    const before = storedRef.current;
+    const after = readConfig(response.values);
+    // The session this screen runs on has ended: reloading is what shows the
+    // sign-in page, and there is nothing left to follow a move with.
+    if (signsEveryoneOut(before, after)) {
+      window.location.reload();
+      return false;
+    }
+    // Compared as stored, before and after: the server has already moved the
+    // admin UI by the time this answer arrives.
+    if (adminMoved(before, after)) setMoving(true);
+    storedRef.current = after;
+    sectionsRef.current = response.sections;
+    setStored(after);
+    setSections(response.sections);
+    setHostKeys(response.host_keys);
+    const fresh = initialValues(allFields(response.sections), after);
+    show(afterSave(names, sent, valuesRef.current, fresh));
+    return true;
+  };
+
+  const saverRef = useRef<Autosaver<AutosaveBody> | null>(null);
+  if (!saverRef.current) {
+    saverRef.current = new Autosaver<AutosaveBody>(
+      async (body) => {
+        const response = await api.updateSettings({ values: body.values });
+        land(response, Object.keys(body.form), body.form);
+      },
+      setSaveState,
+      (err) => errorMessage(err, t("Could not save the settings.")),
+    );
+  }
 
   useEffect(() => {
     void (async () => {
       try {
-        adopt(await api.getSettings(), true);
+        const response = await api.getSettings();
+        const config = readConfig(response.values);
+        const spec = allFields(response.sections);
+        const initial = initialValues(spec, config);
+        storedRef.current = config;
+        sectionsRef.current = response.sections;
+        setSections(response.sections);
+        setStored(config);
+        setHostKeys(response.host_keys);
+        show(initial);
+        setTab(initialTab(response.sections, requestedTab));
+        // What was loaded is stored: not a change to save.
+        saverRef.current?.baseline(autosaveBody(spec, initial));
       } catch {
-        setError("Could not load the settings.");
+        setLoadError(t("Could not load the settings."));
       }
     })();
+    // Leaving the screen saves what is waiting.
+    return () => {
+      void saverRef.current?.flush();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const save = (e: FormEvent) => {
-    e.preventDefault();
-    if (!sections) return;
-    if (signsEveryoneOut(stored, values)) setConfirming(true);
-    else void commit();
+  /** Save the settings that save as they are edited, as `next` has them. */
+  const autosave = (next: Record<string, string>) => {
+    saverRef.current?.change(autosaveBody(allFields(sectionsRef.current), next), 0);
   };
 
-  const commit = async () => {
-    if (!sections) return;
-    setConfirming(false);
-    setBusy(true);
-    setError(null);
-    setSaved(false);
-    try {
-      // The response is what was *stored*, not what was sent: a cleared box
-      // comes back as the declared default, and a secret as the sentinel.
-      const response = await api.updateSettings({
-        values: settingsPayload(allFields(sections), values),
-      });
-      const after = readConfig(response.values);
-      // The session this screen runs on has ended: reloading is what shows the
-      // sign-in page, and there is nothing left to follow a move with.
-      if (signsEveryoneOut(stored, after)) {
-        window.location.reload();
-        return;
-      }
-      // Compared as stored, before and after: the server has already moved the
-      // admin UI by the time this answer arrives.
-      if (adminMoved(stored, after)) setMoving(true);
-      adopt(response, false);
-      setSaved(true);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not save the settings.");
-    } finally {
-      setBusy(false);
+  const onChange = (field: SettingSpec, value: string) => {
+    const next = { ...valuesRef.current, [field.name]: value };
+    show(next);
+    if (applied) setApplied(null);
+    if (saveMode(field) !== "change") return;
+    // The one switch that signs everyone out asks first; Cancel puts it back.
+    if (signsEveryoneOut(storedRef.current, next)) setConfirming({ kind: "sign-out" });
+    else autosave(next);
+  };
+
+  const onCommit = (field: SettingSpec, value: string) => {
+    if (saveMode(field) !== "commit") return;
+    const next = { ...valuesRef.current, [field.name]: value };
+    show(next);
+    autosave(next);
+  };
+
+  /** Apply one card's held settings: the ones the admin has changed. */
+  const apply = async (section: Section, confirmed = false) => {
+    const held = appliedFields(section.fields);
+    const names = unsavedNames(held, storedRef.current, valuesRef.current);
+    if (names.length === 0) return;
+    // Applying a new admin subdomain moves this screen: said before it does.
+    if (
+      !confirmed &&
+      names.includes(ADMIN_SUBDOMAIN) &&
+      adminMoved(storedRef.current, valuesRef.current)
+    ) {
+      setConfirming({ kind: "move", section: section.name });
+      return;
     }
+    setConfirming(null);
+    setApplying(section.name);
+    setApplyError(null);
+    setApplied(null);
+    try {
+      // After whatever is still autosaving, so the two never race.
+      await saverRef.current?.flush();
+      const sent = valuesRef.current;
+      const response = await api.updateSettings({
+        values: settingsPayload(
+          held.filter((field) => names.includes(field.name)),
+          sent,
+        ),
+      });
+      if (land(response, names, sent)) setApplied(section.name);
+    } catch (e) {
+      setApplyError({
+        section: section.name,
+        message: errorMessage(e, t("Could not save the settings.")),
+      });
+    } finally {
+      setApplying(null);
+    }
+  };
+
+  const confirmSignOut = () => {
+    setConfirming(null);
+    autosave(valuesRef.current);
+  };
+
+  const cancelSignOut = () => {
+    setConfirming(null);
+    const saved = initialValues(allFields(sectionsRef.current), storedRef.current);
+    show({ ...valuesRef.current, [SHARED_SESSION_COOKIE]: saved[SHARED_SESSION_COOKIE] ?? "" });
   };
 
   if (!sections) {
@@ -270,8 +399,8 @@ export function Settings({ requestedTab = null }: { requestedTab?: string | null
       <>
         <PageHeader pretitle={t("Administration")} title={t("Settings")} />
         <PageBody>
-          {error ? (
-            <Alert variant="danger">{error}</Alert>
+          {loadError ? (
+            <Alert variant="danger">{loadError}</Alert>
           ) : (
             <Spinner animation="border" role="status" />
           )}
@@ -280,17 +409,25 @@ export function Settings({ requestedTab = null }: { requestedTab?: string | null
     );
   }
 
+  const spec = allFields(sections);
+  const onSettingsTab = sections.some((section) => section.name === tab);
+  const movingTo = (values[ADMIN_SUBDOMAIN] ?? "").trim().toLowerCase();
+
   return (
     <>
-      <PageHeader pretitle={t("Administration")} title={t("Settings")} />
+      <PageHeader
+        pretitle={t("Administration")}
+        title={t("Settings")}
+        actions={onSettingsTab ? <SaveStatus state={saveState} /> : undefined}
+      />
       <PageBody>
         {/* Hand-built rather than react-bootstrap's `Tabs`, for the reason the
             multi-select is hand-built: the admin SPA is served under a strict CSP
-            with no inline styles, and these are Tabler's own `.nav-pills` classes
+            with no inline styles, and these are Tabler's own `.nav-underline` classes
             with nothing but classes doing the work. Each panel is mounted only
             while it is showing, which is what makes the Backup tab's first render
             the thing that loads its options. */}
-        <ul className="nav nav-pills mb-3" role="tablist">
+        <ul className="nav nav-underline mb-3" role="tablist">
           {settingsTabs(sections).map((entry) => (
             <li className="nav-item" key={entry.id} role="presentation">
               <button
@@ -309,34 +446,28 @@ export function Settings({ requestedTab = null }: { requestedTab?: string | null
 
         {sections.map((section) => (
           <TabPanel id={section.name} showing={tab} key={section.name}>
-            {error && (
+            {saveState.kind === "error" && (
               <Alert variant="danger">
-                <AlertBody>{error}</AlertBody>
+                <AlertBody>{t("Not saved: {reason}", { reason: saveState.message })}</AlertBody>
               </Alert>
             )}
-            {saved && (
-              <Alert variant="success" dismissible onClose={() => setSaved(false)}>
-                <AlertBody>
-                  <T text="Settings saved. Certificate and port changes take effect when the server restarts." />
-                </AlertBody>
-              </Alert>
-            )}
-            <form onSubmit={save}>
-              <SectionCard
-                section={section}
-                spec={allFields(sections)}
-                values={values}
-                hostKeys={hostKeys}
-                onChange={(name, v) => setValues((current) => ({ ...current, [name]: v }))}
-              />
-              <div className="btn-list">
-                <Button type="submit" disabled={busy}>
-                  {busy ? "Saving…" : "Save settings"}
-                </Button>
-              </div>
-            </form>
+            <SectionCard
+              section={section}
+              spec={spec}
+              values={values}
+              stored={stored}
+              hostKeys={hostKeys}
+              applying={applying === section.name}
+              busy={applying !== null}
+              applied={applied === section.name}
+              applyError={applyError?.section === section.name ? applyError.message : null}
+              onDismissApplied={() => setApplied(null)}
+              onChange={onChange}
+              onCommit={onCommit}
+              onApply={() => void apply(section)}
+            />
             {/* Whatever this section has beyond its fields — the Email tab's
-                test message. Outside the form on purpose: it is a different
+                test message. Outside the card on purpose: it is a different
                 verb, and it acts on what is *stored*. */}
             <SectionExtra name={section.name} stored={stored} values={values} />
           </TabPanel>
@@ -356,7 +487,7 @@ export function Settings({ requestedTab = null }: { requestedTab?: string | null
           <SystemTab />
         </TabPanel>
         {moving && <AdminMove onClose={() => setMoving(false)} />}
-        <Modal show={confirming} onHide={() => setConfirming(false)} centered>
+        <Modal show={confirming?.kind === "sign-out"} onHide={cancelSignOut} centered>
           <Modal.Header closeButton>
             <Modal.Title>
               <T text="You will be signed out" />
@@ -368,11 +499,45 @@ export function Settings({ requestedTab = null }: { requestedTab?: string | null
             </p>
           </Modal.Body>
           <Modal.Footer>
-            <Button variant="secondary" onClick={() => setConfirming(false)}>
+            <Button variant="secondary" onClick={cancelSignOut}>
               <T text="Cancel" />
             </Button>
-            <Button onClick={() => void commit()}>
+            <Button onClick={confirmSignOut}>
               <T text="Save and sign out" />
+            </Button>
+          </Modal.Footer>
+        </Modal>
+        <Modal show={confirming?.kind === "move"} onHide={() => setConfirming(null)} centered>
+          <Modal.Header closeButton>
+            <Modal.Title>
+              <T text="Move the admin UI?" />
+            </Modal.Title>
+          </Modal.Header>
+          <Modal.Body>
+            <p className="mb-0">
+              {movingTo ? (
+                <T
+                  text="The admin UI will be served on the subdomain {subdomain} from now on. This page waits for the new address to answer, then takes you there."
+                  values={{ subdomain: <code>{movingTo}</code> }}
+                />
+              ) : (
+                <T text="The admin UI will be served on the base domain from now on. This page waits for the new address to answer, then takes you there." />
+              )}
+            </p>
+          </Modal.Body>
+          <Modal.Footer>
+            <Button variant="secondary" onClick={() => setConfirming(null)}>
+              <T text="Cancel" />
+            </Button>
+            <Button
+              onClick={() => {
+                const section = sections.find(
+                  (s) => confirming?.kind === "move" && s.name === confirming.section,
+                );
+                if (section) void apply(section, true);
+              }}
+            >
+              <T text="Move" />
             </Button>
           </Modal.Footer>
         </Modal>
@@ -399,25 +564,51 @@ function TabPanel({
   );
 }
 
-/** One section's heading, explanation and controls. */
+/** One section's heading, explanation and controls — with, when it holds
+ * settings for Apply, the Apply button at the right of its title row. */
 function SectionCard({
   section,
   spec,
   values,
+  stored,
   hostKeys,
+  applying,
+  busy,
+  applied,
+  applyError,
+  onDismissApplied,
   onChange,
+  onCommit,
+  onApply,
 }: {
   section: Section;
   /** Every section's fields: what a field's `show_if` may name. */
-  spec: FieldSpec[];
+  spec: SettingSpec[];
   values: Record<string, string>;
+  stored: Record<string, string>;
   hostKeys: string[];
-  onChange: (name: string, value: string) => void;
+  applying: boolean;
+  busy: boolean;
+  applied: boolean;
+  applyError: string | null;
+  onDismissApplied: () => void;
+  onChange: (field: SettingSpec, value: string) => void;
+  onCommit: (field: SettingSpec, value: string) => void;
+  onApply: () => void;
 }) {
   const { t } = useT();
   const pinned = t(
     "Set in this server's feldspar.toml, which wins over this screen. Change it there and restart the server.",
   );
+  const fields: SettingSpec[] = section.fields;
+  const held = appliedFields(fields);
+  const dirty = unsavedNames(held, stored, values).length > 0;
+  const mixed = mixesModes(fields);
+  const formId = `settings-${section.name}-apply`;
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    onApply();
+  };
   return (
     <div className="card mb-4">
       <div className="card-header">
@@ -425,17 +616,39 @@ function SectionCard({
           <h3 className="card-title">{section.label}</h3>
           <p className="card-subtitle text-secondary mb-0">{section.description}</p>
         </div>
+        {held.length > 0 && (
+          <div className="card-actions">
+            <ApplyButton dirty={dirty} busy={busy} applying={applying} form={formId} />
+          </div>
+        )}
       </div>
-      <div className="card-body">
+      {/* The form the title row's Apply button submits: Enter in one of the
+          card's held boxes applies the card, and a box that saves on its own
+          catches its Enter itself (`SettingField`'s `onCommit`), so a card
+          with nothing held never submits anything. */}
+      <form className="card-body" id={formId} onSubmit={submit}>
+        {applyError && (
+          <Alert variant="danger">
+            <AlertBody>{applyError}</AlertBody>
+          </Alert>
+        )}
+        {applied && (
+          <Alert variant="success" dismissible onClose={onDismissApplied}>
+            <AlertBody>
+              <T text="Applied." />
+            </AlertBody>
+          </Alert>
+        )}
         {/* A field whose `show_if` does not hold for what the form shows now
             is hidden, as the admin edits — MCP from this machine only, while
             the MCP server is unticked. */}
-        {section.fields.filter((field) => isShown(field, spec, values)).map((field) => (
+        {fields.filter((field) => isShown(field, spec, values)).map((field) => (
           <div key={field.name}>
             <SettingField
               field={field}
               value={values[field.name] ?? ""}
-              onChange={(v) => onChange(field.name, v)}
+              onChange={(v) => onChange(field, v)}
+              onCommit={(v) => onCommit(field, v)}
               idPrefix={`setting-${section.name}`}
               pinned={hostKeys.includes(field.name) ? pinned : undefined}
             />
@@ -444,9 +657,16 @@ function SectionCard({
             {field.help && (
               <div className="form-hint mt-n2 mb-3 text-secondary">{field.help}</div>
             )}
+            {/* In a card where everything else saves at once, a setting that
+                waits says so. */}
+            {mixed && field.applied && (
+              <div className="form-hint mt-n2 mb-3 text-secondary">
+                <T text="Saved when you press Apply." />
+              </div>
+            )}
           </div>
         ))}
-      </div>
+      </form>
     </div>
   );
 }

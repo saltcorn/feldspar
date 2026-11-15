@@ -542,7 +542,7 @@ export function TriggerForm({ triggerId, table }: { triggerId?: string; table?: 
                     {streamEvent ? (
                       <>
                         <T
-                          text="A JavaScript expression over the element’s envelope. An element is not a row, so there is no {row} or {old} here: the element is {value}, and the provider’s own metadata is {source}. Leave blank to always run."
+                          text="JavaScript over the element's envelope: {value} is the element, {source} the provider's metadata (no {row} or {old}). Blank: always run."
                           values={{
                             row: <code>row</code>,
                             old: <code>old</code>,
@@ -554,7 +554,7 @@ export function TriggerForm({ triggerId, table }: { triggerId?: string; table?: 
                     ) : (
                       <>
                         <T
-                          text="A JavaScript expression over the affected row’s fields, {row}, {old} and {user}. The action runs only when it is true. Leave blank to always run."
+                          text="JavaScript over the row's fields, {row}, {old} and {user}. The action runs only when it's true. Blank: always run."
                           values={{
                             row: <code>row</code>,
                             old: <code>old</code>,
@@ -666,7 +666,7 @@ export function TriggerForm({ triggerId, table }: { triggerId?: string; table?: 
             onChange={(e) => setRunsAsSystem(e.target.checked)}
           />
           <Form.Text muted className="d-block mb-3">
-            <T text="Its action then runs at system authority, tables with row-level security included, once a person approves its code on the triggers list. Until then it runs as the user who caused it." />
+            <T text="Runs at system authority, row-level-secured tables included, once someone approves its code on the triggers list. Until then it runs as the triggering user." />
           </Form.Text>
 
           <div className="d-flex gap-2">

@@ -488,7 +488,7 @@ export function LlmModels({
                 </Form.Text>
               </Form.Group>
               <p className="text-muted small">
-                <T text="Leave a setting blank to use the built-in default. A blank price is unknown, not free, so a cost budget cannot be set on an agent using this model." />
+                <T text="Blank settings use defaults. A blank price means unknown, not free, so agents on this model can't have a cost budget." />
               </p>
               <SettingsFields
                 spec={spec}

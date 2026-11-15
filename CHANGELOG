@@ -12,6 +12,96 @@ conversation. Each admin now signs in once with their own account, unless an Ant
 provider's key is configured, which is used as before. Logins and conversations from the shared
 directory are not carried over.
 
+## Admin Settings save as they are edited; Apply buttons for the settings that go together
+
+The settings tabs under Administration → Settings no longer have a "Save settings" button.
+A checkbox or a choice saves as soon as it changes. A typed value saves when the admin leaves the
+box or presses Enter, never on a keystroke, so a half-typed path, number or language list is not
+sent. One save runs at a time, through the `Autosaver` the application form already uses, and
+the page header shows "Saving…", "Saved" or "Not saved" (`SaveStatus`, moved out of
+`ApplicationForm` to be shared). A refused save shows the server's message above the card.
+
+Some settings wait for an Apply button instead. The server declares them with
+`ConfigDef::applied`, sent as `applied` on each settings field:
+- every TLS and Email setting, because the server checks each of those sections as a whole
+  (`custom` needs a certificate and its key; an SMTP host needs a From address; a username needs
+  a password), so saving one box at a time would be refused half-way through a correct edit;
+- the admin subdomain, because saving it moves the admin UI at once. Applying a new one first
+  asks "Move the admin UI?". In the Development card, where everything else saves at once, the
+  field says "Saved when you press Apply."
+
+The Apply button (`ApplyButton.tsx`) sits in the card's title row, at the top right. It has a
+check icon. It is disabled and outlined while the card matches what is stored, and turns primary
+the moment the card has unsaved changes. Apply sends only that card's changed settings. Enter in
+one of its boxes applies it. The shared sign-in switch still asks before signing everyone out,
+and Cancel now puts the switch back. A module's settings (Settings → Modules) get the same Apply
+button in the module card's title row in place of their "Save settings", because a module reads
+its settings together and each save reloads it. The record forms (identity providers, backup
+schedules, build hosts, module permissions, shared translations, code libraries) keep their own
+Save buttons.
+
+`SettingField` gains `onCommit` (blur, or Enter in a one-line box), and its one-line boxes no
+longer take the browser's saved sign-in (`autoComplete` `new-password` on a secret, `off`
+otherwise). The Email card's Username and Password boxes looked like a login form to the browser.
+It filled in the admin's own credentials, which lit up Apply with nothing changed, and Apply
+would have saved the admin's password as the SMTP password. Compatibility: no stored data
+changes. The server already merged a save over what was stored, so a save naming one setting
+leaves the rest alone. `applied` is a new field in the settings response, and all four UI
+clients are regenerated. The unused "Settings saved. Certificate and port changes…" translation
+is removed.
+
+Tests: `ui/admin/src/settingsSaving.test.ts` (when each kind of setting saves, what counts as
+unsaved, an Apply sends only its card's changes, a save's answer keeps newer typing, the Apply
+button's look), `ui/admin/src/settingField.autofill.test.tsx` (no autofill of a setting's
+box), `crates/sc-server/tests/settings_admin_api.rs` (which settings the screen is told
+to hold for Apply; a save of one setting leaves another section's as stored).
+
+## Source control has one deploy policy; Link setup loses its policy options
+
+The Link setup tab no longer has "Changes that lose data" or "Full backup before each deploy".
+Every instance now works one way: data-losing operations are ticked one by one, with a typed
+confirmation, and the deploy review always offers "Take a full backup first". The zip deploy
+review offers it too. A discard does not, because a discard never took one.
+
+`sc_sync`: `Destructive` and `FullBackup` keep one variant each (`confirm`, `optional`), and
+`Policy` is only what the API reports. It is gone from `Request` and `EditBy`, so a deploy or a
+registry save no longer refuses a ticked drop under `never`. A full backup is taken only when the
+confirmation asks for one (`Confirm::full_backup`, `--full-backup` at the CLI). With no backup
+schedule, that deploy is refused and the error says to untick it.
+
+Compatibility: a policy an older version stored in `_fd_sync` is not read, so a link saved as
+`never`, `off` or `required` behaves as above, with no migration. A link body that still sends
+`policy` is accepted and ignored. Links and plans still report `policy`, always `{ destructive:
+"confirm", full_backup: "optional" }`. `--allow-destructive` is unchanged: it is still the CLI's
+leave for `--yes` to apply a plan that loses data. The unused translations are removed.
+
+Tests: `crates/sc-sync/tests/deploy.rs` (a destructive tick from the UI is applied after a safety
+backup), `crates/sc-sync/tests/source.rs` (a stored `never`/`required` policy reads as the one
+policy), `crates/sc-server/tests/admin_api.rs` (an old client's policy is ignored), and
+`ui/admin/src/screens/SourceControlPage.test.tsx` (Link setup shows no policy options).
+
+## Settings tabs are underlined instead of pills
+
+The tab strips along the top of the global Settings screen and of each application's settings
+(`ApplicationTabs`) use Tabler's `nav nav-underline` instead of `nav nav-pills`. Under Tabler the
+pills barely stood out from the page. Now the open tab is bold with a line under it. Only the class
+changes. The View editor's step indicator keeps its pills, because it shows progress and is not a
+set of tabs. Test: `ui/admin/src/screens/ApplicationTabs.test.tsx`.
+
+## Shorter help text across the admin UI and Settings, translated
+
+108 long sublabels, field help, screen intros, empty states, confirm prompts and warnings are
+rewritten shorter: every live message over 140 characters in the `admin` domain (81) and in the
+admin-facing parts of the `core` domain (27: Settings sections, OAuth provider fields, API and
+framework choices, git and file-store fields, the analytics app and role-grants descriptions).
+Warnings and the facts an admin needs to act (what is deleted, what runs with system authority,
+what cannot be undone) are kept. Removed are restated context, things the form already shows and
+long lead-ins. Agent tool descriptions, which an LLM reads, are not changed. Placeholders are
+unchanged in every message. All 108 new messages are translated in `ar`, `de`, `es`, `fr` and
+`zh-Hans`. The old messages stay in the catalogues as unused entries, as `feldspar i18n` keeps
+orphans. The role-grants table's description is set only when the table is created, so an
+existing installation keeps the old wording. `feldspar i18n check` passes with no mismatches.
+
 ## Admin UI: Source control's Status tab no longer appears late
 
 Status and History are the first tabs of Source control when the installation is linked, but the

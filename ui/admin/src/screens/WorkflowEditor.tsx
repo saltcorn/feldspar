@@ -451,7 +451,7 @@ export function WorkflowEditor({ triggerId }: { triggerId: string }) {
                 />
               </Card.Body>
               <Card.Footer className="text-muted small">
-                <T text="Drag from the bottom of a step onto another to say what runs next; a loop's body hangs off its right-hand side. Select an edge and press Delete to remove it. A step is deleted from its inspector, which is where the refusal naming what points at it belongs." />
+                <T text="Drag from a step's bottom onto another to set what runs next; a loop's body hangs off its right side. Select an edge and press Delete to remove it. Delete steps from the inspector." />
               </Card.Footer>
             </Card>
           </div>
@@ -561,7 +561,7 @@ function WorkflowSettings({
             onChange={(e) => onChange({ ...workflow, max_steps: Number(e.target.value) })}
           />
           <Form.Text muted>
-            <T text="How many steps one run may take before the engine stops it. A branch that points back at itself is a loop with no exit, and a run that spins forever is worse than one that stops with a reason." />
+            <T text="Maximum steps per run before the engine stops it, so a loop with no exit stops with a reason." />
           </Form.Text>
         </Form.Group>
         <Form.Check
@@ -572,7 +572,7 @@ function WorkflowSettings({
           onChange={(e) => onChange({ ...workflow, trace: e.target.checked })}
         />
         <Form.Text muted>
-          <T text="Writes the context after every step, which is what the run detail screen draws its timeline from. Off by default: a trace is a copy of the whole context per step." />
+          <T text="Records the context after every step, for the run timeline. Off by default: it copies the whole context per step." />
         </Form.Text>
       </Card.Body>
     </Card>

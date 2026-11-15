@@ -622,7 +622,7 @@ function TableData({
                 onChange={(event) => setNewName(event.target.value)}
               />
               <Form.Text>
-                <T text="The rows, fields and settings stay. Keys, views, triggers, workflows, agents, datasets and applications that name the table are updated. Code that names it is not." />
+                <T text="Rows, fields and settings stay. Keys, views, triggers, workflows, agents, datasets and applications are updated; code is not." />
               </Form.Text>
             </Form.Group>
           </Modal.Body>
@@ -944,7 +944,7 @@ function Constraints({
                       ))}
                   </Form.Select>
                   <Form.Text muted>
-                    <T text="An HNSW index by cosine distance, which is what lets a nearest read (`?nearest=` in the REST API, `nearest:` in GraphQL) find the closest rows without reading every one. PostgreSQL with pgvector only; SQLite reads every row instead." />
+                    <T text="HNSW cosine index for fast nearest reads (`?nearest=` in REST, `nearest:` in GraphQL). PostgreSQL with pgvector only; SQLite scans every row." />
                   </Form.Text>
                 </Form.Group>
               )}
@@ -962,7 +962,7 @@ function Constraints({
                     ))}
                   </Form.Select>
                   <Form.Text muted>
-                    <T text="Indexes every text field of the table together, which is what lets a read search its rows (`?search=` in the REST API, `search:` in GraphQL). The language decides how words are reduced to their stems; on SQLite only English is stemmed, and the table needs an integer key." />
+                    <T text="Indexes all text fields for search (`?search=` in REST, `search:` in GraphQL). The language sets stemming. On SQLite, only English is stemmed and an integer key is needed." />
                   </Form.Text>
                 </Form.Group>
               )}
@@ -1417,7 +1417,7 @@ function Settings({
             />
             <Form.Text muted>
               <T
-                text="A JavaScript expression over the row’s fields, {user}, the operation flags ({read}, {write}, …), Ⱶ-joinfields and Ↄ-aggregations. Rows it grants are reachable below the roles above. Blank means roles only."
+                text="JavaScript over the row's fields, {user}, operation flags ({read}, {write}, …), Ⱶ-joinfields and Ↄ-aggregations. Grants rows to roles below those above. Blank: roles only."
                 values={{
                   user: <code>user</code>,
                   read: <code>_read</code>,
@@ -1481,7 +1481,7 @@ function Settings({
                     onChange={setHistoryRole}
                   />
                   <Form.Text muted>
-                    <T text="Admin only by default. A wider role sees only the history of rows its read access lets it see, and secrets stay hidden. The admin screens stay admin-only." />
+                    <T text="Admin only by default. Wider roles see history only for rows they can read, and secrets stay hidden." />
                   </Form.Text>
                   <Form.Group className="mt-2" controlId="tableHistoryKeepDays">
                     <Form.Label><T text="Keep history for (days)" /></Form.Label>

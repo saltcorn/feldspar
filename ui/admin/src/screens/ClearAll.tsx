@@ -74,7 +74,7 @@ export function ClearAllPanel() {
             <T text="Clear all" />
           </h3>
           <p className="card-subtitle text-secondary mb-0">
-            <T text="Reset this installation to the empty state: every table in the primary database is dropped, and everything else is deleted — applications, file stores, connections, agents, triggers, models, modules, settings and every user account, yours included." />
+            <T text="Reset to empty: drop every table in the primary database and delete everything else, including all user accounts." />
           </p>
         </div>
       </div>
@@ -138,7 +138,7 @@ export function ClearAllPanel() {
             <>
               <Modal.Body>
                 <p>
-                  <T text="Every table in the primary database will be dropped, and every application, file store, connection, agent, trigger, model, module, setting and user account deleted — yours included, so you will be signed out and asked to create the first administrator again. This cannot be undone." />
+                  <T text="Drops every table in the primary database and deletes all applications, stores, connections, agents, triggers, models, modules, settings and users, you included. You'll be signed out and asked to create a new administrator. This cannot be undone." />
                 </p>
                 {stores.length > 0 ? (
                   <>

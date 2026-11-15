@@ -12,7 +12,8 @@
 //!   instance key like every other secret. A key can be generated before
 //!   there is a link to use it, since the remote has to be given the public
 //!   half first;
-//! - **the policy** (§5);
+//! - **the policy** (§5), the same for every instance now: a policy stored by
+//!   an older version is not read;
 //! - **the base** (§4): each entity as it was last synced here, by a commit, a
 //!   deploy or a discard. A tree, not a commit, so it survives force-pushes and
 //!   branch switches and can hold deferred operations; compressed, with each
@@ -127,12 +128,13 @@ pub struct SyncLink {
     pub subdirectory: Option<String>,
     /// How the remote is reached.
     pub credential: Credential,
-    /// The instance's policy.
+    /// The deploy policy: always [`Policy::default`], reported for API
+    /// clients.
     pub policy: Policy,
 }
 
 impl SyncLink {
-    /// A link to `url`'s `branch`, anonymously, under the default policy.
+    /// A link to `url`'s `branch`, anonymously.
     pub fn new(url: impl Into<String>, branch: impl Into<String>) -> SyncLink {
         SyncLink {
             url: url.into(),
@@ -265,10 +267,8 @@ pub async fn load_link(catalog: &Catalog) -> Result<Option<SyncLink>> {
         branch: text_of(&row, "branch").unwrap_or_else(|| "main".to_owned()),
         subdirectory: text_of(&row, "subdirectory"),
         credential: credential_of(&row)?,
-        policy: match row.get("policy") {
-            Some(Value::Json(v)) => serde_json::from_value(v.clone()).unwrap_or_default(),
-            _ => Policy::default(),
-        },
+        // Whatever policy an older version stored, there is one now.
+        policy: Policy::default(),
     }))
 }
 

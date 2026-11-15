@@ -39,7 +39,7 @@
 //!   in order through each kind's own save path, and [`DeployHost`], what it
 //!   needs from the running server.
 //! - [`deploy`](mod@deploy): [`Deployer`], a deploy or discard from review to
-//!   receipt — the sync lock, the stale-plan check, the policy, the safety
+//!   receipt — the sync lock, the stale-plan check, the safety
 //!   backup, `reload_all`, the convergence re-diff and the next base.
 //! - [`ledger`]: `_fd_deployments` and the sync lock.
 //!

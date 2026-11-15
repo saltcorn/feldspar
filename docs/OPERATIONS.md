@@ -2679,14 +2679,13 @@ before anything is applied. It holds the structure plus the rows of every table 
 be dropped, in `<data dir>/sync-backups/safety-<time>-<id>.zip`. Its path is in the receipt and in
 History.
 
-**The policy**, under Link setup, so instances can differ:
+**A full backup is offered on the review.** Tick "Take a full backup first" (at the CLI,
+`--full-backup`) and a backup goes through every backup schedule to its destination before the
+deploy. With no schedule, the deploy is refused, so add one under Backups or untick it.
 
-- `destructive`: `confirm` (the default) or `never`. Under `never`, nothing that loses data can be
-  ticked in the UI or applied over the API. Only `feldspar sync deploy --yes --allow-destructive`,
-  run on the server, can apply it. Use `never` on production.
-- `full_backup`: `off` (the default), `optional` (the review offers one), or `required`. A full
-  backup goes through every backup schedule to its destination before the deploy. Under
-  `required`, a deploy is refused if no schedule exists.
+Every instance works this way. Older versions had a per-link policy under Link setup (`destructive:
+never`, `full_backup: off | required`). A link that stored one, and an API client that still
+sends one, is treated as above.
 
 At the CLI, `--yes` applies only a plan with no blockers. It refuses a plan that loses data
 unless `--allow-destructive` is given.

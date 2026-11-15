@@ -89,8 +89,8 @@ pub fn email_section() -> ConfigSection {
                     .label("Connection security")
                     .options([SECURITY_STARTTLS, SECURITY_TLS, SECURITY_NONE])
                     .default_value(SECURITY_STARTTLS),
-                "starttls connects in the clear and upgrades (port 587). tls is encrypted from \
-                 the first byte (port 465). none is local-network plain SMTP with no credentials.",
+                "starttls: upgrades, port 587. tls: encrypted from the start, port 465. none: \
+                 plain SMTP, local network only, no credentials.",
             ),
             ConfigDef::help(
                 FormField::new(SMTP_USERNAME, BasicType::Text).label("Username"),
@@ -109,21 +109,23 @@ pub fn email_section() -> ConfigSection {
             ),
             ConfigDef::help(
                 FormField::new(SMTP_CERTIFICATE_NAME, BasicType::Text).label("Certificate name"),
-                "Only needed when the SMTP host is an IP address, or a name the server's \
-                 certificate is not issued for: the certificate \
-                 is checked against this name instead. Leave empty to check it against the host.",
+                "Check the certificate against this name instead of the host. Needed when the \
+                 host is an IP, or the certificate has another name.",
             ),
             ConfigDef::help(
                 FormField::new(SMTP_CERTIFICATE_CHECK, BasicType::Text)
                     .label("Certificate check")
                     .options([CERTIFICATE_VERIFY, CERTIFICATE_ACCEPT_ANY])
                     .default_value(CERTIFICATE_VERIFY),
-                "verify accepts only a certificate from a trusted CA, issued for the host (or the \
-                 certificate name). accept_any accepts any certificate — self-signed, expired or \
-                 for another name: the connection is still encrypted, but use it only for a \
-                 server on a network you trust.",
+                "verify: only a trusted certificate for the host. accept_any: any certificate, \
+                 still encrypted, but use only on a trusted network.",
             ),
-        ],
+        ]
+        // Applied as one: the server checks these together (`EmailSettings::from_config`), so a
+        // field saved as it was typed would be refused half-way through.
+        .into_iter()
+        .map(ConfigDef::applied)
+        .collect(),
     }
 }
 

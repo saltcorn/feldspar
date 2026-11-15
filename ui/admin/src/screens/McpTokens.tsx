@@ -166,7 +166,7 @@ export function McpTokensPanel({ enabled }: { enabled: boolean }) {
           <Alert variant="success">
             <AlertBody>
               <p className="mb-2">
-                <strong><T text="This is the only time this token is shown." /></strong> <T text="It is stored as a hash, so nothing — not this screen, not the log, not the database — can read it back. Copy the line below now; if you lose it, revoke the token and generate another." />
+                <strong><T text="This is the only time this token is shown." /></strong> <T text="Stored only as a hash, so it can't be shown again. Copy the line below now; if it's lost, revoke the token and generate another." />
               </p>
               <pre className="border rounded p-3 mb-2 text-wrap">{command}</pre>
               <div className="btn-list">
@@ -184,7 +184,7 @@ export function McpTokensPanel({ enabled }: { enabled: boolean }) {
         {enabled && !secret && (
           <div className="mb-3">
             <p className="text-secondary mb-2">
-              <T text="Register this server with a coding agent by running this, with a token of its own in place of the placeholder — a generated token is shown in full exactly once, and this line is shown with it." />
+              <T text="Register this server with a coding agent by running this, with its own token in place of the placeholder." />
             </p>
             <pre className="border rounded p-3 mb-2 text-wrap">{command}</pre>
             <Button variant="outline-secondary" size="sm" onClick={() => void copy()}>

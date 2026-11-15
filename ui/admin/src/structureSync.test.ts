@@ -1,5 +1,5 @@
 // Source control's model: Status's groups and ticks, a commit's body with its
-// conflicts kept as mine, the link form, the review's ticks under the policy,
+// conflicts kept as mine, the link form, the review's ticks,
 // the ledger's "restore this version", and the registry's diff tabs.
 
 import { describe, expect, it } from "vitest";
@@ -125,8 +125,9 @@ describe("the link", () => {
 
   it("starts from what is stored, and sends a token only when one is typed", () => {
     const form = linkForm(stored);
-    expect(form.destructive).toBe("never");
     expect(form.username).toBe("bot");
+    // There is one deploy policy, so the form neither shows nor sends one.
+    expect(linkBody(form)).not.toHaveProperty("policy");
     expect(linkBody(form).credential).toEqual({ kind: "https_token", username: "bot", token: null });
     expect(linkBody({ ...form, token: " tok " }).credential?.token).toBe("tok");
     // A blank subdirectory is the repository's top.
@@ -150,13 +151,12 @@ describe("the deploy review", () => {
   const ops = [op("rename", "safe", true), op("delete:view", "metadata_delete", true), op("drop", "data_destructive", false)];
 
   it("starts each operation at its default, and a drop unticked", () => {
-    expect([...reviewTicks(ops, { destructive: "confirm" })]).toEqual(["rename", "delete:view"]);
+    expect([...reviewTicks(ops)]).toEqual(["rename", "delete:view"]);
   });
 
-  it("lets nothing that loses data be ticked under `destructive: never`", () => {
-    expect(reviewTickable(ops[2], { destructive: "confirm" })).toBe(true);
-    expect(reviewTickable(ops[2], { destructive: "never" })).toBe(false);
-    expect(reviewTickable(op("type", "unsupported", false), null)).toBe(false);
+  it("lets what loses data be ticked one by one, and nothing unsupported", () => {
+    expect(reviewTickable(ops[2])).toBe(true);
+    expect(reviewTickable(op("type", "unsupported", false))).toBe(false);
   });
 
   it("asks for the word typed once a drop is ticked, and never with a blocker", () => {

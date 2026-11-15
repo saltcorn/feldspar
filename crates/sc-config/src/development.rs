@@ -68,11 +68,13 @@ pub fn development_section() -> ConfigSection {
             // (and orders the new name's certificate) without a restart.
             ConfigDef::help(
                 FormField::new(ADMIN_SUBDOMAIN, BasicType::Text).label("Admin subdomain"),
-                "Serve the admin UI on this subdomain of the base domain (admin gives \
-                 admin.example.com) instead of on the base domain itself. Once it has moved, an \
-                 application can be served on the base domain by giving @ as its subdomain. \
-                 Leave empty to serve the admin UI on the base domain.",
-            ),
+                "Serve the admin UI on this subdomain (admin → admin.example.com). An \
+                 application can then use the base domain with subdomain @. Empty: admin UI on \
+                 the base domain.",
+            )
+            // Applied, not saved as typed: a save moves the admin UI, and
+            // `a`, `ad`, `adm` are three moves nobody asked for.
+            .applied(),
             ConfigDef::help(
                 FormField::new(LOG_SQL, BasicType::Bool)
                     .label("Log SQL")
@@ -95,8 +97,8 @@ pub fn development_section() -> ConfigSection {
                 FormField::new(MCP_ENABLED, BasicType::Bool)
                     .label("Administration MCP server")
                     .default_value(false),
-                "Serve POST /mcp, so an external coding agent holding an API token can read \
-                 and change this installation's schema, triggers and applications. Generate and revoke tokens below.",
+                "Serve POST /mcp, so external coding agents with an API token can read and \
+                 change schema, triggers and applications. Tokens below.",
             ),
             // Only a question while the server is on.
             ConfigDef::help(
@@ -113,10 +115,9 @@ pub fn development_section() -> ConfigSection {
                 FormField::new(IDE_TERMINAL_ENABLED, BasicType::Bool)
                     .label("Claude Code in the IDE")
                     .default_value(false),
-                "Let an admin open Claude Code in a terminal tab of the file-store IDE. It runs \
-                 on this server, in the store's directory, as the server's operating-system \
-                 user, and can run any command that user can. Only stores on this machine's \
-                 disk can have one.",
+                "Let admins open Claude Code in the file-store IDE. It runs on this server as \
+                 the server's OS user and can run any command that user can. Local-disk stores \
+                 only.",
             ),
             // Only a question while the terminal is on, and only for an install
             // the lookup does not find: a server started by a service manager
@@ -125,9 +126,8 @@ pub fn development_section() -> ConfigSection {
                 FormField::new(CLAUDE_CODE_PATH, BasicType::Text)
                     .label("Claude Code executable")
                     .show_if(IDE_TERMINAL_ENABLED, vec![Json::Bool(true)]),
-                "The full path of the claude program, such as /home/me/.local/bin/claude. Leave \
-                 empty to look for it on the server's PATH and in the usual install locations. \
-                 The server's --claude-cli option, when given, comes first.",
+                "Path to the claude program. Empty: search PATH and the usual install locations. \
+                 --claude-cli overrides this.",
             ),
             // Off by default (security review 2026-11, C3): every dependency's
             // `postinstall` is code from the registry, and saving a file is not

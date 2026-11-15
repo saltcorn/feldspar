@@ -418,8 +418,9 @@ fn print_usage() {
        `deploy` applies the branch tip and `discard` returns KEYs to the
        base: each prints the plan and applies it only with --yes, which
        refuses a plan with blockers, and one that loses data unless
-       --allow-destructive is given (a safety backup is written first, and
-       it is also what lifts a `destructive: never` policy). Deploy is
+       --allow-destructive is given (a safety backup is written first).
+       --full-backup also takes a full backup through every backup schedule
+       first. Deploy is
        refused while there are local changes. `branch` lists the remote's
        branches, switches to NAME, or creates it from the tip with --create.
        `deploy --from FILE.zip` deploys a zip from `feldspar backup

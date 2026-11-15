@@ -115,7 +115,7 @@ export function BuildHostsPanel() {
         <div>
           <h3 className="card-title"><T text="Build hosts" /></h3>
           <p className="card-subtitle text-secondary mb-0">
-            <T text="Other machines that build an application's native apps for this server, such as a Mac for iOS. A build host asks this server for work, so it needs no open port." />
+            <T text="Machines that build native apps for this server, e.g. a Mac for iOS. They poll this server, so they need no open port." />
           </p>
         </div>
       </div>

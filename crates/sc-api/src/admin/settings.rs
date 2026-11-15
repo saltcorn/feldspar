@@ -398,16 +398,18 @@ fn settings_section_schema() -> TypeSchema {
 }
 
 /// A settings key: the same declaration every other configurable thing carries,
-/// plus the sentence a settings screen has room to put under the control.
+/// plus the sentence a settings screen has room to put under the control and
+/// whether the screen saves it as it changes or with an Apply button.
 fn settings_field_schema() -> TypeSchema {
     let TypeSchema::Struct(fields) = form_field_schema() else {
         // `form_field_schema` is a struct literal one function away; this arm
         // exists because the type says it might not be, not because it can.
         return form_field_schema();
     };
-    TypeSchema::struct_of(
-        fields
-            .into_iter()
-            .chain([StructField::new("help", TypeSchema::text())]),
-    )
+    TypeSchema::struct_of(fields.into_iter().chain([
+        StructField::new("help", TypeSchema::text()),
+        // Saved with the card's Apply button, not as it changes: a key
+        // checked together with others, or one whose save acts at once.
+        StructField::new("applied", TypeSchema::bool()),
+    ]))
 }

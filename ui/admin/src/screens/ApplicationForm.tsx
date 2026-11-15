@@ -100,6 +100,7 @@ import { CustomQueries } from "./CustomQueries";
 import { ApplicationTabs } from "./ApplicationViews";
 import { ApplicationTranslations } from "./Translations";
 import { Autosaver, TYPING_DELAY_MS, type SaveState } from "../autosave";
+import { SaveStatus } from "../SaveStatus";
 import { fieldsOnTab, formTab, groupsToRender, type SettingsTab } from "../settingsTabs";
 import { T, useT } from "../i18n";
 
@@ -806,7 +807,7 @@ export function ApplicationForm({
               emptyText="Connect a table to the application first."
             />
             <Form.Text muted>
-              <T text="Serve generic list, read, create, update and delete routes for these tables. Leave this empty unless the app needs generic row access: custom queries expose only what each page does." />
+              <T text="Generic CRUD routes for these tables. Usually unneeded, since custom queries expose only what pages use." />
             </Form.Text>
           </Form.Group>
         );
@@ -970,7 +971,7 @@ export function ApplicationForm({
                 ))}
               <Form.Text muted>
                 <T
-                  text="A page subscribes to each ticked stream over the application’s one live socket at {route}, guarded by the stream’s own minimum role, and it appears in this app’s generated client as {call}."
+                  text="Pages subscribe over the live socket at {route}, subject to each stream's minimum role, via {call} in the generated client."
                   values={{
                     route: <code>{"{api mount}"}/live</code>,
                     call: <code>client.live.{"{name}"}.subscribe()</code>,
@@ -1010,7 +1011,7 @@ export function ApplicationForm({
               blank={blankStaticRow()}
             />
             <Form.Text muted className="d-block mb-3">
-              <T text="A directory is served at the app's own sub-path — `/docs/guide.png` for the store's `handbook/guide.png`. A file still has to be readable by whoever asks: a mount says where files appear, not that they are public." />
+              <T text="Serves a directory at a sub-path: the store's `handbook/guide.png` at `/docs/guide.png`. Files keep their read access, so mounting doesn't make them public." />
             </Form.Text>
           </>
         );
@@ -1045,7 +1046,7 @@ export function ApplicationForm({
             />
             <Form.Text muted className="d-block mb-3">
               <T
-                text="A client uploads a large file to {route} in resumable chunks (the tus protocol), with no size cap but the slot's own. It lands in the folder owned by the uploader, so only they (and admins) may read it. An empty size is the server's limit; empty types accept any. The hook is one of this application's code queries, called first with the file's name, size and type: it may refuse, or choose the path."
+                text="Resumable (tus) uploads to {route}. Files go to the uploader's folder, readable only by them and admins. Empty size: server limit. Empty types: any. The hook, a code query, is called first with the file's name, size and type, and may refuse it or choose the path."
                 values={{
                   route: <code>{"{api mount}"}/_upload/{"{name}"}</code>,
                 }}
@@ -1107,7 +1108,7 @@ export function ApplicationForm({
             />
             <Form.Text muted className="d-block mb-3">
               <T
-                text="The application's pages talk to an agent at {route}: conversations, streamed and kept as each person's own history, or single prompts. Who may use it is the agent's own minimum role, and its tools run as that person. Signed-out use also needs the agent's minimum role to be public. A prompt template makes a prompt take the values of its {placeholder} placeholders instead of free text."
+                text="Pages talk to an agent at {route}, by conversation (streamed, kept per person) or single prompt. Access follows the agent's minimum role (public for signed-out use), and tools run as the user. A prompt template fills its {placeholder} placeholders instead of taking free text."
                 values={{
                   route: <code>{"{api mount}"}/_agents/{"{name}"}</code>,
                   placeholder: <code>{"{{key}}"}</code>,
@@ -1175,7 +1176,7 @@ export function ApplicationForm({
                     />
                   ))}
                 <Form.Text muted>
-                  <T text="A module that talks to another service — a payment provider's embedded form — may need its scripts, frames or API allowed by this application's policy. Each one is allowed only once switched on here." />
+                  <T text="Allow a module's external scripts, frames or API (e.g. a payment form) in this app's content policy." />
                 </Form.Text>
               </Form.Group>
             )}
@@ -1229,7 +1230,7 @@ export function ApplicationForm({
               />
               <Form.Text muted>
                 <T
-                  text="A formula that must hold for anybody to use this application, with {user} in scope as in an ownership formula ({null} when nobody is signed in), or a condition on the time. It sees the user’s own role, before the maximum above. Blank means no condition."
+                  text="A formula that must hold for anyone to use this app, with {user} in scope ({null} when signed out), or a time condition. Uses the user's own role, before the maximum above. Blank: no condition."
                   values={{ user: <code>user</code>, null: <code>null</code> }}
                 />
               </Form.Text>
@@ -1263,7 +1264,7 @@ export function ApplicationForm({
             )}
             <Form.Text muted>
               <T
-                text="The application calls {start} when a visitor first needs one — a basket's first item — and a table owns their rows with {formula}. Signing in in the same browser ends it, and the login event names it so a trigger can move the rows to the account."
+                text="Started by calling {start} when a visitor first needs one (e.g. a basket's first item). Tables own their rows with {formula}. Signing in ends it, and the login event names it so a trigger can move the rows."
                 values={{
                   start: <code>api.startGuestSession()</code>,
                   formula: <code>session_id === session.id</code>,
@@ -1386,38 +1387,6 @@ function createGroups(groups: string[], creating: boolean): string[] {
   return creating && !groups.includes("tables") ? [...groups, "tables"] : groups;
 }
 
-/** Where the form's edits stand, beside the page title. */
-function SaveStatus({ state }: { state: SaveState }) {
-  const { t } = useT();
-  switch (state.kind) {
-    case "pending":
-    case "saving":
-      return (
-        <span className="text-secondary small" role="status">
-          <Spinner animation="border" size="sm" className="me-1" />
-          {t("Saving…")}
-        </span>
-      );
-    case "saved":
-      return (
-        <span className="text-success small" role="status">
-          {t("Saved")}
-        </span>
-      );
-    case "error":
-      return (
-        <span className="text-danger small" role="status">
-          {t("Not saved")}
-        </span>
-      );
-    default:
-      return (
-        <span className="text-secondary small" role="status">
-          {t("Changes save as you edit")}
-        </span>
-      );
-  }
-}
 
 /** The APIs list: one card per enabled provider — its name, its mount, and the
  * settings *that provider declares*, rendered by the same `SettingsFields` a
@@ -1773,7 +1742,7 @@ function TargetOperationButtons({
           {result.git_repo && result.files.length > 0 && (
             <div className="mt-2 text-warning-emphasis">
               {t(
-                "File store “{store}” is a git repository: {files} will be part of your next commit, and pushed with it. Keep it out of a repository others can read.",
+                "“{store}” is a git repository: {files} will be committed and pushed. Keep it out of any repository others can read.",
                 { store: result.store, files: result.files.join(", ") },
               )}
             </div>

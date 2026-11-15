@@ -18,8 +18,8 @@ use sc_error::Result;
 use sc_files::{CFG_BRANCH, CFG_DIR, FileStoreDef, SyncContents};
 use sc_sync::registry::{self, Edit, EditBy};
 use sc_sync::{
-    Class, CommitRequest, Confirm, LinkedStatus, OpClass, Outcome, Policy, Source, SourceControl,
-    SyncLink, list_deployments,
+    Class, CommitRequest, Confirm, LinkedStatus, OpClass, Outcome, Source, SourceControl, SyncLink,
+    list_deployments,
 };
 
 use crate::fixture::{Installation, code_app, file_field, git, put};
@@ -123,7 +123,6 @@ async fn save(inst: &Installation, path: &str, change: impl FnOnce(&mut Json)) -
     let by = EditBy {
         actor: Some("admin@example.com".into()),
         source: Source::Ui,
-        policy: Policy::default(),
     };
     let receipt = inst
         .deployer()
