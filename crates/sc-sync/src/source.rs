@@ -101,7 +101,7 @@ pub struct Linked {
     /// The branch's tip, which the base now is.
     pub tip: Option<String>,
     /// Whether the base was taken again: a new link, or a new URL or
-    /// subdirectory. A change of policy or credential keeps it.
+    /// subdirectory. A change of credential keeps it.
     pub base_taken: bool,
 }
 
@@ -261,7 +261,7 @@ impl<'a> SourceControl<'a> {
     }
 
     /// Link the installation (§4 "Linking"): store `link`, pull, and set the
-    /// base to the tip's tree ([`link_base`]). Changing only the policy, the credential or the
+    /// base to the tip's tree ([`link_base`]). Changing only the credential or the
     /// branch keeps the base, so it is not a new link (a branch change is a
     /// [switch](Self::switch_branch)).
     pub async fn set_link(&self, link: SyncLink) -> Result<Linked> {
@@ -754,13 +754,11 @@ fn deploy_request<'r>(
         branch: Some(link.branch.clone()),
         actor,
         source,
-        policy: link.policy,
     }
 }
 
-/// A deploy of a structure zip: over the link's base and policy, or, with no
-/// link, over live itself — so nothing is a local change — and the default
-/// policy.
+/// A deploy of a structure zip: over the link's base, or, with no link, over
+/// live itself — so nothing is a local change.
 fn zip_request<'r>(
     link: Option<&SyncLink>,
     base: &'r StructureTree,
@@ -775,7 +773,6 @@ fn zip_request<'r>(
         branch: link.map(|l| l.branch.clone()),
         actor,
         source,
-        policy: link.map(|l| l.policy).unwrap_or_default(),
     }
 }
 

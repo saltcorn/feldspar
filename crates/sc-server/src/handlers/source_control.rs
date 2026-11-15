@@ -58,10 +58,9 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                         read_upload(held(&pending, upload_id(&body.upload)?)?.as_ref()).await?;
                     let sc = source(&state, None)?;
                     let planned = sc.plan_zip(&zip, actor(&ctx), sc_sync::Source::Ui).await?;
-                    let policy = sc.link().await?.map(|l| l.policy).unwrap_or_default();
                     let mut out = to_json(&planned.plan)?;
                     out["linked"] = json!(planned.linked);
-                    out["policy"] = json!(policy);
+                    out["policy"] = json!(sc_sync::Policy::default());
                     Ok(out)
                 }
             },
@@ -161,7 +160,8 @@ fn actor(ctx: &HandlerCtx<Admin>) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// What a link body is: `{ url, branch, subdirectory, credential, policy }`.
+/// What a link body is: `{ url, branch, subdirectory, credential }`. A
+/// `policy` an older client sends is ignored: there is one policy now.
 #[derive(Deserialize)]
 struct LinkBody {
     url: String,
@@ -170,8 +170,6 @@ struct LinkBody {
     subdirectory: Option<String>,
     #[serde(default)]
     credential: Option<CredentialBody>,
-    #[serde(default)]
-    policy: Option<PolicyBody>,
 }
 
 #[derive(Deserialize)]
@@ -181,14 +179,6 @@ struct CredentialBody {
     username: Option<String>,
     #[serde(default)]
     token: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct PolicyBody {
-    #[serde(default)]
-    destructive: Option<sc_sync::Destructive>,
-    #[serde(default)]
-    full_backup: Option<sc_sync::FullBackup>,
 }
 
 /// The link a body asks for, from the stored link and credential where it
@@ -227,19 +217,9 @@ async fn link_from(sc: &sc_sync::SourceControl<'_>, body: LinkBody) -> Result<sc
             }
         },
     };
-    let mut policy = sc.link().await?.map(|l| l.policy).unwrap_or_default();
-    if let Some(p) = body.policy {
-        if let Some(d) = p.destructive {
-            policy.destructive = d;
-        }
-        if let Some(f) = p.full_backup {
-            policy.full_backup = f;
-        }
-    }
     let mut link = sc_sync::SyncLink::new(body.url, body.branch);
     link.subdirectory = body.subdirectory;
     link.credential = credential;
-    link.policy = policy;
     Ok(link)
 }
 
@@ -435,10 +415,9 @@ async fn switch_branch(
 async fn plan_deploy(state: HandlerState, ctx: HandlerCtx<Admin>, _: ()) -> Result<Json> {
     let sc = source(&state, None)?;
     let planned = sc.plan_deploy(actor(&ctx), sc_sync::Source::Ui).await?;
-    let policy = sc.link().await?.map(|l| l.policy).unwrap_or_default();
     let mut out = to_json(&planned.plan)?;
     out["commit"] = json!(planned.commit);
-    out["policy"] = json!(policy);
+    out["policy"] = json!(sc_sync::Policy::default());
     Ok(out)
 }
 

@@ -188,9 +188,8 @@ pub(super) fn register(set: &mut EndpointSet) {
     );
 
     // Pull, then plan deploying the tip (§6 steps 1–4): the review. `commit`
-    // is what to confirm, with the digest; `policy` says whether
-    // data-destructive operations may be ticked here and whether a full
-    // backup is offered.
+    // is what to confirm, with the digest; `policy` is the one deploy policy
+    // (destructive operations ticked one by one, a full backup offered).
     set.register(
         Endpoint::new(
             ids::PLAN_SYNC_DEPLOY,
@@ -310,7 +309,8 @@ fn credential_schema() -> TypeSchema {
     ])
 }
 
-/// `{ destructive: "confirm" | "never", full_backup: "off" | "optional" | "required" }`.
+/// `{ destructive: "confirm", full_backup: "optional" }`: the one deploy policy,
+/// the same on every instance.
 fn policy_schema() -> TypeSchema {
     TypeSchema::struct_of([
         StructField::new("destructive", TypeSchema::text()),
@@ -341,6 +341,7 @@ fn link_input_fields() -> Vec<StructField> {
                 StructField::new("token", TypeSchema::optional(TypeSchema::text())),
             ])),
         ),
+        // Accepted from older clients and ignored: there is one policy.
         StructField::new(
             "policy",
             TypeSchema::optional(TypeSchema::struct_of([

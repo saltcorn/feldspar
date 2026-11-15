@@ -11,7 +11,7 @@ use sc_catalog::{Catalog, DataFieldKind, FileOnConflict, FileOnDelete, FileStore
 use sc_error::Result;
 use sc_files::FileStoreDef;
 use sc_sync::{
-    Confirm, DeployHost, Deployer, Executor, Plan, Policy, Receipt, Registries, Request, Source,
+    Confirm, DeployHost, Deployer, Executor, Plan, Receipt, Registries, Request, Source,
     StructureTree,
 };
 use sc_test_harness::{TestDb, TestServer};
@@ -183,7 +183,6 @@ pub fn request<'a>(base: &'a StructureTree, target: &'a StructureTree) -> Reques
         branch: None,
         actor: Some("operator".into()),
         source: Source::Cli,
-        policy: Policy::default(),
     }
 }
 

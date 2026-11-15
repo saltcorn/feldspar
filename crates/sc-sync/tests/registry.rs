@@ -6,8 +6,8 @@ use serde_json::{Value as Json, json};
 use sc_error::Result;
 use sc_sync::registry::{self, version};
 use sc_sync::{
-    Class, Confirm, Edit, EditBy, EditReceipt, InstanceOnly, LedgerKind, OpClass, Policy, Source,
-    Status, list_deployments,
+    Class, Confirm, Edit, EditBy, EditReceipt, InstanceOnly, LedgerKind, OpClass, Source, Status,
+    list_deployments,
 };
 
 use crate::fixture::{Installation, all_text, code_app};
@@ -70,7 +70,6 @@ fn by() -> EditBy {
     EditBy {
         actor: Some("admin@example.com".into()),
         source: Source::Ui,
-        policy: Policy::default(),
     }
 }
 

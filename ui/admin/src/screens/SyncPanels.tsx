@@ -11,7 +11,7 @@
 //   same way (§5).
 // - **History**: the ledger, with "restore this version" on a registry save.
 // - **Link**: URL, branch, subdirectory, credential (generate a key or paste a
-//   token), policy, and a test-connection button.
+//   token), and a test-connection button.
 // - **Deploy a zip** (§7.4): upload a structure zip and deploy it through the
 //   same review — in the branch tip's place on a linked instance, and
 //   additively (nothing deleted) on one with no link.
@@ -61,7 +61,6 @@ import {
   type Deployment,
   type EntityDiff,
   type LinkForm,
-  type Policy,
   type Receipt,
   type SideDiff,
   type StatusEntry,
@@ -278,7 +277,7 @@ export function StatusTab({
           word={branch}
           plan={async () => {
             const plan = await api.planSyncDeploy();
-            return { plan, policy: plan.policy, commit: plan.commit ?? null };
+            return { plan, offersFullBackup: true, commit: plan.commit ?? null };
           }}
           apply={(plan, ticked, fullBackup, commit) =>
             api.syncDeploy({ commit, plan_digest: plan.digest, ticked: [...ticked], full_backup: fullBackup })
@@ -296,7 +295,7 @@ export function StatusTab({
           word={t("discard")}
           plan={async () => ({
             plan: await api.planSyncDiscard({ keys: discarding }),
-            policy: status.link?.policy ?? null,
+            offersFullBackup: false,
             commit: null,
           })}
           apply={(plan, ticked) =>
@@ -514,7 +513,9 @@ interface Planned {
     needs_credentials: string[];
     digest: string;
   };
-  policy: Policy | null;
+  /** Whether the review offers a full backup first: a deploy does, a discard
+   * does not. */
+  offersFullBackup: boolean;
   commit: string | null;
 }
 
@@ -547,7 +548,7 @@ function Review({
     makePlan()
       .then((p) => {
         setPlanned(p);
-        setTicked(reviewTicks(p.plan.operations, p.policy));
+        setTicked(reviewTicks(p.plan.operations));
       })
       .catch((e: unknown) => setError(errorMessage(e, t("The plan could not be made."))));
     // The plan is made once, when the review opens.
@@ -619,7 +620,7 @@ function Review({
                     type="checkbox"
                     label={op.summary}
                     checked={ticked.has(op.id)}
-                    disabled={!reviewTickable(op, planned.policy)}
+                    disabled={!reviewTickable(op)}
                     onChange={() => toggle(op.id)}
                     data-class={op.class}
                     data-op={op.id}
@@ -627,11 +628,6 @@ function Review({
                 ))}
               </div>
             ))}
-            {planned.policy?.destructive === "never" && counts.data_destructive > 0 && (
-              <p className="small text-secondary">
-                <T text="This instance's policy blocks data-losing changes here. Use feldspar sync deploy --allow-destructive on the server." />
-              </p>
-            )}
             {ops.some((op) => op.class === "data_destructive" && !ticked.has(op.id)) && (
               <p className="small text-secondary">
                 <T text="What is left unticked is deferred, not forgotten: it stays here, and the next deploy offers it again." />
@@ -663,7 +659,7 @@ function Review({
                 })}
               </p>
             )}
-            {planned.policy?.full_backup === "optional" && (
+            {planned.offersFullBackup && (
               <Form.Check
                 id="review-full-backup"
                 type="checkbox"
@@ -671,11 +667,6 @@ function Review({
                 checked={fullBackup}
                 onChange={(e) => setFullBackup(e.target.checked)}
               />
-            )}
-            {planned.policy?.full_backup === "required" && (
-              <p className="small text-secondary">
-                <T text="A full backup is taken first, as this instance's policy requires." />
-              </p>
             )}
             {asked !== null && (
               <Form.Group className="mt-2">
@@ -787,7 +778,7 @@ export function ZipTab({ linked, onDeployed }: { linked: boolean; onDeployed: ()
           word={t("deploy")}
           plan={async () => {
             const plan = await api.planSyncZipDeploy({ upload: uploaded.id });
-            return { plan, policy: plan.policy, commit: null };
+            return { plan, offersFullBackup: true, commit: null };
           }}
           apply={(plan, ticked, fullBackup) =>
             api.syncZipDeploy({
@@ -1095,29 +1086,6 @@ export function LinkTab({ onLinked }: { onLinked: () => Promise<void> }) {
             </Col>
           </>
         )}
-        <Col md={6}>
-          <Form.Group controlId="sync-destructive">
-            <Form.Label>
-              <T text="Changes that lose data" />
-            </Form.Label>
-            <Form.Select value={form.destructive} onChange={(e) => set({ destructive: e.target.value })}>
-              <option value="confirm">{t("Ticked one by one, with a typed confirmation")}</option>
-              <option value="never">{t("Never from here; only on the server with --allow-destructive")}</option>
-            </Form.Select>
-          </Form.Group>
-        </Col>
-        <Col md={6}>
-          <Form.Group controlId="sync-full-backup">
-            <Form.Label>
-              <T text="Full backup before each deploy" />
-            </Form.Label>
-            <Form.Select value={form.fullBackup} onChange={(e) => set({ fullBackup: e.target.value })}>
-              <option value="off">{t("Off")}</option>
-              <option value="optional">{t("Offered on the review")}</option>
-              <option value="required">{t("Always")}</option>
-            </Form.Select>
-          </Form.Group>
-        </Col>
       </Row>
       {problem && <div className="small text-secondary mt-3">{problem}</div>}
       <div className="d-flex gap-2 mt-3">

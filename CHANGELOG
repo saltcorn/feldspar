@@ -2,6 +2,30 @@
 
 Changes in reverse chronological order.
 
+## Source control has one deploy policy; Link setup loses its policy options
+
+The Link setup tab no longer has "Changes that lose data" or "Full backup before each deploy".
+Every instance now works one way: data-losing operations are ticked one by one, with a typed
+confirmation, and the deploy review always offers "Take a full backup first". The zip deploy
+review offers it too. A discard does not, because a discard never took one.
+
+`sc_sync`: `Destructive` and `FullBackup` keep one variant each (`confirm`, `optional`), and
+`Policy` is only what the API reports. It is gone from `Request` and `EditBy`, so a deploy or a
+registry save no longer refuses a ticked drop under `never`. A full backup is taken only when the
+confirmation asks for one (`Confirm::full_backup`, `--full-backup` at the CLI). With no backup
+schedule, that deploy is refused and the error says to untick it.
+
+Compatibility: a policy an older version stored in `_fd_sync` is not read, so a link saved as
+`never`, `off` or `required` behaves as above, with no migration. A link body that still sends
+`policy` is accepted and ignored. Links and plans still report `policy`, always `{ destructive:
+"confirm", full_backup: "optional" }`. `--allow-destructive` is unchanged: it is still the CLI's
+leave for `--yes` to apply a plan that loses data. The unused translations are removed.
+
+Tests: `crates/sc-sync/tests/deploy.rs` (a destructive tick from the UI is applied after a safety
+backup), `crates/sc-sync/tests/source.rs` (a stored `never`/`required` policy reads as the one
+policy), `crates/sc-server/tests/admin_api.rs` (an old client's policy is ignored), and
+`ui/admin/src/screens/SourceControlPage.test.tsx` (Link setup shows no policy options).
+
 ## Settings tabs are underlined instead of pills
 
 The tab strips along the top of the global Settings screen and of each application's settings

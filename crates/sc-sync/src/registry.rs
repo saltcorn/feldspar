@@ -37,7 +37,7 @@ use uuid::Uuid;
 use sc_error::{Error, Result};
 use sc_types::SECRET_SENTINEL;
 
-use crate::deploy::{Confirm, Deployer, EditRun, Policy, Receipt, Request, Run, release};
+use crate::deploy::{Confirm, Deployer, EditRun, Receipt, Request, Run, release};
 use crate::entity::{Content, Entities, Entity, Kind};
 use crate::entity_diff::{JsonChange, json_changes};
 use crate::export::{Export, INTERNAL_SECTION, InstanceOnly, Mode};
@@ -421,16 +421,13 @@ fn differences(submitted: &Json, stored: &Json) -> Vec<JsonChange> {
         .collect()
 }
 
-/// Who a save is by, and under what policy.
+/// Who a save is by.
 #[derive(Debug, Clone)]
 pub struct EditBy {
     /// The admin's email, or the operator.
     pub actor: Option<String>,
     /// From where.
     pub source: Source,
-    /// The instance's policy (§5): with `destructive: never`, a save that
-    /// drops data is refused here as a deploy is.
-    pub policy: Policy,
 }
 
 impl Deployer<'_> {
@@ -477,7 +474,6 @@ impl Deployer<'_> {
                 branch: None,
                 actor: by.actor.clone(),
                 source: by.source,
-                policy: by.policy,
             };
             let run = Run {
                 kind: LedgerKind::Edit,

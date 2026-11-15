@@ -24,7 +24,6 @@ export type SyncStatus = GetSyncStatusResponse;
 export type StatusEntry = GetSyncStatusResponse["entries"][number];
 export type SyncLinkInfo = GetSyncLinkResponse;
 export type DeployPlan = PlanSyncDeployResponse;
-export type Policy = PlanSyncDeployResponse["policy"];
 export type Receipt = SyncDeployResponse;
 export type Deployment = ListDeploymentsResponse["deployments"][number];
 export type EntityDiff = GetSyncEntityDiffResponse;
@@ -174,8 +173,6 @@ export interface LinkForm {
   username: string;
   /** A new token; empty keeps the stored one. */
   token: string;
-  destructive: string;
-  fullBackup: string;
 }
 
 /** The form, from what is stored. */
@@ -189,8 +186,6 @@ export function linkForm(info: SyncLinkInfo | null): LinkForm {
     credential: credential.kind,
     username: credential.username ?? "",
     token: "",
-    destructive: link?.policy.destructive ?? "confirm",
-    fullBackup: link?.policy.full_backup ?? "off",
   };
 }
 
@@ -207,7 +202,6 @@ export function linkBody(form: LinkForm): SetSyncLinkRequest {
       username: form.credential === "https_token" ? form.username.trim() || null : null,
       token: form.credential === "https_token" && token ? token : null,
     },
-    policy: { destructive: form.destructive, full_backup: form.fullBackup },
   };
 }
 
@@ -225,19 +219,16 @@ export function linkProblem(form: LinkForm, info: SyncLinkInfo | null, t: Transl
 
 // --- The deploy and discard reviews -----------------------------------------------
 
-/** Whether an operation's tick can be changed under `policy`: an unsupported
- * one never is, and with `destructive: never` nothing that loses data can be
- * ticked here (only `feldspar sync deploy --allow-destructive` can). */
-export function reviewTickable(op: PlannedOp, policy: Pick<Policy, "destructive"> | null): boolean {
-  if (op.class === "unsupported") return false;
-  if (op.class === "data_destructive" && policy?.destructive === "never") return false;
-  return true;
+/** Whether an operation's tick can be changed: an unsupported one never is.
+ * One that loses data can be, one by one, with the typed confirmation. */
+export function reviewTickable(op: PlannedOp): boolean {
+  return op.class !== "unsupported";
 }
 
-/** The ticks a review starts with: each operation's default, less what the
- * policy forbids. */
-export function reviewTicks(ops: readonly PlannedOp[], policy: Pick<Policy, "destructive"> | null): Set<string> {
-  return new Set(ops.filter((op) => op.ticked && reviewTickable(op, policy)).map((op) => op.id));
+/** The ticks a review starts with: each operation's default, less what cannot
+ * be ticked. */
+export function reviewTicks(ops: readonly PlannedOp[]): Set<string> {
+  return new Set(ops.filter((op) => op.ticked && reviewTickable(op)).map((op) => op.id));
 }
 
 /** Whether the review's confirm button may be pressed: no blocker, and the

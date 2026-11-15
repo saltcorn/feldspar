@@ -13,8 +13,7 @@ use serde_json::json;
 use sc_error::Result;
 use sc_files::{CFG_BRANCH, CFG_DIR, CFG_PUBLIC_URL, FileStoreDef};
 use sc_sync::{
-    Class, Confirm, Destructive, Entities, OpClass, Outcome, Policy, Source, Status, StructureTree,
-    list_deployments,
+    Class, Confirm, Entities, OpClass, Outcome, Source, Status, StructureTree, list_deployments,
 };
 
 use crate::fixture::{Installation, code_app, entity, git, put, request};
@@ -446,7 +445,9 @@ async fn discard_restores_a_view_and_dropping_a_new_table_is_destructive() -> Re
 }
 
 #[tokio::test]
-async fn the_never_policy_refuses_a_destructive_tick_except_from_the_cli() -> Result<()> {
+async fn a_destructive_tick_is_applied_from_the_ui_as_from_the_cli() -> Result<()> {
+    // There is one policy: data-losing operations are ticked one by one,
+    // wherever the deploy is from.
     let a = Installation::new().await?;
     helpdesk(&a).await?;
     let first = a.tree().await?;
@@ -454,45 +455,24 @@ async fn the_never_policy_refuses_a_destructive_tick_except_from_the_cli() -> Re
     let base = b.deploy(&StructureTree::new(), &first, |c| c).await?.base;
     let second = without(&first, "tables/old_notes.json");
 
-    let never = Policy {
-        destructive: Destructive::Never,
-        ..Policy::default()
-    };
     let mut ui = request(&base, &second);
-    ui.policy = never;
     ui.source = Source::Ui;
     let plan = b.deployer().plan_deploy(&ui).await?;
-    let ticked = Confirm::defaults(&plan).tick("drop_table:table:old_notes");
+    let drop = plan.op("drop_table:table:old_notes").unwrap();
+    assert_eq!((drop.class, drop.ticked), (OpClass::DataDestructive, false));
 
-    // The admin API, even asking for it.
-    let mut asking = ticked.clone();
-    asking.allow_destructive = true;
-    let refused = b.deployer().deploy(&ui, &asking).await.unwrap_err();
-    assert!(refused.causes().contains("policy"), "{}", refused.causes());
+    // Unticked, it is deferred.
+    let receipt = b.deployer().deploy(&ui, &Confirm::defaults(&plan)).await?;
+    assert!(receipt.backups.is_empty(), "{:?}", receipt.backups);
     assert!(b.catalog.get("old_notes")?.is_some());
 
-    // The CLI without the flag, then with it.
-    let mut cli = ui.clone();
-    cli.source = Source::Cli;
-    let refused = b.deployer().deploy(&cli, &ticked).await.unwrap_err();
-    assert!(
-        refused.causes().contains("--allow-destructive"),
-        "{}",
-        refused.causes()
-    );
-    let receipt = b.deployer().deploy(&cli, &asking).await?;
+    // Ticked, from the admin UI, it is applied after a safety backup.
+    let plan = b.deployer().plan_deploy(&ui).await?;
+    let ticked = Confirm::defaults(&plan).tick("drop_table:table:old_notes");
+    let receipt = b.deployer().deploy(&ui, &ticked).await?;
     assert_eq!(receipt.result, Outcome::Converged);
+    assert_eq!(receipt.backups.len(), 1, "{:?}", receipt.backups);
     assert!(b.catalog.get("old_notes")?.is_none());
-
-    // Without the policy, untouched operations deploy as they always do.
-    let refused_tick = b
-        .deployer()
-        .deploy(&cli, &Confirm::defaults(&plan).tick("no_such_op"))
-        .await
-        .unwrap_err();
-    assert!(
-        refused_tick.causes().contains("stale") || refused_tick.causes().contains("no_such_op")
-    );
     Ok(())
 }
 

@@ -904,7 +904,9 @@ async fn source_control_links_commits_pulls_deploys_and_discards() -> sc_error::
                 "url": url,
                 "branch": "main",
                 "credential": { "kind": "none" },
-                "policy": { "full_backup": "optional" },
+                // An older client's policy is accepted and ignored: there is
+                // one policy.
+                "policy": { "destructive": "never", "full_backup": "required" },
             })),
         )
         .await;
@@ -912,7 +914,10 @@ async fn source_control_links_commits_pulls_deploys_and_discards() -> sc_error::
     assert_eq!(body["base_taken"], true);
     let (_, body) = client.send("GET", "/api/source-control/link", None).await;
     assert_eq!(body["link"]["url"], url.as_str(), "{body}");
-    assert_eq!(body["link"]["policy"]["full_backup"], "optional");
+    assert_eq!(
+        body["link"]["policy"],
+        json!({ "destructive": "confirm", "full_backup": "optional" })
+    );
     assert_eq!(body["credential"]["kind"], "none");
 
     // A table made here is a local change, which stops a deploy.
@@ -1073,7 +1078,10 @@ async fn source_control_links_commits_pulls_deploys_and_discards() -> sc_error::
     assert_eq!(status, StatusCode::OK, "{plan}");
     assert_eq!(plan["blockers"], json!([]), "{plan}");
     assert_eq!(plan["commit"], pulled["tip"]);
-    assert_eq!(plan["policy"]["destructive"], "confirm");
+    assert_eq!(
+        plan["policy"],
+        json!({ "destructive": "confirm", "full_backup": "optional" })
+    );
     let ticked: Vec<Value> = plan["operations"]
         .as_array()
         .unwrap()
