@@ -2,6 +2,48 @@
 
 Changes in reverse chronological order.
 
+## Releases: a failed release is finished by running it again; revoking a release
+
+A release that failed part-way through its uploads can now be finished under the same version
+number. 0.1.1's release died when R2 answered an upload with a 500. By then the tag and the
+`Start 0.1.2-dev` commit were pushed and the versioned tarball was up. Running it again was
+refused, as older than `Cargo.toml` on the branch and "already published" at the tag, so it had
+to be skipped for 0.1.2.
+
+- Every bucket call in `scripts/lib/release.sh` is tried 4 times, 10, 20 and 30 s apart
+  (`RELEASE_ATTEMPTS`, `RELEASE_RETRY_DELAY`). A run that still fails prints the command that
+  finishes it.
+- `release_publish` uploads in a resumable order: the versioned tarball, the latest names,
+  `versions.txt` and `latest.txt`, then **last** the versioned `.sha256`, which marks that
+  architecture of the version as finished. `install.sh` checks every download against it, so
+  an unfinished version cannot be installed by version.
+- `--release X.Y.Z` of a tagged version that is not finished (its versioned `.sha256` missing,
+  or the version not in `versions.txt`, which is how the older order's leftovers look) resumes
+  it. This works at the tag or from the branch, which is left alone. The run reuses the tarball
+  in `dist/` when it is of that commit, built with the same options (`<tarball>.options`), and
+  still matches its checksum. Otherwise it builds the tag in `target/release-src-vX.Y.Z` with
+  the tag's own `build-static.sh`, and removes that worktree afterwards. The version-ordering
+  checks now apply only to a new, untagged version.
+- A version resumed after a newer one is listed goes up under its versioned name only. The
+  latest names, `latest.txt` and `install.sh` stay the newer one's.
+- New `scripts/revoke-release.sh X.Y.Z [--yes] [--bucket NAME] [--restore-latest]`. It
+  removes the version from `versions.txt` and `latest.txt` and deletes every platform's
+  versioned tarball and checksum. If the version was the newest, it first puts the latest names
+  back to the newest remaining release, downloaded and checked against its checksum. It asks
+  first, can be run again safely, and leaves the git tag alone. The platform list and the
+  latest-name table moved into `release.sh` (`RELEASE_PLATFORMS`, `release_latest_objects`) so
+  that both scripts use them.
+- Tests (`crates/sc-cli/tests/build_static_release.rs`) cover:
+  - an upload that fails twice and then succeeds;
+  - the 0.1.1 failure, resumed from the branch without a rebuild;
+  - a resume that builds at the tag with the tag's own script, under a newer listed release,
+    over the old order's leftovers;
+  - revoking the newest release (with the re-release after it), an older one, 0.1.1's
+    unlisted leftovers, and the last one.
+
+  The stubbed bucket now handles `delete` and injected 500s. docs/OPERATIONS.md §13.1 and the
+  new §13.1.1 describe all of this.
+
 ## Agents: tabs for the agents area and for each agent
 
 Agents, LLM providers and MCP servers are now tabs at the top of each list, instead of buttons

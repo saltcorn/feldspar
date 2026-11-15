@@ -60,7 +60,9 @@ fn the_image_installs_the_published_python_artifact_at_its_prefix() {
         shell_value(&dockerfile, "RELEASE_OBJECT"),
         "feldspar-linux-x86_64.tar.gz"
     );
-    assert!(build.contains(r#"OBJECTS=("feldspar-linux-${TARGET_ARCH}.tar.gz")"#));
+    // (`release_latest_objects linux-<arch>`, in scripts/lib/release.sh.)
+    assert!(build.contains(r#"release_latest_objects "linux-${TARGET_ARCH}""#));
+    assert!(read("scripts/lib/release.sh").contains(r#"echo "feldspar-$1.tar.gz""#));
     assert_eq!(
         shell_value(&dockerfile, "PREFIX"),
         shell_value(&build, "PREFIX")

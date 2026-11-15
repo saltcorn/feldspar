@@ -2444,13 +2444,31 @@ of the next patch release, ordered between the two (`0.1.1 < 0.1.2-dev < 0.1.2`)
 what a build from a checkout reports (`feldspar --version`, Settings → System). The next
 release may be 0.1.2, or a minor or major one such as 0.2.0.
 
-**Which versions may be released.** `X.Y.Z` (digits, no `v`, no `-rc1`) must be the
-same as or newer than the version in `Cargo.toml` (`[workspace.package]`) without its
-`-dev` suffix, the newest
-`vX.Y.Z` git tag and the newest version in the bucket's `versions.txt`; and this
-architecture's `feldspar-X.Y.Z-linux-<arch>.tar.gz` must not be in the bucket yet, since a
-published version is never replaced. The checkout must have no uncommitted changes. All of
-this is checked, after a `git fetch --tags`, before anything is built.
+**Which versions may be released.** `X.Y.Z` (digits, no `v`, no `-rc1`) is either new or
+already tagged. A **new** version (no `vX.Y.Z` tag) must be the same as or newer than the
+version in `Cargo.toml` (`[workspace.package]`) without its `-dev` suffix, the newest
+`vX.Y.Z` git tag and the newest version in the bucket's `versions.txt`. A **tagged**
+version may always be published at its tag, unless this architecture of it is
+*finished*: its `feldspar-X.Y.Z-linux-<arch>.tar.gz.sha256` is in the bucket and
+`versions.txt` lists it. A finished version is never replaced (`scripts/revoke-release.sh`,
+§13.1.1, takes one back out). The checkout must have no uncommitted changes. All of this
+is checked, after a `git fetch --tags`, before anything is built.
+
+**A release that failed** — in the build, the push, or an upload that R2 still refused
+after its retries — is finished by **running the same command again**, wherever the
+checkout now is. Nothing needs a new version number. Every bucket call is tried 4 times,
+10 s, 20 s and 30 s apart (`RELEASE_ATTEMPTS`, `RELEASE_RETRY_DELAY`), since R2 now and
+then answers with a 500 that a second try does not get, and a run that still fails prints
+the command to run. From the branch the release moved on to `X.Y.(Z+1)-dev`, the run
+*resumes* the release at its tag: it commits nothing and leaves the branch where it is,
+pushes the tag if it is not on the remote, and publishes. If `dist/` still has the
+tarball that run built (its name carries the commit), and the tarball still matches its
+`.sha256` and was built with the same options (`<tarball>.options`), it is uploaded as it
+is. Otherwise the tag is checked out in `target/release-src-vX.Y.Z` and built there with
+**its own** `scripts/build-static.sh`, so that a version is built with the pins its tag
+has, not with the branch's. That checkout is removed afterwards. When a newer version is
+already listed, the resumed one goes up under its versioned name only: the latest names,
+`latest.txt` and `install.sh` stay the newer one's.
 
 **A new version** is released from a branch (normally `main`) that is level with or ahead
 of its upstream. Before the build, the script sets `X.Y.Z` in `Cargo.toml` and in
@@ -2476,20 +2494,21 @@ scripts/build-static.sh --target aarch64-unknown-linux-gnu --release 0.1.1
 
 At a commit already tagged `vX.Y.Z` (and already on the remote) the script commits and
 tags nothing; it builds, makes sure the tag is on the remote, and publishes this
-architecture. A run that failed
-part-way through its uploads is repeated the same way.
+architecture. (Run from a branch instead of the tag, it resumes the release at the tag,
+as above.)
 
 **What is uploaded**, to the Cloudflare R2 bucket `feldspar-latest-static`, served as
 `https://feldspar-latest-static.saltcorn.com`, in this order:
 
 | Object | What it is |
 |---|---|
-| `feldspar-X.Y.Z-linux-x86_64.tar.gz`, `.sha256` | this version, kept: what `install.sh --version X.Y.Z` fetches |
+| `feldspar-X.Y.Z-linux-x86_64.tar.gz` | this version, kept: what `install.sh --version X.Y.Z` fetches |
 | `feldspar-linux-x86_64.tar.gz`, `.sha256` | the latest release, under its version-less name; each release overwrites it |
 | `feldspar.tar.gz`, `.sha256` | the same tarball, under the name the first releases had, which scripts outside this repository still fetch (`~/feldspar-hosted`) |
 | `versions.txt` | every published version, one per line, oldest first |
 | `latest.txt` | the newest version, alone |
-| `install.sh` | the curl installer, uploaded last |
+| `feldspar-X.Y.Z-linux-x86_64.tar.gz.sha256` | the versioned tarball's checksum, **last but one**: it marks this architecture of `X.Y.Z` as finished. Until it is there, `install.sh` cannot install that version (it checks every download), and running the release again replaces whatever came before it |
+| `install.sh` | the curl installer, uploaded last (only when `X.Y.Z` is the latest release) |
 
 The version-less names are the latest release, so the download URLs of §2 never change.
 All names carry the platform, and a build publishes only its own: an aarch64 build
@@ -2515,6 +2534,28 @@ published it, and no release updates it any more. Nothing in this repository
 fetches it; delete it from the bucket once no host does (`npx wrangler r2 object
 delete feldspar-latest-static/feldspar-debian13-python.tar.gz --remote`, and the
 same for its `.sha256`).
+
+#### 13.1.1 Revoking a release
+
+`scripts/revoke-release.sh X.Y.Z` takes a published version back out of the bucket. It
+removes the version from `versions.txt`, rewrites `latest.txt`, and deletes every
+platform's `feldspar-X.Y.Z-linux-<arch>.tar.gz` and `.sha256`. If `X.Y.Z` is the newest
+release, the version-less latest names hold its tarball too. They are put back to the
+newest remaining release that has a tarball for that platform: the script downloads it
+from its versioned name, checks it against its `.sha256` and uploads it again. Where no
+such release exists, the latest names are deleted. A version with a newer one listed is
+not what those names hold, so they are left alone. `--restore-latest` puts them back even
+without evidence that they hold `X.Y.Z` (a release that stopped while uploading them).
+
+```bash
+scripts/revoke-release.sh 0.1.1           # prints what it will do and asks for the version
+scripts/revoke-release.sh 0.1.1 --yes     # without asking; --bucket NAME as for --release
+```
+
+Running it again is safe, and finishes a revoke that stopped half-way. Git is not
+touched: `vX.Y.Z` stays tagged, and `scripts/build-static.sh --release X.Y.Z` would publish
+that tag again. To retire the version for good, delete the tag too
+(`git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`).
 
 ### 13.2 The CPython pin
 

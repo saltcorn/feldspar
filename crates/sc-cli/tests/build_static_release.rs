@@ -99,6 +99,12 @@ fn fixture(name: &str, npx_status: i32) -> Fixture {
         repo.join("scripts/install.sh"),
     )
     .expect("copy install.sh");
+    // And the script that takes a release back out of the bucket.
+    fs::copy(
+        root.join("scripts/revoke-release.sh"),
+        repo.join("scripts/revoke-release.sh"),
+    )
+    .expect("copy revoke-release.sh");
     // And the bundle step, the tree installer the artifact ships as its
     // install.sh, and the upload half of --release.
     fs::create_dir_all(repo.join("scripts/lib")).unwrap();
@@ -159,8 +165,10 @@ fn fixture(name: &str, npx_status: i32) -> Fixture {
     // `npx wrangler r2 object put <bucket>/<key> -f <file> ...`: record the
     // argv, then keep the file under the key it was uploaded as, so the test can
     // look at what the bucket would hold. `... get <bucket>/<key> --file <file>`
-    // answers from those files, and as wrangler does for a key that is not there.
-    // `npx_status` is what every `put` exits with.
+    // answers from those files, and as wrangler does for a key that is not there;
+    // `... delete <bucket>/<key>` removes it. `npx_status` is what every `put`
+    // exits with. R2's 500s are put in by a test ([`Fixture::fail_puts`],
+    // [`Fixture::fail_key`]): a failed put uploads nothing.
     write_executable(
         &bin.join("npx"),
         &format!(
@@ -170,10 +178,17 @@ fn fixture(name: &str, npx_status: i32) -> Fixture {
              case \"${{4:-}}\" in\n\
              get) if [ -f '{uploads}'/\"$key\" ]; then cp '{uploads}'/\"$key\" \"$7\"; exit 0; fi\n\
                   echo 'X [ERROR] The specified key does not exist.'; exit 1 ;;\n\
-             put) cp \"$7\" '{uploads}'/\"$key\"; exit {npx_status} ;;\n\
+             put) n=\"$(cat '{dir}/fail-puts' 2>/dev/null || echo 0)\"\n\
+                  if [ \"$n\" -gt 0 ] || [ -f '{dir}/fail-key/'\"$key\" ]; then\n\
+                    echo \"$((n > 0 ? n - 1 : 0))\" > '{dir}/fail-puts'\n\
+                    echo 'X [ERROR] 500: Internal Server Error; We encountered an internal error. Please try again.'; exit 1\n\
+                  fi\n\
+                  cp \"$7\" '{uploads}'/\"$key\"; exit {npx_status} ;;\n\
+             delete) rm -f '{uploads}'/\"$key\" ;;\n\
              esac\n",
             log = log.display(),
             uploads = uploads.display(),
+            dir = dir.display(),
         ),
     );
 
@@ -316,6 +331,22 @@ impl Fixture {
             .collect()
     }
 
+    /// Make the next `n` uploads fail as R2's 500 does, whatever they are.
+    fn fail_puts(&self, n: u32) {
+        fs::write(self.dir.join("fail-puts"), n.to_string()).unwrap();
+    }
+
+    /// Make every upload of `key` fail (with `on`), until it is turned off.
+    fn fail_key(&self, key: &str, on: bool) {
+        let marker = self.dir.join("fail-key").join(key);
+        if on {
+            fs::create_dir_all(marker.parent().unwrap()).unwrap();
+            fs::write(marker, "").unwrap();
+        } else {
+            fs::remove_file(marker).ok();
+        }
+    }
+
     /// Put a file in the bucket, as an earlier release would have.
     fn seed(&self, key: &str, contents: &str) {
         fs::write(self.uploads.join(key), contents).unwrap();
@@ -398,6 +429,8 @@ impl Fixture {
             .arg(self.dir.join("dist"))
             .args(extra)
             .env("PATH", &path)
+            // Retried uploads, at once.
+            .env("RELEASE_RETRY_DELAY", "0")
             .output()
             .expect("run build-static.sh");
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -493,13 +526,14 @@ fn release_uploads_the_tarball_and_checksum_under_versioned_and_version_less_nam
         f.objects(),
         [
             "feldspar-latest-static/feldspar-0.4.0-linux-x86_64.tar.gz",
-            "feldspar-latest-static/feldspar-0.4.0-linux-x86_64.tar.gz.sha256",
             "feldspar-latest-static/feldspar-linux-x86_64.tar.gz",
             "feldspar-latest-static/feldspar-linux-x86_64.tar.gz.sha256",
             "feldspar-latest-static/feldspar.tar.gz",
             "feldspar-latest-static/feldspar.tar.gz.sha256",
             "feldspar-latest-static/versions.txt",
             "feldspar-latest-static/latest.txt",
+            // Last but the installer: what marks 0.4.0 for x86_64 as finished.
+            "feldspar-latest-static/feldspar-0.4.0-linux-x86_64.tar.gz.sha256",
             "feldspar-latest-static/install.sh",
         ]
     );
@@ -626,9 +660,9 @@ fn bucket_overrides_the_destination() {
         objects[..4],
         [
             "feldspar-staging/feldspar-0.4.0-linux-x86_64.tar.gz",
-            "feldspar-staging/feldspar-0.4.0-linux-x86_64.tar.gz.sha256",
             "feldspar-staging/feldspar-linux-x86_64.tar.gz",
             "feldspar-staging/feldspar-linux-x86_64.tar.gz.sha256",
+            "feldspar-staging/feldspar.tar.gz",
         ],
         "{objects:?}"
     );
@@ -929,11 +963,11 @@ fn an_aarch64_release_publishes_only_its_own_name() {
         f.objects(),
         [
             "feldspar-latest-static/feldspar-0.4.0-linux-aarch64.tar.gz",
-            "feldspar-latest-static/feldspar-0.4.0-linux-aarch64.tar.gz.sha256",
             "feldspar-latest-static/feldspar-linux-aarch64.tar.gz",
             "feldspar-latest-static/feldspar-linux-aarch64.tar.gz.sha256",
             "feldspar-latest-static/versions.txt",
             "feldspar-latest-static/latest.txt",
+            "feldspar-latest-static/feldspar-0.4.0-linux-aarch64.tar.gz.sha256",
             "feldspar-latest-static/install.sh",
         ]
     );
@@ -976,7 +1010,10 @@ fn a_new_version_is_committed_tagged_pushed_and_listed() {
         "Release 0.4.1"
     );
     assert_eq!(
-        f.git("repo", &["show", "--name-only", "--format=", "v0.4.1^{commit}"]),
+        f.git(
+            "repo",
+            &["show", "--name-only", "--format=", "v0.4.1^{commit}"]
+        ),
         "Cargo.lock\nCargo.toml"
     );
     let manifest = f.git("repo", &["show", "v0.4.1:Cargo.toml"]);
@@ -1046,12 +1083,12 @@ fn a_new_version_is_committed_tagged_pushed_and_listed() {
     assert_eq!(f.bucket("versions.txt"), "0.3.9\n0.4.0\n0.4.1\n");
     assert_eq!(f.bucket("latest.txt"), "0.4.1\n");
 
-    // The next release from there: 0.4.1 again is older than 0.4.2-dev; a
-    // minor release, 0.5.0, is fine from it.
+    // The next release from there: 0.4.1 again is published and finished, so
+    // there is nothing to resume; a minor release, 0.5.0, is fine from it.
     let (output, _stdout, stderr) = f.release_as("0.4.1", &[]);
     assert!(!output.status.success());
     assert!(
-        stderr.contains("older than the version in Cargo.toml, 0.4.2-dev"),
+        stderr.contains("feldspar-0.4.1-linux-x86_64.tar.gz is already published"),
         "{stderr}"
     );
     let (output, stdout, stderr) = f.release_as("0.5.0", &[]);
@@ -1153,11 +1190,11 @@ fn another_architecture_publishes_at_the_tag_and_a_version_is_never_replaced() {
         f.objects()[before..],
         [
             "feldspar-latest-static/feldspar-0.5.0-linux-aarch64.tar.gz",
-            "feldspar-latest-static/feldspar-0.5.0-linux-aarch64.tar.gz.sha256",
             "feldspar-latest-static/feldspar-linux-aarch64.tar.gz",
             "feldspar-latest-static/feldspar-linux-aarch64.tar.gz.sha256",
             "feldspar-latest-static/versions.txt",
             "feldspar-latest-static/latest.txt",
+            "feldspar-latest-static/feldspar-0.5.0-linux-aarch64.tar.gz.sha256",
             "feldspar-latest-static/install.sh",
         ]
     );
@@ -1244,7 +1281,7 @@ fn versions_that_may_not_be_published_are_refused_before_the_build() {
             f.git("repo", &["commit", "--quiet", "-m", "the checkout"]);
         },
         "0.4.1",
-        "git checkout v0.4.1",
+        "v0.4.1 is tagged on a commit whose Cargo.toml says 0.4.0, not 0.4.1",
     );
     refused(
         "behind",
@@ -1514,9 +1551,14 @@ fn a_wrangler_npx_must_download_is_fetched_in_view_and_never_asks() {
     let downloading = stdout
         .find("==> wrangler is not installed: npx is downloading it")
         .expect(&stdout);
-    let reading = stdout.find("==> reading r2://b/versions.txt").expect(&stdout);
+    let reading = stdout
+        .find("==> reading r2://b/versions.txt")
+        .expect(&stdout);
     assert!(downloading < reading, "{stdout}");
-    assert!(stderr.contains("npm: downloading wrangler@4.0.0"), "{stderr}");
+    assert!(
+        stderr.contains("npm: downloading wrangler@4.0.0"),
+        "{stderr}"
+    );
 
     // Installed now: the preflight names the version and downloads nothing.
     let out = run();
@@ -1527,7 +1569,10 @@ fn a_wrangler_npx_must_download_is_fetched_in_view_and_never_asks() {
 
     // A wrangler that cannot be had stops the release before anything else.
     fs::remove_file(&installed).unwrap();
-    write_executable(&bin.join("npx"), "#!/bin/sh\necho 'npm error 404' >&2\nexit 1\n");
+    write_executable(
+        &bin.join("npx"),
+        "#!/bin/sh\necho 'npm error 404' >&2\nexit 1\n",
+    );
     let out = run();
     assert_eq!(out.status.code(), Some(1));
     assert!(
@@ -1536,4 +1581,337 @@ fn a_wrangler_npx_must_download_is_fetched_in_view_and_never_asks() {
         String::from_utf8_lossy(&out.stderr)
     );
     fs::remove_dir_all(&dir).ok();
+}
+
+impl Fixture {
+    /// How many times the cargo stub built.
+    fn builds(&self) -> usize {
+        fs::read_to_string(self.dir.join("cargo.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.starts_with("RUSTFLAGS="))
+            .count()
+    }
+}
+
+/// R2 answers the odd request with a 500 that a second try does not get. Each
+/// upload is tried again, and the release goes through.
+#[test]
+fn an_upload_r2_refuses_once_is_tried_again() {
+    let f = fixture("retry", 0);
+    f.fake_python_build_standalone(true);
+    f.fail_puts(2);
+    let (output, stdout, stderr) = f.release(&[]);
+    assert!(
+        output.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains(
+            "could not upload r2://feldspar-latest-static/feldspar-0.4.0-linux-x86_64.tar.gz (attempt 2 of 4)"
+        ),
+        "{stdout}"
+    );
+    assert_eq!(f.bucket("versions.txt"), "0.4.0\n");
+    assert!(
+        f.uploads
+            .join("feldspar-0.4.0-linux-x86_64.tar.gz.sha256")
+            .is_file()
+    );
+    fs::remove_dir_all(&f.dir).ok();
+}
+
+/// What happened to 0.1.1: the push went through, the versioned tarball went
+/// up, and then R2 refused the latest name until the run gave up. The branch
+/// is at the next -dev version by then. The same command, run from that
+/// branch, resumes the release at its tag — publishing the tarball it already
+/// built rather than building again — and leaves the branch where it is.
+#[test]
+fn a_release_that_failed_at_an_upload_is_resumed_from_the_branch() {
+    let f = fixture("resume", 0);
+    f.fake_python_build_standalone(true);
+    f.start_at("0.4.1-dev");
+    f.seed("versions.txt", "0.4.0\n");
+    f.fail_key("feldspar-linux-x86_64.tar.gz", true);
+    let (output, stdout, stderr) = f.release_as("0.4.1", &[]);
+    assert!(!output.status.success(), "{stdout}");
+    assert!(
+        stderr.contains("could not upload r2://feldspar-latest-static/feldspar-linux-x86_64.tar.gz, after 4 attempts"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("run the same command again to finish 0.4.1"),
+        "{stderr}"
+    );
+    // Not listed, and not finished: no versioned .sha256.
+    assert_eq!(f.bucket("versions.txt"), "0.4.0\n");
+    assert!(
+        !f.uploads
+            .join("feldspar-0.4.1-linux-x86_64.tar.gz.sha256")
+            .exists()
+    );
+    assert_eq!(f.version(), "0.4.2-dev");
+    let main = f.git("repo", &["rev-parse", "HEAD"]);
+    assert_eq!(f.git("remote.git", &["rev-parse", "main"]), main);
+    assert_eq!(f.builds(), 1);
+
+    f.fail_key("feldspar-linux-x86_64.tar.gz", false);
+    let before = f.objects().len();
+    let (output, stdout, stderr) = f.release_as("0.4.1", &[]);
+    assert!(
+        output.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(stdout.contains("resuming 0.4.1"), "{stdout}");
+    assert!(stdout.contains("reusing "), "{stdout}");
+    assert_eq!(f.builds(), 1, "built again");
+    assert_eq!(
+        f.objects()[before..],
+        [
+            "feldspar-latest-static/feldspar-0.4.1-linux-x86_64.tar.gz",
+            "feldspar-latest-static/feldspar-linux-x86_64.tar.gz",
+            "feldspar-latest-static/feldspar-linux-x86_64.tar.gz.sha256",
+            "feldspar-latest-static/feldspar.tar.gz",
+            "feldspar-latest-static/feldspar.tar.gz.sha256",
+            "feldspar-latest-static/versions.txt",
+            "feldspar-latest-static/latest.txt",
+            "feldspar-latest-static/feldspar-0.4.1-linux-x86_64.tar.gz.sha256",
+            "feldspar-latest-static/install.sh",
+        ]
+    );
+    assert_eq!(f.bucket("versions.txt"), "0.4.0\n0.4.1\n");
+    assert_eq!(f.bucket("latest.txt"), "0.4.1\n");
+    // The branch is left alone: no commit, nothing pushed to it.
+    assert_eq!(f.git("repo", &["rev-parse", "HEAD"]), main);
+    assert_eq!(f.git("remote.git", &["rev-parse", "main"]), main);
+    assert_eq!(f.version(), "0.4.2-dev");
+
+    // Finished now: a third run is refused.
+    let (output, _stdout, stderr) = f.release_as("0.4.1", &[]);
+    assert!(!output.status.success());
+    assert!(stderr.contains("is already published"), "{stderr}");
+    fs::remove_dir_all(&f.dir).ok();
+}
+
+/// Resumed without a tarball to reuse, the release is built at its tag, in a
+/// checkout of its own, with the tag's own build script; the checkout goes
+/// afterwards. And with a newer release already listed, the older one is
+/// published under its version only: the latest names, latest.txt and the
+/// installer stay the newer one's. A release the script before this one left
+/// half-way — its versioned .sha256 up, the version not listed — resumes too.
+#[test]
+fn a_resumed_release_is_built_at_its_tag_and_does_not_replace_a_newer_one() {
+    let f = fixture("resume-tag", 0);
+    f.fake_python_build_standalone(true);
+    f.start_at("0.4.1-dev");
+    f.fail_key("feldspar-linux-x86_64.tar.gz", true);
+    let (output, stdout, _stderr) = f.release_as("0.4.1", &[]);
+    assert!(!output.status.success(), "{stdout}");
+    f.fail_key("feldspar-linux-x86_64.tar.gz", false);
+
+    // Meanwhile 0.5.0 went out; the tarball 0.4.1 built is gone; and the
+    // bucket looks as an older script left it.
+    f.seed("versions.txt", "0.5.0\n");
+    f.seed("latest.txt", "0.5.0\n");
+    f.seed("feldspar-linux-x86_64.tar.gz", "0.5.0's");
+    f.seed("feldspar-0.4.1-linux-x86_64.tar.gz.sha256", "an old run's");
+    fs::remove_file(f.tarball()).unwrap();
+    // A commit on the branch that changes the build script: the resumed build
+    // must not run it.
+    let script = f.repo.join("scripts/build-static.sh");
+    let text = fs::read_to_string(&script).unwrap();
+    fs::write(
+        &script,
+        text.replacen(
+            "build_tree() {",
+            "build_tree() {\n    echo BRANCH-SCRIPT-BUILD",
+            1,
+        ),
+    )
+    .unwrap();
+    f.git("repo", &["commit", "--quiet", "-am", "a later change"]);
+    f.git("repo", &["push", "--quiet", "origin", "main"]);
+
+    let before = f.objects().len();
+    let (output, stdout, stderr) = f.release_as("0.4.1", &[]);
+    assert!(
+        output.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("with its own scripts/build-static.sh"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("BRANCH-SCRIPT-BUILD"), "{stdout}");
+    assert_eq!(f.builds(), 2);
+    assert!(
+        f.tarball().to_string_lossy().contains("/feldspar-0.4.1-"),
+        "{:?}",
+        f.tarball()
+    );
+    assert_eq!(
+        f.objects()[before..],
+        [
+            "feldspar-latest-static/feldspar-0.4.1-linux-x86_64.tar.gz",
+            "feldspar-latest-static/versions.txt",
+            "feldspar-latest-static/latest.txt",
+            "feldspar-latest-static/feldspar-0.4.1-linux-x86_64.tar.gz.sha256",
+        ]
+    );
+    assert_eq!(f.bucket("versions.txt"), "0.4.1\n0.5.0\n");
+    assert_eq!(f.bucket("latest.txt"), "0.5.0\n");
+    assert_eq!(f.bucket("feldspar-linux-x86_64.tar.gz"), "0.5.0's");
+    assert!(stdout.contains("A newer release is the latest"), "{stdout}");
+    // The checkout of the tag is gone again.
+    assert_eq!(f.git("repo", &["worktree", "list"]).lines().count(), 1);
+    assert!(!f.repo.join("target/release-src-v0.4.1").exists());
+    fs::remove_dir_all(&f.dir).ok();
+}
+
+impl Fixture {
+    /// Run `scripts/revoke-release.sh` with `args`, against the stubbed bucket.
+    fn revoke(&self, args: &[&str]) -> (std::process::Output, String, String) {
+        let path = format!(
+            "{}:{}",
+            self.bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let output = Command::new("bash")
+            .arg(self.repo.join("scripts/revoke-release.sh"))
+            .args(args)
+            .env("PATH", &path)
+            .env("RELEASE_RETRY_DELAY", "0")
+            .output()
+            .expect("run revoke-release.sh");
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        (output, stdout, stderr)
+    }
+
+    fn in_bucket(&self, key: &str) -> bool {
+        self.uploads.join(key).exists()
+    }
+}
+
+/// Revoking the newest release: out of versions.txt and latest.txt, its files
+/// gone, and the latest names put back to the release before it, byte for
+/// byte, each checksum naming its own object. Git keeps the tag, and
+/// `--release` of the same version publishes it again (it resumes).
+#[test]
+fn revoking_the_newest_release_puts_the_one_before_back() {
+    let f = fixture("revoke-newest", 0);
+    f.fake_python_build_standalone(true);
+    let (output, stdout, stderr) = f.release(&[]);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    let (output, stdout, stderr) = f.release_as("0.4.1", &[]);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert_eq!(f.bucket("latest.txt"), "0.4.1\n");
+    let older = fs::read(f.uploads.join("feldspar-0.4.0-linux-x86_64.tar.gz")).unwrap();
+    assert_ne!(
+        fs::read(f.uploads.join("feldspar-linux-x86_64.tar.gz")).unwrap(),
+        older,
+        "two releases with the same tarball prove nothing"
+    );
+
+    // Not without asking, when there is nobody to ask.
+    let (output, _stdout, stderr) = f.revoke(&["0.4.1"]);
+    assert!(!output.status.success());
+    assert!(stderr.contains("pass --yes"), "{stderr}");
+    assert!(f.in_bucket("feldspar-0.4.1-linux-x86_64.tar.gz"));
+
+    let (output, stdout, stderr) = f.revoke(&["0.4.1", "--yes"]);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("put feldspar-linux-x86_64.tar.gz feldspar.tar.gz back to 0.4.0"),
+        "{stdout}"
+    );
+    assert_eq!(f.bucket("versions.txt"), "0.4.0\n");
+    assert_eq!(f.bucket("latest.txt"), "0.4.0\n");
+    assert!(!f.in_bucket("feldspar-0.4.1-linux-x86_64.tar.gz"));
+    assert!(!f.in_bucket("feldspar-0.4.1-linux-x86_64.tar.gz.sha256"));
+    let digest = f.bucket("feldspar-0.4.0-linux-x86_64.tar.gz.sha256");
+    let digest = digest.split_whitespace().next().unwrap();
+    for object in ["feldspar-linux-x86_64.tar.gz", "feldspar.tar.gz"] {
+        assert_eq!(fs::read(f.uploads.join(object)).unwrap(), older, "{object}");
+        assert_eq!(
+            f.bucket(&format!("{object}.sha256")),
+            format!("{digest}  {object}\n")
+        );
+    }
+    assert!(f.in_bucket("feldspar-0.4.0-linux-x86_64.tar.gz"));
+    assert_eq!(f.git("repo", &["tag", "-l", "v0.4.1"]), "v0.4.1");
+
+    // Again: nothing left of it, and that is fine.
+    let (output, stdout, stderr) = f.revoke(&["0.4.1", "--yes"]);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert_eq!(f.bucket("versions.txt"), "0.4.0\n");
+
+    // Published again, from the branch, at its tag.
+    let (output, stdout, stderr) = f.release_as("0.4.1", &[]);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert!(stdout.contains("resuming 0.4.1"), "{stdout}");
+    assert_eq!(f.bucket("versions.txt"), "0.4.0\n0.4.1\n");
+    assert_eq!(f.bucket("latest.txt"), "0.4.1\n");
+    fs::remove_dir_all(&f.dir).ok();
+}
+
+/// Revoking a release with a newer one listed — or 0.1.1's leftovers, never
+/// listed at all — leaves the latest names alone: they are the newer one's.
+/// Revoking the only release deletes the latest names and latest.txt.
+#[test]
+fn revoking_an_older_release_leaves_the_latest_names_alone() {
+    let f = fixture("revoke-older", 0);
+    f.seed("versions.txt", "0.1.0\n0.1.2\n");
+    f.seed("latest.txt", "0.1.2\n");
+    f.seed("feldspar-linux-x86_64.tar.gz", "0.1.2's");
+    f.seed("feldspar-0.1.2-linux-x86_64.tar.gz", "0.1.2's");
+    f.seed(
+        "feldspar-0.1.2-linux-x86_64.tar.gz.sha256",
+        "z  feldspar-0.1.2-linux-x86_64.tar.gz\n",
+    );
+    f.seed("feldspar-0.1.0-linux-x86_64.tar.gz", "0.1.0's");
+    f.seed(
+        "feldspar-0.1.0-linux-x86_64.tar.gz.sha256",
+        "x  feldspar-0.1.0-linux-x86_64.tar.gz\n",
+    );
+    // What 0.1.1's failed release left: its versioned tarball, unlisted.
+    f.seed("feldspar-0.1.1-linux-x86_64.tar.gz", "0.1.1's");
+    f.seed(
+        "feldspar-0.1.1-linux-x86_64.tar.gz.sha256",
+        "y  feldspar-0.1.1-linux-x86_64.tar.gz\n",
+    );
+
+    let (output, stdout, stderr) = f.revoke(&["0.1.1", "--yes"]);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert!(!f.in_bucket("feldspar-0.1.1-linux-x86_64.tar.gz"));
+    assert!(!f.in_bucket("feldspar-0.1.1-linux-x86_64.tar.gz.sha256"));
+    assert_eq!(f.bucket("versions.txt"), "0.1.0\n0.1.2\n");
+    assert_eq!(f.bucket("feldspar-linux-x86_64.tar.gz"), "0.1.2's");
+
+    let (output, stdout, stderr) = f.revoke(&["0.1.0", "--yes"]);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert_eq!(f.bucket("versions.txt"), "0.1.2\n");
+    assert_eq!(f.bucket("latest.txt"), "0.1.2\n");
+    assert_eq!(f.bucket("feldspar-linux-x86_64.tar.gz"), "0.1.2's");
+    assert!(!f.in_bucket("feldspar-0.1.0-linux-x86_64.tar.gz"));
+    // No upload of any tarball: nothing was put back.
+    assert!(
+        !f.objects().iter().any(|o| o.ends_with(".tar.gz")),
+        "{:?}",
+        f.objects()
+    );
+
+    // The only one left: there is nothing to put back.
+    let (output, stdout, stderr) = f.revoke(&["0.1.2", "--yes"]);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert_eq!(f.bucket("versions.txt"), "");
+    assert!(!f.in_bucket("latest.txt"));
+    assert!(!f.in_bucket("feldspar-linux-x86_64.tar.gz"));
+    assert!(!f.in_bucket("feldspar-0.1.2-linux-x86_64.tar.gz"));
+
+    // A version that is not X.Y.Z is refused.
+    let (output, _stdout, stderr) = f.revoke(&["v0.1.2", "--yes"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr.contains("X.Y.Z"), "{stderr}");
+    fs::remove_dir_all(&f.dir).ok();
 }

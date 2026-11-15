@@ -979,6 +979,16 @@ The manual is docs/OPERATIONS.md §13.1.
 - [ ] **R1.4** Settings → System compares the running version with `latest.txt` and says when a
   newer release is out.
 - [ ] **R1.5** Channels other than latest (`beta`, …), under names of their own.
+- [x] **R1.6** A release that fails part-way is finished by running the same command again,
+  from the tag or from the branch that has moved on to `X.Y.(Z+1)-dev` (0.1.1 died on an R2 500
+  after its push and versioned upload, could not be retried, and was skipped). Every bucket call
+  is retried; the versioned `.sha256` goes up last and marks an architecture as finished; a
+  tagged, unfinished version resumes at its tag, reusing the tarball already built or building
+  the tag with its own script in a worktree; an older version resumed after a newer one leaves
+  the latest names alone.
+- [x] **R1.7** `scripts/revoke-release.sh X.Y.Z` takes a version out of `versions.txt` and
+  `latest.txt`, deletes its tarballs and checksums, and puts the latest names back to the
+  release before it when they held it.
 
 ## BK1 — Back up columns of database types feldspar does not know (bug report: `halfvec`)
 
