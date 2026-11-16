@@ -2,6 +2,84 @@
 
 Changes in reverse chronological order.
 
+## Bayesian regression from a formula, R2: breadth, prediction, and conversion to Stan
+
+Milestone R2 of `TODO-bayesian-regression.md`. The `bayesian_regression` provider now covers
+the rest of the brms families, non-linear and multivariate formulas, and predicts new rows in
+Rust from the stored draws. A formula model can be converted into an ordinary Stan model, and
+`feldspar stan warm` compiles the commonest programs ahead of the first fits.
+
+Running applications are unaffected. Every field R2 adds to the canonical structure is left
+out of its JSON when unused, so all 176 R1 golden programs are byte-identical,
+`GENERATOR_VERSION` is still 1, and compiled executables in an existing cache are still hits.
+There is no database change and no migration. The binder gains one optional configuration key,
+which no existing model has. The work stays clean-room, as R1 states: the new constructions
+come from published sources named in the modules (Bürkner & Vuorre 2019 for the ordinal
+models, Bürkner & Charpentier 2020 for monotonic effects, Mullahy 1986 for hurdles, Yu &
+Moyeed 2001 for the asymmetric Laplace), the brms documentation for behaviour and default
+links, and no `make_stancode()` output.
+
+- **R2.1: families and terms.**
+  - The families: `zero_inflated_poisson`, `zero_inflated_negbinomial`, `hurdle_poisson`,
+    `hurdle_negbinomial`, `hurdle_gamma`, `hurdle_lognormal`, `zero_inflated_beta`,
+    `zero_one_inflated_beta`, `beta_binomial`, the ordinal `cumulative`, `sratio`, `cratio` and
+    `acat`, `categorical`, `von_mises`, `exgaussian` and `asym_laplace`.
+  - Ordinal models have thresholds in place of an intercept: as many as the data says, or
+    `thres(k)`. Their `disc` is fixed at 1 unless it has a formula, and `cs()` gives
+    category-specific effects (refused with `cumulative`).
+  - Terms: `mo(x)` monotonic effects, `gr(g, by = h)`, fixed distributional parameters
+    (`nu = 4`), grouping by a combination of columns (`g1:g2`, `g1/g2`, refused in R1), and
+    grouping by a foreign key's referenced rows when the model has a related dataset over that
+    table.
+  - The prior menu gains `dirichlet` (on `simo`), and rows may name `nlpar` and `resp`.
+- **R2.2: non-linear formulas.** `y ~ a * (1 - exp(-b * t))` with `a ~ 1 + (1 | tree)` and
+  `b ~ 1`. `nl` is inferred, and the editor says so. The expression is parsed over a whitelist
+  of functions and re-emitted with positional names. A non-linear parameter's coefficients
+  need a proper prior.
+- **R2.3: multivariate models.** `mvbind(y1, y2) ~ …`, several response lines, or
+  `bf(…) + bf(…) + set_rescor(…)`. Responses are sorted canonically, an `|ID|` shares one
+  block across responses, gaussian responses have residual correlations by default, and
+  `subset()` is supported.
+- **R2.4: prediction in Rust.** A fit keeps a prediction pack in its state: the lowered
+  configuration, the coordinates, and the draws a prediction reads, at most 1 000.
+  `predict("…")` in a formula and `m.predict(…)` in a code body answer the posterior mean of
+  E[y]. An unknown level or a null is refused by name, and so is a fit with `keep_draws` off. A
+  multivariate or categorical model does not predict. In `sc-model`, `predict_rows` hands a
+  posterior's rows to its provider unencoded.
+- **R2.5: conversion and warming.**
+  - `POST /api/models/{id}/convert-to-stan` (`convertModelToStan`, admin only) writes the
+    program into a file store and saves a new `stan` model with the bindings the formula was
+    lowered to against its rows. It refuses to overwrite a file. The model editor shows it
+    under **Show Stan program**.
+  - `feldspar stan warm [--family F]… [--list] [--stan-cache-dir DIR]`, also `feldspar cmdstan
+    warm`, compiles 39 common programs into the server's cache.
+- **Host additions** (additive):
+  - `sc-model`: the binder key `derived_columns`, with the kinds `combine` and `mask`, added
+    before binding and known to the save-time check.
+  - `sc-server`: `stan_cache_dir()` is now public.
+  - The admin clients are regenerated for the new endpoint.
+
+Tests:
+- Without CmdStan (all run):
+  - 150 new golden programs, and every one of the 326 passes the real `stanc`.
+  - 11 R2 binding tests through the host's `bind_data`: combinations, foreign-key rows, `mo`,
+    ordinal thresholds, categorical indices, `by` and its refusal, fixed parameters,
+    zero-inflated and hurdle models, and a subset response.
+  - The non-linear and multivariate normalisation rules (renamed parameters and columns give
+    one program; `a*x` and `x*a` give two).
+  - A prediction from known draws, and its refusals.
+  - The ordinal probabilities summing to one for every family and link.
+  - The conversion's configuration, and the CLI's `warm` arguments.
+  - The server API test now converts a model through the endpoint.
+- Against a real CmdStan (`#[ignore]`d like every compiling test, all passing here):
+  - Recovery for case F (non-linear), case G (two responses, residual correlation, shared
+    block), a zero-inflated Poisson and a cumulative ordinal model. Case G's data seed was
+    chosen as R1's were: the first seed's posterior matched the within-school least-squares
+    slopes, which the test now prints.
+  - R2.4: the Rust predictions equal the program's `epred_1` for cases A, C and D.
+  - R2.5: a converted model samples identical draws with the same seed.
+  - R1's cases A–E still recover.
+
 ## Bayesian regression from a formula, R1.5–R1.8: the generator, the provider, and the editor
 
 The rest of `TODO-bayesian-regression.md` milestone R1. An admin can now pick the

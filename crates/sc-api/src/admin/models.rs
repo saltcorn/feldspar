@@ -433,6 +433,28 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(formula_check_schema()),
     );
 
+    // A formula model converted to a Stan model (TODO-bayesian-regression §9):
+    // the generated program written at `path` in the file store `store`, and
+    // a new `stan` model — named `name`, or "… (Stan)" — over the same
+    // datasets, with the bindings the formula was lowered to against its rows,
+    // so it fits to the same posterior. The original is left as it is.
+    set.register(
+        Endpoint::new(
+            ids::CONVERT_MODEL_TO_STAN,
+            Method::Post,
+            api()
+                .lit("models")
+                .param("id", ValueType::Uuid)
+                .lit("convert-to-stan"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("store", TypeSchema::text()),
+            StructField::new("path", TypeSchema::text()),
+            StructField::new("name", TypeSchema::optional(TypeSchema::text())),
+        ]))
+        .output(model_schema()),
+    );
+
     // Warm the compile cache without fitting (§13). It waits for the compile —
     // a minute the first time, nothing after — and answers the cache key, so a
     // compile error is shown where the button was pressed.

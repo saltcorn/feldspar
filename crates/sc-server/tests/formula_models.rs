@@ -98,6 +98,17 @@ impl Client {
 async fn setup() -> Result<(Client, sc_test_harness::TestDb)> {
     let TestServer { db, catalog, .. } = TestServer::builder().sql(SCHEMA).build().await?;
     sc_auth::bootstrap(&catalog).await?;
+    // Where a model converted to Stan writes its program.
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let programs = std::env::temp_dir().join(format!(
+        "feldspar-formula-programs-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    ));
+    std::fs::create_dir_all(&programs)?;
+    catalog.connect_file_store(Arc::new(sc_files::LocalFileStore::new(
+        "programs", &programs,
+    )?))?;
     let models = sc_server::install_models_with(
         &catalog,
         sc_model::DEFAULT_MAX_ROWS,
@@ -290,12 +301,40 @@ async fn a_formula_model_is_checked_previewed_and_saved_through_the_api() -> Res
         refused.to_string().contains("did you mean `floor`?"),
         "{refused}"
     );
-    client
+    let saved = client
         .ok(
             "POST",
             "/api/models",
             Some(radon("log_radon ~ floor + (1 | county)", json!([]))),
         )
         .await;
+
+    // Converted to a Stan model (R2.5): the program written to the store, a
+    // new `stan` model binding it as the formula did; the original kept.
+    let id = saved["id"].as_str().unwrap().to_owned();
+    let converted = client
+        .ok(
+            "POST",
+            &format!("/api/models/{id}/convert-to-stan"),
+            Some(json!({ "store": "programs", "path": "radon/model.stan" })),
+        )
+        .await;
+    assert_eq!(converted["provider"], "stan", "{converted}");
+    assert_eq!(converted["name"], "Radon (Stan)");
+    let config = &converted["configuration"];
+    assert_eq!(config["program_store"], "programs");
+    assert_eq!(config["program"], "radon/model.stan");
+    assert_eq!(config["bindings"]["J_1"]["dimension"], "county");
+    assert!(config.get("formula").is_none(), "{config}");
+    // Again to the same path: refused, nothing overwritten.
+    let (status, refused) = client
+        .send(
+            "POST",
+            &format!("/api/models/{id}/convert-to-stan"),
+            Some(json!({ "store": "programs", "path": "radon/model.stan" })),
+        )
+        .await;
+    assert!(!status.is_success(), "{refused}");
+    assert!(refused.to_string().contains("already exists"), "{refused}");
     Ok(())
 }

@@ -1002,6 +1002,8 @@ pub(crate) struct Spec {
     pub dimensions: BTreeMap<String, DimensionSpec>,
     /// Each dataset's policies; absent means both `refuse`.
     pub policies: BTreeMap<String, Policies>,
+    /// The columns added to the datasets before binding.
+    pub derived: BTreeMap<String, super::DerivedColumn>,
 }
 
 impl Spec {
@@ -1028,6 +1030,15 @@ impl Spec {
                 ))
             })?;
             spec.policies.insert(name.clone(), parsed);
+        }
+        for (name, derived) in object(config, super::DERIVED_COLUMNS_KEY)? {
+            let parsed = serde_json::from_value(derived.clone()).map_err(|e| {
+                Error::invalid(format!(
+                    "the derived column `{name}`: {}",
+                    serde_sentence(&e)
+                ))
+            })?;
+            spec.derived.insert(name.clone(), parsed);
         }
         Ok(spec)
     }

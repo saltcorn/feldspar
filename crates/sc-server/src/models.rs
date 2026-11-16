@@ -465,7 +465,7 @@ fn stan_provider(catalog: &Arc<Catalog>, settings: &StanSettings) -> StanProvide
 /// platform's data directory (Stan TODO §13) — a compile is a minute, and a
 /// temporary directory cleared at reboot would pay it again. The system
 /// temporary directory when there is no data directory.
-fn stan_cache_dir() -> PathBuf {
+pub fn stan_cache_dir() -> PathBuf {
     match sc_module::default_modules_root() {
         Ok(modules) => modules
             .parent()

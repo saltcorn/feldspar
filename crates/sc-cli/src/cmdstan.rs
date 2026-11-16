@@ -1,4 +1,6 @@
-//! `feldspar cmdstan status | install` (TODO "Bayesian models with Stan" §20).
+//! `feldspar cmdstan status | install | warm` (TODO "Bayesian models with Stan"
+//! §20; `warm`, TODO-bayesian-regression R2.5). `feldspar stan …` is the same
+//! command.
 //!
 //! Neither command touches a database: `status` reports what
 //! `sc_stan::cmdstan::discover` finds on this machine, and `install` downloads
@@ -22,10 +24,19 @@ pub enum CmdStanArgs {
         dir: Option<PathBuf>,
         jobs: u32,
     },
+    /// `warm [--cmdstan DIR] [--stan-cache-dir DIR] [--family F]… [--list]`.
+    Warm {
+        cmdstan: Option<PathBuf>,
+        cache_dir: Option<PathBuf>,
+        families: Vec<String>,
+        list: bool,
+    },
 }
 
 const USAGE: &str = "usage: feldspar cmdstan status [--cmdstan DIR]\n       \
-                     feldspar cmdstan install [--version V] [--dir D] [--jobs J]";
+                     feldspar cmdstan install [--version V] [--dir D] [--jobs J]\n       \
+                     feldspar cmdstan warm [--cmdstan DIR] [--stan-cache-dir DIR] \
+                     [--family F]... [--list]";
 
 impl CmdStanArgs {
     pub fn parse(args: &[String]) -> Result<CmdStanArgs> {
@@ -39,9 +50,16 @@ impl CmdStanArgs {
                 // and running out of memory halfway is the expensive failure.
                 jobs: 1,
             },
+            Some("warm") => CmdStanArgs::Warm {
+                cmdstan: None,
+                cache_dir: None,
+                families: Vec::new(),
+                list: false,
+            },
             Some(other) => {
                 return Err(Error::config(format!(
-                    "unknown cmdstan subcommand `{other}`; they are status and install\n{USAGE}"
+                    "unknown cmdstan subcommand `{other}`; they are status, install and \
+                     warm\n{USAGE}"
                 )));
             }
             None => return Err(Error::config(USAGE)),
@@ -54,9 +72,19 @@ impl CmdStanArgs {
                     .ok_or_else(|| Error::config(format!("{flag} needs a value")))
             };
             match (&mut parsed, arg.as_str()) {
-                (CmdStanArgs::Status { cmdstan }, "--cmdstan") => {
+                (
+                    CmdStanArgs::Status { cmdstan } | CmdStanArgs::Warm { cmdstan, .. },
+                    "--cmdstan",
+                ) => {
                     *cmdstan = Some(PathBuf::from(value("--cmdstan")?));
                 }
+                (CmdStanArgs::Warm { cache_dir, .. }, "--stan-cache-dir") => {
+                    *cache_dir = Some(PathBuf::from(value("--stan-cache-dir")?));
+                }
+                (CmdStanArgs::Warm { families, .. }, "--family") => {
+                    families.push(value("--family")?);
+                }
+                (CmdStanArgs::Warm { list, .. }, "--list") => *list = true,
                 (CmdStanArgs::Install { version, .. }, "--version") => {
                     *version = Some(value("--version")?.parse()?);
                 }
@@ -218,6 +246,52 @@ pub async fn install(version: Option<Version>, dir: Option<PathBuf>, jobs: u32) 
             cmdstan.version,
             cmdstan.dir.display()
         ),
+    }
+    Ok(())
+}
+
+/// `feldspar cmdstan warm`: compile the formula provider's commonest programs
+/// into the cache the server reads (`cache_dir`, the server's default when
+/// absent), one after another, saying of each whether it was already there.
+/// With `list`, only say which they are.
+pub async fn warm(
+    cmdstan: Option<PathBuf>,
+    cache_dir: PathBuf,
+    families: &[String],
+    list: bool,
+) -> Result<()> {
+    let programs = sc_bayesreg::warm::programs(families).map_err(Error::config)?;
+    if list {
+        for (label, _) in &programs {
+            println!("{label}");
+        }
+        return Ok(());
+    }
+    let locations = Locations::from_env(cmdstan);
+    let found = sc_stan::cmdstan::discover(&locations)?;
+    let make = Toolchain::find(&locations)
+        .make
+        .unwrap_or_else(|| PathBuf::from("make"));
+    let cache = sc_stan::compile::CompileCache::new(&cache_dir, make);
+    println!(
+        "warming {} programs into {} with CmdStan {}",
+        programs.len(),
+        cache_dir.display(),
+        found.version
+    );
+    let never = || false;
+    for (label, text) in &programs {
+        let program = sc_bayesreg::program_of(text)?;
+        let watch = sc_stan::Watch::new(std::time::Duration::from_secs(30 * 60), &never);
+        let compiled = cache.compile(&found, &program, &watch, &|| {}).await?;
+        println!(
+            "  {label}: {}",
+            if compiled.cached {
+                "already compiled"
+            } else {
+                "compiled"
+            }
+        );
     }
     Ok(())
 }

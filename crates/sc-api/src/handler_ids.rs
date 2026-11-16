@@ -250,6 +250,10 @@ pub const CHECK_FORMULA: HandlerId<AdminOnly> = HandlerId::new("checkFormula");
 /// The same model's prior table against its rows: the data-dependent defaults
 /// as numbers, and the level coefficients matched exactly.
 pub const CHECK_PRIORS: HandlerId<AdminOnly> = HandlerId::new("checkPriors");
+/// A `bayesian_regression` model converted to an ordinary `stan` model: its
+/// generated program written into a file store, and a new model binding it
+/// as the formula did (TODO-bayesian-regression §9, R2.5).
+pub const CONVERT_MODEL_TO_STAN: HandlerId<AdminOnly> = HandlerId::new("convertModelToStan");
 pub const COMPILE_MODEL: HandlerId<AdminOnly> = HandlerId::new("compileModel");
 pub const CANCEL_MODEL_FIT: HandlerId<AdminOnly> = HandlerId::new("cancelModelFit");
 pub const GET_MODEL_DRAWS: HandlerId<AdminOnly> = HandlerId::new("getModelDraws");
@@ -380,8 +384,7 @@ pub const FORCE_LOGOUT_USER: HandlerId<AdminOnly> = HandlerId::new("forceLogoutU
 pub const BECOME_USER: HandlerId<AdminOnly> = HandlerId::new("becomeUser");
 pub const RESET_USER_SECOND_FACTOR: HandlerId<AdminOnly> = HandlerId::new("resetUserSecondFactor");
 pub const SET_RANDOM_PASSWORD: HandlerId<AdminOnly> = HandlerId::new("setRandomPassword");
-pub const SEND_CREDENTIALS_EMAIL: HandlerId<AdminOnly> =
-    HandlerId::new("sendCredentialsEmail");
+pub const SEND_CREDENTIALS_EMAIL: HandlerId<AdminOnly> = HandlerId::new("sendCredentialsEmail");
 pub const LIST_USER_ROLE_GRANTS: HandlerId<AdminOnly> = HandlerId::new("listUserRoleGrants");
 pub const GRANT_USER_ROLE: HandlerId<AdminOnly> = HandlerId::new("grantUserRole");
 pub const REVOKE_USER_ROLE_GRANT: HandlerId<AdminOnly> = HandlerId::new("revokeUserRoleGrant");

@@ -10665,10 +10665,11 @@ A provider, `bayesian_regression`, whose configuration is a formula in lme4/brms
 than a Stan program: `price | weights(w) ~ area + region + (1 + area | county)`, with
 `sigma ~ region` on a line of its own. The provider generates the Stan program from the
 formula's **structure** and fits it through `sc-stan`. The plan, the decisions and the
-milestones are `TODO-bayesian-regression.md`. Milestone R1 has landed: the crate, the parser
-and resolver, the families and priors, the host's half, the canonicaliser and generator, the
-provider, and the editor. R2 (more families, non-linear and multivariate formulas, prediction,
-eject to a Stan model) is next.
+milestones are `TODO-bayesian-regression.md`. Both milestones have landed. R1 is the crate,
+the parser and resolver, the families and priors, the host's half, the canonicaliser and
+generator, the provider, and the editor. R2 adds the remaining families, non-linear and
+multivariate formulas, prediction in Rust, conversion to a Stan model, and cache warming (see
+"What R2 adds" below).
 
 **A clean-room implementation.** brms is GPL-2, and none of this is derived from its source.
 The crate follows published behaviour only: brms's reference documentation, Bürkner (2017,
@@ -10747,14 +10748,63 @@ the design, because the cache only helps if equivalent models hit it.
 - *The data plan* binds every data variable with the host's own kinds: `count`, `column`,
   `terms` for the model matrices and offsets, `width` for their sizes, a `values` dimension
   per grouping column (named after the column) with `size` and `index`, `value` for the prior
-  numbers, and the main dataset's nulls policy `drop`. Grouping by a combination of columns
-  (`g1:g2`) is refused in R1, with the advice to add a Calculated column, because no binder
-  kind indexes by two columns yet.
+  numbers, and the main dataset's nulls policy `drop`.
 
 The golden files (`crates/sc-bayesreg/tests/golden/`, one per family × block shape × addition
-term, 176 in all) pin the text, and every one passes the real `stanc` when a CmdStan is
+term, 326 in all since R2) pin the text, and every one passes the real `stanc` when a CmdStan is
 present. Any change to what the generator emits fails them until `GENERATOR_VERSION` is
 bumped and they are regenerated, so a cached executable cannot silently change meaning.
+
+**What R2 adds.** Every R2 field of the `Structure` is left out of its canonical JSON when it is
+unused, so an R1 model's structure, program and cache key are what they were. The 176 R1 golden
+programs are byte-identical, and `GENERATOR_VERSION` is still 1.
+
+- *Families* (R2.1): the zero-inflated, hurdle and zero-one-inflated families, beta-binomial,
+  von Mises, ex-Gaussian, asymmetric Laplace, the four ordinal families (`cumulative`,
+  `sratio`, `cratio`, `acat`) and `categorical`. Each is a table entry with a `Kind`
+  (standard, ordinal, categorical). An ordinal model has thresholds in place of an intercept
+  (their number is data, from the response or `thres(k)`), a `disc` fixed at 1 unless it has a
+  formula, and `cs()` category-specific effects. The categories are Bürkner & Vuorre (2019)'s
+  four models over the link's CDF. A categorical response is an `index` into a `values`
+  dimension of its column, with one linear predictor per category but the first.
+- *Terms* (R2.1): `mo(x)` monotonic effects (a simplex over the column's levels, a Dirichlet
+  prior), `gr(g, by = h)` (SDs and correlations per level of `h`, a group level using those of
+  the level its rows are in, refused when a level of `g` is in two of `h`), fixed parameters
+  (`nu = 4`, structurally the same as `constant(4)`), grouping by a combination (`g1:g2`,
+  `g1/g2`), and grouping by a foreign key's referenced rows when the model has a related dataset
+  over that table, so a level with no rows still gets a parameter.
+- *Non-linear formulas* (R2.2): the main formula is an expression (`NlExpr`) when another line
+  is the formula of a name it uses (`nl` is inferred, and the editor says so). The parameters
+  are renamed `nlp_1…` and the columns `C_1…` in order of first appearance, and literals are
+  printed in one form. A non-linear parameter's intercept is an ordinary coefficient, never
+  centred, and its coefficients need a proper prior.
+- *Multivariate models* (R2.3): several response lines, `mvbind(y1, y2) ~ …`, or
+  `bf(…) + bf(…) + set_rescor(…)`. Each response has its own submodel. A distributional
+  parameter's line belongs to the response in the same `bf(…)`, and terms sharing an `|ID|` are
+  one block across responses. The responses are sorted by their structural signature, and a
+  later one's variables have a suffix (`Y_2`, `sigma_2`). Gaussian responses without addition
+  terms have residual correlations by default (`rescor`). A response measured on some rows only
+  (`subset(s)`) is bound through a masked column.
+- *The binder* (`sc-model`) gained one additive key, `derived_columns`. It names columns added
+  to a dataset before binding: `combine` (the combination of several columns, as text) and
+  `mask` (a column where a yes/no column is true, null elsewhere). They are ordinary columns to
+  every binding and to the save-time check, and a model without the key is untouched.
+- *Prediction in Rust* (R2.4): a fit's state keeps a prediction pack: the lowered
+  configuration, the binder's coordinates, and the draws a linear predictor reads, thinned to at
+  most 1 000 (fewer for a model with many group levels, about 250 000 numbers in all). A
+  prediction evaluates the bindings on the new rows with the fit's encodings and levels, refusing
+  an unknown level or a null by name, and answers the posterior mean of E[y] per family. These
+  are the same expressions as the program's optional `epred_1` (the configuration key `epred`).
+  The provider's outcome is `Posterior { prediction: Some("epred") }`, except for a
+  multivariate or categorical model. `sc_model::predict_rows` hands a posterior's rows to its
+  provider as they are, so `predict("…")` and `m.predict(…)` work. With `keep_draws` off, or a
+  needed variable excluded, the fit records why there is no pack, and a prediction says so.
+- *Conversion to a Stan model* (R2.5, `sc_bayesreg::eject`, the endpoint `convertModelToStan`):
+  the formula is lowered against its rows, the program is written at a path in a file store
+  (refused if the file exists), and a new `stan` model is saved with the lowered bindings, so it
+  fits to the same draws with the same seed. `feldspar stan warm` (an alias of `feldspar
+  cmdstan warm`) compiles the R1 families × no block / one correlated block / one uncorrelated
+  block into the server's compile cache.
 
 **The provider** (`BayesRegProvider`). Its configuration is `formula`, `family`, `links`,
 `priors` (only the rows the admin set), `center`, and the Stan sampler's settings, the `stan`

@@ -29,6 +29,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+sc-dataset.workspace = true
 sc-files.workspace = true
 tokio.workspace = true
 

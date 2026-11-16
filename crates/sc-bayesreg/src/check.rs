@@ -14,10 +14,10 @@ use sc_types::Attrs;
 use serde::Serialize;
 use serde_json::Value as Json;
 
-use crate::canon::{Structure, canonicalise, data_plan};
+use crate::canon::{PlanContext, Structure, canonicalise_with, data_plan_in};
 use crate::family::{FAMILIES, family};
 use crate::generate::generate;
-use crate::lower::{keys, rows, settings};
+use crate::lower::{keys, options, rows, settings};
 use crate::parse::{ParseError, parse_formula, strip_priors};
 use crate::prior::{self, PriorFamily, PriorRow, PriorTable, merge_rows};
 use crate::resolve::{Data, resolve};
@@ -161,30 +161,37 @@ pub fn check(config: &Attrs, input: LowerInput<'_>) -> Check {
             None
         }
     };
-    let scale = frame.map(|f| resolved.data_scale(f));
+    let scales = frame.map(|f| resolved.data_scales(f));
     let slots = resolved.prior_slots(names.as_ref());
-    out.table = Some(prior::resolve(
+    let responses: Vec<String> = resolved
+        .responses
+        .iter()
+        .map(|r| r.response.clone())
+        .collect();
+    out.table = Some(prior::resolve_each(
         &slots,
         &out.priors,
-        scale,
-        &resolved.response,
+        scales.as_deref(),
+        &responses,
         resolved.center,
     ));
 
-    match canonicalise(&resolved, &out.priors) {
+    let opts = match options(config) {
+        Ok(o) => o,
+        Err(e) => {
+            out.problems.push(e.to_string());
+            Default::default()
+        }
+    };
+    match canonicalise_with(&resolved, &out.priors, opts) {
         Ok(canonical) => {
-            let taken: Vec<String> = input
-                .model()
-                .related
-                .iter()
-                .map(|r| r.name.clone())
-                .collect();
-            let plan = data_plan(&resolved, &canonical, &taken);
-            let (bindings, dimensions, policies) = plan.to_json();
+            let plan = data_plan_in(&resolved, &canonical, &PlanContext::of(input.model()));
+            let (bindings, dimensions, policies, derived) = plan.to_json();
             out.data = Some(serde_json::json!({
                 "bindings": bindings,
                 "dimensions": dimensions,
                 "policies": policies,
+                "derived_columns": derived,
             }));
             out.program = Some(generate(&canonical.structure));
             out.structure = Some(canonical.structure);

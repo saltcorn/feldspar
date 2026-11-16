@@ -2086,9 +2086,20 @@ columns are called. On a typical installation that is a handful of entries in to
 generated program's header names the generator version and the structure, so an entry read
 off disk says what it is. A feldspar upgrade that changes the generator (its version is in
 that header) makes a new set of entries, compiled again on each structure's first fit after
-the upgrade. Warming them ahead of time (`feldspar stan warm`, compiling the commonest
-structures at boot) is planned (TODO-bayesian-regression R2.5); until then the first fit of a
-structure on a fresh node or after such an upgrade waits its minute in **Compiling**. The
+the upgrade. To keep the first fits from waiting their minute in **Compiling**, warm the cache
+on each node after an install or an upgrade:
+
+```sh
+feldspar stan warm                      # every R1 family, three common shapes each
+feldspar stan warm --family poisson     # only some families (repeat --family)
+feldspar stan warm --list               # what it would compile
+feldspar stan warm --stan-cache-dir DIR # a server started with --stan-cache-dir
+```
+
+It compiles one program at a time (39 in all, half a minute or so each), into the cache
+directory the server uses by default, and says of each whether it was already there. A second
+run compiles nothing. Run it with the same `--cmdstan` the server uses, because the cache is
+keyed by the CmdStan version. The
 formula editor has no Compile button and shows no cache state, on purpose: whether a structure
 happens to be compiled must not steer which model an admin writes.
 

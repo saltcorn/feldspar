@@ -228,6 +228,71 @@ two are correlated.
 
 ---
 
+## Part 4 — Use the fit: `predict("Radon")`
+
+A fitted formula model predicts. Add a calculated field to the homes table:
+
+```text
+predict("Radon")
+```
+
+Each row gets the posterior mean of its expected `log_radon`: the intercept, the floor
+effect and its county's effect, averaged over the fit's draws. The same number comes from
+`m.predict({ floor: 1, county: "Aitkin" })` in a code body. The prediction is computed in
+feldspar from the draws the fit kept, so no CmdStan runs at prediction time. A county the fit
+never saw is refused by name rather than guessed at.
+
+Two things stop a fit from predicting, and the instance says which. The first is `keep_draws`
+turned off, because the prediction is made from the draws. The second is a model that does not
+predict one number per row: a multivariate one, or a categorical response.
+
+---
+
+## Part 5 — More than one formula can say
+
+**A non-linear curve.** When a line is the formula of a name the main formula uses, the main
+formula is non-linear. This is a growth curve whose asymptote varies by tree:
+
+```text
+height ~ asym * (1 - exp(-rate * age))
+asym ~ 1 + (1 | tree)
+rate ~ 1
+```
+
+The editor notes that `asym` and `rate` are its parameters. Each needs a proper prior, which
+you set with **nlpar** `asym` (for example `normal(10, 5)` on `b`), because a flat prior on a
+curve's parameters rarely gives a proper posterior. The table reports `asym_Intercept`,
+`rate_Intercept` and `sd(asym_Intercept)`.
+
+**Two responses.** Weight and height measured on the same children, with correlated
+residuals and school effects that share an ID:
+
+```text
+mvbind(weight, height) ~ age + (1 | p | school)
+```
+
+Gaussian responses with no addition terms get residual correlations by default. Write
+`set_rescor(FALSE)` (or `bf(…, rescor = FALSE)`) to drop them. To give one response a formula
+of its own, write a `bf()` per response, with its distributional parameters inside it:
+`bf(weight ~ age, sigma ~ age) + bf(height ~ age)`. A response measured on some rows only
+takes `subset(s)`, a yes/no column. Prior rows name their response with **resp**.
+
+**Other kinds of response.** Counts with too many zeros (`zero_inflated_poisson`,
+`hurdle_negbinomial`, …), ratings on an ordered scale (`cumulative`, `sratio`, `cratio`,
+`acat`), and a categorical choice (`categorical`). An ordinal response is numbered 1, 2, 3, …;
+`thres(k)` fixes the number of thresholds, and `cs(x)` lets `x` move each threshold separately
+(not with `cumulative`). `mo(x)` is a monotonic effect of an ordered column of whole numbers.
+`(1 | gr(county, by = region))` gives each region its own SDs, and `(1 | state:county)` groups
+by a combination. A grouping column that is a foreign key to a table the model has a related
+dataset over groups by that table's rows, so a county with no homes still gets its effect.
+
+**When the formula is not enough.** Under **Show Stan program**, **Convert to a Stan model**
+writes the generated program into a file store and makes a new Stan model that binds it as
+the formula did. It fits to the same posterior, and from there you can edit the program
+freely. The formula model is kept.
+
+---
+
 ## What brms users should know
 
 The formula language is brms's, so a formula pasted from R mostly just works. `bf(...)`
@@ -237,23 +302,26 @@ editor tells you. What differs:
 - **Columns, not R expressions.** A term is a column of the dataset, or one of `log()`,
   `log1p()`, `exp()`, `sqrt()`, `abs()`, `inv()`, `scale()`, `poly(x, k)` and `I(...)` over
   columns and numbers. Anything else belongs in a Calculated column of the dataset.
-- **Grouping by a combination** (`(1 | g1:g2)`, `(1 | g1/g2)`) is not generated yet. Add a
-  Calculated column holding the combination and group by it.
-- **No raw Stan.** There is no `stanvars`. A model that needs Stan the formula cannot say will
-  be converted into an ordinary Stan model in a later release.
+- **No raw Stan.** There is no `stanvars`. A model that needs Stan the formula cannot say is
+  converted into an ordinary Stan model (Part 5) and edited there.
 - **The default priors** are brms's documented ones. Where brms does not document how a
   number is computed, the rule is this provider's own, and it is stated, in the table, and in
   the TODO's §3.7: the median of the response on the link scale, and its MAD, at least 2.5.
 - **The same model, not the same numbers.** A fit should agree with brms's within Monte Carlo
   error, not to the last digit: the program and the seeds differ.
 - **Families**: `gaussian`, `student`, `lognormal`, `skew_normal`, `bernoulli`, `binomial`
-  (with `trials()`), `poisson`, `negbinomial`, `geometric`, `Gamma`, `weibull`, `exponential`
-  and `Beta`. The response may take `weights()`, `trials()`, `cens()`, `trunc()`, `se()` and
-  `rate()`. A censoring column holds −1, 0, 1 and 2 (left, none, right, interval), or yes/no
-  for right censoring.
-- **Not yet**: prediction for new rows (`predict("Radon")` in a formula), non-linear and
-  multivariate formulas, and the zero-inflated, hurdle and ordinal families arrive in the next
-  release. Smooths, Gaussian processes, autocorrelation terms and mixtures are not planned.
+  (with `trials()`), `poisson`, `negbinomial`, `geometric`, `Gamma`, `weibull`, `exponential`,
+  `Beta`, the zero-inflated and hurdle families, `zero_one_inflated_beta`, `beta_binomial`,
+  `cumulative`, `sratio`, `cratio`, `acat`, `categorical`, `von_mises`, `exgaussian` and
+  `asym_laplace`. The response may take `weights()`, `trials()`, `cens()`, `trunc()`, `se()`,
+  `rate()`, `thres()` and `subset()`. A censoring column holds −1, 0, 1 and 2 (left, none,
+  right, interval), or yes/no for right censoring.
+- **Differences in R2's breadth.** Residual correlations are for gaussian responses only (not
+  `student`). A `subset()` response takes no other addition term. A categorical response's
+  group-level effects are one block across the categories (correlated when written with `|`).
+  Each category gets its own SDs, but brms's separate block per category is not reproduced.
+- **Not planned**: smooths, Gaussian processes, autocorrelation terms, mixtures and
+  multi-membership (`mm()`).
 
 ## Where to go next
 

@@ -13,6 +13,19 @@
 //! positive distributional parameters (`sigma`, `shape`, `phi`) are not listed
 //! there; this table allows `log`, `identity` and `softplus`, and `nu` takes
 //! `logm1` and `identity`. The densities are the Stan Functions Reference's.
+//!
+//! The R2 families (R2.1) follow the same documentation, with their
+//! distributional parameters' meanings from `vignette("brms_families")`: a
+//! zero-inflated family mixes a point mass at zero (`zi`) with the base count
+//! density, a hurdle family (`hu`) puts all of the zeros in the point mass
+//! and truncates the base density above zero, the zero-one-inflated beta has
+//! `zoi` (a zero or a one) and `coi` (a one, given that); the ordinal
+//! families' four models are Bürkner & Vuorre (2019), *Advances in Methods and
+//! Practices in Psychological Science* 2(1), with `disc` fixed at 1 unless it
+//! has a formula. The defaults of the R2 dpars' priors are `beta(1, 1)` on a
+//! probability, `gamma(2, 0.01)` on von Mises's `kappa` and `gamma(1, 0.1)` on
+//! the exponential part `beta` of the ex-Gaussian — this implementation's own
+//! choices, stated here and shown on every fit.
 
 use std::fmt;
 
@@ -43,6 +56,8 @@ pub enum Link {
     Softplus,
     /// `logm1`: `log(x - 1)`, for ν > 1.
     Logm1,
+    /// `tan_half`: `tan(x / 2)`, for an angle (von Mises).
+    TanHalf,
 }
 
 impl Link {
@@ -59,6 +74,7 @@ impl Link {
         Link::Sqrt,
         Link::Softplus,
         Link::Logm1,
+        Link::TanHalf,
     ];
 
     /// Its name.
@@ -75,6 +91,7 @@ impl Link {
             Link::Sqrt => "sqrt",
             Link::Softplus => "softplus",
             Link::Logm1 => "logm1",
+            Link::TanHalf => "tan_half",
         }
     }
 
@@ -95,6 +112,7 @@ impl Link {
             Link::Inverse => 1.0 / y,
             Link::Softplus => y.exp_m1().ln(),
             Link::Logm1 => (y - 1.0).ln(),
+            Link::TanHalf => (y / 2.0).tan(),
             Link::Logit | Link::Probit | Link::ProbitApprox | Link::Cloglog | Link::Cauchit => {
                 return None;
             }
@@ -122,6 +140,19 @@ pub enum Response {
     Binary,
     /// A whole number ≥ 0 (with `trials`, ≤ the trials).
     Count,
+    /// Zero or more (a hurdle on a positive family).
+    NonNegative,
+    /// In [0, 1) (zero-inflated beta).
+    UnitZero,
+    /// In [0, 1] (zero-one-inflated beta).
+    UnitClosed,
+    /// An ordered category: a whole number from 1.
+    Ordinal,
+    /// A category of any kind: text, a whole number or yes/no, each distinct
+    /// value one category (the first in sorted order the reference).
+    Category,
+    /// An angle in radians, between −π and π.
+    Angle,
 }
 
 impl Response {
@@ -133,6 +164,12 @@ impl Response {
             Response::Unit => "numbers strictly between 0 and 1",
             Response::Binary => "0 or 1 (or a yes/no column)",
             Response::Count => "whole numbers of zero or more",
+            Response::NonNegative => "numbers of zero or more",
+            Response::UnitZero => "numbers from 0 up to (not including) 1",
+            Response::UnitClosed => "numbers from 0 to 1",
+            Response::Ordinal => "ordered categories numbered 1, 2, 3, …",
+            Response::Category => "categories (text, whole numbers or yes/no)",
+            Response::Angle => "angles in radians, between −π and π",
         }
     }
 
@@ -144,13 +181,22 @@ impl Response {
             Response::Unit => y > 0.0 && y < 1.0,
             Response::Binary => y == 0.0 || y == 1.0,
             Response::Count => y >= 0.0 && y.fract() == 0.0 && y.is_finite(),
+            Response::NonNegative => y.is_finite() && y >= 0.0,
+            Response::UnitZero => (0.0..1.0).contains(&y),
+            Response::UnitClosed => (0.0..=1.0).contains(&y),
+            Response::Ordinal => y >= 1.0 && y.fract() == 0.0 && y.is_finite(),
+            Response::Category => true,
+            Response::Angle => (-std::f64::consts::PI..=std::f64::consts::PI).contains(&y),
         }
     }
 
     /// Whether the column must hold integers (as the dataset's type, not just
     /// its values).
     pub fn integer(self) -> bool {
-        matches!(self, Response::Binary | Response::Count)
+        matches!(
+            self,
+            Response::Binary | Response::Count | Response::Ordinal | Response::Category
+        )
     }
 }
 
@@ -165,6 +211,8 @@ pub struct ATerms {
     pub se: bool,
     /// `rate(d)`.
     pub rate: bool,
+    /// `thres(k)`: the ordinal families.
+    pub thres: bool,
 }
 
 /// A distributional parameter other than `mu`.
@@ -180,6 +228,9 @@ pub struct Dpar {
     pub prior: DefaultPrior,
     /// What it is, for the editor.
     pub about: &'static str,
+    /// When it has no formula: fixed at this value rather than estimated
+    /// (an ordinal family's `disc`, brms's documented default 1).
+    pub fixed: Option<f64>,
 }
 
 /// One family.
@@ -200,6 +251,20 @@ pub struct Family {
     pub stan: &'static str,
     /// The addition terms it takes (`weights` goes with every family).
     pub aterms: ATerms,
+    /// What kind of model it makes.
+    pub kind: Kind,
+}
+
+/// What kind of model a family makes — the three shapes the generator writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// One linear predictor per distributional parameter, one density.
+    Standard,
+    /// An ordinal response: thresholds instead of an intercept, and
+    /// optionally category-specific effects (`cs()`).
+    Ordinal,
+    /// An unordered category: a linear predictor per category but the first.
+    Categorical,
 }
 
 impl Family {
@@ -251,6 +316,7 @@ const SIGMA: Dpar = Dpar {
     kind: ClassKind::Positive,
     prior: DefaultPrior::ResponseScale,
     about: "the residual standard deviation",
+    fixed: None,
 };
 const NU: Dpar = Dpar {
     name: "nu",
@@ -258,6 +324,7 @@ const NU: Dpar = Dpar {
     kind: ClassKind::AboveOne,
     prior: DefaultPrior::Fixed("gamma", &[2.0, 0.1]),
     about: "the degrees of freedom",
+    fixed: None,
 };
 const ALPHA: Dpar = Dpar {
     name: "alpha",
@@ -265,6 +332,7 @@ const ALPHA: Dpar = Dpar {
     kind: ClassKind::Real,
     prior: DefaultPrior::Fixed("normal", &[0.0, 4.0]),
     about: "the skewness",
+    fixed: None,
 };
 const SHAPE: Dpar = Dpar {
     name: "shape",
@@ -272,6 +340,7 @@ const SHAPE: Dpar = Dpar {
     kind: ClassKind::Positive,
     prior: DefaultPrior::Fixed("gamma", &[0.01, 0.01]),
     about: "the shape",
+    fixed: None,
 };
 const NB_SHAPE: Dpar = Dpar {
     prior: DefaultPrior::Fixed("inv_gamma", &[0.4, 0.3]),
@@ -284,6 +353,61 @@ const PHI: Dpar = Dpar {
     kind: ClassKind::Positive,
     prior: DefaultPrior::Fixed("gamma", &[0.01, 0.01]),
     about: "the precision",
+    fixed: None,
+};
+
+const UNIT: Dpar = Dpar {
+    name: "zi",
+    links: &[Link::Logit, Link::Identity],
+    kind: ClassKind::Unit,
+    prior: DefaultPrior::Fixed("beta", &[1.0, 1.0]),
+    about: "the probability of an extra zero",
+    fixed: None,
+};
+const ZI: Dpar = UNIT;
+const HU: Dpar = Dpar {
+    name: "hu",
+    about: "the probability of a zero (the hurdle)",
+    ..UNIT
+};
+const ZOI: Dpar = Dpar {
+    name: "zoi",
+    about: "the probability of a zero or a one",
+    ..UNIT
+};
+const COI: Dpar = Dpar {
+    name: "coi",
+    about: "the probability of a one, given a zero or a one",
+    ..UNIT
+};
+const QUANTILE: Dpar = Dpar {
+    name: "quantile",
+    about: "the quantile the location is",
+    ..UNIT
+};
+const KAPPA: Dpar = Dpar {
+    name: "kappa",
+    links: DPAR_POSITIVE_LINKS,
+    kind: ClassKind::Positive,
+    prior: DefaultPrior::Fixed("gamma", &[2.0, 0.01]),
+    about: "the concentration",
+    fixed: None,
+};
+const EX_BETA: Dpar = Dpar {
+    name: "beta",
+    links: DPAR_POSITIVE_LINKS,
+    kind: ClassKind::Positive,
+    prior: DefaultPrior::Fixed("gamma", &[1.0, 0.1]),
+    about: "the scale of the exponential part",
+    fixed: None,
+};
+const DISC: Dpar = Dpar {
+    name: "disc",
+    links: &[Link::Log, Link::Identity],
+    kind: ClassKind::Positive,
+    prior: DefaultPrior::Fixed("lognormal", &[0.0, 1.0]),
+    about: "the discrimination (fixed at 1 unless it has a formula)",
+    fixed: Some(1.0),
 };
 
 const CONTINUOUS: ATerms = ATerms {
@@ -291,9 +415,25 @@ const CONTINUOUS: ATerms = ATerms {
     cdf: true,
     se: false,
     rate: false,
+    thres: false,
 };
+const NO_CDF: ATerms = ATerms {
+    cdf: false,
+    ..CONTINUOUS
+};
+const ORDINAL: ATerms = ATerms {
+    thres: true,
+    ..NO_CDF
+};
+const ORDINAL_LINKS: &[Link] = &[
+    Link::Logit,
+    Link::Probit,
+    Link::ProbitApprox,
+    Link::Cloglog,
+    Link::Cauchit,
+];
 
-/// The R1 families.
+/// The families: R1's, then R2's (§3.6).
 pub static FAMILIES: &[Family] = &[
     Family {
         name: "gaussian",
@@ -306,6 +446,7 @@ pub static FAMILIES: &[Family] = &[
             se: true,
             ..CONTINUOUS
         },
+        kind: Kind::Standard,
     },
     Family {
         name: "student",
@@ -318,6 +459,7 @@ pub static FAMILIES: &[Family] = &[
             se: true,
             ..CONTINUOUS
         },
+        kind: Kind::Standard,
     },
     Family {
         name: "lognormal",
@@ -327,6 +469,7 @@ pub static FAMILIES: &[Family] = &[
         response: Response::Positive,
         stan: "lognormal",
         aterms: CONTINUOUS,
+        kind: Kind::Standard,
     },
     Family {
         name: "skew_normal",
@@ -336,6 +479,7 @@ pub static FAMILIES: &[Family] = &[
         response: Response::Real,
         stan: "skew_normal",
         aterms: CONTINUOUS,
+        kind: Kind::Standard,
     },
     Family {
         name: "bernoulli",
@@ -348,6 +492,7 @@ pub static FAMILIES: &[Family] = &[
             cdf: false,
             ..CONTINUOUS
         },
+        kind: Kind::Standard,
     },
     Family {
         name: "binomial",
@@ -361,6 +506,7 @@ pub static FAMILIES: &[Family] = &[
             cdf: false,
             ..CONTINUOUS
         },
+        kind: Kind::Standard,
     },
     Family {
         name: "poisson",
@@ -373,6 +519,7 @@ pub static FAMILIES: &[Family] = &[
             rate: true,
             ..CONTINUOUS
         },
+        kind: Kind::Standard,
     },
     Family {
         name: "negbinomial",
@@ -385,6 +532,7 @@ pub static FAMILIES: &[Family] = &[
             rate: true,
             ..CONTINUOUS
         },
+        kind: Kind::Standard,
     },
     Family {
         name: "geometric",
@@ -397,6 +545,7 @@ pub static FAMILIES: &[Family] = &[
             rate: true,
             ..CONTINUOUS
         },
+        kind: Kind::Standard,
     },
     Family {
         name: "Gamma",
@@ -406,6 +555,7 @@ pub static FAMILIES: &[Family] = &[
         response: Response::Positive,
         stan: "gamma",
         aterms: CONTINUOUS,
+        kind: Kind::Standard,
     },
     Family {
         name: "weibull",
@@ -415,6 +565,7 @@ pub static FAMILIES: &[Family] = &[
         response: Response::Positive,
         stan: "weibull",
         aterms: CONTINUOUS,
+        kind: Kind::Standard,
     },
     Family {
         name: "exponential",
@@ -424,6 +575,7 @@ pub static FAMILIES: &[Family] = &[
         response: Response::Positive,
         stan: "exponential",
         aterms: CONTINUOUS,
+        kind: Kind::Standard,
     },
     Family {
         name: "Beta",
@@ -433,29 +585,196 @@ pub static FAMILIES: &[Family] = &[
         response: Response::Unit,
         stan: "beta",
         aterms: CONTINUOUS,
+        kind: Kind::Standard,
+    },
+    Family {
+        name: "zero_inflated_poisson",
+        aliases: &[],
+        mu_links: COUNT_LINKS,
+        dpars: &[ZI],
+        response: Response::Count,
+        stan: "poisson",
+        aterms: NO_CDF,
+        kind: Kind::Standard,
+    },
+    Family {
+        name: "zero_inflated_negbinomial",
+        aliases: &[],
+        mu_links: COUNT_LINKS,
+        dpars: &[NB_SHAPE, ZI],
+        response: Response::Count,
+        stan: "neg_binomial_2",
+        aterms: NO_CDF,
+        kind: Kind::Standard,
+    },
+    Family {
+        name: "hurdle_poisson",
+        aliases: &[],
+        mu_links: COUNT_LINKS,
+        dpars: &[HU],
+        response: Response::Count,
+        stan: "poisson",
+        aterms: NO_CDF,
+        kind: Kind::Standard,
+    },
+    Family {
+        name: "hurdle_negbinomial",
+        aliases: &[],
+        mu_links: COUNT_LINKS,
+        dpars: &[NB_SHAPE, HU],
+        response: Response::Count,
+        stan: "neg_binomial_2",
+        aterms: NO_CDF,
+        kind: Kind::Standard,
+    },
+    Family {
+        name: "hurdle_gamma",
+        aliases: &[],
+        mu_links: POSITIVE_LINKS,
+        dpars: &[SHAPE, HU],
+        response: Response::NonNegative,
+        stan: "gamma",
+        aterms: NO_CDF,
+        kind: Kind::Standard,
+    },
+    Family {
+        name: "hurdle_lognormal",
+        aliases: &[],
+        mu_links: LOGNORMAL_LINKS,
+        dpars: &[SIGMA, HU],
+        response: Response::NonNegative,
+        stan: "lognormal",
+        aterms: NO_CDF,
+        kind: Kind::Standard,
+    },
+    Family {
+        name: "zero_inflated_beta",
+        aliases: &[],
+        mu_links: BINARY_LINKS,
+        dpars: &[PHI, ZI],
+        response: Response::UnitZero,
+        stan: "beta",
+        aterms: NO_CDF,
+        kind: Kind::Standard,
+    },
+    Family {
+        name: "zero_one_inflated_beta",
+        aliases: &[],
+        mu_links: BINARY_LINKS,
+        dpars: &[PHI, ZOI, COI],
+        response: Response::UnitClosed,
+        stan: "beta",
+        aterms: NO_CDF,
+        kind: Kind::Standard,
+    },
+    Family {
+        name: "beta_binomial",
+        aliases: &[],
+        mu_links: BINARY_LINKS,
+        dpars: &[PHI],
+        response: Response::Count,
+        stan: "beta_binomial",
+        aterms: ATerms {
+            trials: true,
+            ..NO_CDF
+        },
+        kind: Kind::Standard,
+    },
+    Family {
+        name: "cumulative",
+        aliases: &[],
+        mu_links: ORDINAL_LINKS,
+        dpars: &[DISC],
+        response: Response::Ordinal,
+        stan: "cumulative",
+        aterms: ORDINAL,
+        kind: Kind::Ordinal,
+    },
+    Family {
+        name: "sratio",
+        aliases: &[],
+        mu_links: ORDINAL_LINKS,
+        dpars: &[DISC],
+        response: Response::Ordinal,
+        stan: "sratio",
+        aterms: ORDINAL,
+        kind: Kind::Ordinal,
+    },
+    Family {
+        name: "cratio",
+        aliases: &[],
+        mu_links: ORDINAL_LINKS,
+        dpars: &[DISC],
+        response: Response::Ordinal,
+        stan: "cratio",
+        aterms: ORDINAL,
+        kind: Kind::Ordinal,
+    },
+    Family {
+        name: "acat",
+        aliases: &[],
+        mu_links: ORDINAL_LINKS,
+        dpars: &[DISC],
+        response: Response::Ordinal,
+        stan: "acat",
+        aterms: ORDINAL,
+        kind: Kind::Ordinal,
+    },
+    Family {
+        name: "categorical",
+        aliases: &[],
+        mu_links: &[Link::Logit],
+        dpars: &[],
+        response: Response::Category,
+        stan: "categorical_logit",
+        aterms: NO_CDF,
+        kind: Kind::Categorical,
+    },
+    Family {
+        name: "von_mises",
+        aliases: &[],
+        mu_links: &[Link::TanHalf, Link::Identity],
+        dpars: &[KAPPA],
+        response: Response::Angle,
+        stan: "von_mises",
+        aterms: CONTINUOUS,
+        kind: Kind::Standard,
+    },
+    Family {
+        name: "exgaussian",
+        aliases: &["exponentially_modified_gaussian"],
+        mu_links: IDENTITY_LINKS,
+        dpars: &[SIGMA, EX_BETA],
+        response: Response::Real,
+        stan: "exp_mod_normal",
+        aterms: CONTINUOUS,
+        kind: Kind::Standard,
+    },
+    Family {
+        name: "asym_laplace",
+        aliases: &[],
+        mu_links: IDENTITY_LINKS,
+        dpars: &[SIGMA, QUANTILE],
+        response: Response::Real,
+        stan: "asym_laplace",
+        aterms: NO_CDF,
+        kind: Kind::Standard,
     },
 ];
 
 /// The families a later release adds, so naming one says when rather than
 /// "unknown".
 const LATER: &[&str] = &[
-    "zero_inflated_poisson",
-    "zero_inflated_negbinomial",
-    "hurdle_poisson",
-    "hurdle_negbinomial",
-    "hurdle_gamma",
-    "hurdle_lognormal",
-    "zero_inflated_beta",
-    "zero_one_inflated_beta",
-    "beta_binomial",
-    "cumulative",
-    "sratio",
-    "cratio",
-    "acat",
-    "categorical",
-    "von_mises",
-    "exgaussian",
-    "asym_laplace",
+    "mixture",
+    "wiener",
+    "shifted_lognormal",
+    "skew_student",
+    "gen_extreme_value",
+    "inverse.gaussian",
+    "frechet",
+    "dirichlet",
+    "multinomial",
+    "logistic_normal",
 ];
 
 /// The family called `name` (or one of its aliases), or a sentence saying why
@@ -469,9 +788,7 @@ pub fn family(name: &str) -> Result<&'static Family, String> {
         return Ok(f);
     }
     if LATER.contains(&name) {
-        return Err(format!(
-            "the family `{name}` arrives in a later release (R2)"
-        ));
+        return Err(format!("the family `{name}` is not supported yet"));
     }
     Err(format!(
         "there is no family `{name}`; the families are {}",
@@ -504,6 +821,12 @@ mod tests {
     #[test]
     fn an_unknown_family_lists_the_known_and_a_later_one_says_when() {
         assert!(family("gausian").unwrap_err().contains("`gaussian`"));
-        assert!(family("cumulative").unwrap_err().contains("later release"));
+        assert!(family("mixture").unwrap_err().contains("not supported yet"));
+        let link = |f: &str, d: &str| family(f).unwrap().default_link(d).unwrap().name();
+        assert_eq!(link("cumulative", "mu"), "logit");
+        assert_eq!(link("cumulative", "disc"), "log");
+        assert_eq!(link("von_mises", "mu"), "tan_half");
+        assert_eq!(link("zero_inflated_poisson", "zi"), "logit");
+        assert_eq!(link("hurdle_lognormal", "mu"), "identity");
     }
 }

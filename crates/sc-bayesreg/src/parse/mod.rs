@@ -15,8 +15,8 @@ mod formula;
 pub(crate) mod lex;
 
 pub use formula::{
-    ATerm, Bound, Censoring, FamilySpec, Formula, GroupTerm, Intercept, Lhs, Line, Overrides,
-    PastedPrior, Rhs, Term, parse_formula, strip_priors,
+    ATerm, Bound, Censoring, FamilySpec, FixedDpar, Formula, GroupTerm, Intercept, Lhs, Line,
+    NL_FUNCTIONS, NlExpr, Overrides, PastedPrior, Rhs, Term, parse_formula, strip_priors,
 };
 
 /// A range of the formula text: byte offsets, `start..end`.

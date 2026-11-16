@@ -710,6 +710,7 @@ pub fn bind_data(
     let mut work: BTreeMap<&str, Working> = BTreeMap::new();
     for (name, frame) in datasets {
         let mut frame = frame.clone();
+        super::derived::add_derived(name, &mut frame, &spec.derived)?;
         let labels = match frame.columns.iter().position(|(n, _)| n == LABEL_COLUMN) {
             Some(at) => {
                 let (_, column) = frame.columns.remove(at);

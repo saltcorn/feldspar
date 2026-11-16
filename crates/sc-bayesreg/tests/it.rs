@@ -8,5 +8,7 @@ mod formulas;
 mod generate;
 #[path = "provider.rs"]
 mod provider;
+#[path = "r2.rs"]
+mod r2;
 #[path = "recovery.rs"]
 mod recovery;

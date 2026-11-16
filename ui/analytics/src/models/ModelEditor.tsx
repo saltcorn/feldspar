@@ -669,6 +669,8 @@ export function ModelEditor({
               config={config}
               setConfig={(key, value) => setConfig((c) => ({ ...c, [key]: value }))}
               modelBody={body}
+              savedId={id}
+              onConverted={(made) => pane.go({ name: "model", id: made })}
             />
           )}
           {bindingTable && chosen && (

@@ -268,12 +268,18 @@ export function FormulaSection({
   config,
   setConfig,
   modelBody,
+  savedId,
+  onConverted,
 }: {
   /** The form's settings, as text. */
   config: Record<string, string>;
   setConfig: (key: string, value: string) => void;
   /** Everything on the form as `saveModel` takes it. */
   modelBody: () => Record<string, unknown>;
+  /** The model's id once it is saved: what can be converted to Stan. */
+  savedId?: string | null;
+  /** Open the Stan model a conversion made. */
+  onConverted?: (id: string) => void;
 }) {
   const { t } = useT();
   const formula = config.formula ?? "";
@@ -572,9 +578,85 @@ export function FormulaSection({
               {check?.program ?? t("No program until the formula reads.")}
             </pre>
           </details>
+          {savedId && <ConvertToStan modelId={savedId} onConverted={onConverted} />}
         </Card.Body>
       </Card>
     </>
+  );
+}
+
+/** "Convert to a Stan model" (§9): the generated program written into a file
+ * store, and a new `stan` model binding it as the formula does — the escape
+ * hatch for anything a formula cannot say. The formula model is kept. */
+function ConvertToStan({
+  modelId,
+  onConverted,
+}: {
+  modelId: string;
+  onConverted?: (id: string) => void;
+}) {
+  const { t } = useT();
+  const [stores, setStores] = useState<string[] | null>(null);
+  const [store, setStore] = useState("");
+  const [path, setPath] = useState("models/model.stan");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const load = () => {
+    if (stores) return;
+    api
+      .listFileStores()
+      .then((list) => {
+        const names = list.filter((s) => s.connected).map((s) => s.name);
+        setStores(names);
+        setStore((current) => current || names[0] || "");
+      })
+      .catch((err) => setError(errorMessage(err, t("Could not list the file stores."))));
+  };
+  const convert = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const made = await api.convertModelToStan(modelId, { store, path });
+      onConverted?.(made.id);
+    } catch (err) {
+      setError(errorMessage(err, t("Could not convert the model.")));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <details className="mt-2" onToggle={(e) => (e.currentTarget as HTMLDetailsElement).open && load()}>
+      <summary className="small"><T text="Convert to a Stan model" /></summary>
+      <p className="text-muted small mt-2 mb-2">
+        <T text="Writes the generated program into a file store and makes a new Stan model that binds it as this formula does, so it fits to the same posterior. Edit it freely from there; this model is kept." />
+      </p>
+      <div className="d-flex flex-wrap gap-2 align-items-end">
+        <Form.Group controlId="convert-store">
+          <Form.Label className="small mb-0"><T text="File store" /></Form.Label>
+          <Form.Select size="sm" value={store} onChange={(e) => setStore(e.target.value)}>
+            {(stores ?? []).map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </Form.Select>
+        </Form.Group>
+        <Form.Group controlId="convert-path">
+          <Form.Label className="small mb-0"><T text="Path" /></Form.Label>
+          <Form.Control
+            size="sm"
+            className="font-monospace"
+            value={path}
+            onChange={(e) => setPath(e.target.value)}
+          />
+        </Form.Group>
+        <Button size="sm" variant="outline-primary" disabled={busy || !store || !path} onClick={convert}>
+          {busy ? t("Converting…") : t("Convert")}
+        </Button>
+      </div>
+      {stores && stores.length === 0 && (
+        <div className="text-muted small mt-1"><T text="No file store is connected." /></div>
+      )}
+      {error && <div className="text-danger small mt-1">{error}</div>}
+    </details>
   );
 }
 

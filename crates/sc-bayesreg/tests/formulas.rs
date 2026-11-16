@@ -161,11 +161,11 @@ fn every_error_is_a_sentence_at_its_span() {
     let cases: &[(&str, &str, &str)] = &[
         ("y ~ s(x)", "a smoothing spline", "s"),
         ("y ~ x + gp(t)", "Gaussian process", "gp"),
-        ("y ~ mo(rating)", "later release (R2)", "mo"),
+        ("y ~ mo(a + b)", "one ordinal column", "mo(a + b)"),
         ("y ~ 2 + x", "only `1` (an intercept) and `0` (none)", "2"),
         ("log(y) ~ x", "calculated column", "log(y)"),
         ("y ~ x | g", "parentheses of its own", "x | g"),
-        ("mvbind(a, b) ~ x", "multivariate", "mvbind"),
+        ("mvbind(a) ~ x", "two responses or more", "mvbind(a)"),
         ("y ~ .", "`.` (every other column)", "."),
         ("y ~ x + (1 | g", "never closed", "("),
         ("y ~ x == 1", "comparison", "=="),
@@ -175,9 +175,13 @@ fn every_error_is_a_sentence_at_its_span() {
         ("y ~ log(x, 2)", "one argument", "log(x, 2)"),
         ("y | foo(z) ~ x", "not an addition term", "foo"),
         ("y ~ (1 | mm(a, b))", "multi-membership", "mm"),
-        ("y ~ (1 | gr(g, by = h))", "R2", "by"),
+        (
+            "y ~ (1 | gr(g, by = h + 1))",
+            "`by` is a column",
+            "by = h + 1",
+        ),
         ("y ~ x * (1 | g)", "part of an interaction", "(1 | g)"),
-        ("nu = 4\ny ~ x", "later release (R2)", "nu = 4"),
+        ("y ~ x\nsigma = x", "fixes `sigma` to a number", "x"),
         (
             "y ~ x\nprior(normal(0, -1), class = b)",
             "σ must be positive",
@@ -382,14 +386,14 @@ fn the_resolver_names_what_does_not_fit_the_dataset_or_the_family() {
             "no distributional parameters besides the mean",
         ),
         (
-            "price ~ area\nvisits ~ area",
+            "price ~ area\nvisits ~ area\nsigma ~ area",
             "gaussian",
-            "a second response, `visits`",
+            "belongs inside the `bf(…)` of its response",
         ),
         (
             "price | trials(visits) ~ area",
             "gaussian",
-            "does not take `trials()` (it is for `binomial`)",
+            "does not take `trials()` (it is for `binomial` and `beta_binomial`)",
         ),
         ("visits ~ area", "binomial", "needs its number of trials"),
         (
@@ -410,7 +414,7 @@ fn the_resolver_names_what_does_not_fit_the_dataset_or_the_family() {
         (
             "price ~ area",
             "cumulative",
-            "arrives in a later release (R2)",
+            "models ordered categories numbered 1, 2, 3, …, and `price` is a decimal-number",
         ),
         ("price ~ area", "gausian", "there is no family `gausian`"),
     ];
@@ -660,7 +664,7 @@ fn rows_that_name_what_the_formula_does_not_have_are_refused_with_a_sentence() {
         ),
         (
             serde_json::json!({"class": "b", "nlpar": "a", "prior": "normal(0, 1)"}),
-            "(R2)",
+            "`a` is not a non-linear parameter",
         ),
         (
             serde_json::json!({"class": "b", "prior": "normal(0, -2)"}),

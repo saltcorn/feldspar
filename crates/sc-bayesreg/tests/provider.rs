@@ -349,14 +349,11 @@ fn what_this_release_cannot_generate_is_refused_by_name() {
     let err = p
         .validate(
             &shape,
-            &radon_model("log_radon ~ floor + (1 | county:region)").configuration,
+            &radon_model("log_radon ~ floor + cs(floor)").configuration,
         )
         .unwrap_err()
         .to_string();
-    assert!(
-        err.contains("`county:region`") && err.contains("Calculated column"),
-        "{err}"
-    );
+    assert!(err.contains("for the ordinal families"), "{err}");
     let err = p
         .validate(
             &shape,

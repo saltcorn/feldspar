@@ -60,14 +60,17 @@
 
 pub mod canon;
 pub mod check;
+pub mod eject;
 pub mod family;
 pub mod generate;
 pub mod lower;
 pub mod output;
 pub mod parse;
+pub mod predict;
 pub mod prior;
 mod provider;
 pub mod resolve;
+pub mod warm;
 
 pub use canon::{Canonical, DataPlan, GENERATOR_VERSION, Structure, canonicalise, data_plan};
 pub use check::{Check, check};

@@ -101,6 +101,22 @@ pub async fn predict_rows(
             no_per_row_prediction(outcome.is_posterior())
         )));
     }
+    if outcome.is_posterior() {
+        // A posterior that predicts holds its own encodings in its state
+        // (TODO-bayesian-regression §8): the rows go to the provider as they
+        // are, and it refuses by name what the fit cannot represent.
+        let provider = registry.require(provider.trim())?;
+        let raw = provider.predict(&instance.state, frame).await?;
+        if raw.len() != frame.rows {
+            return Err(Error::msg(format!(
+                "the model provider `{}` answered {} predictions for {} rows",
+                provider.name(),
+                raw.len(),
+                frame.rows
+            )));
+        }
+        return Ok(raw);
+    }
     let encoding = instance.encoding()?;
     // Strict, and **features only**: at predict time a row we cannot represent
     // is an error rather than a dropped row, because dropping would answer fewer
@@ -175,7 +191,11 @@ pub async fn predict_subject(
 ) -> Result<Predictions> {
     let frame = match subject {
         Subject::Rows(rows) => {
-            let types = instance.encoding()?.feature_types();
+            let types = if instance.outcome()?.is_posterior() {
+                row_types(rows)
+            } else {
+                instance.encoding()?.feature_types()
+            };
             Frame::from_rows(rows, &types)?
         }
         Subject::Dataset(restrict) => {
@@ -203,6 +223,39 @@ pub async fn predict_subject(
         predictions,
         keys: frame.keys,
     })
+}
+
+/// The columns literal rows give, each typed by its values: a posterior has no
+/// stored feature list, so a row's own keys are what it is about. A column
+/// whose every value is a whole number is a whole-number column.
+fn row_types(rows: &[Json]) -> Vec<(String, crate::frame::ColumnType)> {
+    use crate::frame::ColumnType;
+    let mut out: Vec<(String, ColumnType)> = Vec::new();
+    for row in rows {
+        let Some(object) = row.as_object() else {
+            continue;
+        };
+        for (name, value) in object {
+            let ty = match value {
+                Json::Bool(_) => ColumnType::Bool,
+                Json::Number(n) if n.is_i64() => ColumnType::Int,
+                Json::Number(_) => ColumnType::Float,
+                Json::String(_) => ColumnType::Str,
+                _ => continue,
+            };
+            match out.iter_mut().find(|(n, _)| n == name) {
+                Some((_, existing)) => {
+                    if *existing == ColumnType::Int && ty == ColumnType::Float {
+                        *existing = ColumnType::Float;
+                    }
+                }
+                None => out.push((name.clone(), ty)),
+            }
+        }
+    }
+    // Every row gives every column (`Frame::from_rows` refuses one that
+    // does not, by row): a null is written `null`, which types nothing.
+    out
 }
 
 /// Turn every class index into the class name the fit's encoding gave it.

@@ -9298,6 +9298,7 @@ name = "sc-bayesreg"
 version = "0.1.3-dev"
 dependencies = [
  "async-trait",
+ "sc-dataset",
  "sc-error",
  "sc-files",
  "sc-model",
@@ -9383,6 +9384,7 @@ dependencies = [
  "sc-app",
  "sc-auth",
  "sc-backup",
+ "sc-bayesreg",
  "sc-catalog",
  "sc-check",
  "sc-config",

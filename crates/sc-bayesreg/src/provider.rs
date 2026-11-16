@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use sc_error::{Error, Result};
 use sc_model::{
     BINDINGS_KEY, DIMENSIONS_KEY, DatasetShape, DrawPlan, FitContext, FitResult, Frame, Interface,
-    LABELS_KEY, LowerInput, ModelProvider, OutcomeSpec, POLICIES_KEY, PosteriorInput,
+    LABELS_KEY, LowerInput, ModelProvider, Outcome, OutcomeSpec, POLICIES_KEY, PosteriorInput,
     PosteriorResult, Prediction,
 };
 use sc_stan::StanProvider;
@@ -31,6 +31,9 @@ use crate::generate::PROGRAM_PATH;
 use crate::lower::{Built, build, keys};
 use crate::resolve::Data;
 use crate::{PROVIDER, Structure};
+
+/// What a prediction reads: the expected response (`posterior_epred`).
+pub const EPRED: &str = "epred";
 
 /// The name a generated program's snapshot gives as its store: it was read
 /// from no file store.
@@ -92,14 +95,9 @@ fn data_of<'a>(input: &LowerInput<'a>) -> (Data<'a>, Option<&'a Frame>) {
 /// [`ModelProvider::lower`], for the editor's API too.
 pub fn lower_config(config: &Attrs, input: LowerInput<'_>) -> Result<(Built, Attrs)> {
     let (data, frame) = data_of(&input);
-    let taken: Vec<String> = input
-        .model()
-        .related
-        .iter()
-        .map(|r| r.name.clone())
-        .collect();
+    let ctx = crate::canon::PlanContext::of(input.model());
     let built = build(config, data)?;
-    let lowered = built.lower(config, frame, &taken)?;
+    let lowered = built.lower_in(config, frame, &ctx)?;
     Ok((built, lowered))
 }
 
@@ -148,8 +146,22 @@ impl ModelProvider for BayesRegProvider {
     }
 
     fn outcome_spec(&self) -> OutcomeSpec {
-        // Prediction in Rust from the draws is R2.4 (§8).
-        OutcomeSpec::Posterior { prediction: None }
+        // Prediction in Rust from the draws (§8, R2.4): the posterior mean
+        // of the expected response, a number.
+        OutcomeSpec::Posterior {
+            prediction: Some(EPRED.to_owned()),
+        }
+    }
+
+    /// A posterior that predicts `epred` — the expected response — except a
+    /// multivariate or categorical model, which predicts no one number.
+    fn outcome(&self, shape: &DatasetShape, config: &Attrs) -> Result<Outcome> {
+        let built = build(config, Data::Shape(shape))?;
+        Ok(Outcome::Posterior {
+            prediction: crate::predict::predicts(built.structure())
+                .is_ok()
+                .then(|| EPRED.to_owned()),
+        })
     }
 
     fn binds_data(&self) -> bool {
@@ -180,7 +192,9 @@ impl ModelProvider for BayesRegProvider {
             }
         }
         let built = build(config, Data::Shape(shape))?;
-        built.prior_table(None)?.0.require_matched()?;
+        let table = built.prior_table(None)?.0;
+        table.require_matched()?;
+        crate::lower::require_nl_priors(&table)?;
         self.stan.validate(shape, config)
     }
 
@@ -191,11 +205,13 @@ impl ModelProvider for BayesRegProvider {
         ))
     }
 
-    async fn predict(&self, _state: &Json, _frame: &Frame) -> Result<Vec<Prediction>> {
-        Err(Error::invalid(
-            "a Bayesian regression does not predict rows yet (a later release): it is \
-             inspected through its posterior",
-        ))
+    /// The posterior mean of each row's expected response, in Rust from the
+    /// draws the fit kept (§8).
+    async fn predict(&self, state: &Json, frame: &Frame) -> Result<Vec<Prediction>> {
+        Ok(crate::predict::predict(state, frame)?
+            .into_iter()
+            .map(Prediction::number)
+            .collect())
     }
 
     fn lower(&self, config: &Attrs, input: LowerInput<'_>) -> Result<Option<Attrs>> {
@@ -238,6 +254,14 @@ impl ModelProvider for BayesRegProvider {
             }
             if let Some(f) = config.get(keys::FORMULA) {
                 state.insert(keys::FORMULA.to_owned(), f.clone());
+            }
+            match crate::predict::pack(config, &structure, &input.coordinates, &result.draws) {
+                Ok(pack) => {
+                    state.insert(crate::predict::PACK_KEY.to_owned(), pack);
+                }
+                Err(why) => {
+                    state.insert(crate::predict::NO_PACK_KEY.to_owned(), Json::from(why));
+                }
             }
         }
         Ok(result)

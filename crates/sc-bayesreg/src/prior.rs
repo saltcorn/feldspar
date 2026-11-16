@@ -92,6 +92,12 @@ impl PriorRow {
         if !self.dpar.is_empty() {
             text.push_str(&format!(" for `{}`", self.dpar));
         }
+        if !self.nlpar.is_empty() {
+            text.push_str(&format!(" of the non-linear parameter `{}`", self.nlpar));
+        }
+        if !self.resp.is_empty() {
+            text.push_str(&format!(" of the response `{}`", self.resp));
+        }
         format!("the prior row {text}")
     }
 }
@@ -145,6 +151,9 @@ pub enum PriorFamily {
     Lkj,
     /// `constant(x)`: the parameter fixed — structural.
     Constant,
+    /// `dirichlet(α)`: on a simplex (`simo`), every element's concentration
+    /// `α` (R2.1).
+    Dirichlet,
 }
 
 /// One entry of the menu.
@@ -241,6 +250,12 @@ const MENU: &[Entry] = &[
         name: "constant",
         code: 13,
         args: &["x"],
+    },
+    Entry {
+        family: PriorFamily::Dirichlet,
+        name: "dirichlet",
+        code: 14,
+        args: &["α"],
     },
 ];
 
@@ -344,12 +359,9 @@ impl Prior {
             other => other,
         };
         let Some(entry) = MENU.iter().find(|m| m.name == name) else {
-            let later = matches!(
-                name,
-                "horseshoe" | "R2D2" | "dirichlet" | "lasso" | "logistic_normal"
-            );
+            let later = matches!(name, "horseshoe" | "R2D2" | "lasso" | "logistic_normal");
             return Err(if later {
-                format!("`{name}()` arrives in a later release (R2)")
+                format!("`{name}()` is not supported yet")
             } else {
                 format!(
                     "`{name}` is not a prior on the menu; the priors are {}",
@@ -415,7 +427,7 @@ impl Prior {
                 positive(0)?;
                 positive(2)
             }
-            PriorFamily::Exponential | PriorFamily::Lkj => positive(0),
+            PriorFamily::Exponential | PriorFamily::Lkj | PriorFamily::Dirichlet => positive(0),
             PriorFamily::Gamma | PriorFamily::InvGamma | PriorFamily::Beta => {
                 positive(0)?;
                 positive(1)
@@ -457,8 +469,10 @@ pub enum ClassKind {
     AboveOne,
     /// A correlation matrix: `cor`.
     Correlation,
-    /// In (0, 1): none in R1.
+    /// In (0, 1): `zi`, `hu`, `zoi`, `coi`, `quantile`.
     Unit,
+    /// A simplex: a monotonic effect's `simo`.
+    Simplex,
 }
 
 /// Whether `prior` may go on a row of `class` (of `kind`), as `row` sets it.
@@ -478,6 +492,18 @@ pub fn check_allowed(
         ));
     }
     match kind {
+        ClassKind::Simplex => {
+            if fam != PriorFamily::Dirichlet {
+                return Err(format!(
+                    "{}; a simplex (`simo`) takes `dirichlet(α)`",
+                    on("not a prior for a simplex")
+                ));
+            }
+            return Ok(());
+        }
+        _ if fam == PriorFamily::Dirichlet => {
+            return Err(on("for a monotonic effect's simplex (`simo`) only"));
+        }
         ClassKind::Correlation => {
             if fam != PriorFamily::Lkj {
                 return Err(format!(
@@ -816,6 +842,14 @@ pub struct ClassSlot {
     pub kind: ClassKind,
     /// Its default prior.
     pub default: DefaultPrior,
+    /// The non-linear parameter it belongs to; empty for none.
+    pub nlpar: String,
+    /// The response it belongs to, in a multivariate model; empty in a
+    /// univariate one.
+    pub resp: String,
+    /// The response whose data scale its data-dependent default uses (an
+    /// index; 0 in a univariate model).
+    pub response: usize,
 }
 
 /// Where a resolved prior came from.
@@ -847,6 +881,12 @@ pub struct TableRow {
     pub group: String,
     /// The distributional parameter.
     pub dpar: String,
+    /// The non-linear parameter.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub nlpar: String,
+    /// The response, in a multivariate model.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub resp: String,
     /// The prior, as text.
     pub prior: String,
     /// Before the data is read, the rule a data-dependent default follows.
@@ -899,21 +939,22 @@ impl PriorTable {
         }
     }
 
-    /// The parameters' priors only (not the whole-class rows), keyed by
-    /// (class, dpar, group, coef) — what a fit stores and the generator's data
-    /// carries.
-    pub fn parameters(&self) -> BTreeMap<(String, String, String, String), &TableRow> {
+    /// The parameters' priors only (not the whole-class rows), keyed by their
+    /// [`Target`] — what a fit stores and the generator's data carries.
+    pub fn parameters(&self) -> BTreeMap<Target, &TableRow> {
         self.rows
             .iter()
             .filter(|r| !r.whole_class || r.coef.is_empty() && !has_coefs(&r.class))
             .map(|r| {
                 (
-                    (
-                        r.class.clone(),
-                        r.dpar.clone(),
-                        r.group.clone(),
-                        r.coef.clone(),
-                    ),
+                    Target {
+                        class: r.class.clone(),
+                        dpar: r.dpar.clone(),
+                        nlpar: r.nlpar.clone(),
+                        resp: r.resp.clone(),
+                        group: r.group.clone(),
+                        coef: r.coef.clone(),
+                    },
                     r,
                 )
             })
@@ -921,8 +962,26 @@ impl PriorTable {
     }
 }
 
+/// What one parameter's prior is for: a prior row's target, every part
+/// spelled out.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub struct Target {
+    /// The class.
+    pub class: String,
+    /// The distributional parameter (empty for `mu`).
+    pub dpar: String,
+    /// The non-linear parameter.
+    pub nlpar: String,
+    /// The response, in a multivariate model.
+    pub resp: String,
+    /// The grouping factor.
+    pub group: String,
+    /// The coefficient.
+    pub coef: String,
+}
+
 fn has_coefs(class: &str) -> bool {
-    class == "b" || class == "sd"
+    class == "b" || class == "sd" || class == "simo"
 }
 
 /// Resolve `rows` against the classes a formula creates: every parameter's
@@ -937,6 +996,27 @@ pub fn resolve(
     rows: &[PriorRow],
     scale: Option<DataScale>,
     response: &str,
+    center: bool,
+) -> PriorTable {
+    let scales = scale.map(|s| vec![s]);
+    resolve_each(
+        slots,
+        rows,
+        scales.as_deref(),
+        &[response.to_owned()],
+        center,
+    )
+}
+
+/// [`resolve`] for a model of several responses: `scales` (one per
+/// response, `None` before the data is read) and the responses' names, which
+/// a slot picks by its [`response`](ClassSlot::response).
+#[allow(clippy::too_many_lines)]
+pub fn resolve_each(
+    slots: &[ClassSlot],
+    rows: &[PriorRow],
+    scales: Option<&[DataScale]>,
+    responses: &[String],
     center: bool,
 ) -> PriorTable {
     let mut table = PriorTable::default();
@@ -961,18 +1041,28 @@ pub fn resolve(
         }
     }
 
-    let explicit = |class: &str, dpar: &str, group: &str, coef: &str| {
-        valid
-            .iter()
-            .find(|(r, _)| r.class == class && r.dpar == dpar && r.group == group && r.coef == coef)
+    let explicit = |slot: &ClassSlot, group: &str, coef: &str| {
+        valid.iter().find(|(r, _)| {
+            r.class == slot.class
+                && r.dpar == slot.dpar
+                && r.nlpar == slot.nlpar
+                && r.resp == slot.resp
+                && r.group == group
+                && r.coef == coef
+        })
     };
     let from_default = |slot: &ClassSlot| {
+        let scale = scales.and_then(|s| s.get(slot.response).copied());
+        let response = responses
+            .get(slot.response)
+            .or_else(|| responses.first())
+            .map_or("", String::as_str);
         let prior = slot.default.prior(scale);
         let data = matches!(
             slot.default,
             DefaultPrior::ResponseScale | DefaultPrior::InterceptScale
         );
-        let rule = if scale.is_none() {
+        let rule = if scales.is_none() {
             slot.default.rule(response)
         } else {
             None
@@ -998,6 +1088,8 @@ pub fn resolve(
         coef: coef.to_owned(),
         group: slot.group.clone(),
         dpar: slot.dpar.clone(),
+        nlpar: slot.nlpar.clone(),
+        resp: slot.resp.clone(),
         prior: prior.to_string(),
         rule,
         source,
@@ -1011,11 +1103,11 @@ pub fn resolve(
     for slot in slots {
         // The whole class: its own row, else (for `sd`) the all-groups row,
         // else the default.
-        let class_row = explicit(&slot.class, &slot.dpar, &slot.group, "").or_else(|| {
+        let class_row = explicit(slot, &slot.group, "").or_else(|| {
             if slot.group.is_empty() {
                 None
             } else {
-                explicit(&slot.class, &slot.dpar, "", "")
+                explicit(slot, "", "")
             }
         });
         let (class_prior, class_source, class_rule, class_bounds) = match class_row {
@@ -1045,24 +1137,23 @@ pub fn resolve(
         ));
         for coef in &slot.coefs {
             let name = coef.display();
-            let (prior, source, rule, bounds) =
-                match explicit(&slot.class, &slot.dpar, &slot.group, &name) {
-                    Some((row, prior)) => (prior.clone(), Source::Explicit, None, Some(*row)),
-                    None => {
-                        let source = match (&class_source, class_row) {
-                            (_, Some((row, _))) => Source::Inherited {
-                                from: row.describe(),
-                            },
-                            (other, None) => other.clone(),
-                        };
-                        (
-                            class_prior.clone(),
-                            source,
-                            class_rule.clone(),
-                            class_bounds,
-                        )
-                    }
-                };
+            let (prior, source, rule, bounds) = match explicit(slot, &slot.group, &name) {
+                Some((row, prior)) => (prior.clone(), Source::Explicit, None, Some(*row)),
+                None => {
+                    let source = match (&class_source, class_row) {
+                        (_, Some((row, _))) => Source::Inherited {
+                            from: row.describe(),
+                        },
+                        (other, None) => other.clone(),
+                    };
+                    (
+                        class_prior.clone(),
+                        source,
+                        class_rule.clone(),
+                        class_bounds,
+                    )
+                }
+            };
             table
                 .rows
                 .push(row_of(slot, &name, false, &prior, source, rule, bounds));
@@ -1073,22 +1164,53 @@ pub fn resolve(
 
 /// One explicit row against the classes: its target exists and its prior is
 /// allowed there. The prior, or why not.
+#[allow(clippy::too_many_lines)] // one check after another, each its sentence
 fn check_row(slots: &[ClassSlot], row: &PriorRow, center: bool) -> Result<Prior, String> {
-    if !row.nlpar.is_empty() {
-        return Err("non-linear parameters (`nlpar`) arrive in a later release (R2)".to_owned());
-    }
-    if !row.resp.is_empty() {
-        return Err("multivariate responses (`resp`) arrive in a later release (R2)".to_owned());
-    }
     let prior = Prior::parse(&row.prior)?;
-    let of_class: Vec<&ClassSlot> = slots.iter().filter(|s| s.class == row.class).collect();
+    if !row.resp.is_empty() && !slots.iter().any(|s| s.resp == row.resp) {
+        let resps: Vec<String> = slots
+            .iter()
+            .filter(|s| !s.resp.is_empty())
+            .map(|s| format!("`{}`", s.resp))
+            .fold(Vec::new(), |mut v, r| {
+                if !v.contains(&r) {
+                    v.push(r);
+                }
+                v
+            });
+        return Err(if resps.is_empty() {
+            "`resp` names a response of a multivariate model, and this model has one response, \
+             so `resp` must be empty"
+                .to_owned()
+        } else {
+            format!(
+                "`{}` is not a response of the model (they are {})",
+                row.resp,
+                resps.join(", ")
+            )
+        });
+    }
+    if !row.nlpar.is_empty() && !slots.iter().any(|s| s.nlpar == row.nlpar) {
+        return Err(format!(
+            "`{}` is not a non-linear parameter of the formula",
+            row.nlpar
+        ));
+    }
+    let multivariate = slots.iter().any(|s| !s.resp.is_empty());
+    let of_class: Vec<&ClassSlot> = slots
+        .iter()
+        .filter(|s| s.class == row.class && s.nlpar == row.nlpar)
+        .filter(|s| !multivariate || s.class == "cor" || s.class == "rescor" || s.resp == row.resp)
+        .collect();
     if of_class.is_empty() {
         let mut classes: Vec<&str> = slots.iter().map(|s| s.class.as_str()).collect();
         classes.dedup();
-        let known = matches!(row.class.as_str(), "b" | "Intercept" | "sd" | "cor" | "L")
-            || crate::family::FAMILIES
-                .iter()
-                .any(|f| f.dpar(&row.class).is_some());
+        let known = matches!(
+            row.class.as_str(),
+            "b" | "Intercept" | "sd" | "cor" | "L" | "simo" | "rescor"
+        ) || crate::family::FAMILIES
+            .iter()
+            .any(|f| f.dpar(&row.class).is_some());
         return Err(if known {
             let why = match row.class.as_str() {
                 "b" => "the formula has no population-level coefficients".to_owned(),
@@ -1099,6 +1221,11 @@ fn check_row(slots: &[ClassSlot], row: &PriorRow, center: bool) -> Result<Prior,
                 }
                 "sd" => "the formula has no group-level terms".to_owned(),
                 "cor" => "the formula has no correlated group-level effects".to_owned(),
+                "simo" => "the formula has no monotonic effects (`mo()`)".to_owned(),
+                "rescor" => "the model has no residual correlations".to_owned(),
+                _ if multivariate && row.resp.is_empty() => {
+                    "in a multivariate model, a row names its response (`resp`)".to_owned()
+                }
                 "L" => "set the correlations' prior on `cor`".to_owned(),
                 other => format!(
                     "the family has no `{other}`, or `{other}` has a formula of its own (set \
@@ -1246,7 +1373,7 @@ mod tests {
             ("flat(1)", "`flat` takes no arguments"),
             ("normal(0, sigma = 1)", "without names"),
             ("normal(a, 1)", "are numbers"),
-            ("horseshoe(1)", "later release (R2)"),
+            ("horseshoe(1)", "not supported yet"),
             ("wishart(1)", "not a prior on the menu"),
         ];
         for (text, want) in cases {
@@ -1263,6 +1390,9 @@ mod tests {
             coefs: Vec::new(),
             kind,
             default,
+            nlpar: String::new(),
+            resp: String::new(),
+            response: 0,
         }
     }
 

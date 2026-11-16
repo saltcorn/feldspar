@@ -109,13 +109,13 @@ mod validate;
 
 pub use bind::{
     Aggregate, Along, Axis, BINDINGS_KEY, BindReport, Binding, BoundData, Coordinates,
-    DEFAULT_MAX_DATA_VALUES, DIMENSIONS_KEY, DataPreview, DatasetReport, DesignCoordinates,
-    DimensionCoordinates, DimensionKind, DimensionSpec, DropReport, EXCLUDE_VARIABLES_KEY, Edges,
-    KEEP_DRAWS_KEY, LABEL_COLUMN, LABELS_KEY, Labeller, MAX_DISTANCE_SITES, MAX_GRID_STEPS,
-    MAX_ICAR_NODES, POLICIES_KEY, Points, Policies, Policy, RecordedAxes, Suggestions, Symmetric,
-    TimeScale, VariablePreview, VariableReport, bind_data, binding_dataset, check_bindings,
-    check_bindings_declared, check_bindings_with, element_label, excluded_variables, keeps_draws,
-    named_axes, preview_data, recorded_axes, suggest_bindings,
+    DEFAULT_MAX_DATA_VALUES, DERIVED_COLUMNS_KEY, DIMENSIONS_KEY, DataPreview, DatasetReport,
+    DerivedColumn, DesignCoordinates, DimensionCoordinates, DimensionKind, DimensionSpec,
+    DropReport, EXCLUDE_VARIABLES_KEY, Edges, KEEP_DRAWS_KEY, LABEL_COLUMN, LABELS_KEY, Labeller,
+    MAX_DISTANCE_SITES, MAX_GRID_STEPS, MAX_ICAR_NODES, POLICIES_KEY, Points, Policies, Policy,
+    RecordedAxes, Suggestions, Symmetric, TimeScale, VariablePreview, VariableReport, bind_data,
+    binding_dataset, check_bindings, check_bindings_declared, check_bindings_with, element_label,
+    excluded_variables, keeps_draws, named_axes, preview_data, recorded_axes, suggest_bindings,
 };
 pub use dataset::{
     ATTR_DATASETS, Dataset, DatasetColumn, DatasetColumnShape, DatasetOrder, DatasetShape,

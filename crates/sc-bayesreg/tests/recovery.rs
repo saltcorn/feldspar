@@ -67,6 +67,11 @@ impl Rng {
 
 /// The Stan provider over this machine's CmdStan, or `None` (and a notice).
 fn stan() -> Option<Arc<StanProvider>> {
+    stan_reading(None)
+}
+
+/// [`stan`], reading a Stan model's program from `store`.
+fn stan_reading(store: Option<Arc<dyn sc_files::FileStore>>) -> Option<Arc<StanProvider>> {
     let locations = Locations::from_env(None);
     let cmdstan = match discover(&locations) {
         Ok(c) if c.built() => c,
@@ -83,10 +88,13 @@ fn stan() -> Option<Arc<StanProvider>> {
         .make
         .unwrap_or_else(|| PathBuf::from("make"));
     let stores = Arc::new(
-        |name: &str| -> sc_error::Result<Arc<dyn sc_files::FileStore>> {
-            Err(sc_error::Error::invalid(format!(
-                "no file store `{name}` here"
-            )))
+        move |name: &str| -> sc_error::Result<Arc<dyn sc_files::FileStore>> {
+            match &store {
+                Some(s) if s.name() == name => Ok(Arc::clone(s)),
+                _ => Err(sc_error::Error::invalid(format!(
+                    "no file store `{name}` here"
+                ))),
+            }
         },
     );
     Some(Arc::new(
@@ -138,6 +146,17 @@ fn frame(columns: Vec<(&str, Column)>) -> Frame {
 
 /// Fit `formula` (family `family`) over `frame`.
 async fn fit(stan: &Arc<StanProvider>, formula: &str, family: &str, frame: Frame) -> Fit {
+    fit_with(stan, formula, family, frame, &[]).await
+}
+
+/// [`fit`] with more configuration (priors, `epred`).
+async fn fit_with(
+    stan: &Arc<StanProvider>,
+    formula: &str,
+    family: &str,
+    frame: Frame,
+    extra: &[(&str, Json)],
+) -> Fit {
     let mut registry = ModelRegistry::new();
     registry
         .register(Arc::new(BayesRegProvider::new(Arc::clone(stan))))
@@ -153,6 +172,9 @@ async fn fit(stan: &Arc<StanProvider>, formula: &str, family: &str, frame: Frame
         .config("iter_warmup", 500)
         .config("iter_sampling", 500)
         .config("seed", 4711);
+    let model = extra
+        .iter()
+        .fold(model, |m, (k, v)| m.config(*k, v.clone()));
     let source = Frames(HashMap::from([("t".to_owned(), frame)]));
     run_fit(&registry, &source, &model, 1_000_000)
         .await
@@ -475,4 +497,389 @@ async fn case_e_censored_survival_times() {
             ("shape", &[], k),
         ],
     );
+}
+
+#[tokio::test]
+#[ignore = "needs a real CmdStan: `feldspar cmdstan install`, or set $CMDSTAN"]
+async fn case_f_a_non_linear_growth_curve_varying_by_tree() {
+    let Some(stan) = stan() else { return };
+    let mut rng = Rng(71);
+    let (mut y, mut t, mut tree) = (Vec::new(), Vec::new(), Vec::new());
+    for k in 0..12 {
+        let a = 10.0 + 1.5 * rng.normal();
+        for step in 1..=10 {
+            let ti = f64::from(step);
+            y.push(a * (1.0 - (-0.3 * ti).exp()) + 0.5 * rng.normal());
+            t.push(ti);
+            tree.push(format!("T{:02}", k + 1));
+        }
+    }
+    let f = fit_with(
+        &stan,
+        "y ~ a * (1 - exp(-b * t))\na ~ 1 + (1 | tree)\nb ~ 1",
+        "gaussian",
+        frame(vec![
+            ("y", floats(y)),
+            ("t", floats(t)),
+            ("tree", texts(tree)),
+        ]),
+        &[(
+            keys::PRIORS,
+            serde_json::json!([
+                {"class": "b", "nlpar": "a", "prior": "normal(10, 5)"},
+                {"class": "b", "nlpar": "b", "prior": "normal(0, 1)", "lb": 0},
+            ]),
+        )],
+    )
+    .await;
+    recovers(
+        &f,
+        "F",
+        &[
+            ("b_1", &[1], 10.0),
+            ("b_2", &[1], 0.3),
+            ("sd_1", &[1], 1.5),
+            ("sigma", &[], 0.5),
+        ],
+    );
+    assert_eq!(
+        first_cells(table(&f, "Population-level effects")),
+        ["a_Intercept", "b_Intercept"]
+    );
+    assert_eq!(
+        first_cells(table(&f, "Group-level effects ~tree")),
+        ["sd(a_Intercept)"]
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a real CmdStan: `feldspar cmdstan install`, or set $CMDSTAN"]
+async fn case_g_two_outcomes_with_correlated_residuals_and_a_shared_block() {
+    let Some(stan) = stan() else { return };
+    let mut rng = Rng(113);
+    let (mut weight, mut height, mut age, mut school) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for s in 0..20 {
+        let z = rng.normal();
+        let (u, v) = (z, 0.5 * (0.4 * z + (1.0_f64 - 0.16).sqrt() * rng.normal()));
+        for _ in 0..20 {
+            let a = rng.normal();
+            let e1 = rng.normal();
+            let e2 = 0.5 * e1 + (1.0_f64 - 0.25).sqrt() * rng.normal();
+            weight.push(2.0 + 0.5 * a + u + e1);
+            height.push(1.0 + 0.3 * a + v + 0.8 * e2);
+            age.push(a);
+            school.push(format!("S{:02}", s + 1));
+        }
+    }
+    // A classical check of the data: the within-school least-squares slope.
+    let within = |y: &[f64]| {
+        let (mut sxy, mut sxx) = (0.0, 0.0);
+        for s in 0..20 {
+            let r = s * 20..(s + 1) * 20;
+            let (ma, my) = (
+                age[r.clone()].iter().sum::<f64>() / 20.0,
+                y[r.clone()].iter().sum::<f64>() / 20.0,
+            );
+            for i in r {
+                sxy += (age[i] - ma) * (y[i] - my);
+                sxx += (age[i] - ma) * (age[i] - ma);
+            }
+        }
+        sxy / sxx
+    };
+    eprintln!(
+        "within-school slopes: {} {}",
+        within(&weight),
+        within(&height)
+    );
+    let g = fit(
+        &stan,
+        "mvbind(weight, height) ~ age + (1 | p | school)",
+        "gaussian",
+        frame(vec![
+            ("weight", floats(weight)),
+            ("height", floats(height)),
+            ("age", floats(age)),
+            ("school", texts(school)),
+        ]),
+    )
+    .await;
+    recovers(
+        &g,
+        "G",
+        &[
+            ("Intercept_1", &[], 2.0),
+            ("b_1", &[1], 0.5),
+            ("Intercept_2", &[], 1.0),
+            ("b_2", &[1], 0.3),
+            ("sd_1", &[1], 1.0),
+            ("sd_1", &[2], 0.5),
+            ("sigma", &[], 1.0),
+            ("sigma_2", &[], 0.8),
+            ("Rescor", &[2, 1], 0.5),
+        ],
+    );
+    assert_eq!(
+        first_cells(table(&g, "Population-level effects")),
+        [
+            "weight_Intercept",
+            "weight_age",
+            "height_Intercept",
+            "height_age"
+        ]
+    );
+    assert_eq!(
+        first_cells(table(&g, "Group-level effects ~school")),
+        [
+            "sd(weight_Intercept)",
+            "sd(height_Intercept)",
+            "cor(weight_Intercept,height_Intercept)"
+        ]
+    );
+    assert_eq!(
+        first_cells(table(&g, "Family-specific parameters")),
+        ["sigma_weight", "sigma_height", "rescor(weight,height)"]
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a real CmdStan: `feldspar cmdstan install`, or set $CMDSTAN"]
+async fn r2_families_a_zero_inflated_count_and_an_ordinal_response() {
+    let Some(stan) = stan() else { return };
+    let mut rng = Rng(97);
+    let (mut n, mut x) = (Vec::new(), Vec::new());
+    for _ in 0..500 {
+        let xi = rng.normal();
+        let zero = rng.uniform() < 0.3;
+        n.push(if zero {
+            0
+        } else {
+            rng.poisson((0.5 + 0.4 * xi).exp())
+        });
+        x.push(xi);
+    }
+    let zip = fit(
+        &stan,
+        "n ~ x",
+        "zero_inflated_poisson",
+        frame(vec![("n", ints(n)), ("x", floats(x))]),
+    )
+    .await;
+    recovers(
+        &zip,
+        "zero_inflated_poisson",
+        &[
+            ("Intercept_1", &[], 0.5),
+            ("b_1", &[1], 0.4),
+            ("zi", &[], 0.3),
+        ],
+    );
+
+    let (mut y, mut x) = (Vec::new(), Vec::new());
+    let thresholds = [-1.0, 0.5, 2.0];
+    for _ in 0..400 {
+        let xi = rng.normal();
+        let u = rng.uniform();
+        let latent = xi + (u / (1.0 - u)).ln();
+        y.push(1 + thresholds.iter().filter(|t| latent > **t).count() as i64);
+        x.push(xi);
+    }
+    let ord = fit(
+        &stan,
+        "rating ~ x",
+        "cumulative",
+        frame(vec![("rating", ints(y)), ("x", floats(x))]),
+    )
+    .await;
+    recovers(
+        &ord,
+        "cumulative",
+        &[
+            ("b_1", &[1], 1.0),
+            ("Intercept_1", &[1], -1.0),
+            ("Intercept_1", &[2], 0.5),
+            ("Intercept_1", &[3], 2.0),
+        ],
+    );
+    assert_eq!(
+        first_cells(table(&ord, "Population-level effects")),
+        ["Intercept[1]", "Intercept[2]", "Intercept[3]", "x"]
+    );
+}
+
+/// The posterior mean of `epred_1[i]` for each row, over every draw.
+fn epred_means(fit: &Fit, rows: usize) -> Vec<f64> {
+    (1..=rows)
+        .map(|i| {
+            let all: Vec<f64> = fit
+                .draws
+                .iter()
+                .filter(|s| s.variable == "epred_1" && s.element == [i] && !s.warmup)
+                .flat_map(|s| s.draws.iter().copied())
+                .collect();
+            assert!(!all.is_empty(), "no draws of epred_1[{i}]");
+            all.iter().sum::<f64>() / all.len() as f64
+        })
+        .collect()
+}
+
+/// R2.4: a prediction in Rust from the stored draws is the program's own
+/// `epred_1`, row by row, within floating-point error.
+async fn predicts_as_the_program_does(
+    stan: &Arc<StanProvider>,
+    case: &str,
+    formula: &str,
+    family: &str,
+    frame: Frame,
+) {
+    let f = fit_with(
+        stan,
+        formula,
+        family,
+        frame.clone(),
+        &[
+            (keys::EPRED, Json::Bool(true)),
+            ("iter_sampling", Json::from(250)),
+        ],
+    )
+    .await;
+    let want = epred_means(&f, frame.rows);
+    let provider = BayesRegProvider::new(Arc::clone(stan));
+    let got: Vec<f64> = sc_model::ModelProvider::predict(&provider, &f.state, &frame)
+        .await
+        .unwrap_or_else(|e| panic!("case {case}: {}", sc_error::format_chain(&e)))
+        .into_iter()
+        .map(|p| match p {
+            sc_model::Prediction::Number { value } => value,
+            other => panic!("case {case}: {other:?}"),
+        })
+        .collect();
+    assert_eq!(got.len(), want.len());
+    for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+        // CmdStan writes six significant digits, and the program reads its
+        // intercept on the centred scale: so near, not equal.
+        assert!(
+            (g - w).abs() <= 1e-4 * w.abs().max(1.0),
+            "case {case}, row {}: Rust {g}, Stan {w}",
+            i + 1
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs a real CmdStan: `feldspar cmdstan install`, or set $CMDSTAN"]
+async fn r2_4_predictions_match_the_programs_epred_for_cases_a_c_and_d() {
+    let Some(stan) = stan() else { return };
+    predicts_as_the_program_does(
+        &stan,
+        "A",
+        "log_radon ~ floor + (1 | county)",
+        "gaussian",
+        radon(["log_radon", "floor", "county"]),
+    )
+    .await;
+    let mut rng = Rng(5);
+    let (mut deaths, mut n, mut dose) = (Vec::new(), Vec::new(), Vec::new());
+    for i in 0..30 {
+        let x = -2.0 + 4.0 * f64::from(i % 10) / 9.0;
+        let p = 1.0 / (1.0 + (-(-1.0 + 0.8 * x)).exp());
+        deaths.push((0..40).filter(|_| rng.uniform() < p).count() as i64);
+        n.push(20 + i64::from(i));
+        dose.push(x);
+    }
+    predicts_as_the_program_does(
+        &stan,
+        "C",
+        "deaths | trials(n) ~ dose",
+        "binomial",
+        frame(vec![
+            (
+                "deaths",
+                ints(deaths.iter().zip(&n).map(|(d, n)| (*d).min(*n)).collect()),
+            ),
+            ("n", ints(n)),
+            ("dose", floats(dose)),
+        ]),
+    )
+    .await;
+    let (mut y, mut x, mut g) = (Vec::new(), Vec::new(), Vec::new());
+    for i in 0..120 {
+        let xi = rng.normal();
+        y.push(1.0 + 2.0 * xi + (-0.5 + 0.5 * xi).exp() * rng.normal());
+        x.push(xi);
+        g.push(format!("G{}", i % 6));
+    }
+    predicts_as_the_program_does(
+        &stan,
+        "D",
+        "y ~ x + (1 | g)\nsigma ~ x",
+        "gaussian",
+        frame(vec![("y", floats(y)), ("x", floats(x)), ("g", texts(g))]),
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "needs a real CmdStan: `feldspar cmdstan install`, or set $CMDSTAN"]
+async fn r2_5_a_converted_model_fits_to_the_same_posterior_with_the_same_seed() {
+    let root = std::env::temp_dir().join(format!("sc-bayesreg-eject-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let store: Arc<dyn sc_files::FileStore> =
+        Arc::new(sc_files::LocalFileStore::new("programs", &root).unwrap());
+    let Some(stan) = stan_reading(Some(Arc::clone(&store))) else {
+        return;
+    };
+    let data = radon(["log_radon", "floor", "county"]);
+    let formula = fit(
+        &stan,
+        "log_radon ~ floor + (1 | county)",
+        "gaussian",
+        data.clone(),
+    )
+    .await;
+
+    // Convert the configuration the fit was lowered to, as the server does.
+    let lowered = formula
+        .lowered
+        .clone()
+        .expect("a formula fit stores its lowering");
+    let converted = sc_bayesreg::eject::convert(&lowered, "programs", "radon/model.stan").unwrap();
+    store
+        .write(
+            &sc_files::StorePath::parse("radon/model.stan").unwrap(),
+            converted.program.clone().into(),
+        )
+        .await
+        .unwrap();
+    let mut registry = ModelRegistry::new();
+    registry
+        .register(Arc::clone(&stan) as Arc<dyn sc_model::ModelProvider>)
+        .unwrap();
+    let mut dataset = Dataset::new("t");
+    for (name, _) in &data.columns {
+        dataset = dataset.column(name.clone(), name.clone());
+    }
+    let mut model = Model::new("m", sc_stan::STAN_PROVIDER, dataset);
+    model.configuration = converted.config;
+    let source = Frames(HashMap::from([("t".to_owned(), data)]));
+    let plain = run_fit(&registry, &source, &model, 1_000_000)
+        .await
+        .unwrap_or_else(|e| panic!("{}", sc_error::format_chain(&e)));
+    let _ = std::fs::remove_dir_all(&root);
+
+    // The same program, the same data, the same seed: the same draws. (Not
+    // the same compiled executable: the compile cache keys on the program's
+    // path too, and the Stan model's is the admin's.)
+    for (variable, element) in [("Intercept_1", vec![]), ("b_1", vec![1]), ("sd_1", vec![1])] {
+        let draws = |f: &Fit| -> Vec<f64> {
+            f.draws
+                .iter()
+                .filter(|s| s.variable == variable && s.element == element && !s.warmup)
+                .flat_map(|s| s.draws.iter().copied())
+                .collect()
+        };
+        assert!(!draws(&formula).is_empty(), "{variable}");
+        assert_eq!(draws(&formula), draws(&plain), "{variable}{element:?}");
+    }
 }

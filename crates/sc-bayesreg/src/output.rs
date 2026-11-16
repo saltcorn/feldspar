@@ -46,6 +46,17 @@ impl<'a> Draws<'a> {
         Draws { by }
     }
 
+    /// How many elements of a vector `variable` were drawn (its first index's
+    /// largest value).
+    fn len(&self, variable: &str) -> usize {
+        self.by
+            .keys()
+            .filter(|(v, _)| *v == variable)
+            .filter_map(|(_, e)| e.first().copied())
+            .max()
+            .unwrap_or(0)
+    }
+
     /// The row for `variable[element]`, named `label`, if it was drawn.
     fn row(&self, label: &str, variable: &str, element: &[usize]) -> Option<ParameterRow> {
         let chains: Vec<&[f64]> = self
@@ -80,23 +91,34 @@ impl<'a> Draws<'a> {
     }
 }
 
-/// `sigma_area` for a coefficient of `sigma`'s formula, `area` for `mu`'s.
-fn prefixed(dpar: &str, name: &str) -> String {
-    if dpar == "mu" {
-        name.to_owned()
-    } else {
-        format!("{dpar}_{name}")
-    }
+/// The text of a layout field.
+fn text(v: &Json, key: &str) -> String {
+    v.get(key).and_then(Json::as_str).unwrap_or("").to_owned()
+}
+
+/// A layout list of texts.
+fn texts(v: &Json, key: &str) -> Vec<String> {
+    v.get(key)
+        .and_then(Json::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The tables, from the draws, the binder's coordinates (the model matrices'
-/// column names) and the lowering's layout.
+/// column names and the dimensions' labels) and the lowering's layout.
+#[allow(clippy::too_many_lines)] // one table after another
 pub fn tables(
     draws: &[DrawSeries],
     coordinates: &Coordinates,
     layout: &Json,
     structure: &crate::Structure,
 ) -> Result<Vec<ParameterBlock>> {
+    use crate::canon::{CoefShape, InterceptShape};
+    use crate::family::Kind;
     let d = Draws::new(draws);
     let columns_of = |var: &str| -> Vec<String> {
         coordinates
@@ -105,25 +127,97 @@ pub fn tables(
             .map(|c| c.columns.clone())
             .unwrap_or_default()
     };
+    let labels_of = |dim: &str| -> Vec<String> {
+        coordinates
+            .dimension(dim)
+            .map(|c| c.labels.clone())
+            .unwrap_or_default()
+    };
+    let categorical = structure.kind() == Kind::Categorical;
+    // A categorical response's categories but the first, by label.
+    let categories: Vec<String> = layout
+        .get("category_dimension")
+        .and_then(Json::as_str)
+        .map(|dim| labels_of(dim).into_iter().skip(1).collect())
+        .unwrap_or_default();
+    let category = |c: usize| {
+        categories
+            .get(c)
+            .map_or_else(|| format!("mu{}", c + 2), |l| format!("mu{l}"))
+    };
+    let predictors = layout
+        .get("predictors")
+        .and_then(Json::as_array)
+        .cloned()
+        .unwrap_or_default();
     let mut out = Vec::new();
 
     // Population-level.
     let mut rows = Vec::new();
     for (i, p) in structure.predictors.iter().enumerate() {
         let n = i + 1;
-        if p.intercept != crate::canon::InterceptShape::None {
-            if let Some(r) = d.row(
-                &prefixed(&p.dpar, "Intercept"),
-                &format!("Intercept_{n}"),
-                &[],
-            ) {
+        let entry = predictors.get(i).cloned().unwrap_or(Json::Null);
+        let prefix = text(&entry, "prefix");
+        let intercept = format!("Intercept_{n}");
+        match p.intercept {
+            InterceptShape::None => {}
+            _ if p.intercept.thresholds() => {
+                for t in 1..=d.len(&intercept) {
+                    if let Some(r) = d.row(&format!("{prefix}Intercept[{t}]"), &intercept, &[t]) {
+                        rows.push(r);
+                    }
+                }
+            }
+            _ if categorical => {
+                for c in 0..d.len(&intercept) {
+                    if let Some(r) =
+                        d.row(&format!("{}_Intercept", category(c)), &intercept, &[c + 1])
+                    {
+                        rows.push(r);
+                    }
+                }
+            }
+            _ => {
+                if let Some(r) = d.row(&format!("{prefix}Intercept"), &intercept, &[]) {
+                    rows.push(r);
+                }
+            }
+        }
+        if p.b != CoefShape::None {
+            for (j, name) in columns_of(&format!("X_{n}")).iter().enumerate() {
+                if categorical {
+                    for c in 0..categories.len().max(1) {
+                        if let Some(r) = d.row(
+                            &format!("{}_{name}", category(c)),
+                            &format!("b_{n}"),
+                            &[j + 1, c + 1],
+                        ) {
+                            rows.push(r);
+                        }
+                    }
+                } else if let Some(r) =
+                    d.row(&format!("{prefix}{name}"), &format!("b_{n}"), &[j + 1])
+                {
+                    rows.push(r);
+                }
+            }
+        }
+        for (j, m) in texts(&entry, "mo").iter().enumerate() {
+            if let Some(r) = d.row(&format!("{prefix}mo{m}"), &format!("bsp_{n}"), &[j + 1]) {
                 rows.push(r);
             }
         }
-        if p.b != crate::canon::CoefShape::None {
-            for (j, name) in columns_of(&format!("X_{n}")).iter().enumerate() {
-                if let Some(r) = d.row(&prefixed(&p.dpar, name), &format!("b_{n}"), &[j + 1]) {
-                    rows.push(r);
+        if p.cs {
+            let thresholds = d.len(&intercept).max(1);
+            for (j, name) in columns_of(&format!("Xcs_{n}")).iter().enumerate() {
+                for t in 1..=thresholds {
+                    if let Some(r) = d.row(
+                        &format!("{prefix}{name}[{t}]"),
+                        &format!("bcs_{n}"),
+                        &[j + 1, t],
+                    ) {
+                        rows.push(r);
+                    }
                 }
             }
         }
@@ -131,6 +225,28 @@ pub fn tables(
     if !rows.is_empty() {
         out.push(ParameterBlock::table(
             "Population-level effects",
+            COLUMNS,
+            rows,
+        )?);
+    }
+
+    // Monotonic effects' simplexes.
+    let mut rows = Vec::new();
+    for (i, p) in structure.predictors.iter().enumerate() {
+        let entry = predictors.get(i).cloned().unwrap_or(Json::Null);
+        let prefix = text(&entry, "prefix");
+        for (j, m) in texts(&entry, "mo").iter().enumerate().take(p.mo) {
+            let var = format!("simo_{}_{}", i + 1, j + 1);
+            for e in 1..=d.len(&var) {
+                if let Some(r) = d.row(&format!("{prefix}mo{m}1[{e}]"), &var, &[e]) {
+                    rows.push(r);
+                }
+            }
+        }
+    }
+    if !rows.is_empty() {
+        out.push(ParameterBlock::table(
+            "Monotonic simplex parameters",
             COLUMNS,
             rows,
         )?);
@@ -145,38 +261,61 @@ pub fn tables(
     let mut by_group: Vec<(String, Vec<ParameterRow>)> = Vec::new();
     for (i, b) in blocks.iter().enumerate() {
         let k = i + 1;
-        let group = b
-            .get("group")
-            .and_then(Json::as_str)
-            .unwrap_or("")
-            .to_owned();
-        let parts: Vec<String> = b
-            .get("parts")
-            .and_then(Json::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let group = text(b, "group");
+        let parts = texts(b, "parts");
         let mut names = Vec::new();
-        for (j, dpar) in parts.iter().enumerate() {
-            for c in columns_of(&format!("Z_{k}_{}", j + 1)) {
-                names.push(prefixed(dpar, &c));
+        for (j, prefix) in parts.iter().enumerate() {
+            let cols = columns_of(&format!("Z_{k}_{}", j + 1));
+            if categorical {
+                for c in 0..categories.len().max(1) {
+                    for col in &cols {
+                        names.push(format!("{}_{col}", category(c)));
+                    }
+                }
+            } else {
+                for col in cols {
+                    names.push(format!("{prefix}{col}"));
+                }
             }
         }
+        let shape = structure.blocks.get(i);
+        let by_levels: Option<Vec<String>> = shape.filter(|s| s.by).map(|_| {
+            b.get("by_dimension")
+                .and_then(Json::as_str)
+                .map(labels_of)
+                .unwrap_or_default()
+        });
         let mut rows = Vec::new();
-        for (m, name) in names.iter().enumerate() {
-            if let Some(r) = d.row(&format!("sd({name})"), &format!("sd_{k}"), &[m + 1]) {
-                rows.push(r);
+        let levels: Vec<(Option<usize>, String)> = match &by_levels {
+            Some(l) => l
+                .iter()
+                .enumerate()
+                .map(|(x, name)| (Some(x + 1), format!(":{name}")))
+                .collect(),
+            None => vec![(None, String::new())],
+        };
+        for (level, suffix) in &levels {
+            for (m, name) in names.iter().enumerate() {
+                let element: Vec<usize> = match level {
+                    Some(l) => vec![m + 1, *l],
+                    None => vec![m + 1],
+                };
+                if let Some(r) = d.row(&format!("sd({name}{suffix})"), &format!("sd_{k}"), &element)
+                {
+                    rows.push(r);
+                }
             }
-        }
-        if structure.blocks.get(i).is_some_and(|s| s.correlated) {
-            for a in 0..names.len() {
-                for c in (a + 1)..names.len() {
-                    let label = format!("cor({},{})", names[a], names[c]);
-                    if let Some(r) = d.row(&label, &format!("Cor_{k}"), &[c + 1, a + 1]) {
-                        rows.push(r);
+            if shape.is_some_and(|s| s.correlated) {
+                for a in 0..names.len() {
+                    for c in (a + 1)..names.len() {
+                        let label = format!("cor({}{suffix},{}{suffix})", names[a], names[c]);
+                        let element: Vec<usize> = match level {
+                            Some(l) => vec![*l, c + 1, a + 1],
+                            None => vec![c + 1, a + 1],
+                        };
+                        if let Some(r) = d.row(&label, &format!("Cor_{k}"), &element) {
+                            rows.push(r);
+                        }
                     }
                 }
             }
@@ -197,12 +336,26 @@ pub fn tables(
     }
 
     // Family-specific.
-    let rows: Vec<ParameterRow> = structure
-        .scalars
-        .iter()
-        .filter(|s| !s.fixed)
-        .filter_map(|s| d.row(&s.dpar, &s.dpar, &[]))
-        .collect();
+    let mut rows: Vec<ParameterRow> = layout
+        .get("scalars")
+        .and_then(Json::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| d.row(&text(x, "label"), &text(x, "variable"), &[]))
+                .collect()
+        })
+        .unwrap_or_default();
+    if structure.rescor {
+        let responses = texts(layout, "responses");
+        for a in 0..responses.len() {
+            for c in (a + 1)..responses.len() {
+                let label = format!("rescor({},{})", responses[a], responses[c]);
+                if let Some(r) = d.row(&label, "Rescor", &[c + 1, a + 1]) {
+                    rows.push(r);
+                }
+            }
+        }
+    }
     if !rows.is_empty() {
         out.push(ParameterBlock::table(
             "Family-specific parameters",

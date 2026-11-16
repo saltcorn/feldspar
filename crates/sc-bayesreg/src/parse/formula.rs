@@ -37,6 +37,21 @@ pub struct Formula {
     /// The spans of the statements that were prior calls, for
     /// [`strip_priors`].
     pub prior_spans: Vec<Span>,
+    /// Distributional parameters fixed to a number: `nu = 4` (R2.1).
+    pub fixed: Vec<FixedDpar>,
+}
+
+/// `nu = 4`: a distributional parameter fixed rather than estimated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FixedDpar {
+    /// The parameter.
+    pub dpar: String,
+    /// Its value.
+    pub value: f64,
+    /// Where it is written.
+    pub span: Span,
+    /// The `bf(…)` it was written in, if any.
+    pub group: Option<usize>,
 }
 
 impl Formula {
@@ -55,8 +70,12 @@ pub struct Overrides {
     pub family: Option<FamilySpec>,
     /// `center = …`.
     pub center: Option<bool>,
-    /// `nl = …` — only `FALSE` is accepted in R1.
+    /// `nl = …`: whether the main formula is non-linear (inferred when
+    /// absent: it is when another line is the formula of a name it uses).
     pub nl: Option<bool>,
+    /// `rescor = …` / `set_rescor(…)`: residual correlations between the
+    /// responses of a multivariate model.
+    pub rescor: Option<bool>,
     /// The sentences the editor shows: "`bf()` sets the family to `student`".
     pub notes: Vec<String>,
 }
@@ -84,6 +103,12 @@ pub struct Line {
     pub span: Span,
     /// Its left-hand side.
     pub lhs_span: Span,
+    /// The main formula's right-hand side when it is non-linear (then `rhs`
+    /// is empty): an expression over its non-linear parameters and columns.
+    pub nl: Option<NlExpr>,
+    /// The `bf(…)` it was written in, if any: what ties a distributional
+    /// parameter's line to its response in a multivariate model.
+    pub group: Option<usize>,
 }
 
 /// What a line is the formula of.
@@ -98,6 +123,102 @@ pub enum Lhs {
     },
     /// A distributional parameter: `sigma ~ x`.
     Dpar(String),
+    /// A non-linear parameter of the main formula: `a ~ 1 + (1 | g)`.
+    Nlpar(String),
+}
+
+/// A non-linear formula's right-hand side (R2.2): arithmetic over numbers,
+/// non-linear parameters and columns, and a whitelist of functions. Parsed
+/// here and re-emitted by the generator; no text of it reaches Stan as
+/// written.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NlExpr {
+    /// A number.
+    Number(f64),
+    /// A non-linear parameter, by name.
+    Param(String),
+    /// A column, by name.
+    Covariate(String),
+    /// `-x`.
+    Neg(Box<NlExpr>),
+    /// `a + b`, `a - b`, `a * b`, `a / b`, `a ^ b`.
+    Binary {
+        /// `+ - * / ^`.
+        op: char,
+        /// The left operand.
+        lhs: Box<NlExpr>,
+        /// The right operand.
+        rhs: Box<NlExpr>,
+    },
+    /// A whitelisted function.
+    Call {
+        /// Its name, one of [`NL_FUNCTIONS`].
+        function: &'static str,
+        /// Its arguments.
+        args: Vec<NlExpr>,
+    },
+}
+
+/// The functions a non-linear formula may call, with their arities: Stan's
+/// own names, so each is emitted as itself.
+pub const NL_FUNCTIONS: &[(&str, usize)] = &[
+    ("exp", 1),
+    ("log", 1),
+    ("log1p", 1),
+    ("expm1", 1),
+    ("log1p_exp", 1),
+    ("sqrt", 1),
+    ("square", 1),
+    ("inv", 1),
+    ("inv_logit", 1),
+    ("logit", 1),
+    ("inv_cloglog", 1),
+    ("Phi", 1),
+    ("Phi_approx", 1),
+    ("abs", 1),
+    ("sin", 1),
+    ("cos", 1),
+    ("tan", 1),
+    ("tanh", 1),
+    ("atan", 1),
+    ("fmin", 2),
+    ("fmax", 2),
+    ("pow", 2),
+];
+
+impl NlExpr {
+    /// The names of its non-linear parameters and its columns, each in order
+    /// of first appearance.
+    pub fn names(&self) -> (Vec<String>, Vec<String>) {
+        fn go(e: &NlExpr, params: &mut Vec<String>, covs: &mut Vec<String>) {
+            match e {
+                NlExpr::Number(_) => {}
+                NlExpr::Param(n) => {
+                    if !params.contains(n) {
+                        params.push(n.clone());
+                    }
+                }
+                NlExpr::Covariate(n) => {
+                    if !covs.contains(n) {
+                        covs.push(n.clone());
+                    }
+                }
+                NlExpr::Neg(x) => go(x, params, covs),
+                NlExpr::Binary { lhs, rhs, .. } => {
+                    go(lhs, params, covs);
+                    go(rhs, params, covs);
+                }
+                NlExpr::Call { args, .. } => {
+                    for a in args {
+                        go(a, params, covs);
+                    }
+                }
+            }
+        }
+        let (mut p, mut c) = (Vec::new(), Vec::new());
+        go(self, &mut p, &mut c);
+        (p, c)
+    }
 }
 
 /// The names that are a distributional parameter on a line's left-hand side,
@@ -133,6 +254,11 @@ pub enum ATerm {
     },
     /// `rate(d)`.
     Rate(Bound),
+    /// `thres(k)`: the number of thresholds of an ordinal response (R2.1).
+    Thres(usize),
+    /// `subset(s)`: the rows (where the yes/no column `s` is true) this
+    /// response is measured on, in a multivariate model (R2.3).
+    Subset(String),
 }
 
 impl ATerm {
@@ -145,6 +271,8 @@ impl ATerm {
             ATerm::Trunc { .. } => "trunc",
             ATerm::Se { .. } => "se",
             ATerm::Rate(_) => "rate",
+            ATerm::Thres(_) => "thres",
+            ATerm::Subset(_) => "subset",
         }
     }
 
@@ -162,7 +290,8 @@ impl ATerm {
                 .chain(c.upper.as_deref())
                 .collect(),
             ATerm::Trunc { lb, ub } => lb.iter().chain(ub).filter_map(bound).collect(),
-            ATerm::Se { column, .. } => vec![column],
+            ATerm::Se { column, .. } | ATerm::Subset(column) => vec![column],
+            ATerm::Thres(_) => Vec::new(),
         }
     }
 }
@@ -196,6 +325,11 @@ pub struct Rhs {
     pub offsets: Vec<VarExpr>,
     /// The group-level terms, in the order written.
     pub groups: Vec<GroupTerm>,
+    /// `mo(x)`: monotonic effects of ordinal columns (R2.1), in the order
+    /// written.
+    pub mo: Vec<String>,
+    /// `cs(…)`: category-specific effects (R2.1, ordinal families).
+    pub cs: Vec<Term>,
 }
 
 /// Whether a right-hand side has an intercept, and how.
@@ -242,6 +376,8 @@ pub struct GroupTerm {
     pub correlated: bool,
     /// `|ID|` or `gr(id = )`.
     pub id: Option<String>,
+    /// `gr(by = h)`: one covariance matrix per level of `h` (R2.1).
+    pub by: Option<String>,
     /// Where it is written.
     pub span: Span,
 }
@@ -268,10 +404,22 @@ pub fn parse_formula(text: &str) -> Result<Formula, ParseErrors> {
     let tokens = lex(text).map_err(|e| ParseErrors(vec![e.locate(text)]))?;
     let mut formula = Formula::default();
     let mut errors = Vec::new();
+    let mut raw: Vec<RawLine> = Vec::new();
+    let reader = Reader {
+        text,
+        groups: std::cell::Cell::new(0),
+    };
     for statement in statements(&tokens) {
-        let result = statement.and_then(|e| Reader { text }.statement(&e, &mut formula));
+        let result = statement.and_then(|e| reader.statement(&e, &mut formula, &mut raw));
         if let Err(e) = result {
             errors.push(e.locate(text));
+        }
+    }
+    let nlpars = reader.nlpars(&raw, &mut formula);
+    for r in &raw {
+        match reader.line(&r.lhs, &r.rhs, r.span, r.group, &nlpars) {
+            Ok(lines) => formula.lines.extend(lines),
+            Err(e) => errors.push(e.locate(text)),
         }
     }
     if errors.is_empty() && formula.main().is_none() {
@@ -341,14 +489,12 @@ fn unsupported_special(name: &str) -> Option<&'static str> {
         "s" | "t2" => "a smoothing spline, which is not supported yet",
         "gp" => "a Gaussian process, which is not supported yet",
         "me" | "mi" => "measurement error and imputation, which are not supported",
-        "mo" => "a monotonic effect, which arrives in a later release (R2)",
-        "cs" => "a category-specific effect, which arrives with the ordinal families (R2)",
-        "mm" | "mmc" => "a multi-membership term, which arrives in a later release (R2)",
+        "mm" | "mmc" => "a multi-membership term, which is not supported yet",
         "ar" | "ma" | "arma" | "cosy" | "unstr" | "car" | "sar" | "fcor" => {
             "an autocorrelation term, which is not supported"
         }
         "lf" | "nlf" | "acformula" => "a formula helper that is not supported yet",
-        "mvbind" => "a multivariate response, which arrives in a later release (R2)",
+        "mvbind" => "a multivariate response, which belongs on the left of `~`",
         "factor" | "as.factor" | "ordered" | "as.numeric" | "as.integer" | "cut" | "ifelse" => {
             "a conversion inside the formula; compute it as a calculated column of the dataset"
         }
@@ -358,6 +504,40 @@ fn unsupported_special(name: &str) -> Option<&'static str> {
 
 struct Reader<'t> {
     text: &'t str,
+    /// How many `bf(…)`s have been read: each groups its lines.
+    groups: std::cell::Cell<usize>,
+}
+
+/// A formula statement before its meaning is decided: whether the main
+/// formula is non-linear depends on every line.
+struct RawLine {
+    lhs: Expr,
+    rhs: Expr,
+    span: Span,
+    group: Option<usize>,
+}
+
+/// The free names of an expression: every name not in a function's place.
+fn free_names(e: &Expr, out: &mut Vec<String>) {
+    match e {
+        Expr::Name(n, _) => {
+            if !out.contains(n) {
+                out.push(n.clone());
+            }
+        }
+        Expr::Num(..) | Expr::Str(..) => {}
+        Expr::Call { args, .. } => {
+            for a in args {
+                free_names(&a.value, out);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            free_names(lhs, out);
+            free_names(rhs, out);
+        }
+        Expr::Unary { operand, .. } => free_names(operand, out),
+        Expr::Paren(inner, _) => free_names(inner, out),
+    }
 }
 
 impl Reader<'_> {
@@ -365,7 +545,12 @@ impl Reader<'_> {
         &self.text[span.start.min(self.text.len())..span.end.min(self.text.len())]
     }
 
-    fn statement(&self, e: &Expr, formula: &mut Formula) -> Result<(), ParseError> {
+    fn statement(
+        &self,
+        e: &Expr,
+        formula: &mut Formula,
+        raw: &mut Vec<RawLine>,
+    ) -> Result<(), ParseError> {
         match e.unparen() {
             Expr::Binary {
                 op: BinOp::Tilde,
@@ -373,8 +558,12 @@ impl Reader<'_> {
                 rhs,
                 span,
             } => {
-                let line = self.line(lhs, rhs, *span)?;
-                formula.lines.push(line);
+                raw.push(RawLine {
+                    lhs: (**lhs).clone(),
+                    rhs: (**rhs).clone(),
+                    span: *span,
+                    group: None,
+                });
                 Ok(())
             }
             Expr::Unary { op: "~", span, .. } => err(
@@ -385,21 +574,12 @@ impl Reader<'_> {
             Expr::Binary {
                 op: BinOp::Assign,
                 lhs,
+                rhs,
                 span,
-                ..
-            } => match lhs.as_name() {
-                Some(name) if DPAR_NAMES.contains(&name) => err(
-                    format!(
-                        "fixing `{name}` to a number arrives in a later release (R2); give it a \
-                         `constant(…)` prior meanwhile"
-                    ),
-                    *span,
-                ),
-                _ => err(
-                    "an assignment is not a formula; write `response ~ terms`",
-                    *span,
-                ),
-            },
+            } => {
+                self.fixed(lhs, rhs, *span, None, formula)?;
+                Ok(())
+            }
             Expr::Call { name, .. } if is_prior_call(name) || name == "c" => {
                 self.priors(e, formula)?;
                 formula.prior_spans.push(e.span());
@@ -414,17 +594,35 @@ impl Reader<'_> {
             }
             Expr::Call {
                 name, args, span, ..
-            } if name == "bf" || name == "brmsformula" => self.bf(args, *span, formula),
+            } if name == "bf" || name == "brmsformula" => self.bf(args, *span, formula, raw),
+            Expr::Call { name, args, .. } if name == "set_rescor" => {
+                self.set_rescor(args, e.span(), formula)
+            }
+            Expr::Call {
+                name, args, span, ..
+            } if name == "mvbf" || name == "mvbrmsformula" => {
+                for a in args {
+                    match (&a.name, a.value.unparen()) {
+                        (Some((n, _)), v) if n == "rescor" => {
+                            formula.overrides.rescor = Some(logical(v)?);
+                        }
+                        (None, inner) => self.statement(inner, formula, raw)?,
+                        (Some((n, s)), _) => {
+                            return err(format!("`mvbf()` has no argument `{n}`"), *s);
+                        }
+                    }
+                }
+                let _ = span;
+                Ok(())
+            }
             Expr::Binary {
                 op: BinOp::Plus,
                 lhs,
+                rhs,
                 ..
-            } if matches!(lhs.unparen(), Expr::Call { name, .. } if name == "bf" || name == "brmsformula") => {
-                err(
-                    "adding to `bf(…)` (`+ lf(…)`, `+ set_rescor(…)`) is not supported yet; put \
-                     each formula on its own line",
-                    e.span(),
-                )
+            } if is_bf_sum(e) => {
+                self.statement(lhs, formula, raw)?;
+                self.statement(rhs, formula, raw)
             }
             other => err(
                 "a line is a formula (`y ~ x`), a `bf(…)`, or a `prior(…)`; this is none of \
@@ -434,8 +632,16 @@ impl Reader<'_> {
         }
     }
 
-    fn bf(&self, args: &[Arg], span: Span, formula: &mut Formula) -> Result<(), ParseError> {
+    fn bf(
+        &self,
+        args: &[Arg],
+        span: Span,
+        formula: &mut Formula,
+        raw: &mut Vec<RawLine>,
+    ) -> Result<(), ParseError> {
         let mut any = false;
+        let group = self.groups.get();
+        self.groups.set(group + 1);
         for arg in args {
             match &arg.name {
                 None => match arg.value.unparen() {
@@ -445,9 +651,20 @@ impl Reader<'_> {
                         rhs,
                         span,
                     } => {
-                        formula.lines.push(self.line(lhs, rhs, *span)?);
+                        raw.push(RawLine {
+                            lhs: (**lhs).clone(),
+                            rhs: (**rhs).clone(),
+                            span: *span,
+                            group: Some(group),
+                        });
                         any = true;
                     }
+                    Expr::Binary {
+                        op: BinOp::Assign,
+                        lhs,
+                        rhs,
+                        span,
+                    } => self.fixed(lhs, rhs, *span, Some(group), formula)?,
                     other => {
                         return err(
                             "each unnamed argument of `bf(…)` is a formula",
@@ -473,22 +690,26 @@ impl Reader<'_> {
                         formula.overrides.center = Some(value);
                     }
                     "nl" => {
-                        let value = logical(&arg.value)?;
-                        if value {
-                            return err(
-                                "non-linear formulas (`nl = TRUE`) arrive in a later release \
-                                 (R2)",
-                                arg.value.span(),
-                            );
-                        }
-                        formula.overrides.nl = Some(false);
+                        formula.overrides.nl = Some(logical(&arg.value)?);
                     }
                     "rescor" => {
-                        return err(
-                            "residual correlations (`rescor`) arrive with multivariate models \
-                             (R2)",
-                            *name_span,
-                        );
+                        formula.overrides.rescor = Some(logical(&arg.value)?);
+                    }
+                    // `bf(sigma ~ x, nu = 4)`: R lets a fixed parameter be a
+                    // named argument too.
+                    d if DPAR_NAMES.contains(&d) => {
+                        let value = arg.value.as_number().ok_or_else(|| {
+                            ParseError::new(
+                                format!("`{d} = …` fixes `{d}` to a number"),
+                                arg.value.span(),
+                            )
+                        })?;
+                        formula.fixed.push(FixedDpar {
+                            dpar: d.to_owned(),
+                            value,
+                            span: name_span.to(arg.value.span()),
+                            group: Some(group),
+                        });
                     }
                     other => {
                         return err(
@@ -506,14 +727,145 @@ impl Reader<'_> {
         }
     }
 
-    fn line(&self, lhs: &Expr, rhs: &Expr, span: Span) -> Result<Line, ParseError> {
+    /// `dpar = number`.
+    fn fixed(
+        &self,
+        lhs: &Expr,
+        rhs: &Expr,
+        span: Span,
+        group: Option<usize>,
+        formula: &mut Formula,
+    ) -> Result<(), ParseError> {
+        match lhs.as_name() {
+            Some(name) if DPAR_NAMES.contains(&name) => {
+                let Some(value) = rhs.as_number() else {
+                    return err(
+                        format!(
+                            "`{name} = …` fixes `{name}` to a number; for a formula, write \
+                             `{name} ~ …`"
+                        ),
+                        rhs.span(),
+                    );
+                };
+                formula.fixed.push(FixedDpar {
+                    dpar: name.to_owned(),
+                    value,
+                    span,
+                    group,
+                });
+                Ok(())
+            }
+            _ => err(
+                "an assignment is not a formula; write `response ~ terms`, or fix a \
+                 distributional parameter with `nu = 4`",
+                span,
+            ),
+        }
+    }
+
+    fn set_rescor(
+        &self,
+        args: &[Arg],
+        span: Span,
+        formula: &mut Formula,
+    ) -> Result<(), ParseError> {
+        match args {
+            [a] if a.name.as_ref().is_none_or(|(n, _)| n == "rescor") => {
+                formula.overrides.rescor = Some(logical(&a.value)?);
+                Ok(())
+            }
+            _ => err("`set_rescor()` takes `TRUE` or `FALSE`", span),
+        }
+    }
+
+    /// The non-linear parameters: the names the main formula uses that are
+    /// the left-hand side of another line (R2.2). With `nl = FALSE` none; with
+    /// `nl = TRUE` every such line must be one.
+    fn nlpars(&self, raw: &[RawLine], formula: &mut Formula) -> Vec<String> {
+        if formula.overrides.nl == Some(false) {
+            return Vec::new();
+        }
+        let is_response = |r: &RawLine| match r.lhs.unparen() {
+            Expr::Name(n, _) => !DPAR_NAMES.contains(&n.as_str()),
+            _ => true,
+        };
+        let Some(main_at) = raw.iter().position(is_response) else {
+            return Vec::new();
+        };
+        let mut used = Vec::new();
+        free_names(&raw[main_at].rhs, &mut used);
+        let nlpars: Vec<String> = raw
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != main_at)
+            .filter_map(|(_, r)| r.lhs.as_name())
+            .filter(|n| !DPAR_NAMES.contains(n) && used.iter().any(|u| u == n))
+            .map(str::to_owned)
+            .collect();
+        if !nlpars.is_empty() && formula.overrides.nl.is_none() {
+            formula.overrides.notes.push(format!(
+                "the formula is non-linear: {} {} its parameters",
+                nlpars
+                    .iter()
+                    .map(|n| format!("`{n}`"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if nlpars.len() == 1 { "is" } else { "are" }
+            ));
+        }
+        nlpars
+    }
+
+    /// One statement `lhs ~ rhs` as its lines: one, or one per response of
+    /// `mvbind(…)`.
+    fn line(
+        &self,
+        lhs: &Expr,
+        rhs: &Expr,
+        span: Span,
+        group: Option<usize>,
+        nlpars: &[String],
+    ) -> Result<Vec<Line>, ParseError> {
         let lhs_span = lhs.span();
         let lhs = match lhs.unparen() {
             Expr::Name(name, _) if DPAR_NAMES.contains(&name.as_str()) => Lhs::Dpar(name.clone()),
+            Expr::Name(name, _) if nlpars.contains(name) => Lhs::Nlpar(name.clone()),
             Expr::Name(name, _) => Lhs::Response {
                 column: name.clone(),
                 aterms: Vec::new(),
             },
+            Expr::Call {
+                name, args, span, ..
+            } if name == "mvbind" => {
+                if !nlpars.is_empty() {
+                    return err(
+                        "a non-linear formula has one response; write it without `mvbind`",
+                        *span,
+                    );
+                }
+                let rhs_parsed = self.rhs(rhs, true)?;
+                let mut out = Vec::new();
+                for a in args {
+                    if a.name.is_some() {
+                        return err("`mvbind()` takes the response columns", a.value.span());
+                    }
+                    out.push(Line {
+                        lhs: Lhs::Response {
+                            column: response_column(&a.value)?,
+                            aterms: Vec::new(),
+                        },
+                        rhs: rhs_parsed.clone(),
+                        span: *span,
+                        lhs_span: a.value.span(),
+                        nl: None,
+                        group,
+                    });
+                }
+                if out.len() < 2 {
+                    return err("`mvbind()` binds two responses or more", *span);
+                }
+                return Ok(out);
+            }
             Expr::Binary {
                 op: BinOp::Bar,
                 lhs: response,
@@ -541,12 +893,130 @@ impl Reader<'_> {
                 aterms: Vec::new(),
             },
         };
-        let rhs = self.rhs(rhs, true)?;
-        Ok(Line {
+        // The main formula is non-linear when it uses a non-linear parameter.
+        let main_nl = matches!(lhs, Lhs::Response { .. }) && !nlpars.is_empty() && {
+            let mut used = Vec::new();
+            free_names(rhs, &mut used);
+            used.iter().any(|u| nlpars.contains(u))
+        };
+        let (rhs, nl) = if main_nl {
+            (Rhs::default(), Some(self.nl_expr(rhs, nlpars)?))
+        } else {
+            (self.rhs(rhs, true)?, None)
+        };
+        Ok(vec![Line {
             lhs,
             rhs,
             span,
             lhs_span,
+            nl,
+            group,
+        }])
+    }
+
+    /// A non-linear right-hand side as an [`NlExpr`].
+    fn nl_expr(&self, e: &Expr, nlpars: &[String]) -> Result<NlExpr, ParseError> {
+        Ok(match e {
+            Expr::Paren(inner, _) => self.nl_expr(inner, nlpars)?,
+            Expr::Num(x, _) => NlExpr::Number(*x),
+            Expr::Name(n, span) => {
+                if matches!(
+                    n.as_str(),
+                    "TRUE" | "FALSE" | "T" | "F" | "NA" | "NULL" | "."
+                ) {
+                    return err(format!("`{n}` is not a column"), *span);
+                }
+                if nlpars.contains(n) {
+                    NlExpr::Param(n.clone())
+                } else {
+                    NlExpr::Covariate(n.clone())
+                }
+            }
+            Expr::Str(_, span) => return err("a string is not part of a formula", *span),
+            Expr::Unary {
+                op: "-", operand, ..
+            } => match self.nl_expr(operand, nlpars)? {
+                NlExpr::Number(x) => NlExpr::Number(-x),
+                x => NlExpr::Neg(Box::new(x)),
+            },
+            Expr::Unary {
+                op: "+", operand, ..
+            } => self.nl_expr(operand, nlpars)?,
+            Expr::Unary { span, .. } => return err("a second `~` in one formula", *span),
+            Expr::Binary { op, lhs, rhs, span } => {
+                let op = match op {
+                    BinOp::Plus => '+',
+                    BinOp::Minus => '-',
+                    BinOp::Times => '*',
+                    BinOp::Divide => '/',
+                    BinOp::Power => '^',
+                    BinOp::Bar | BinOp::DoubleBar => {
+                        return err(
+                            "a non-linear formula has no group-level terms of its own; put them \
+                             in a parameter's formula (`a ~ 1 + (1 | g)`)",
+                            *span,
+                        );
+                    }
+                    other => {
+                        return err(
+                            format!(
+                                "`{}` is not arithmetic, and a non-linear formula is arithmetic",
+                                other.symbol()
+                            ),
+                            *span,
+                        );
+                    }
+                };
+                NlExpr::Binary {
+                    op,
+                    lhs: Box::new(self.nl_expr(lhs, nlpars)?),
+                    rhs: Box::new(self.nl_expr(rhs, nlpars)?),
+                }
+            }
+            Expr::Call {
+                name,
+                args,
+                span,
+                name_span,
+            } => {
+                let name = match name.as_str() {
+                    "fabs" => "abs",
+                    "plogis" => "inv_logit",
+                    "qlogis" => "logit",
+                    "pnorm" => "Phi",
+                    other => other,
+                };
+                let Some(&(function, arity)) = NL_FUNCTIONS.iter().find(|(f, _)| *f == name) else {
+                    return err(
+                        format!(
+                            "`{name}()` is not a function a non-linear formula can use (they are \
+                             {})",
+                            NL_FUNCTIONS
+                                .iter()
+                                .map(|(f, _)| format!("`{f}`"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        *name_span,
+                    );
+                };
+                if args.len() != arity || args.iter().any(|a| a.name.is_some()) {
+                    return err(
+                        format!(
+                            "`{function}()` takes {arity} argument{}, without names",
+                            if arity == 1 { "" } else { "s" }
+                        ),
+                        *span,
+                    );
+                }
+                NlExpr::Call {
+                    function,
+                    args: args
+                        .iter()
+                        .map(|a| self.nl_expr(&a.value, nlpars))
+                        .collect::<Result<_, _>>()?,
+                }
+            }
         })
     }
 
@@ -619,6 +1089,8 @@ impl Reader<'_> {
                 .collect(),
             offsets: x.offsets,
             groups: x.groups,
+            mo: x.mo,
+            cs: x.cs,
         })
     }
 
@@ -687,6 +1159,38 @@ impl Reader<'_> {
                     let v = self.arithmetic(&arg.value)?;
                     return Ok(Expansion {
                         offsets: vec![v],
+                        ..Expansion::default()
+                    });
+                }
+                if name == "mo" || name == "cs" {
+                    if !top {
+                        return err(
+                            format!(
+                                "`{name}()` belongs to the population-level part, not inside a \
+                                 group-level term"
+                            ),
+                            *span,
+                        );
+                    }
+                    if name == "mo" {
+                        let col = match args.as_slice() {
+                            [a] if a.name.is_none() => a.value.as_name().map(str::to_owned),
+                            _ => None,
+                        };
+                        let Some(col) = col else {
+                            return err("`mo()` takes one ordinal column: `mo(education)`", *span);
+                        };
+                        return Ok(Expansion {
+                            mo: vec![col],
+                            ..Expansion::default()
+                        });
+                    }
+                    let [arg] = args.as_slice() else {
+                        return err("`cs()` takes the terms that vary by category", *span);
+                    };
+                    let inner = self.rhs(&arg.value, false)?;
+                    return Ok(Expansion {
+                        cs: inner.terms,
                         ..Expansion::default()
                     });
                 }
@@ -795,6 +1299,12 @@ impl Reader<'_> {
         if !x.groups.is_empty() || !x.offsets.is_empty() {
             return err(
                 "a group-level term or an offset cannot be part of an interaction",
+                e.span(),
+            );
+        }
+        if !x.mo.is_empty() || !x.cs.is_empty() {
+            return err(
+                "`mo()` and `cs()` cannot be part of an interaction",
                 e.span(),
             );
         }
@@ -936,6 +1446,7 @@ impl Reader<'_> {
             return err("a group-level term is `(terms | group)`", span);
         };
         let mut correlated = *op == BinOp::Bar;
+        let mut by: Option<String> = None;
         let (lhs, mut id) = match lhs.unparen() {
             Expr::Binary {
                 op: BinOp::Bar,
@@ -985,11 +1496,9 @@ impl Reader<'_> {
                             });
                         }
                         Some(("by", s)) => {
-                            return err(
-                                "`gr(by = )` (a covariance per level) arrives in a later release \
-                                 (R2)",
-                                s,
-                            );
+                            by = Some(a.value.as_name().map(str::to_owned).ok_or_else(|| {
+                                ParseError::new("`by` is a column", s.to(a.value.span()))
+                            })?);
                         }
                         Some(("cov", s)) => {
                             return err("`gr(cov = )` (a known covariance) is not supported", s);
@@ -1013,7 +1522,7 @@ impl Reader<'_> {
                 name, name_span, ..
             } if name == "mm" || name == "mmc" => {
                 return err(
-                    "a multi-membership term (`mm()`) arrives in a later release (R2)",
+                    "a multi-membership term (`mm()`) is not supported yet",
                     *name_span,
                 );
             }
@@ -1039,6 +1548,7 @@ impl Reader<'_> {
                 terms: part.terms.clone(),
                 correlated,
                 id: id.clone(),
+                by: by.clone(),
                 span,
             })
             .collect())
@@ -1074,7 +1584,7 @@ fn response_column(e: &Expr) -> Result<String, ParseError> {
         Expr::Call {
             name, name_span, ..
         } if name == "mvbind" => err(
-            "a multivariate response (`mvbind`) arrives in a later release (R2)",
+            "`mvbind(…)` takes no addition terms; give each response its own line to add them",
             *name_span,
         ),
         Expr::Call { span, .. } | Expr::Binary { span, .. } | Expr::Unary { span, .. } => err(
@@ -1206,9 +1716,29 @@ fn aterm(e: &Expr) -> Result<ATerm, ParseError> {
                 sigma,
             }
         }
-        "subset" | "thres" | "cat" => {
+        "thres" => {
+            if named("gr").is_some() {
+                return err(
+                    "grouped thresholds (`thres(gr = )`) are not supported",
+                    *name_span,
+                );
+            }
+            let k = one("thres")?
+                .as_number()
+                .filter(|k| *k >= 1.0 && k.fract() == 0.0);
+            let Some(k) = k else {
+                return err(
+                    "`thres()` takes the number of thresholds: `thres(4)`",
+                    *span,
+                );
+            };
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            ATerm::Thres(k as usize)
+        }
+        "subset" => ATerm::Subset(column(one("subset")?)?),
+        "cat" => {
             return err(
-                format!("`{name}()` arrives in a later release (R2)"),
+                "`cat()` is not supported; the categories are the data's",
                 *name_span,
             );
         }
@@ -1219,7 +1749,7 @@ fn aterm(e: &Expr) -> Result<ATerm, ParseError> {
             return err(
                 format!(
                     "`{other}()` is not an addition term (they are `weights`, `trials`, `cens`, \
-                     `trunc`, `se` and `rate`)"
+                     `trunc`, `se`, `rate`, `thres` and `subset`)"
                 ),
                 *name_span,
             );
@@ -1281,6 +1811,22 @@ pub(crate) fn family_spec(e: &Expr) -> Result<FamilySpec, ParseError> {
             Ok(spec)
         }
         other => err("a family is a name: `gaussian`, `student()`", other.span()),
+    }
+}
+
+/// `bf(…) + bf(…) + set_rescor(…)`.
+fn is_bf_sum(e: &Expr) -> bool {
+    match e.unparen() {
+        Expr::Binary {
+            op: BinOp::Plus,
+            lhs,
+            rhs,
+            ..
+        } => is_bf_sum(lhs) && is_bf_sum(rhs),
+        Expr::Call { name, .. } => {
+            matches!(name.as_str(), "bf" | "brmsformula" | "set_rescor" | "mvbf")
+        }
+        _ => false,
     }
 }
 
@@ -1421,6 +1967,8 @@ struct Expansion {
     intercept_coef: bool,
     offsets: Vec<VarExpr>,
     groups: Vec<GroupTerm>,
+    mo: Vec<String>,
+    cs: Vec<Term>,
 }
 
 impl Expansion {
@@ -1450,6 +1998,12 @@ impl Expansion {
         self.intercept_coef |= other.intercept_coef;
         self.offsets.extend(other.offsets);
         self.groups.extend(other.groups);
+        for m in other.mo {
+            if !self.mo.contains(&m) {
+                self.mo.push(m);
+            }
+        }
+        self.cs.extend(other.cs);
         self
     }
 

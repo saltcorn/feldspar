@@ -600,22 +600,38 @@ feature with its own chunk.
 
 ## R2 — Breadth and prediction
 
-- [ ] **R2.1** Distributional and family breadth: the R2 families of §3.6 (zero-inflated,
+- [x] **R2.1** Distributional and family breadth: the R2 families of §3.6 (zero-inflated,
   hurdle, beta-binomial, ordinal with flexible thresholds and `thres()`, categorical),
   fixed dpars (`nu = 4`), `mo()` with `simo`, `cs()`, and `gr(by = )`. Also grouping by a
   combination of columns (`g1:g2`, `g1/g2`, from R1.5), which needs a binder index over
   several columns, and the foreign-key "rows" dimension for a grouping factor (§2.8). Golden files and
-  recovery tests for each.
-- [ ] **R2.2** Non-linear formulas (§5 rule 4): the expression AST, its whitelist (arithmetic,
+  recovery tests for each. (Done: 150 new golden files, the 176 R1 ones byte-identical;
+  recovery for `zero_inflated_poisson` and `cumulative`, binding tests without CmdStan for the
+  rest. Grouping by a combination goes through a new additive binder key, `derived_columns`.
+  The foreign-key rows dimension is chosen automatically, not offered as a click. A
+  categorical response's group-level effects are one block across its categories. `mm()`
+  (multi-membership, §3.4) is not done and is refused as "not supported yet".)
+- [x] **R2.2** Non-linear formulas (§5 rule 4): the expression AST, its whitelist (arithmetic,
   `^`, `exp`, `log`, `inv_logit`, `fmin`/`fmax`, …), nlpar lines, `nl` inferred and shown,
   and `center = FALSE` for nlpars. Recovery test for case F; normalisation test (renamed
-  nlpars and covariates → one cache key).
-- [ ] **R2.3** Multivariate: `mvbind`, several response lines, `subset()`, residual
+  nlpars and covariates → one cache key). (Done. A non-linear parameter's coefficients need
+  a proper prior, as in brms. `a*b` and `b*a` with both as parameters are one program, since
+  renaming by first appearance makes them the same text; `a*x` and `x*a` are two.)
+- [x] **R2.3** Multivariate: `mvbind`, several response lines, `subset()`, residual
   correlation for gaussian/student (`rescor`, default on where possible), shared `|ID|`
-  blocks across responses, and responses sorted canonically. Test for case G.
-- [ ] **R2.4** Prediction in Rust (§8): `Outcome::Posterior { prediction }` for this
+  blocks across responses, and responses sorted canonically. Test for case G. (Done.
+  Residual correlations are for gaussian responses only. A `subset()` response takes no other
+  addition term. All responses share the form's family. A distributional parameter's line in a
+  multivariate model goes inside its response's `bf(…)`.)
+- [x] **R2.4** Prediction in Rust (§8): `Outcome::Posterior { prediction }` for this
   provider, `predict("…")` in formulas and `m.predict` on a handle, thinned draws, and the
   `keep_draws` refusal. Test: predictions match the generated-quantities `epred` of the same
-  fit within floating-point error, for cases A, C and D.
-- [ ] **R2.5** Eject to a Stan model (§9), and `feldspar stan warm` (§5). Test: an ejected
-  model fits to the same summary with the same seed.
+  fit within floating-point error, for cases A, C and D. (Done. The optional `epred` key
+  makes the program compute `epred_1`, which the test compares against: within 1e-4,
+  CmdStan's six significant digits. `predict()` in a formula takes only the model's name, so
+  the q05-style variants of §8 are not offered.)
+- [x] **R2.5** Eject to a Stan model (§9), and `feldspar stan warm` (§5). Test: an ejected
+  model fits to the same summary with the same seed. (Done: the endpoint
+  `convertModelToStan` and a "Convert to a Stan model" control under Show Stan program;
+  `feldspar stan warm` is `feldspar cmdstan warm`. The converted model samples identical draws
+  with the same seed.)

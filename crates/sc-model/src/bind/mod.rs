@@ -26,6 +26,7 @@
 //! per variable.
 
 mod assist;
+mod derived;
 mod dimension;
 mod labels;
 mod resolve;
@@ -48,6 +49,7 @@ use crate::interface::Interface;
 use crate::model::{MAIN_DATASET, Model, NamedDataset};
 
 pub use assist::{DataPreview, Suggestions, VariablePreview, preview_data, suggest_bindings};
+pub use derived::DerivedColumn;
 pub use dimension::{
     Coordinates, DesignCoordinates, DimensionCoordinates, DimensionKind, MAX_GRID_STEPS,
 };
@@ -76,6 +78,10 @@ pub const DIMENSIONS_KEY: &str = "dimensions";
 pub const POLICIES_KEY: &str = "policies";
 /// The configuration key holding explicit labels for output variables (§15).
 pub const LABELS_KEY: &str = "labels";
+/// The configuration key holding the columns the binder adds to a dataset
+/// before binding: an object from each new column's name to a
+/// [`DerivedColumn`] (TODO-bayesian-regression R2.1, R2.3). Absent means none.
+pub const DERIVED_COLUMNS_KEY: &str = "derived_columns";
 
 /// The column a related dataset's read carries its label formula's value in
 /// (see [`binding_dataset`]). Reserved, like the split key.
@@ -127,6 +133,26 @@ pub fn check_bindings_with(interface: &Interface, model: &Model, config: &Attrs)
                 .map(|c| c.name.as_str())
                 .collect(),
         });
+    }
+    for (name, derived) in &spec.derived {
+        if let Some(d) = datasets.iter_mut().find(|d| d.name == derived.dataset()) {
+            for read in derived.reads() {
+                if !d.columns.contains(&read) {
+                    return Err(Error::invalid(format!(
+                        "the derived column `{name}` reads `{read}`, which is not a column of \
+                         `{}`",
+                        d.name
+                    )));
+                }
+            }
+            d.columns.push(name.as_str());
+        } else {
+            return Err(Error::invalid(format!(
+                "the derived column `{name}` is added to `{}`, which is not a dataset of the \
+                 model",
+                derived.dataset()
+            )));
+        }
     }
     resolve::check_structure(interface, config, &spec, &datasets)?;
     labels::check_outputs(interface, config, &spec, &|name| {
