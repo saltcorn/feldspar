@@ -86,7 +86,7 @@ use crate::outputs::{
     draws_output, rows_output, tidy_outputs,
 };
 use crate::posterior::{DrawSeries, FitContext, FitStage, PosteriorInput, Progress};
-use crate::provider::{ModelProvider, Outcome, ParameterBlock};
+use crate::provider::{LowerInput, ModelProvider, Outcome, ParameterBlock};
 use crate::registry::ModelRegistry;
 use crate::source::DatasetSource;
 use crate::split::{Part, SplitCounts};
@@ -126,6 +126,14 @@ pub const ATTR_COORDINATES: &str = "coordinates";
 /// The attribute holding a posterior's [`BindReport`]: rows read and bound,
 /// what the policies dropped, and a line per bound variable (Stan TODO §10).
 pub const ATTR_BINDING: &str = "binding";
+
+/// The attribute holding the configuration a posterior was bound and sampled
+/// with, when its provider [lowers](crate::ModelProvider::lower) the model's
+/// configuration (TODO-bayesian-regression §2.3): the generated bindings,
+/// dimensions and labels as they were at fit time, so the instance means what
+/// it meant when it was fitted after the generator changes. Absent for a
+/// provider that binds with the configuration as written.
+pub const ATTR_LOWERED: &str = "lowered_configuration";
 
 /// The attribute holding a fit's warnings, as sentences that say what to do:
 /// a posterior's diagnostics (Stan TODO §15) and whatever any provider
@@ -206,6 +214,9 @@ pub struct Fit {
     /// A posterior's output variables: their shapes and what labels each
     /// axis. Written to [`ATTR_AXES`].
     pub axes: BTreeMap<String, RecordedAxes>,
+    /// The configuration the provider lowered the model's to, when it lowers
+    /// one. Written to [`ATTR_LOWERED`].
+    pub lowered: Option<Attrs>,
     /// What the fit shows (analytics TODO A3.1): written to
     /// [`ATTR_OUTPUTS`](crate::ATTR_OUTPUTS).
     pub outputs: Vec<OutputDecl>,
@@ -251,6 +262,12 @@ impl Fit {
             instance.attributes.insert(
                 ATTR_AXES.to_owned(),
                 serde_json::to_value(&self.axes).map_err(|e| Error::msg(format!("axes: {e}")))?,
+            );
+        }
+        if let Some(lowered) = &self.lowered {
+            instance.attributes.insert(
+                ATTR_LOWERED.to_owned(),
+                Json::Object(lowered.clone().into_iter().collect()),
             );
         }
         if !self.warnings.is_empty() {
@@ -531,6 +548,7 @@ pub async fn run_fit_with(
         binding: None,
         warnings: result.warnings,
         axes: BTreeMap::new(),
+        lowered: None,
         outputs,
         output_data,
     })
@@ -592,6 +610,7 @@ async fn fit_test(
         binding: None,
         warnings: result.warnings,
         axes: BTreeMap::new(),
+        lowered: None,
         outputs,
         output_data: result.outputs,
     })
@@ -604,6 +623,7 @@ async fn fit_test(
 /// been read (the outcome needed its shape); the related ones are read here,
 /// each under the same row cap, each named in the sentence when it fails.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 async fn fit_posterior(
     provider: &dyn ModelProvider,
     source: &dyn DatasetSource,
@@ -633,7 +653,16 @@ async fn fit_posterior(
         datasets.push((related.name.clone(), frame));
     }
 
-    let config = &model.configuration;
+    // A provider whose configuration is a formula answers the bindings it
+    // implies; everything below reads the lowered configuration.
+    let lowered = provider.lower(
+        &model.configuration,
+        LowerInput::Frames {
+            model,
+            datasets: &datasets,
+        },
+    )?;
+    let config = lowered.as_ref().unwrap_or(&model.configuration);
     let limits = ctx.limits();
     let interface = provider.interface(config).await?;
     let bound = match &interface {
@@ -778,6 +807,7 @@ async fn fit_posterior(
         binding: bound.map(|b| (b.coordinates, b.report)),
         warnings,
         axes,
+        lowered,
         outputs,
         output_data,
     })
@@ -1429,6 +1459,9 @@ mod tests {
     struct Sampler {
         interface: Option<Interface>,
         plan: Option<crate::posterior::DrawPlan>,
+        /// Lower a configuration holding `formula` into `bound_radon`'s
+        /// bindings, as a formula provider would.
+        lowers: bool,
     }
 
     #[async_trait]
@@ -1459,6 +1492,19 @@ mod tests {
         }
         async fn interface(&self, _config: &Attrs) -> Result<Option<Interface>> {
             Ok(self.interface.clone())
+        }
+        fn lower(&self, config: &Attrs, input: LowerInput<'_>) -> Result<Option<Attrs>> {
+            if !self.lowers || !config.contains_key("formula") {
+                return Ok(None);
+            }
+            let rows = input
+                .main_frame()
+                .ok_or_else(|| Error::msg("a fit lowers with the frames".to_owned()))?
+                .rows;
+            let mut lowered = bound_radon().configuration;
+            lowered.insert("formula".to_owned(), config["formula"].clone());
+            lowered.insert("rows_seen".to_owned(), Json::from(rows));
+            Ok(Some(lowered))
         }
         fn draw_plan(&self, _config: &Attrs) -> Result<Option<crate::posterior::DrawPlan>> {
             Ok(self.plan)
@@ -1547,6 +1593,7 @@ mod tests {
             .register(Arc::new(Sampler {
                 interface,
                 plan: None,
+                lowers: false,
             }))
             .expect("register");
         registry
@@ -1715,6 +1762,45 @@ mod tests {
         );
     }
 
+    /// TODO-bayesian-regression R1.4: a provider that lowers its
+    /// configuration is bound with what it answers, and the instance keeps it;
+    /// one that does not (every `stan` model) is bound as before and keeps
+    /// nothing extra.
+    #[tokio::test]
+    async fn a_lowered_configuration_is_what_is_bound_and_the_instance_keeps_it() {
+        let mut registry = ModelRegistry::new();
+        registry
+            .register(Arc::new(Sampler {
+                interface: Some(grouped_program()),
+                plan: None,
+                lowers: true,
+            }))
+            .expect("register");
+        // No bindings written: the provider derives them from `formula`.
+        let model = radon().config("formula", serde_json::json!("y ~ x"));
+        let fit = run_fit(&registry, &ByTable, &model, 1000)
+            .await
+            .expect("fit");
+        assert_eq!(
+            fit.state["data"],
+            serde_json::json!({ "N": 50, "J": 3, "u": [0.1, 0.2, 0.3] })
+        );
+        let instance = fit.apply(ModelInstance::starting(model.id)).expect("apply");
+        let lowered = &instance.attributes[ATTR_LOWERED];
+        assert_eq!(lowered["formula"], "y ~ x");
+        assert_eq!(lowered["rows_seen"], 50);
+        assert_eq!(lowered["bindings"]["N"]["kind"], "count");
+
+        // Not lowering: the written bindings, and no attribute.
+        let model = bound_radon();
+        let fit = run_fit(&registry, &ByTable, &model, 1000)
+            .await
+            .expect("fit");
+        assert!(fit.lowered.is_none());
+        let instance = fit.apply(ModelInstance::starting(model.id)).expect("apply");
+        assert!(!instance.attributes.contains_key(ATTR_LOWERED));
+    }
+
     #[tokio::test]
     async fn the_host_summarises_the_draws_by_label_and_scores_them() {
         let model = bound_radon();
@@ -1811,6 +1897,7 @@ mod tests {
                     draws_per_chain: 1000,
                     sampler_variables: 7,
                 }),
+                lowers: false,
             }))
             .expect("register");
         let limited = |bytes| PosteriorLimits {
@@ -1899,6 +1986,7 @@ mod tests {
         let sampler = Sampler {
             interface: None,
             plan: None,
+            lowers: false,
         };
         assert!(sampler.kind().binds_data);
         assert_eq!(sampler.outcome_spec(), Spec::Posterior { prediction: None });

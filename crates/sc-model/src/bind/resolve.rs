@@ -175,18 +175,22 @@ pub(crate) fn dimension_source<'a>(
         });
     }
     if let Some(dim) = spec.dimensions.get(name) {
+        let dataset = match dim {
+            DimensionSpec::Names { of } => spec.bindings.get(of)?.dataset()?,
+            other => other.dataset()?,
+        };
         return Some(DimensionSource {
-            dataset: dim.dataset(),
+            dataset,
             rows: false,
         });
     }
     let grid = name.strip_suffix(".future")?;
     match spec.dimensions.get(grid)? {
         dim @ DimensionSpec::TimeGrid { .. } => Some(DimensionSource {
-            dataset: dim.dataset(),
+            dataset: dim.dataset()?,
             rows: false,
         }),
-        DimensionSpec::Values { .. } => None,
+        DimensionSpec::Values { .. } | DimensionSpec::Names { .. } => None,
     }
 }
 
@@ -235,7 +239,7 @@ pub(crate) fn lookups<'a>(spec: &'a Spec, binding: &'a Binding) -> Vec<Lookup<'a
             Some(Lookup {
                 column: match &a.column {
                     Some(c) => c,
-                    None => declared(spec, &a.dimension)?.column(),
+                    None => declared(spec, &a.dimension)?.column()?,
                 },
                 dimension: &a.dimension,
                 match_column: a.match_column.as_deref(),
@@ -283,19 +287,29 @@ pub(crate) fn check_structure<'a>(
                 "`{name}` is already a dataset, and every dataset is a dimension of its rows"
             )));
         }
-        let Some(ds) = dataset(dim.dataset()) else {
+        let (Some(over), Some(over_column)) = (dim.dataset(), dim.column()) else {
+            // A names dimension is over a variable's columns.
+            if let DimensionSpec::Names { of } = dim {
+                if !matches!(
+                    spec.bindings.get(of),
+                    Some(Binding::Terms { .. } | Binding::Design { .. })
+                ) {
+                    return Err(at(format!(
+                        "a `names` dimension is over the columns of a `terms`- or \
+                         `design`-bound variable, and `{of}` is not one"
+                    )));
+                }
+            }
+            continue;
+        };
+        let Some(ds) = dataset(over) else {
             return Err(at(format!(
-                "there is no dataset `{}` (the datasets are {})",
-                dim.dataset(),
+                "there is no dataset `{over}` (the datasets are {})",
                 listed()
             )));
         };
-        if !has_column(ds, dim.column()) {
-            return Err(at(format!(
-                "`{}` has no column `{}`",
-                ds.name,
-                dim.column()
-            )));
+        if !has_column(ds, over_column) {
+            return Err(at(format!("`{}` has no column `{over_column}`", ds.name)));
         }
         if let DimensionSpec::TimeGrid {
             step, start, end, ..
@@ -375,6 +389,16 @@ pub(crate) fn check_structure<'a>(
             named.push((&e.dimension, e.match_column.as_deref()));
         }
         for (dimension, match_column) in named {
+            if matches!(
+                spec.dimensions.get(dimension),
+                Some(DimensionSpec::Names { .. })
+            ) && !matches!(binding, Binding::Size { .. })
+            {
+                return Err(at(format!(
+                    "`{dimension}` is a `names` dimension, a list of labels: it can be sized \
+                     (`size`) and can label an axis, but nothing indexes into it"
+                )));
+            }
             let Some(source) = dimension_source(spec, datasets, dimension) else {
                 return Err(at(format!(
                     "there is no dimension `{dimension}` (the datasets are dimensions of their \
@@ -407,13 +431,13 @@ pub(crate) fn check_structure<'a>(
             }
             let over = binding.dataset().unwrap_or_default();
             match declared(spec, &along.dimension) {
-                Some(d) if d.dataset() == over => {}
+                Some(d) if d.dataset() == Some(over) => {}
                 Some(d) => {
                     return Err(at(format!(
                         "`{}` is over `{}`, not `{over}`, so give the `column` of `{over}` that \
                          places its rows in it",
                         along.dimension,
-                        d.dataset()
+                        d.dataset().unwrap_or("a variable's columns")
                     )));
                 }
                 None => {
@@ -430,6 +454,14 @@ pub(crate) fn check_structure<'a>(
                 if columns.is_empty() =>
             {
                 return Err(at("it lists no columns".to_owned()));
+            }
+            Binding::Terms { terms, .. } => {
+                for v in terms.iter().flatten() {
+                    v.check().map_err(|e| at(e.to_string()))?;
+                }
+                if terms.iter().any(Vec::is_empty) {
+                    return Err(at("a term lists no variables".to_owned()));
+                }
             }
             Binding::Series {
                 column,
@@ -478,10 +510,13 @@ pub(crate) fn check_structure<'a>(
                 )));
             }
             Binding::Width { of } => {
-                if !matches!(spec.bindings.get(of), Some(Binding::Design { .. })) {
+                if !matches!(
+                    spec.bindings.get(of),
+                    Some(Binding::Design { .. } | Binding::Terms { .. })
+                ) {
                     return Err(at(format!(
-                        "`width` is the width of a `design`-bound variable, and `{of}` is not \
-                         one"
+                        "`width` is the width of a `design`- or `terms`-bound variable, and \
+                         `{of}` is not one"
                     )));
                 }
             }
@@ -860,16 +895,38 @@ pub fn bind_data(
     }
 
     // Every binding, evaluated: the ones that depend on another binding last.
+    // Model matrices first, because a `names` dimension is over one's columns
+    // and a `size` of that dimension is evaluated with everything else.
     let mut bound: HashMap<&str, Bound> = HashMap::new();
     let mut designs = BTreeMap::new();
     let mut warnings: Vec<String> = Vec::new();
-    for pass in 0..2 {
+    for pass in 0..3 {
+        if pass == 1 {
+            for (name, dim) in &spec.dimensions {
+                let DimensionSpec::Names { of } = dim else {
+                    continue;
+                };
+                let columns = designs
+                    .get(of)
+                    .map(|d: &DesignCoordinates| d.columns.clone())
+                    .ok_or_else(|| internal("a names dimension over an unbound variable"))?;
+                let over = spec
+                    .bindings
+                    .get(of)
+                    .and_then(Binding::dataset)
+                    .unwrap_or_default();
+                dims.insert(name.clone(), Dimension::names(name, over, of, &columns));
+            }
+        }
         for (decl, binding) in &bindings {
-            let dependent = matches!(
-                binding,
-                Binding::Width { .. } | Binding::SegmentStart { .. } | Binding::SegmentSize { .. }
-            );
-            if dependent != (pass == 1) {
+            let stage = match binding {
+                Binding::Design { .. } | Binding::Terms { .. } => 0,
+                Binding::Width { .. }
+                | Binding::SegmentStart { .. }
+                | Binding::SegmentSize { .. } => 2,
+                _ => 1,
+            };
+            if stage != pass {
                 continue;
             }
             let value = evaluate(
@@ -1031,10 +1088,13 @@ fn build_dimensions(
     dims: &mut HashMap<String, Dimension>,
 ) -> Result<()> {
     for (name, dim) in &spec.dimensions {
-        if dim.dataset() != dataset {
+        let (Some(over), Some(over_column)) = (dim.dataset(), dim.column()) else {
+            continue;
+        };
+        if over != dataset {
             continue;
         }
-        let column = column_of(frame, dim.column())?;
+        let column = column_of(frame, over_column)?;
         match dim {
             DimensionSpec::Values { column: c, .. } => {
                 dims.insert(name.clone(), Dimension::values(name, dataset, c, column));
@@ -1060,6 +1120,7 @@ fn build_dimensions(
                 dims.insert(future.coords.name.clone(), future);
                 dims.insert(name.clone(), grid);
             }
+            DimensionSpec::Names { .. } => {}
         }
     }
     Ok(())
@@ -1438,6 +1499,35 @@ fn evaluate(
                 Tensor {
                     shape: vec![f.rows, encoding.width()],
                     values: Values::Real(encoded.features.values().to_vec()),
+                },
+                dataset,
+            )
+        }
+        Binding::Terms {
+            dataset,
+            terms,
+            intercept,
+            intercept_column,
+        } => {
+            let f = frame(dataset);
+            let spec = crate::terms::TermsSpec {
+                terms: terms.clone(),
+                intercept: *intercept,
+                intercept_column: *intercept_column,
+            };
+            let (encoding, matrix) =
+                crate::terms::fit_terms(&spec, f).map_err(|e| at(e.to_string()))?;
+            designs.insert(
+                decl.name.clone(),
+                DesignCoordinates {
+                    columns: matrix.columns.clone(),
+                    encoding: encoding.to_json()?,
+                },
+            );
+            over(
+                Tensor {
+                    shape: vec![f.rows, matrix.columns.len()],
+                    values: Values::Real(matrix.values),
                 },
                 dataset,
             )

@@ -7,18 +7,18 @@ use std::io::{Cursor, Write as _};
 use sc_catalog::Catalog;
 use sc_error::{Context as _, Error, Result};
 use sc_model::{Frame, Interface, MAIN_DATASET, Model, ModelInstance, ModelProvider};
+use sc_types::Attrs;
 use serde_json::{Value as Json, json};
 use std::sync::Arc;
 use zip::write::SimpleFileOptions;
 
 use crate::ModelServices;
 
-/// The provider of `model` and the interface its program declares, refused by
-/// name for a provider that binds no data.
-pub(crate) async fn binding_interface(
+/// The provider of `model`, refused by name for a provider that binds no data.
+pub(crate) fn binding_provider(
     models: &ModelServices,
     model: &Model,
-) -> Result<(Arc<dyn ModelProvider>, Interface)> {
+) -> Result<Arc<dyn ModelProvider>> {
     let provider = Arc::clone(models.registry().require(model.provider.trim())?);
     if !provider.binds_data() {
         return Err(Error::invalid(format!(
@@ -26,16 +26,21 @@ pub(crate) async fn binding_interface(
             provider.name()
         )));
     }
-    let interface = provider
-        .interface(&model.configuration)
-        .await?
-        .ok_or_else(|| {
-            Error::invalid(format!(
-                "the model provider `{}` declares no program interface to bind",
-                provider.name()
-            ))
-        })?;
-    Ok((provider, interface))
+    Ok(provider)
+}
+
+/// The interface `provider`'s program declares under `config` — the model's
+/// configuration as the provider lowered it (TODO-bayesian-regression §7).
+pub(crate) async fn binding_interface(
+    provider: &dyn ModelProvider,
+    config: &Attrs,
+) -> Result<Interface> {
+    provider.interface(config).await?.ok_or_else(|| {
+        Error::invalid(format!(
+            "the model provider `{}` declares no program interface to bind",
+            provider.name()
+        ))
+    })
 }
 
 /// Every dataset of `model`, read as a fit reads them: the main one as `main`,

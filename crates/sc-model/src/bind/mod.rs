@@ -100,7 +100,14 @@ pub fn binding_dataset(related: &NamedDataset) -> Dataset {
 /// And the outputs' configuration (§§14–15): `exclude_variables` and `labels`
 /// name output variables, and each label names a dimension.
 pub fn check_bindings(interface: &Interface, model: &Model) -> Result<()> {
-    let spec = spec::Spec::parse(&model.configuration)?;
+    check_bindings_with(interface, model, &model.configuration)
+}
+
+/// [`check_bindings`] against `config` rather than the model's own
+/// configuration — the configuration a provider
+/// [lowered](crate::ModelProvider::lower) it to.
+pub fn check_bindings_with(interface: &Interface, model: &Model, config: &Attrs) -> Result<()> {
+    let spec = spec::Spec::parse(config)?;
     let mut datasets = vec![resolve::DatasetColumns {
         name: MAIN_DATASET,
         columns: model
@@ -121,8 +128,8 @@ pub fn check_bindings(interface: &Interface, model: &Model) -> Result<()> {
                 .collect(),
         });
     }
-    resolve::check_structure(interface, &model.configuration, &spec, &datasets)?;
-    labels::check_outputs(interface, &model.configuration, &spec, &|name| {
+    resolve::check_structure(interface, config, &spec, &datasets)?;
+    labels::check_outputs(interface, config, &spec, &|name| {
         resolve::dimension_source(&spec, &datasets, name).is_some()
     })
 }

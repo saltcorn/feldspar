@@ -272,15 +272,29 @@ keeps only formulas. A pasted row that has the same target as an existing explic
 it, and the editor names each row it replaced. A call that does not parse stays in the field,
 underlined like any other error.
 
-**Defaults**, as documented for brms. `b` is flat. `cor` is `lkj(1)`. `nu` is `gamma(2, 0.1)`.
-`shape` is `gamma(0.01, 0.01)` (`inv_gamma(0.4, 0.3)` for negbinomial). `phi` is
-`gamma(0.01, 0.01)`. The `Intercept`, `sd` and `sigma` defaults are data-dependent:
-`student_t(3, median(ỹ), s)` for the intercept and `student_t(3, 0, s)` for the SDs, with
-ỹ = the response on the link scale (where defined) and s = max(2.5, MAD(ỹ)). The exact rule
-should be **confirmed against the `default_prior` / `get_prior` documentation**: the pages did
-not load during research. Then this sentence should be corrected. Whatever the rule, the
-resolved numbers are stored on the instance and shown, so a user never has to guess. Because
-they are data, computing them from the rows costs no recompile.
+**Defaults**, as documented for brms (`?set_prior`, brms 2.23, confirmed in R1.3). `b` is
+flat. `cor` is `lkj(1)`. `nu` is `gamma(2, 0.1)`. `shape` is `gamma(0.01, 0.01)`
+(`inv_gamma(0.4, 0.3)` for negbinomial). `sd` is a half `student_t(3, 0, s)` with "a scale
+parameter that depends on the standard deviation of the response after applying the link
+function. Minimally, the scale parameter is 2.5", and `sigma` "scales in the same way". The
+documentation does **not** say how s or the intercept's default is computed, and does not
+document `phi`'s default. So the rule here is **this implementation's own**, stated in
+`sc-bayesreg/src/prior.rs`:
+
+- Let ỹ be the response on `mu`'s link scale, over the rows where the link is defined
+  (`lognormal`: the log of the response first).
+- The `Intercept` default is `student_t(3, median(ỹ), s)`.
+- The `sd` and `sigma` defaults are `student_t(3, 0, s)`.
+- s = max(2.5, MAD(ỹ)), with MAD scaled as R's `mad`.
+- Both numbers are rounded to one decimal.
+- A binary or binomial response, or a link that is not defined at the data, gives
+  `student_t(3, 0, 2.5)`.
+- A distributional parameter's own intercept is `student_t(3, 0, 2.5)`.
+- `phi` is `gamma(0.01, 0.01)`, as `shape`.
+- Skew-normal's `alpha` is `normal(0, 4)`.
+
+Whatever the rule, the resolved numbers are stored on the instance and shown, so a user never
+has to guess. Because they are data, computing them from the rows costs no recompile.
 
 ## 4. What the generated program looks like
 
@@ -511,7 +525,8 @@ feature with its own chunk.
   R's documented rules, with expected column names checked by hand.
 - **M = 1 merged with M > 1** (§5 rule 2) must not cost sampling efficiency. If it does,
   split the two and accept the extra cache entry. Measure on case A.
-- **Data-dependent default priors** (§3.7): the rule is unconfirmed (see §3.7).
+- **Data-dependent default priors** (§3.7): brms documents the shape of the rule but not the
+  formula, so ours is our own and stated (see §3.7).
 - **Vector bounds on `b`** with infinite entries: check the CmdStan version in use before
   relying on it. Otherwise bounds stay structural, which they are in this design anyway.
 
@@ -521,16 +536,16 @@ feature with its own chunk.
 
 ## R1 — Core GLMM, end to end, cached
 
-- [ ] **R1.1** Crate `sc-bayesreg` skeleton, layer 6 above `sc-stan`; add it to the crate
+- [x] **R1.1** Crate `sc-bayesreg` skeleton, layer 6 above `sc-stan`; add it to the crate
   table and dependency list in TECHNICAL_DESIGN §2 and §14.2 (a new "Bayesian regression
   from a formula" subsection replacing "a formula front end generating Stan" in *What was left
   out*). Note the clean-room sources (Part I §2.1) in the crate docs.
-- [ ] **R1.2** Parser and resolver for §3.1–3.5 (R1 rows): multi-line formulas, `bf()`
+- [x] **R1.2** Parser and resolver for §3.1–3.5 (R1 rows): multi-line formulas, `bf()`
   unwrapping, `+ - : * / ^ %in%`, `0/1/-1`, `offset()`, the §3.3 transforms, `|`, `||`,
   `|ID|`, `gr(cor, id)`, `g1:g2`, `g1/g2`, the R1 addition terms. Every error is a sentence
   with a span. Tests: a table of formulas → expected terms and model-matrix column names,
   taken from R's documented `model.matrix` behaviour.
-- [ ] **R1.3** Family table (§3.6, R1 families) and the priors of §3.7: the menu with its
+- [x] **R1.3** Family table (§3.6, R1 families) and the priors of §3.7: the menu with its
   argument constraints and allowed classes, whole-class rows and precedence, the defaults, the
   unmatched-row checks (at save from the shape; level coefficients at preview and fit), and
   the parsing of pasted `prior(…)`/`set_prior(…)`/`c(…)` calls into rows. Confirm the
@@ -538,9 +553,10 @@ feature with its own chunk.
   each constraint violation's sentence; a row left unmatched by a formula edit is kept and
   flagged, never dropped; a level row unmatched at fit is refused; pasted calls give the same
   rows as the table.
-- [ ] **R1.4** Host additions in `sc-model`: `ModelProvider::lower` + `LowerInput`, used by
+- [x] **R1.4** Host additions in `sc-model`: `ModelProvider::lower` + `LowerInput`, used by
   `fit_posterior`, `validate` and `sc-server/src/posterior.rs`, with the lowered configuration
-  stored in the instance's state. Also the `terms` binder kind (through `encode`, so its
+  stored on the instance (done as the attribute `lowered_configuration` rather than inside the
+  provider's `state`, so it cannot collide with a provider's keys; TECHNICAL_DESIGN §14.2). Also the `terms` binder kind (through `encode`, so its
   constants are on the instance) and the `names` dimension. Tests: an existing `stan` model
   binds and fits exactly as before (`lower` → `None`). A `terms` binding gives the matrix and
   names of R1.2's cases.

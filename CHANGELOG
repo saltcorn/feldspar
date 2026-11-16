@@ -2,6 +2,113 @@
 
 Changes in reverse chronological order.
 
+## Bayesian regression from a formula, R1.1–R1.4: the crate, the parser, families and priors, and the host's half
+
+The first four items of `TODO-bayesian-regression.md` milestone R1. The provider itself, the
+Stan generator and the editor (R1.5–R1.8) are still to come, so nothing changes for an admin
+yet and no existing model behaves differently.
+
+**A clean-room implementation.** brms is GPL-2, and nothing here is derived from its source:
+neither its R code nor its Stan templates were read, and no `make_stancode()` output was
+copied. The code follows published behaviour only: brms's reference documentation
+(`?brmsformula`, `?brmsfamily`, `?set_prior`, `?addition-terms`, `?gr`), Bürkner (2017, *JSS*
+80(1); 2018, *R Journal* 10(1)), Bates et al. (2015, *JSS* 67(1)), R's `?formula` and
+`?model.matrix` with Chambers & Hastie (1992), and the Stan User's Guide. The crate docs list
+these sources, and each module names the one it follows.
+
+- **R1.1: the crate `sc-bayesreg`** (layer 6, above `sc-stan` and `sc-model`). It is in the
+  workspace, in TECHNICAL_DESIGN §2's crate tree, dependency table and graph, and in a new §14.2
+  subsection, "Bayesian regression from a formula". That subsection replaces "a formula front
+  end generating Stan" among the Stan design's later work.
+- **R1.2: the parser and resolver.** `parse_formula` handles:
+  - multi-line text, `#` comments, lines continued after an operator, and `bf()`/
+    `brmsformula()` unwrapped, with its `family`, `center` and `nl` noted as overrides;
+  - the population-level expansion by R's rules (`+ - : * / ^ %in%`, `0`/`1`/`-1`,
+    `0 + Intercept`, terms ordered by degree, variables by first appearance), `offset()`, and
+    the transforms `log log1p exp sqrt abs inv scale poly I`;
+  - group-level terms `|`, `||`, `|ID|`, `gr(g, cor, id)`, `g1:g2` and `g1/g2`;
+  - the R1 addition terms `weights trials cens trunc se rate`;
+  - everything R2 or out of scope (`s()`, `mo()`, `mm()`, `mvbind`, `gr(by)`, `nu = 4`, …)
+    refused with a sentence that says which.
+
+  Every error carries a byte span, a line and character columns, and all bad lines are
+  reported, not just the first. `resolve` checks the result against the column names, the
+  shape or the frames:
+  - unknown columns, with a "did you mean" and an underline at the column;
+  - the response type against the family, and dates or categoricals inside a transform;
+  - distributional-parameter lines the family does not have, and a second response (R2);
+  - addition terms the family does not take, and `binomial` without `trials`;
+  - links against each parameter's allowed list;
+  - group terms merged into blocks by `|ID|`, across `mu` and `sigma`.
+- **R1.3: families and priors.** The family table has the 13 R1 families with brms's
+  documented default and allowed links (`Gamma` defaults to `log`, `nu` to `logm1`), the
+  response each accepts, its Stan density, and the addition terms it takes. The prior menu
+  gives each family a stable integer code (priors are data to the program) and checks its
+  arguments as the editor will ("σ must be positive (it is -1)"). Each menu family is allowed
+  on its classes only: `flat` on `b`, positive-support families on positive classes, `lkj` on
+  `cor` only, `uniform` with matching `lb`/`ub`, bounds on `b` only.
+
+  Rows resolve with precedence (class, coef, group) → (class, group) → (class). The table
+  shows each row's source (explicit, inherited from a named row, default, or default from
+  data), and a data-dependent default shows its rule until the data is read. An explicit row
+  that no longer targets anything is **kept and flagged** with its reason, never dropped, and
+  save and fit refuse it (`require_matched`). A row naming a level (`regionNorth`) is matched
+  by template at save and exactly at fit. Pasted `prior(…)`, `set_prior(…)`, `prior_string(…)`,
+  `c(…)` and `+` calls parse to the same rows as the table. `strip_priors` gives the formula
+  text without them, and `merge_rows` merges them in, naming the rows they replace.
+  `check = FALSE` is refused.
+
+  The default-prior rule was checked against the brms reference documentation (2.23) and
+  §3.7 of the TODO corrected. The documentation gives `b` flat, `lkj(1)`, `gamma(2, 0.1)` for
+  `nu`, `gamma(0.01, 0.01)` or `inv_gamma(0.4, 0.3)` for `shape`, and a half-`student_t(3, 0,
+  s)` for `sd` and `sigma`, with s "depend[ing] on the standard deviation of the response
+  after applying the link function. Minimally, the scale parameter is 2.5". It does not give
+  the formula for s or for the intercept's default. The rule used here is this
+  implementation's own, stated in `prior.rs` and in §3.7: `student_t(3, median(ỹ), max(2.5,
+  MAD(ỹ)))`, rounded to one decimal, and (0, 2.5) for a binary or binomial response.
+- **R1.4: the host's half, in `sc-model`.** All of it is additive with defaults, needs no
+  migration, and leaves `stan` models as they were:
+  - `ModelProvider::lower(cfg, LowerInput)` (with `lowered_configuration`) answers the
+    configuration to bind with. `LowerInput::Shape` serves save, validate and load;
+    `LowerInput::Frames` serves preview and fit.
+  - `validate_model`, the posterior fit, and the server's `previewModelData` and
+    `suggestBindings` use the lowered configuration everywhere they read the model's. They go
+    through `check_bindings_with`, and `posterior.rs` is split into `binding_provider` and
+    `binding_interface`.
+  - A fit stores the lowered configuration as the instance attribute `lowered_configuration`
+    (`ATTR_LOWERED`), not inside the provider's `state`, so it cannot collide with a
+    provider's keys. `Fit` gains a `lowered` field.
+  - `sc_model::terms` adds a model matrix with R's `model.matrix` coding: the margin rule for
+    contrasts versus dummies, the no-intercept rule, products with the first variable
+    fastest, `regionNorth`-style names, the fitted transforms `scale()` and `poly()` (R's
+    orthogonal basis by its three-term recurrence), and a `TermsEncoding` that rebuilds the
+    matrix for new rows and refuses unseen levels by name.
+  - The binding kind `terms` stores its encoding in the coordinates' `designs`. `width` and
+    `labels` accept it as they accept `design`.
+  - The dimension kind `names` (`{kind: "names", of}`) labels and sizes an axis by a
+    matrix's column names (`DimensionKind::Names`). `DimensionSpec::dataset()` and `column()`
+    now return `Option`.
+
+Tests:
+- `crates/sc-model/src/terms.rs`: R's coding cases, products, transforms, `poly(1:5, 2)`
+  against R's known values, stored encodings applied to new rows, unseen levels, non-finite
+  transforms, single-level factors.
+- `crates/sc-model/src/bind/tests.rs`: a `terms` binding sized and labelled by a `names`
+  dimension; nothing may index into one.
+- `crates/sc-model/src/fit.rs`: a lowering provider's bindings are used and stored on the
+  instance; a non-lowering one is bound as before and stores nothing.
+- `crates/sc-bayesreg`, unit and `tests/formulas.rs`, 24 tests:
+  - the expansion table and the model-matrix column names from R's rules;
+  - group-level and addition terms, and `bf()` unwrapping;
+  - 21 error sentences with their spans, plus line and column location;
+  - pasted priors equal to table rows;
+  - resolver refusals, links and block merging;
+  - the prior table before and after the data;
+  - unmatched rows kept and flagged; a level row matched at fit; class, group and dpar
+    refusals; response values;
+  - resolved formulas bound through the real binder as `terms` bindings.
+- The existing `sc-model` and `sc-stan` suites pass unchanged.
+
 ## Reenable analytics links and applications
 
 Reversing directions below by which they were disabled

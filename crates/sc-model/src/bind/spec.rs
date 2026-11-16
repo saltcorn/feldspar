@@ -69,9 +69,26 @@ pub enum Binding {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         standardise: bool,
     },
-    /// The number of columns of a `design`-bound variable.
+    /// A model matrix from a formula's terms, with R's `model.matrix`
+    /// coding (TODO-bayesian-regression §7): see [`crate::terms`]. Its
+    /// column names label whatever is sized by its `width` or by a `names`
+    /// dimension over it.
+    Terms {
+        /// The dataset.
+        dataset: String,
+        /// The terms, each a product of variables.
+        terms: Vec<Vec<crate::terms::VarExpr>>,
+        /// Whether the model has an intercept, which decides the coding — not
+        /// whether the matrix has a column for it.
+        #[serde(default = "yes")]
+        intercept: bool,
+        /// Whether the matrix starts with a column of ones, `Intercept`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        intercept_column: bool,
+    },
+    /// The number of columns of a `design`- or `terms`-bound variable.
     Width {
-        /// The `design`-bound variable.
+        /// The `design`- or `terms`-bound variable.
         of: String,
     },
     /// The 1-based position of each row's value in a dimension.
@@ -359,6 +376,7 @@ impl Binding {
             Binding::Column { .. } => "column",
             Binding::Columns { .. } => "columns",
             Binding::Design { .. } => "design",
+            Binding::Terms { .. } => "terms",
             Binding::Width { .. } => "width",
             Binding::Index { .. } => "index",
             Binding::Present { .. } => "present",
@@ -431,6 +449,7 @@ impl Binding {
             | Binding::Column { dataset, .. }
             | Binding::Columns { dataset, .. }
             | Binding::Design { dataset, .. }
+            | Binding::Terms { dataset, .. }
             | Binding::Index { dataset, .. }
             | Binding::Present { dataset, .. }
             | Binding::Absent { dataset, .. }
@@ -455,6 +474,17 @@ impl Binding {
             Binding::Column { column, .. } | Binding::Index { column, .. } => vec![column],
             Binding::Columns { columns, .. } | Binding::Design { columns, .. } => {
                 columns.iter().map(String::as_str).collect()
+            }
+            Binding::Terms { terms, .. } => {
+                let mut out: Vec<&str> = Vec::new();
+                for v in terms.iter().flatten() {
+                    for c in v.columns() {
+                        if !out.contains(&c) {
+                            out.push(c);
+                        }
+                    }
+                }
+                out
             }
             _ => Vec::new(),
         }
@@ -511,6 +541,26 @@ impl Binding {
             Binding::Design {
                 dataset, columns, ..
             } => format!("design({dataset}: {})", columns.join(", ")),
+            Binding::Terms {
+                dataset,
+                terms,
+                intercept,
+                intercept_column,
+            } => {
+                let mut parts: Vec<String> = Vec::new();
+                if *intercept_column {
+                    parts.push("Intercept".to_owned());
+                } else if !*intercept {
+                    parts.push("0".to_owned());
+                }
+                parts.extend(terms.iter().map(|t| {
+                    t.iter()
+                        .map(crate::terms::VarExpr::label)
+                        .collect::<Vec<_>>()
+                        .join(":")
+                }));
+                format!("terms({dataset}: {})", parts.join(" + "))
+            }
             Binding::Width { of } => format!("width({of})"),
             Binding::Index {
                 dataset,
@@ -641,6 +691,7 @@ impl Binding {
             | Binding::Component(_) => Some(1),
             Binding::Columns { .. }
             | Binding::Design { .. }
+            | Binding::Terms { .. }
             | Binding::Cells { .. }
             | Binding::CellsPresent { .. }
             | Binding::Adjacency(_)
@@ -666,6 +717,7 @@ impl Binding {
             _ => matches!(
                 self,
                 Binding::Design { .. }
+                    | Binding::Terms { .. }
                     | Binding::Column { time: Some(_), .. }
                     | Binding::IcarScale(_)
                     | Binding::Points(_)
@@ -691,6 +743,10 @@ impl Binding {
             _ => Aggregate::Count,
         }
     }
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// `main.amount`, or `main` when rows are counted.
@@ -813,6 +869,14 @@ pub enum DimensionSpec {
         #[serde(default, skip_serializing_if = "is_zero")]
         horizon: u32,
     },
+    /// A fixed list of labels: the column names of a `terms`- or
+    /// `design`-bound variable, known once it is bound
+    /// (TODO-bayesian-regression §6). What a coefficient vector is sized and
+    /// labelled by.
+    Names {
+        /// The `terms`- or `design`-bound variable.
+        of: String,
+    },
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -820,19 +884,24 @@ fn is_zero(n: &u32) -> bool {
 }
 
 impl DimensionSpec {
-    /// The dataset it is over.
-    pub fn dataset(&self) -> &str {
+    /// The dataset it is over — `None` for a `names` dimension, which is over
+    /// a variable's columns rather than a dataset's.
+    pub fn dataset(&self) -> Option<&str> {
         match self {
             DimensionSpec::Values { dataset, .. } | DimensionSpec::TimeGrid { dataset, .. } => {
-                dataset
+                Some(dataset)
             }
+            DimensionSpec::Names { .. } => None,
         }
     }
 
-    /// The column it is over.
-    pub fn column(&self) -> &str {
+    /// The column it is over — `None` for a `names` dimension.
+    pub fn column(&self) -> Option<&str> {
         match self {
-            DimensionSpec::Values { column, .. } | DimensionSpec::TimeGrid { column, .. } => column,
+            DimensionSpec::Values { column, .. } | DimensionSpec::TimeGrid { column, .. } => {
+                Some(column)
+            }
+            DimensionSpec::Names { .. } => None,
         }
     }
 }

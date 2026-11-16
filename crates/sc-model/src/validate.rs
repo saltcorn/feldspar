@@ -42,10 +42,10 @@ use sc_error::{Error, Result};
 use sc_types::validate_attrs;
 use serde_json::Value as Json;
 
-use crate::bind::check_bindings;
+use crate::bind::check_bindings_with;
 use crate::dataset::DatasetShape;
 use crate::model::{MAIN_DATASET, Model};
-use crate::provider::{ModelProvider, OutcomeSpec};
+use crate::provider::{LowerInput, ModelProvider, OutcomeSpec, lowered_configuration};
 use crate::registry::ModelRegistry;
 use crate::store::{MODELS_TABLE, list_models};
 
@@ -131,12 +131,16 @@ pub async fn validate_model(
     // reading the data, so this runs with or without a shape — and a program
     // that is gone from its store lists the model with that reason.
     if provider.binds_data() {
+        // What the provider binds with: its own configuration, or the one it
+        // lowers a formula to (TODO-bayesian-regression §7).
+        let config = lowered_configuration(provider.as_ref(), LowerInput::Shape { model, shape })
+            .map_err(|e| problem(e.to_string()))?;
         let interface = provider
-            .interface(&model.configuration)
+            .interface(&config)
             .await
             .map_err(|e| problem(e.to_string()))?;
         if let Some(interface) = interface {
-            check_bindings(&interface, model).map_err(|e| problem(e.to_string()))?;
+            check_bindings_with(&interface, model, &config).map_err(|e| problem(e.to_string()))?;
         }
     }
 

@@ -611,11 +611,20 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             async move {
                 let models = models_of(&apps)?;
                 let model = model_from_body(&catalog, rows::require_object(&ctx.body)?).await?;
-                let (_, interface) = crate::posterior::binding_interface(&models, &model).await?;
+                let provider = crate::posterior::binding_provider(&models, &model)?;
                 let datasets = crate::posterior::posterior_datasets(&models, &model).await?;
+                let config = sc_model::lowered_configuration(
+                    provider.as_ref(),
+                    sc_model::LowerInput::Frames {
+                        model: &model,
+                        datasets: &datasets,
+                    },
+                )?;
+                let interface =
+                    crate::posterior::binding_interface(provider.as_ref(), &config).await?;
                 let preview = sc_model::preview_data(
                     &interface,
-                    &model.configuration,
+                    &config,
                     &datasets,
                     models.posterior_limits().max_data_values,
                 );
@@ -636,7 +645,20 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             async move {
                 let models = models_of(&apps)?;
                 let model = model_from_body(&catalog, rows::require_object(&ctx.body)?).await?;
-                let (_, interface) = crate::posterior::binding_interface(&models, &model).await?;
+                let provider = crate::posterior::binding_provider(&models, &model)?;
+                let config = sc_model::lowered_configuration(
+                    provider.as_ref(),
+                    sc_model::LowerInput::Shape {
+                        model: &model,
+                        shape: None,
+                    },
+                )?;
+                let interface =
+                    crate::posterior::binding_interface(provider.as_ref(), &config).await?;
+                // Suggested against the bindings the provider binds with, so a
+                // provider that derives them has nothing left to suggest.
+                let mut model = model;
+                model.configuration = config;
                 let suggestions =
                     sc_model::suggest_bindings(&interface, &model, &catalog.schema_shape()?);
                 Ok(HandlerResponse::ok(json!({

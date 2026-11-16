@@ -901,6 +901,25 @@ pub trait ModelProvider: Send + Sync {
     /// makes a provider in another language usable at all.
     async fn predict(&self, state: &Json, frame: &Frame) -> Result<Vec<Prediction>>;
 
+    /// The configuration the host should bind with, derived from this one
+    /// (TODO-bayesian-regression §7): the provider's own keys plus generated
+    /// [`bindings`](crate::BINDINGS_KEY), [`dimensions`](crate::DIMENSIONS_KEY),
+    /// [`labels`](crate::LABELS_KEY) and [`policies`](crate::POLICIES_KEY).
+    ///
+    /// `None` (the default) means "bind with `config` as it is", which is what
+    /// every provider whose admin writes the bindings wants (`stan`). A
+    /// provider whose configuration is a formula answers the bindings it
+    /// implies. The host calls it once per save, preview and fit, uses the
+    /// answer everywhere it would otherwise read the model's configuration —
+    /// [`interface`](ModelProvider::interface), the binder, the labels, the
+    /// sampler — and a fit stores it on the instance
+    /// ([`ATTR_LOWERED`](crate::ATTR_LOWERED)), so the instance means what it
+    /// meant when it was fitted. Pure: no I/O.
+    fn lower(&self, config: &Attrs, input: LowerInput<'_>) -> Result<Option<Attrs>> {
+        let _ = (config, input);
+        Ok(None)
+    }
+
     /// What the program this configuration names declares (Stan TODO §5), or
     /// `None` for a provider with no program.
     ///
@@ -968,6 +987,59 @@ pub trait ModelProvider: Send + Sync {
         let _ = state;
         Ok(())
     }
+}
+
+/// What [`ModelProvider::lower`] is lowering against.
+#[derive(Debug, Clone, Copy)]
+pub enum LowerInput<'a> {
+    /// Saving, validating or loading: the model, and the main dataset's shape
+    /// when something has read it (a save from the editor, a fit). With no
+    /// shape the provider knows the datasets' column names and not their
+    /// types.
+    Shape {
+        /// The model being lowered.
+        model: &'a crate::model::Model,
+        /// The main dataset's shape, when known.
+        shape: Option<&'a DatasetShape>,
+    },
+    /// A preview or a fit: every dataset read, the main one first as
+    /// [`MAIN_DATASET`](crate::MAIN_DATASET) — so what depends on the data (a
+    /// default prior computed from the response) can be computed.
+    Frames {
+        /// The model being lowered.
+        model: &'a crate::model::Model,
+        /// Each dataset by name, as the binder receives them.
+        datasets: &'a [(String, Frame)],
+    },
+}
+
+impl<'a> LowerInput<'a> {
+    /// The model being lowered.
+    pub fn model(&self) -> &'a crate::model::Model {
+        match self {
+            LowerInput::Shape { model, .. } | LowerInput::Frames { model, .. } => model,
+        }
+    }
+
+    /// The main dataset's frame, at a preview or a fit.
+    pub fn main_frame(&self) -> Option<&'a Frame> {
+        match self {
+            LowerInput::Frames { datasets, .. } => datasets
+                .iter()
+                .find(|(n, _)| n == crate::model::MAIN_DATASET)
+                .map(|(_, f)| f),
+            LowerInput::Shape { .. } => None,
+        }
+    }
+}
+
+/// `provider`'s lowered configuration of `model` against `input`, or the
+/// model's own configuration when the provider does not lower.
+pub fn lowered_configuration(provider: &dyn ModelProvider, input: LowerInput<'_>) -> Result<Attrs> {
+    let model = input.model();
+    Ok(provider
+        .lower(&model.configuration, input)?
+        .unwrap_or_else(|| model.configuration.clone()))
 }
 
 /// The model providers a module supplies: the seam `sc-module` and `sc-python`

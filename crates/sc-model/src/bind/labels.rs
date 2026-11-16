@@ -466,12 +466,15 @@ pub(crate) fn check_outputs(
             )));
         }
         for name in entries.iter().flatten() {
-            let is_design = matches!(spec.bindings.get(name), Some(Binding::Design { .. }));
+            let is_design = matches!(
+                spec.bindings.get(name),
+                Some(Binding::Design { .. } | Binding::Terms { .. })
+            );
             if !is_dimension(name) && !is_design {
                 return Err(Error::invalid(format!(
                     "`{LABELS_KEY}` labels `{variable}` with `{name}`, which is neither a \
                      dimension (a dataset, or one declared under `dimensions`) nor a \
-                     `design`-bound variable"
+                     `design`- or `terms`-bound variable"
                 )));
             }
         }

@@ -9294,6 +9294,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-bayesreg"
+version = "0.1.3-dev"
+dependencies = [
+ "sc-error",
+ "sc-model",
+ "sc-stan",
+ "sc-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "sc-catalog"
 version = "0.1.3-dev"
 dependencies = [

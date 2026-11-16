@@ -30,6 +30,8 @@ pub enum DimensionKind {
     Values,
     /// The steps of a time grid (or of its horizon, for `name.future`).
     TimeGrid,
+    /// A fixed list of labels: a model matrix's column names.
+    Names,
 }
 
 /// One dimension's coordinates: a key and a label per position, in order.
@@ -161,6 +163,27 @@ impl Dimension {
                 labels: labels.map_or(texts, <[String]>::to_vec),
             },
             lookup: Lookup::Text(lookup),
+        }
+    }
+
+    /// A names dimension: one position per label, keyed by the label.
+    pub(crate) fn names(name: &str, dataset: &str, of: &str, labels: &[String]) -> Dimension {
+        Dimension {
+            coords: DimensionCoordinates {
+                name: name.to_owned(),
+                kind: DimensionKind::Names,
+                dataset: dataset.to_owned(),
+                column: Some(of.to_owned()),
+                keys: labels.iter().map(|l| Json::String(l.clone())).collect(),
+                labels: labels.to_vec(),
+            },
+            lookup: Lookup::Text(
+                labels
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| (l.clone(), i))
+                    .collect(),
+            ),
         }
     }
 

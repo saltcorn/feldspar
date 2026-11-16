@@ -158,6 +158,14 @@ feldspar/
 │  │                              #    Stan-specific (the binder, the draws, the posterior
 │  │                              #    summary) is sc-model's. No Cargo feature: nothing is
 │  │                              #    linked, availability is a runtime fact
+│  ├─ sc-bayesreg/                # 6. Bayesian regression from a formula, above sc-stan
+│  │                              #    (§14.2, "Bayesian regression from a formula"): lme4/brms
+│  │                              #    formula text parsed (spans on every error), resolved
+│  │                              #    against the dataset (families, links, addition terms,
+│  │                              #    group-level blocks), and the prior menu and its
+│  │                              #    resolution; lowered through `ModelProvider::lower` to the
+│  │                              #    binder's `terms` bindings. Pure Rust, no I/O. Clean-room:
+│  │                              #    follows brms's documentation, never its source
 │  ├─ sc-stream/                  # 6. Streams: dataflows as an entity (§14.3). The
 │  │                              #    StreamProvider seam and its registry, the element
 │  │                              #    type and the envelope, `_fd_streams`, the supervisor
@@ -276,6 +284,8 @@ graph TD
   cli --> stan["sc-stan"]
   server --> stan
   stan --> model
+  bayesreg["sc-bayesreg"] --> stan
+  bayesreg --> model
   coreact --> model
   server --> stream["sc-stream"]
   server --> live["sc-live"]
@@ -369,6 +379,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-analytics` | `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-db-sqlite` `sc-error` `sc-model` `sc-query` `sc-types` |
 | `sc-stream` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
 | `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-net` `sc-proc` `sc-types` |
+| `sc-bayesreg` | `sc-error` `sc-model` `sc-stan` `sc-types` |
 | `sc-agent` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-workflow` | `sc-action` `sc-agent` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
 | `sc-api` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-query` `sc-ratelimit` `sc-types` |
@@ -10643,10 +10654,67 @@ generated quantities over a `new` pseudo-dataset) is **carried past** this desig
 declares no prediction, so `predict("Radon")` in a formula is refused when it is saved, and
 `m.predict` on its handle throws a sentence pointing at `m.draws`. When it is picked up, it
 arrives as those two accepting a posterior, not as an action. A forecast needs none of it: a time grid's horizon is a generated quantity of
-the fit itself. LOO/WAIC, a formula front end generating Stan, Bayesian providers from modules,
-and adjacency from geometry are later work. A fit still doesn't survive a restart; the chains
-die with the server. The admin-facing walk-through is `docs/tutorial-stan.md`; operating it
+the fit itself. LOO/WAIC, Bayesian providers from modules, and adjacency from geometry are later
+work; a formula front end generating Stan is the next subsection. A fit still doesn't survive a
+restart; the chains die with the server. The admin-facing walk-through is `docs/tutorial-stan.md`; operating it
 (installing CmdStan, the flags, the cache, the size of the draws) is `OPERATIONS.md` §9.
+
+#### Bayesian regression from a formula (`sc-bayesreg`)
+
+A provider, `bayesian_regression`, whose configuration is a formula in lme4/brms syntax rather
+than a Stan program: `price | weights(w) ~ area + region + (1 + area | county)`, with
+`sigma ~ region` on a line of its own. The provider generates the Stan program from the
+formula's **structure** and fits it through `sc-stan`. The plan, the decisions and the
+milestones are `TODO-bayesian-regression.md`. R1.1–R1.4 have landed: the crate, the parser
+and resolver, the families and priors, and the host's half. The generator, the provider and
+the editor (R1.5–R1.8) build on them.
+
+**A clean-room implementation.** brms is GPL-2, and none of this is derived from its source.
+The crate follows published behaviour only: brms's reference documentation, Bürkner (2017,
+2018), lme4's paper (Bates et al. 2015), R's `?formula`/`?model.matrix` with Chambers & Hastie
+(1992), and the Stan User's Guide. The crate docs list them, and each module names the one it
+follows.
+
+**The pipeline.** All of it is pure Rust with no I/O:
+
+- *parse*: the text becomes a `Formula`. Lines, `bf()` unwrapped, the population-level terms
+  expanded by R's rules (`* / : ^ %in% -`, `0`/`1`, `0 + Intercept`), group-level terms
+  (`|`, `||`, `|ID|`, `gr(cor, id)`, `g1:g2`, `g1/g2`), the response's addition terms, and
+  pasted `prior(…)`/`set_prior(…)` calls lifted out as rows. Every error is a sentence with a
+  span, a line and character columns.
+- *resolve*: the formula is checked against what is known of the dataset. With the column
+  names it checks names (with a "did you mean"). With the shape it also checks types. With the
+  frames it also checks values and levels. The result is the family and links (brms's
+  documented defaults), each linear predictor's terms, the group-level **blocks** (terms
+  sharing an ID merge, across `mu` and `sigma` too), and the prior classes.
+- *priors*: a menu of families, each with argument constraints and the classes it is allowed
+  on. Precedence runs (class, coef, group) → (class, group) → (class). Defaults are documented
+  ones where brms documents them. The data-dependent ones (intercept, `sd`, `sigma`) follow a
+  stated rule of this implementation, because brms's documentation does not give one: over the
+  response on the link scale, `student_t(3, median, max(2.5, MAD))`, location 0 for the SDs.
+  An explicit row that no longer matches is kept and flagged, and save and fit refuse it.
+
+**The host's half** (`sc-model`), additive and with defaults:
+
+- `ModelProvider::lower(cfg, LowerInput)` answers the configuration the host should bind
+  with. `LowerInput` is the model with its shape (save, validate, load), or with its frames
+  (preview, fit). The default `None` means "as written", so every `stan` model is untouched.
+  `validate_model`, the posterior fit and the server's preview and suggest handlers use the
+  lowered configuration wherever they read the model's. A fit stores it on the instance as the
+  attribute `lowered_configuration` (`ATTR_LOWERED`), beside the coordinates, rather than in
+  the provider's `state`, so it cannot collide with a provider's own keys.
+- `sc_model::terms` and the binding kind `terms` (`{dataset, terms, intercept,
+  intercept_column}`): a model matrix from a list of terms with R's `model.matrix` coding.
+  That is treatment contrasts or dummy coding by the *Statistical Models in S* margin rule,
+  interactions with the first variable fastest, columns named `regionNorth` and
+  `area:regionNorth`, and the transforms `log`, `log1p`, `exp`, `sqrt`, `abs`, `inv`, `I()`,
+  `scale()` and `poly()`. What is fitted (levels, `scale`'s constants, `poly`'s recurrence) is
+  stored as a `TermsEncoding` in the coordinates' `designs`, so the same matrix can be rebuilt
+  for new rows, and an unseen level is refused by name. It lives in the host so that a second
+  formula front end gets it free.
+- The dimension kind `names` (`{kind: "names", of: <terms-bound variable>}`): the matrix's
+  column names as a dimension. A `size` of it sizes a coefficient vector, and the axis is
+  labelled by the column names. Nothing indexes into it.
 
 ---
 

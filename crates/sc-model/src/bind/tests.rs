@@ -251,8 +251,9 @@ fn the_save_time_check_passes_the_radon_model_and_names_what_is_wrong_with_other
     designed["N"] = json!({"kind": "width", "of": "x"});
     let err = check_bindings(&radon_program(), &model(designed)).unwrap_err();
     assert!(
-        err.to_string()
-            .contains("`width` is the width of a `design`-bound variable, and `x` is not one"),
+        err.to_string().contains(
+            "`width` is the width of a `design`- or `terms`-bound variable, and `x` is not one"
+        ),
         "{err}"
     );
 
@@ -610,6 +611,86 @@ fn a_design_one_hots_text_records_its_columns_and_sizes_its_width() {
         bound.coordinates.designs["X"].columns,
         ["floor", "region=north", "region=south"]
     );
+}
+
+/// TODO-bayesian-regression R1.4: a `terms` model matrix with R's coding,
+/// sized by a `names` dimension over its columns, which also labels the axis.
+#[test]
+fn a_terms_matrix_is_coded_as_model_matrix_and_names_its_columns() {
+    let main = frame(
+        &[1, 2, 3, 4],
+        vec![
+            ("area", reals(&[50.0, 80.0, 120.0, 65.0])),
+            ("region", texts(&["South", "North", "South", "East"])),
+        ],
+    );
+    let program = interface(vec![
+        int("N"),
+        int("K"),
+        Declaration::new(
+            "X",
+            Element::Real,
+            vec![SizeExpr::var("N"), SizeExpr::var("K")],
+            "matrix[N, K]",
+        ),
+    ]);
+    // `area + region + area:region`, the intercept centred out (brms).
+    let mut bindings = config(json!({
+        "N": {"kind": "count", "dataset": "main"},
+        "K": {"kind": "size", "dimension": "coef"},
+        "X": {"kind": "terms", "dataset": "main", "terms": [
+            [{"column": "area"}],
+            [{"column": "region"}],
+            [{"column": "area"}, {"column": "region"}],
+        ]},
+    }));
+    bindings = with(
+        bindings,
+        DIMENSIONS_KEY,
+        json!({"coef": {"kind": "names", "of": "X"}}),
+    );
+    let bound = bind(&program, &bindings, vec![("main", main)]).expect("bind");
+    let names = [
+        "area",
+        "regionNorth",
+        "regionSouth",
+        "area:regionNorth",
+        "area:regionSouth",
+    ];
+    assert_eq!(bound.coordinates.designs["X"].columns, names);
+    assert_eq!(bound.json["K"], json!(5));
+    assert_eq!(bound.json["X"][1], json!([80.0, 1.0, 0.0, 80.0, 0.0]));
+    // `East` is the reference level: its row is the area alone.
+    assert_eq!(bound.json["X"][3], json!([65.0, 0.0, 0.0, 0.0, 0.0]));
+    let coef = bound
+        .coordinates
+        .dimension("coef")
+        .expect("the names dimension");
+    assert_eq!(coef.kind, DimensionKind::Names);
+    assert_eq!(coef.labels, names);
+    // The encoding is stored, and rebuilds the matrix for new rows.
+    let encoding = crate::terms::TermsEncoding::from_json(&bound.coordinates.designs["X"].encoding)
+        .expect("stored encoding");
+    assert_eq!(encoding.columns(), names);
+
+    // A names dimension is a list of labels: nothing indexes into it.
+    let mut bad = config(json!({
+        "N": {"kind": "count", "dataset": "main"},
+        "K": {"kind": "width", "of": "X"},
+        "X": {"kind": "index", "dataset": "main", "column": "region", "dimension": "coef"},
+    }));
+    bad = with(
+        bad,
+        DIMENSIONS_KEY,
+        json!({"coef": {"kind": "names", "of": "N"}}),
+    );
+    let program = interface(vec![int("N"), int("K"), index("X", "N", "K")]);
+    let err = refused(bind(
+        &program,
+        &bad,
+        vec![("main", frame(&[1], vec![("region", texts(&["a"]))]))],
+    ));
+    assert!(err.contains("`N` is not one"), "{err}");
 }
 
 #[test]
