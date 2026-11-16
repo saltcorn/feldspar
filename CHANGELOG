@@ -2,6 +2,109 @@
 
 Changes in reverse chronological order.
 
+## Bayesian regression from a formula, R1.5–R1.8: the generator, the provider, and the editor
+
+The rest of `TODO-bayesian-regression.md` milestone R1. An admin can now pick the
+**bayesian_regression** provider, type `log_radon ~ floor + (1 | county)` into the model
+editor, and fit it with CmdStan. Existing models are untouched. The `stan` provider behaves as
+before: its fit runs through the newly extracted `run_program`, and its state gains one key,
+`cached`. No database change and no migration. The implementation stays clean-room, as R1.1
+states: the generator's constructions are the Stan User's Guide's, each family's
+parameterisation is brms's documented one, and no `make_stancode()` output was used anywhere,
+the golden files included.
+
+- **R1.5: the canonicaliser and the generator** (`sc_bayesreg::canon`, `generate`). A
+  resolved formula becomes a `Structure`, holding only what changes the program text: the
+  family and links; per linear predictor its intercept (centred or not), coefficients (bounded
+  or not) and offset; per block correlated or not and which predictors it feeds; the addition
+  terms (column or constant); bounds on `b` and `constant()` on a distributional parameter. It
+  holds no column name, no count and no prior number, and blocks are sorted by signature. The
+  program is generated from the structure alone at the fixed path `model.stan`, with a header
+  naming the generator version and the structure.
+  - The group-level effects are non-centred, with an LKJ on the Cholesky factor when
+    correlated.
+  - The predictors are centred, and the intercept is recovered in generated quantities.
+  - The priors are data: a code and three numbers, branched on in one `prior_lpdf`.
+  - The likelihood is a loop when there are weights, censoring or truncation.
+  - The data plan binds everything with the host's own kinds (`terms`, `width`, a `values`
+    dimension per grouping column, `index`, `value`).
+
+  Tests:
+  - §5's acceptance cases: `y ~ x + (1 | g)`, `price ~ area + (1 | county)` and
+    `y ~ a + b + c + (1 + a | g)` give byte-identical programs and one `CompileCache::key`, and
+    so does block order. A different family, `||`, a `sigma ~` line, a link or a bound each
+    give another key, and a prior's numbers do not.
+  - 176 golden programs (every R1 family × no blocks / correlated / uncorrelated / an ID shared
+    across `mu` and a dpar × no addition term / `weights` / `cens` / `trunc`, as each family
+    allows). Each is checked against the generator, and with the real `stanc` when a CmdStan is
+    found.
+- **R1.6: `StanProvider::run_program`.** Compile, chains, draws and publish, extracted from
+  `fit_posterior`. The `stan` provider's tests pass unchanged, and so do the five real-CmdStan
+  server tests.
+- **R1.7: `BayesRegProvider`**, registered in `sc-server` beside `stan` and sharing its
+  `Arc<StanProvider>`, so the compile cache, process budget and runner are one.
+  - **Configuration**: `formula`, `family`, `links`, `priors` (only explicit rows), `center`,
+    and the Stan sampler's keys.
+  - **`validate`**: the formula against the dataset's shape, the prior rows against what it
+    creates, then the sampler's settings as the `stan` provider checks them.
+  - **`lower`**: the configuration plus the generated program and every binding. With the
+    frames, the default priors are computed and level rows are matched exactly, over the rows
+    the fit will keep.
+  - **`interface`**: Stan's own declaration parser on the generated program, so every host
+    check runs unchanged.
+  - **`fit_posterior`**: through `run_program`, adding a brms-style table (population-level,
+    group-level per grouping factor, family-specific) computed with the host's R̂ and ESS.
+  - **`program_changed`**: compares the regenerated program's hash with the snapshot's.
+
+  Tests:
+  - Without CmdStan: lowering, binding through the host's `bind_data` (rows with nulls
+    dropped, column names, prior codes and numbers, bounds), the save-time checks, a level row
+    refused at fit, a renamed model's program unchanged, dimension naming.
+  - With CmdStan (`#[ignore]`d like every compiling test; a notice without one): recovery on
+    simulated data for use cases A–E, every true value inside its 90 % interval (radon;
+    varying slopes with their correlation; binomial with `trials()`; Poisson with an offset;
+    `sigma ~ x`; censored Weibull). A renamed copy of case A fits with `cached: true` and the
+    same key, and the summary reads `floor`, `county` and `C07`, not positions.
+- **R1.8: the editor and its API.**
+  - `checkFormula` (`POST /api/model-formula/check`) and `checkPriors`
+    (`POST /api/model-formula/priors`) answer the located mistakes, pasted priors merged
+    (naming the rows they replaced), the prior table (rules from the shape, numbers from the
+    rows), the generated program, the derived bindings and the completions. A bad formula is a
+    successful answer carrying its mistakes.
+  - In the Analytics model editor, `FormulaEditor.tsx` replaces the binding table for this
+    provider:
+    - a Monaco formula editor with column and parameter completion and the mistakes
+      underlined;
+    - the family, link and centring controls;
+    - the prior table of §7: defaults and inherited rows greyed, explicit rows with a ✕,
+      `(all)` rows for whole classes, constraint checks as you type, bounds on `b` only with a
+      *structural* badge, and a "Not matched by the formula" section with delete and
+      retarget;
+    - Preview data, which also turns the rules into numbers;
+    - the derived bindings and Show Stan program, collapsed.
+
+    Pasted priors move into the table on blur and on save. There is no Compile button and no
+    cache state (§5).
+  - The model-provider list reports CmdStan's absence for this provider too.
+  - The generated clients were regenerated.
+  - Docs: `docs/tutorial-bayesian-regression.md` (radon: cases A, B, D), an OPERATIONS.md §9.3
+    note on formula models and the cache, and TECHNICAL_DESIGN §14.2 updated.
+  - Tests: a server test through the router (listed, checked with spans, pasted priors moved,
+    numbers after the data, preview, a save refused by name), and vitest for the editor's
+    prior logic.
+
+**Fixed on the way**: the coefficient names and the data-dependent defaults were computed over
+every row, so a null in a predictor broke the lowering. They are now computed over the rows a
+fit keeps.
+
+**Not in R1, by decision** (recorded in the TODO):
+- Grouping by a combination of columns (`(1 | g1:g2)`, `g1/g2`) parses but is refused at
+  save, with the advice to add a Calculated column. The binder has no two-column index yet.
+- `constant()` is allowed on a distributional parameter without a formula only.
+- A censoring column must be −1/0/1/2 or yes/no; text values are refused by name.
+- A grouping factor's levels are its distinct values; the foreign-key "rows" dimension of
+  TODO §2.8 is not offered yet.
+
 ## Bayesian regression from a formula, R1.1–R1.4: the crate, the parser, families and priors, and the host's half
 
 The first four items of `TODO-bayesian-regression.md` milestone R1. The provider itself, the

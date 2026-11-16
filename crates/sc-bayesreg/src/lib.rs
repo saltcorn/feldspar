@@ -25,8 +25,16 @@
 //! - [`prior`]: the prior menu, its constraints, the defaults and the
 //!   resolution of the rows an admin sets (§3.7).
 //!
-//! The canonicaliser and generator (R1.5), the provider itself (R1.7) and the
-//! editor's API (R1.8) build on these.
+//! - [`canon`]: the resolved formula → the [`Structure`] that alone decides the
+//!   program's text, and the [`DataPlan`] binding each of its data variables
+//!   (§5).
+//! - [`generate`]: the structure → the Stan program (§4).
+//! - [`lower`]: the configuration → the lowered configuration the host binds
+//!   with: the program, the bindings and the prior data.
+//! - [`check`]: what the model editor asks as the admin types.
+//! - [`output`]: the brms-style parameter table of a fit (§6).
+//! - [`BayesRegProvider`]: all of it as a `ModelProvider`, fitting through
+//!   `sc_stan::StanProvider::run_program`.
 //!
 //! ## A clean-room implementation
 //!
@@ -50,16 +58,27 @@
 //! Each module names the source of what it implements, and the generated
 //! program's variable names are this crate's own.
 
+pub mod canon;
+pub mod check;
 pub mod family;
+pub mod generate;
+pub mod lower;
+pub mod output;
 pub mod parse;
 pub mod prior;
+mod provider;
 pub mod resolve;
 
+pub use canon::{Canonical, DataPlan, GENERATOR_VERSION, Structure, canonicalise, data_plan};
+pub use check::{Check, check};
 pub use family::{FAMILIES, Family, Link, Response, family};
+pub use generate::{PROGRAM_PATH, generate};
+pub use lower::{Built, build, keys};
 pub use parse::{Formula, ParseError, ParseErrors, Span, parse_formula, strip_priors};
 pub use prior::{
     ClassKind, ClassSlot, DataScale, Prior, PriorFamily, PriorRow, PriorTable, merge_rows,
 };
+pub use provider::{BayesRegProvider, GENERATED_STORE, lower_config, program_of};
 pub use resolve::{Block, BlockPart, Data, Names, Predictor, Resolved, Settings, resolve};
 
 /// The name the provider is registered and stored under.

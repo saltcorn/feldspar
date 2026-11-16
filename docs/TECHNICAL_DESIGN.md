@@ -10665,9 +10665,10 @@ A provider, `bayesian_regression`, whose configuration is a formula in lme4/brms
 than a Stan program: `price | weights(w) ~ area + region + (1 + area | county)`, with
 `sigma ~ region` on a line of its own. The provider generates the Stan program from the
 formula's **structure** and fits it through `sc-stan`. The plan, the decisions and the
-milestones are `TODO-bayesian-regression.md`. R1.1–R1.4 have landed: the crate, the parser
-and resolver, the families and priors, and the host's half. The generator, the provider and
-the editor (R1.5–R1.8) build on them.
+milestones are `TODO-bayesian-regression.md`. Milestone R1 has landed: the crate, the parser
+and resolver, the families and priors, the host's half, the canonicaliser and generator, the
+provider, and the editor. R2 (more families, non-linear and multivariate formulas, prediction,
+eject to a Stan model) is next.
 
 **A clean-room implementation.** brms is GPL-2, and none of this is derived from its source.
 The crate follows published behaviour only: brms's reference documentation, Bürkner (2017,
@@ -10715,6 +10716,72 @@ follows.
 - The dimension kind `names` (`{kind: "names", of: <terms-bound variable>}`): the matrix's
   column names as a dimension. A `size` of it sizes a coefficient vector, and the axis is
   labelled by the column names. Nothing indexes into it.
+
+**Canonicalisation and the generated program** (`canon`, `generate`). The resolved formula
+becomes a `Structure`: the generator version, the family and every link, per linear predictor
+whether it has an intercept (centred or not), coefficients (bounded or not) and an offset, per
+block whether it is correlated and which predictors it feeds, the response's addition terms
+(each argument a column or one number), and the two structural priors, a bound on `b` and
+`constant()` on a distributional parameter. It holds no column name, no count and no prior
+number. Blocks are sorted by signature, so the order terms are written in does not matter. The
+program is a function of the structure alone, at the fixed path `model.stan`, and starts with
+a header naming the generator version and the structure's JSON. Structurally equal models are
+therefore byte-identical programs with one compile-cache key: `y ~ x + (1 | g)` and
+`log_radon ~ floor + region + (1 + floor | county)` share an executable. That is the point of
+the design, because the cache only helps if equivalent models hit it.
+
+- *Names* are positional: `N`, `Y`; per linear predictor *p* `K_p`, `X_p`, `b_p` and the
+  intercept (`Intercept_c_p` sampled on the centred predictors, `Intercept_p` recovered in
+  generated quantities); per block *k* `N_k`, `J_k`, `M_k_j`/`Z_k_j` per part, `sd_k`, `z_k`,
+  `L_k`, `r_k`, `Cor_k`.
+- *Group-level effects* use the non-centred construction of the Stan User's Guide:
+  `r = (diag_pre_multiply(sd, L) * z)'`, with `L ~ lkj_corr_cholesky(η)` when correlated. A
+  block over several linear predictors (a shared `|ID|`) is one `r` whose columns are split
+  between them.
+- *Priors* are data: a prior is a code and three numbers, and one program function,
+  `prior_lpdf`, branches on the code. Changing `normal(0, 5)` to `student_t(3, 0, 2.5)` never
+  recompiles.
+- *The likelihood* is vectorised, or a loop over the rows when there are weights, censoring or
+  truncation (CDFs for censoring, the mass between the bounds for truncation). Each family's
+  mean parameterisation is brms's documented one.
+- *The data plan* binds every data variable with the host's own kinds: `count`, `column`,
+  `terms` for the model matrices and offsets, `width` for their sizes, a `values` dimension
+  per grouping column (named after the column) with `size` and `index`, `value` for the prior
+  numbers, and the main dataset's nulls policy `drop`. Grouping by a combination of columns
+  (`g1:g2`) is refused in R1, with the advice to add a Calculated column, because no binder
+  kind indexes by two columns yet.
+
+The golden files (`crates/sc-bayesreg/tests/golden/`, one per family × block shape × addition
+term, 176 in all) pin the text, and every one passes the real `stanc` when a CmdStan is
+present. Any change to what the generator emits fails them until `GENERATOR_VERSION` is
+bumped and they are regenerated, so a cached executable cannot silently change meaning.
+
+**The provider** (`BayesRegProvider`). Its configuration is `formula`, `family`, `links`,
+`priors` (only the rows the admin set), `center`, and the Stan sampler's settings, the `stan`
+provider's own keys. `lower` runs the pipeline and answers the configuration plus the bindings,
+the dimensions, the policies, the generated program, the structure, the resolved prior table
+and the layout the parameter table needs. With the frames, the data-dependent defaults are
+computed and a row naming a level is matched exactly. Both use the rows the fit will keep, so
+the numbers shown are the numbers used. `interface` parses the generated program with the
+Stan provider's own declaration parser, so every host check (sizes, types, bounds, labels,
+draw plan) runs on it unchanged. `fit_posterior` hands the program to
+`StanProvider::run_program`, the one implementation of compile → chains → draws → publish,
+which `StanProvider::fit_posterior` now also calls after reading its program from a store. So
+the compile cache, the process budget and the runner are shared, not duplicated. The provider
+adds a brms-style table ("Population-level effects", "Group-level effects ~county",
+"Family-specific parameters") computed with the host's R̂ and ESS, and stores the structure,
+the generator version and the resolved priors in the state. `program_changed` regenerates
+from the formula and compares the program's hash with the snapshot's.
+
+**The editor's API.** `checkFormula` (`POST /api/model-formula/check`) checks a model against
+its dataset's shape. It answers the located mistakes, the pasted prior calls merged into the
+rows (and those they replaced), the prior table with its rules, the generated program and the
+derived bindings. `checkPriors` (`POST /api/model-formula/priors`) answers the same against
+the rows, so the table shows numbers. Neither fails on a bad formula, because the mistakes are
+the answer. The model editor (`FormulaEditor.tsx`) is a Monaco formula editor with completion
+and underlined mistakes, the family and link pickers, the prior table (§7 of the TODO), and,
+collapsed, the bindings and the program. It has no binding table, no Compile button and no
+cache state.
 
 ---
 

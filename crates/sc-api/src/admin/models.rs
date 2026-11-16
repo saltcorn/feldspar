@@ -403,6 +403,36 @@ pub(super) fn register(set: &mut EndpointSet) {
         ])),
     );
 
+    // A formula model as the editor holds it (TODO-bayesian-regression §7):
+    // checked against the dataset's shape, with nothing saved. A formula with
+    // mistakes is the answer the editor is waiting for, so they are fields of
+    // a successful response — `errors` located for an underline, `problems`
+    // the sentences about no one place — beside everything that could still
+    // be worked out: the prior table (its data-dependent defaults as rules),
+    // the generated program and the derived bindings.
+    set.register(
+        Endpoint::new(
+            ids::CHECK_FORMULA,
+            Method::Post,
+            api().lit("model-formula").lit("check"),
+        )
+        .input(model_input_schema())
+        .output(formula_check_schema()),
+    );
+
+    // The prior table against the dataset's rows (§3.7): the defaults
+    // computed from the response, and a row naming a level matched against
+    // the levels there are. What the table shows after a data preview.
+    set.register(
+        Endpoint::new(
+            ids::CHECK_PRIORS,
+            Method::Post,
+            api().lit("model-formula").lit("priors"),
+        )
+        .input(model_input_schema())
+        .output(formula_check_schema()),
+    );
+
     // Warm the compile cache without fitting (§13). It waits for the compile —
     // a minute the first time, nothing after — and answers the cache key, so a
     // compile error is shown where the button was pressed.
@@ -603,6 +633,35 @@ fn model_schema() -> TypeSchema {
 }
 
 /// What a `saveModel` sends. The id is what says create or replace.
+/// What `checkFormula` and `checkPriors` answer.
+fn formula_check_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        // `{message, span: {start, end}, line, column, end_column}`.
+        StructField::new("errors", TypeSchema::array(TypeSchema::json())),
+        StructField::new(
+            "problems",
+            TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+        ),
+        StructField::new(
+            "notes",
+            TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+        ),
+        StructField::new("formula", TypeSchema::text()),
+        StructField::new("priors", TypeSchema::array(TypeSchema::json())),
+        StructField::new(
+            "replaced",
+            TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
+        ),
+        StructField::new("pasted", TypeSchema::int()),
+        StructField::new("table", TypeSchema::optional(TypeSchema::json())),
+        StructField::new("from_data", TypeSchema::bool()),
+        StructField::new("program", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("structure", TypeSchema::optional(TypeSchema::json())),
+        StructField::new("data", TypeSchema::optional(TypeSchema::json())),
+        StructField::new("completions", TypeSchema::json()),
+    ])
+}
+
 fn model_input_schema() -> TypeSchema {
     TypeSchema::struct_of([
         StructField::new("id", TypeSchema::optional(TypeSchema::uuid())),

@@ -419,6 +419,12 @@ pub async fn keep_row(
 fn base_registry(stan: &Arc<StanProvider>) -> Result<ModelRegistry> {
     let mut registry = builtin_registry()?;
     registry.register(Arc::clone(stan) as Arc<dyn ModelProvider>)?;
+    // A formula's generated program fits through the same Stan provider: its
+    // compile cache, its process budget, its runner
+    // (TODO-bayesian-regression R1.7).
+    registry.register(
+        Arc::new(sc_bayesreg::BayesRegProvider::new(Arc::clone(stan))) as Arc<dyn ModelProvider>,
+    )?;
     Ok(registry)
 }
 

@@ -2075,6 +2075,23 @@ Nothing prunes the cache — old entries are only disk. Deleting the directory, 
 it, is always safe while no compile is running: the next fit recompiles. A compile interrupted
 by a restart leaves a `*.building-*` directory that the next boot removes.
 
+**Formula models** (the `bayesian_regression` provider, `y ~ x + (1 | g)`) generate their
+program, and the program depends only on the model's **structure**: the family and links,
+which linear predictors there are, whether each has an intercept and an offset, how many
+group-level blocks and whether each is correlated, the response's addition terms. Column
+names, the number of predictors, groups and levels, and every prior's numbers are data. So
+`price ~ area + (1 | county)` and `log_radon ~ floor + region + (1 + floor | county)` are one
+executable, and a node compiles each structure once, whoever writes it and whatever their
+columns are called. On a typical installation that is a handful of entries in total. The
+generated program's header names the generator version and the structure, so an entry read
+off disk says what it is. A feldspar upgrade that changes the generator (its version is in
+that header) makes a new set of entries, compiled again on each structure's first fit after
+the upgrade. Warming them ahead of time (`feldspar stan warm`, compiling the commonest
+structures at boot) is planned (TODO-bayesian-regression R2.5); until then the first fit of a
+structure on a fresh node or after such an upgrade waits its minute in **Compiling**. The
+formula editor has no Compile button and shows no cache state, on purpose: whether a structure
+happens to be compiled must not steer which model an admin writes.
+
 ### 9.4 How big a fit can get
 
 Four ceilings, each a server flag because each is about this host's memory, and each refused

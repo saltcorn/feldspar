@@ -11,20 +11,26 @@ rust-version.workspace = true
 autotests = false
 
 [dependencies]
+async-trait.workspace = true
 sc-error.workspace = true
 # The host's half: `ModelProvider::lower`, the `terms` binding kind and its
 # model-matrix coding, `DatasetShape` and `Frame`. The formula's terms are
 # `sc_model::terms::VarExpr`s, so what this crate parses is exactly what the
 # binder evaluates.
 sc-model.workspace = true
-# The Stan machinery the provider will fit through (R1.6–R1.7): the compile
-# cache, the runner and `StanProvider`, shared rather than duplicated. Layer 6,
-# above `sc-stan`.
+# The Stan machinery the provider fits through: `StanProvider::run_program`
+# (its compile cache, runner and process budget, shared rather than
+# duplicated) and the declaration parser `interface` reads the generated
+# program with. Layer 6, above `sc-stan`.
 sc-stan.workspace = true
 # `Attrs`: the provider's configuration.
 sc-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+sc-files.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

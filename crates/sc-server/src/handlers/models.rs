@@ -92,7 +92,8 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                         "cancellable": kind.cancellable,
                         // Only a provider this server knows how to ask has an
                         // availability; CmdStan's is found at boot (Stan §20).
-                        "unavailable": (kind.name == sc_stan::STAN_PROVIDER)
+                        "unavailable": (kind.name == sc_stan::STAN_PROVIDER
+                            || kind.name == sc_bayesreg::PROVIDER)
                             .then(|| models.stan().unavailable().map(|why| {
                                 format!("CmdStan was not found: {why}")
                             }))
@@ -666,6 +667,66 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     "reasons": serde_json::to_value(&suggestions.reasons)
                         .unwrap_or(Json::Null),
                 })))
+            }
+        }
+    });
+
+    // TODO-bayesian-regression §7: the formula editor's two questions. The
+    // check is `sc_bayesreg::check`, pure; what is here is reading the
+    // dataset through the row layer — its first rows for the shape while the
+    // admin types, every row (as a fit reads them) for the prior table's
+    // numbers after a data preview.
+    reg.handle(sc_api::handler_ids::CHECK_FORMULA, {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let models = models_of(&apps)?;
+                let model = model_from_body(&catalog, rows::require_object(&ctx.body)?).await?;
+                let frame = models
+                    .source()
+                    .read(
+                        &model.dataset,
+                        &sc_model::Read::all(models.max_rows()).first(DATASET_PREVIEW_ROWS),
+                    )
+                    .await?;
+                let shape = sc_model::DatasetShape::of_frame(&model.dataset.table, &frame);
+                let check = sc_bayesreg::check(
+                    &model.configuration,
+                    sc_model::LowerInput::Shape {
+                        model: &model,
+                        shape: Some(&shape),
+                    },
+                );
+                Ok(HandlerResponse::ok(serde_json::to_value(&check).map_err(
+                    |e| Error::msg(format!("the formula check: {e}")),
+                )?))
+            }
+        }
+    });
+
+    reg.handle(sc_api::handler_ids::CHECK_PRIORS, {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let models = models_of(&apps)?;
+                let model = model_from_body(&catalog, rows::require_object(&ctx.body)?).await?;
+                let datasets = crate::posterior::posterior_datasets(&models, &model).await?;
+                let check = sc_bayesreg::check(
+                    &model.configuration,
+                    sc_model::LowerInput::Frames {
+                        model: &model,
+                        datasets: &datasets,
+                    },
+                );
+                Ok(HandlerResponse::ok(serde_json::to_value(&check).map_err(
+                    |e| Error::msg(format!("the prior check: {e}")),
+                )?))
             }
         }
     });

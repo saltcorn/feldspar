@@ -40,6 +40,8 @@ import { routeHash } from "../router";
 import { DatasetPicker, type DatasetItem } from "./DatasetPicker";
 import { FitRunning } from "./FitRunning";
 import { FitView } from "./FitView";
+import { FormulaSection } from "./FormulaEditor";
+import { FORMULA_KEYS, FORMULA_PROVIDER, writeRows, type FormulaCheck } from "./formula";
 import { BindingSection, type BindingState } from "./ModelBindings";
 import {
   BINDINGS_KEY,
@@ -154,8 +156,12 @@ export function ModelEditor({
   const datasetJson = JSON.stringify(dataset);
   const mainDataset = datasets.find((d) => d.id === datasetId) ?? null;
   const bindsData = Boolean(providers.find((p) => p.name === provider)?.binds_data);
+  // A formula provider binds data too, but derives its bindings from the
+  // formula (TODO-bayesian-regression §7): it has no binding table.
+  const formulaProvider = provider === FORMULA_PROVIDER;
+  const bindingTable = bindsData && !formulaProvider;
   const configJson = JSON.stringify(
-    configurationOf(specOf(providers, provider), config, bindsData ? binding : null),
+    configurationOf(specOf(providers, provider), config, bindingTable ? binding : null),
   );
 
   // --- loading ---------------------------------------------------------------
@@ -320,7 +326,9 @@ export function ModelEditor({
   // A binding provider's own controls edit these settings; the rest (the
   // sampler's, the runs store) are rendered as settings like any provider's.
   const settingsSpec = (chosen?.config_spec ?? []).filter(
-    (field) => !bindsData || !BINDING_FORM_KEYS.includes(field.name),
+    (field) =>
+      (!bindsData || !BINDING_FORM_KEYS.includes(field.name)) &&
+      (!formulaProvider || !FORMULA_KEYS.includes(field.name)),
   );
   // The fit on the screen: the one chosen, else the active one, else the
   // newest that fitted.
@@ -337,7 +345,7 @@ export function ModelEditor({
     provider,
     dataset,
     related: bindsData ? relatedBody(binding.related) : [],
-    configuration: configurationOf(specOf(providers, provider), config, bindsData ? binding : null),
+    configuration: configurationOf(specOf(providers, provider), config, bindingTable ? binding : null),
     hyperparameters: bindsData ? {} : hyperSpace,
     split: bindsData
       ? DEFAULT_SPLIT
@@ -353,7 +361,20 @@ export function ModelEditor({
   /** Save, and answer the model's id — the same path Fit takes. `over`
    * replaces parts of the form's body, for a change made in the same breath. */
   const save = async (over: Partial<ReturnType<typeof body>> = {}): Promise<string> => {
-    const saved = await api.saveModel({ ...body(), ...over });
+    let current = { ...body(), ...over };
+    // Prior calls pasted into a formula move into the prior table on save,
+    // as they do when the field is committed (§3.7).
+    if (formulaProvider) {
+      const answer = (await api.checkFormula(current as never)) as unknown as FormulaCheck;
+      if (answer.pasted > 0) {
+        setConfig((c) => ({ ...c, formula: answer.formula, priors: writeRows(answer.priors) }));
+        current = {
+          ...current,
+          configuration: { ...current.configuration, formula: answer.formula, priors: answer.priors },
+        };
+      }
+    }
+    const saved = await api.saveModel(current);
     setId(saved.id);
     setModel(saved);
     setError(saved.error ?? null);
@@ -643,7 +664,14 @@ export function ModelEditor({
           </Card>
 
           {/* --- the program and its data (a binding provider) --------------- */}
-          {bindsData && chosen && (
+          {formulaProvider && chosen && (
+            <FormulaSection
+              config={config}
+              setConfig={(key, value) => setConfig((c) => ({ ...c, [key]: value }))}
+              modelBody={body}
+            />
+          )}
+          {bindingTable && chosen && (
             <BindingSection
               spec={chosen.config_spec}
               config={config}

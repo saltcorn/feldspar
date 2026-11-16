@@ -48,6 +48,9 @@ impl Default for Settings {
 /// What is known of the dataset.
 #[derive(Debug, Clone, Copy)]
 pub enum Data<'a> {
+    /// Nothing: no column is checked (a model listed before anything has read
+    /// its dataset).
+    Nothing,
     /// The column names only.
     Names(&'a [String]),
     /// The shape: names and types.
@@ -59,6 +62,7 @@ pub enum Data<'a> {
 impl Data<'_> {
     fn has(&self, column: &str) -> bool {
         match self {
+            Data::Nothing => true,
             Data::Names(n) => n.iter().any(|c| c == column),
             Data::Shape(s) => s.column(column).is_some(),
             Data::Frame(f) => f.column(column).is_some(),
@@ -67,6 +71,7 @@ impl Data<'_> {
 
     fn names(&self) -> Vec<String> {
         match self {
+            Data::Nothing => Vec::new(),
             Data::Names(n) => n.to_vec(),
             Data::Shape(s) => s.columns.iter().map(|c| c.name.clone()).collect(),
             Data::Frame(f) => f.columns.iter().map(|(n, _)| n.clone()).collect(),
@@ -75,14 +80,14 @@ impl Data<'_> {
 
     fn ty(&self, column: &str) -> Option<ColumnType> {
         match self {
-            Data::Names(_) => None,
+            Data::Nothing | Data::Names(_) => None,
             Data::Shape(s) => s.column(column),
             Data::Frame(f) => f.column(column).map(sc_model::Column::kind),
         }
     }
 
     fn typed(&self) -> bool {
-        !matches!(self, Data::Names(_))
+        !matches!(self, Data::Nothing | Data::Names(_))
     }
 }
 
@@ -263,10 +268,29 @@ pub fn resolve(
     if !errors.is_empty() {
         return Err(ParseErrors(errors));
     }
+    // `se(s, sigma = FALSE)`: the known SEs are the whole residual SD, so
+    // there is no `sigma` to estimate (`?addition-terms`).
+    let no_sigma = aterm_list
+        .iter()
+        .any(|a| matches!(a, ATerm::Se { sigma: false, .. }));
+    if no_sigma {
+        if let Some(line) = dpar_lines.get("sigma") {
+            errors.push(
+                problem(
+                    "`se(…, sigma = FALSE)` takes the residual SD as known, so `sigma` cannot \
+                     have a formula; write `se(…, sigma = TRUE)` to estimate one as well",
+                    Some(line.lhs_span),
+                )
+                .locate(text),
+            );
+            return Err(ParseErrors(errors));
+        }
+    }
     let scalars = family
         .dpars
         .iter()
         .filter(|d| !dpar_lines.contains_key(d.name))
+        .filter(|d| !(no_sigma && d.name == "sigma"))
         .map(|d| d.name)
         .collect();
     Ok(Resolved {
@@ -408,6 +432,59 @@ fn templates(spec: &TermsSpec, data: &Data<'_>) -> Vec<CoefTemplate> {
 }
 
 impl Resolved {
+    /// Every column the formula reads: the response, its addition terms, the
+    /// terms and offsets of every linear predictor, and the grouping factors.
+    pub fn columns(&self) -> Vec<String> {
+        let mut out: Vec<String> = vec![self.response.clone()];
+        let mut add = |c: &str| {
+            if !out.iter().any(|o| o == c) {
+                out.push(c.to_owned());
+            }
+        };
+        for a in &self.aterms {
+            for c in a.columns() {
+                add(c);
+            }
+        }
+        for p in &self.predictors {
+            for v in p.terms.terms.iter().flatten().chain(&p.offsets) {
+                for c in v.columns() {
+                    add(c);
+                }
+            }
+        }
+        for b in &self.blocks {
+            for f in &b.factors {
+                add(f);
+            }
+            for part in &b.parts {
+                for v in part.terms.terms.iter().flatten() {
+                    for c in v.columns() {
+                        add(c);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The rows of `frame` a fit keeps: those with no null in any column the
+    /// formula reads (the main dataset's `nulls` policy is `drop`, §2.9).
+    pub fn kept(&self, frame: &Frame) -> sc_error::Result<Frame> {
+        let read: Vec<&sc_model::Column> = self
+            .columns()
+            .iter()
+            .filter_map(|c| frame.column(c))
+            .collect();
+        let rows: Vec<usize> = (0..frame.rows)
+            .filter(|&i| read.iter().all(|c| !c.is_null_at(i)))
+            .collect();
+        if rows.len() == frame.rows {
+            return Ok(frame.clone());
+        }
+        frame.take_rows(&rows)
+    }
+
     /// The linear predictor of `dpar`.
     pub fn predictor(&self, dpar: &str) -> Option<&Predictor> {
         self.predictors.iter().find(|p| p.dpar == dpar)
@@ -416,6 +493,8 @@ impl Resolved {
     /// The coefficient names of every linear predictor and block part over
     /// `frame`: the model matrices' columns, with the levels the rows have.
     pub fn names(&self, frame: &Frame) -> sc_error::Result<Names> {
+        let kept = self.kept(frame)?;
+        let frame = &kept;
         let mut names = Names::default();
         for p in &self.predictors {
             let (_, m) = fit_terms(&p.terms, frame).map_err(|e| {
@@ -553,6 +632,11 @@ impl Resolved {
         if binary {
             return DataScale::default();
         }
+        // Over the rows a fit keeps.
+        let Ok(kept) = self.kept(frame) else {
+            return DataScale::default();
+        };
+        let frame = &kept;
         let Some(column) = frame.column(&self.response) else {
             return DataScale::default();
         };

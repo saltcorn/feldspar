@@ -242,6 +242,14 @@ pub const PREDICT_ROWS: HandlerId<AdminOnly> = HandlerId::new("predictRows");
 pub const GET_PROGRAM_INTERFACE: HandlerId<AdminOnly> = HandlerId::new("getProgramInterface");
 pub const PREVIEW_MODEL_DATA: HandlerId<AdminOnly> = HandlerId::new("previewModelData");
 pub const SUGGEST_BINDINGS: HandlerId<AdminOnly> = HandlerId::new("suggestBindings");
+/// A `bayesian_regression` model's formula checked as the admin types it:
+/// its mistakes located, the pasted priors lifted into rows, the prior table,
+/// the generated program and the derived bindings (TODO-bayesian-regression
+/// §7, R1.8).
+pub const CHECK_FORMULA: HandlerId<AdminOnly> = HandlerId::new("checkFormula");
+/// The same model's prior table against its rows: the data-dependent defaults
+/// as numbers, and the level coefficients matched exactly.
+pub const CHECK_PRIORS: HandlerId<AdminOnly> = HandlerId::new("checkPriors");
 pub const COMPILE_MODEL: HandlerId<AdminOnly> = HandlerId::new("compileModel");
 pub const CANCEL_MODEL_FIT: HandlerId<AdminOnly> = HandlerId::new("cancelModelFit");
 pub const GET_MODEL_DRAWS: HandlerId<AdminOnly> = HandlerId::new("getModelDraws");

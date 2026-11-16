@@ -395,6 +395,10 @@ export type PreviewModelDataRequest = { id?: string | null; name: string; descri
 export type PreviewModelDataResponse = { variables: Array<unknown>; report?: unknown | null; errors: Array<string> };
 export type SuggestBindingsRequest = { id?: string | null; name: string; description?: string | null; provider: string; dataset: unknown; related?: unknown | null; configuration?: unknown | null; hyperparameters?: unknown | null; split?: unknown | null; attributes?: unknown | null };
 export type SuggestBindingsResponse = { bindings: unknown; reasons: unknown };
+export type CheckFormulaRequest = { id?: string | null; name: string; description?: string | null; provider: string; dataset: unknown; related?: unknown | null; configuration?: unknown | null; hyperparameters?: unknown | null; split?: unknown | null; attributes?: unknown | null };
+export type CheckFormulaResponse = { errors: Array<unknown>; problems?: Array<string> | null; notes?: Array<string> | null; formula: string; priors: Array<unknown>; replaced?: Array<unknown> | null; pasted: number; table?: unknown | null; from_data: boolean; program?: string | null; structure?: unknown | null; data?: unknown | null; completions: unknown };
+export type CheckPriorsRequest = { id?: string | null; name: string; description?: string | null; provider: string; dataset: unknown; related?: unknown | null; configuration?: unknown | null; hyperparameters?: unknown | null; split?: unknown | null; attributes?: unknown | null };
+export type CheckPriorsResponse = { errors: Array<unknown>; problems?: Array<string> | null; notes?: Array<string> | null; formula: string; priors: Array<unknown>; replaced?: Array<unknown> | null; pasted: number; table?: unknown | null; from_data: boolean; program?: string | null; structure?: unknown | null; data?: unknown | null; completions: unknown };
 export type CompileModelResponse = { key: string; cached: boolean; cmdstan: string };
 export type CancelModelFitResponse = { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string>; dataset_changed?: boolean | null };
 export type GetModelDrawsQuery = { variable?: string; elements?: string; chains?: string; warmup?: boolean; thin?: number };
@@ -839,6 +843,8 @@ export interface ApiClient {
   getProgramInterface(query?: GetProgramInterfaceQuery): Promise<GetProgramInterfaceResponse>;
   previewModelData(body: PreviewModelDataRequest): Promise<PreviewModelDataResponse>;
   suggestBindings(body: SuggestBindingsRequest): Promise<SuggestBindingsResponse>;
+  checkFormula(body: CheckFormulaRequest): Promise<CheckFormulaResponse>;
+  checkPriors(body: CheckPriorsRequest): Promise<CheckPriorsResponse>;
   compileModel(id: string): Promise<CompileModelResponse>;
   cancelModelFit(id: string): Promise<CancelModelFitResponse>;
   getModelDraws(id: string, query?: GetModelDrawsQuery): Promise<GetModelDrawsResponse>;
@@ -3256,6 +3262,24 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("suggestBindings", res);
       return (await res.json()) as SuggestBindingsResponse;
+    },
+    async checkFormula(body) {
+      const res = await doFetch(`${baseUrl}/api/model-formula/check`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("checkFormula", res);
+      return (await res.json()) as CheckFormulaResponse;
+    },
+    async checkPriors(body) {
+      const res = await doFetch(`${baseUrl}/api/model-formula/priors`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("checkPriors", res);
+      return (await res.json()) as CheckPriorsResponse;
     },
     async compileModel(id) {
       const res = await doFetch(`${baseUrl}/api/models/${encodeURIComponent(id)}/compile`, {
