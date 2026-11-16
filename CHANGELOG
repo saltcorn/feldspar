@@ -2,6 +2,31 @@
 
 Changes in reverse chronological order.
 
+## Test suite green again after the analytics, Bayesian-regression and agent-form changes
+
+Fixes to tests and docs only. The one product change is in the agent form: its labels,
+help texts and validation messages now reach the translation catalogue. No database or API
+change.
+
+- **Analytics switched back on.** `the_analytics_framework_is_not_offered_while_switched_off`
+  (`sc-server/src/apps.rs`) is now `the_analytics_framework_is_offered_while_switched_on`, and the
+  two Analytics tests in `ui/admin/src/nav.test.ts` follow `ANALYTICS_IN_SIDEBAR`. Each test now
+  checks that the framework or sidebar entry is there exactly when its flag is on, so flipping a
+  flag no longer breaks a test.
+- **Crate table.** `docs/TECHNICAL_DESIGN.md` §2 now lists the new `sc-bayesreg` dependency of
+  `sc-server` and `sc-cli`, in both the table and the diagram (`repo_hygiene`).
+- **Agent screens' i18n.** `AgentForm.tsx` and `AgentHeader.tsx` passed table fields such as
+  `t(item.label)` to `t()`. The extractor cannot read those (`i18n` test), so the strings were
+  never put in the catalogue. In `agentForm.ts` (`ROLES`, `ANSWER_SETTINGS`, `LIMITS`,
+  `CREDITS`, `AGENT_TABS`, `missingRequired`) and `agentNav.ts` (`AGENT_AREA_TABS`,
+  `AGENT_SECTIONS`), each label, help text and message is now a function of the translator,
+  `(t) => t("…")`, the pattern `createButtons(t)` already uses.
+  `docs_agents::the_tutorial_names_the_agent_form_roles_and_budgets` reads the labels in that
+  new form.
+- **French catalogue.** "dewordify" reworded the locale help text and the Saltcorn UI pitch, so
+  `locale_negotiation` now expects their new translations ("Balises BCP-47 …", "Vues et pages
+  …").
+
 ## The Stan provider is held back from the new-model picker
 
 The hand-written `stan` provider is not easy enough to use for the first release of the

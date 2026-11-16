@@ -184,7 +184,8 @@ fn the_tutorial_names_the_agent_form_roles_and_budgets() {
     let tutorial = tutorial();
     let labels: Vec<String> = form
         .lines()
-        .filter_map(|line| line.trim().strip_prefix("label: \""))
+        // Each label is a function of the translator: `label: (t: Tr) => t("…")`.
+        .filter_map(|line| line.trim().strip_prefix("label: (t: Tr) => t(\""))
         .filter_map(|rest| rest.split('"').next().map(str::to_owned))
         .collect();
     assert!(

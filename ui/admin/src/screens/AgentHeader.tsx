@@ -39,7 +39,7 @@ export function AgentAreaTabs({ active }: { active: AgentAreaTab }) {
             aria-current={tab.id === active ? "page" : undefined}
             href={tab.href}
           >
-            {t(tab.label)}
+            {tab.label(t)}
           </a>
         </li>
       ))}
@@ -59,12 +59,12 @@ export function AgentHeader({
   actions?: ReactNode;
 }) {
   const { t } = useT();
-  const screen = AGENT_SECTIONS.find((s) => s.id === section)?.label ?? "";
+  const screen = AGENT_SECTIONS.find((s) => s.id === section)?.label(t) ?? "";
   return (
     <PageHeader
       pretitle={t("Agent")}
       title={agent}
-      docTitle={`${agent} · ${t(screen)}`}
+      docTitle={`${agent} · ${screen}`}
       actions={
         <>
           <Button variant="outline-secondary" onClick={() => navigate("/agents")}>
@@ -136,7 +136,7 @@ export function AgentTabs({
               aria-disabled={href ? undefined : true}
               href={href ?? undefined}
             >
-              {t(section.label)}
+              {section.label(t)}
             </a>
           </li>
         );

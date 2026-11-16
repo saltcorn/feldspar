@@ -286,6 +286,8 @@ graph TD
   stan --> model
   bayesreg["sc-bayesreg"] --> stan
   bayesreg --> model
+  cli --> bayesreg
+  server --> bayesreg
   coreact --> model
   server --> stream["sc-stream"]
   server --> live["sc-live"]
@@ -393,8 +395,8 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-agent-builtins` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-proc` `sc-query` `sc-repomap` `sc-types` |
 | `sc-backup` | `sc-access` `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-net` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
 | `sc-sync` | `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-mcp` `sc-model` `sc-module` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-http` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-sync` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-sync` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-bayesreg` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-http` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-sync` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-bayesreg` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-sync` `sc-types` `sc-viewpattern` `sc-workflow` |
 
 Four things the graph is worth reading for:
 

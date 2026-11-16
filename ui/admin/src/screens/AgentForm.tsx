@@ -51,6 +51,7 @@ import {
   agentTabHref,
   chargesCredits,
   missingRequired,
+  type Tr,
   readEffort,
   readNumbers,
   readRoles,
@@ -222,7 +223,7 @@ export function AgentForm({ agentId, tab: rawTab }: { agentId?: string; tab?: st
     e.preventDefault();
     const missing = missingRequired(name, provider);
     if (missing) {
-      setError(t(missing.message));
+      setError(missing.message(t));
       setProblemTab(missing.tab);
       navigate(agentTabHref(agentId, missing.tab).slice(1));
       return;
@@ -286,7 +287,7 @@ export function AgentForm({ agentId, tab: rawTab }: { agentId?: string; tab?: st
 
   // The number boxes of one group, three or two to a row.
   const numberBoxes = (
-    attrs: readonly { key: string; label: string; help: string }[],
+    attrs: readonly { key: string; label: (t: Tr) => string; help: (t: Tr) => string }[],
     md: number,
   ) => (
     <Row>
@@ -350,7 +351,7 @@ export function AgentForm({ agentId, tab: rawTab }: { agentId?: string; tab?: st
                 aria-current={item.id === tab ? "page" : undefined}
                 href={agentTabHref(agentId, item.id)}
               >
-                {t(item.label)}
+                {item.label(t)}
                 {item.id === "traits" && enabled.length > 0 && (
                   <span className="badge bg-secondary-lt ms-2">{enabled.length}</span>
                 )}
@@ -457,8 +458,8 @@ export function AgentForm({ agentId, tab: rawTab }: { agentId?: string; tab?: st
                 <RolePicker
                   key={role.key}
                   id={`agent-role-${role.key}`}
-                  label={t(role.label)}
-                  help={t(role.help)}
+                  label={role.label(t)}
+                  help={role.help(t)}
                   providers={providers}
                   value={modelRoles[role.key]}
                   onChange={(value) => setModelRoles((r) => ({ ...r, [role.key]: value }))}
@@ -696,14 +697,14 @@ function NumberBox({
   value,
   onChange,
 }: {
-  attr: { key: string; label: string; help: string };
+  attr: { key: string; label: (t: Tr) => string; help: (t: Tr) => string };
   value: string;
   onChange: (value: string) => void;
 }) {
   const { t } = useT();
   return (
     <Form.Group className="mb-3" controlId={`agent-${attr.key}`}>
-      <Form.Label>{t(attr.label)}</Form.Label>
+      <Form.Label>{attr.label(t)}</Form.Label>
       <Form.Control
         type="number"
         step="any"
@@ -711,7 +712,7 @@ function NumberBox({
         value={value}
         onChange={(e) => onChange(e.target.value)}
       />
-      <Form.Text muted>{t(attr.help)}</Form.Text>
+      <Form.Text muted>{attr.help(t)}</Form.Text>
     </Form.Group>
   );
 }

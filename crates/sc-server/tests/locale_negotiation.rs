@@ -512,7 +512,7 @@ async fn what_the_server_says_is_said_in_the_request_s_language() -> sc_error::R
     assert!(
         enabled["help"]
             .as_str()
-            .is_some_and(|h| h.starts_with("Étiquettes BCP-47")),
+            .is_some_and(|h| h.starts_with("Balises BCP-47")),
         "the help text hangs off ConfigDef rather than FormField, and is \
          translated where it is serialised: {}",
         enabled["help"]
@@ -541,7 +541,7 @@ async fn what_the_server_says_is_said_in_the_request_s_language() -> sc_error::R
     assert!(
         saltcorn_ui["description"]
             .as_str()
-            .is_some_and(|d| d.starts_with("Des vues et des pages")),
+            .is_some_and(|d| d.starts_with("Vues et pages")),
         "a framework's one-line pitch is a declared string and is translated \
          at the edge: {}",
         saltcorn_ui["description"]
