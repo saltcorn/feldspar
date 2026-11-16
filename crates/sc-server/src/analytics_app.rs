@@ -128,7 +128,7 @@ pub(crate) fn check_app_gates(handlers: &crate::handler::HandlerRegistry) -> Res
 /// yet. The framework, its routes and its tests stay; turn this back on (with
 /// the admin sidebar's `ANALYTICS_IN_SIDEBAR`) to offer it again. A test that
 /// needs it calls [`install_analytics_framework`] itself.
-pub const ANALYTICS_FRAMEWORK_ENABLED: bool = false;
+pub const ANALYTICS_FRAMEWORK_ENABLED: bool = true;
 
 /// Install the Analytics framework into `sc-app`'s registry. Idempotent.
 pub fn install_analytics_framework() -> Result<()> {

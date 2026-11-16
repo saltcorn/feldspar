@@ -234,7 +234,7 @@ export type NavGroup = "Data" | "Automation" | "Insights" | "Administration";
  * bundle and the old `#/models/…` redirects into it are unchanged; set this to
  * `true` to bring back the entry and its Insights heading (the server's
  * `ANALYTICS_FRAMEWORK_ENABLED` turns the application framework back on). */
-export const ANALYTICS_IN_SIDEBAR: boolean = false;
+export const ANALYTICS_IN_SIDEBAR: boolean = true;
 
 /** The sidebar entry for the Analytics UI, kept for when it returns. */
 export const ANALYTICS_NAV_ITEM: NavItem = {

@@ -2,6 +2,10 @@
 
 Changes in reverse chronological order.
 
+## Reenable analytics links and applications
+
+Reversing directions below by which they were disabled
+
 ## Releases: a failed release is finished by running it again; revoking a release
 
 A release that failed part-way through its uploads can now be finished under the same version
