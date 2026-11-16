@@ -419,6 +419,10 @@ fn model_provider_schema() -> TypeSchema {
         // Whether a running fit can be cancelled — what the instance screen
         // renders Cancel for.
         StructField::new("cancellable", TypeSchema::bool()),
+        // Whether the picker offers it for a new model. An unlisted provider
+        // still fits, edits and saves the models that already name it; it is
+        // left out only of the choice for a new one.
+        StructField::new("listed", TypeSchema::bool()),
         // Why it cannot fit anything on this server, when it cannot: "CmdStan
         // was not found: …". Listed rather than hidden (Stan TODO §4).
         StructField::new("unavailable", TypeSchema::optional(TypeSchema::text())),

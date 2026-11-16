@@ -90,6 +90,9 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                         "standardise": kind.standardise,
                         "binds_data": kind.binds_data,
                         "cancellable": kind.cancellable,
+                        // Whether the new-model picker offers it (see
+                        // `UNLISTED_PROVIDERS`).
+                        "listed": !UNLISTED_PROVIDERS.contains(&kind.name.as_str()),
                         // Only a provider this server knows how to ask has an
                         // availability; CmdStan's is found at boot (Stan §20).
                         "unavailable": (kind.name == sc_stan::STAN_PROVIDER
@@ -1031,6 +1034,14 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
 
 /// The ceiling on a preview's `limit` — see [`DATASET_PREVIEW_ROWS`].
 const DATASET_PREVIEW_MAX: u64 = 500;
+
+/// Providers registered and working but not offered for a new model. The
+/// hand-written Stan provider is held back from the first release of the
+/// analytics app as not friendly enough yet: it stays registered, because a
+/// formula model (`sc_bayesreg`) fits through it and a model that already
+/// names it must keep fitting, editing and saving. Remove it from this list
+/// to offer it again.
+pub(crate) const UNLISTED_PROVIDERS: &[&str] = &[sc_stan::STAN_PROVIDER];
 
 /// A required, non-empty query parameter.
 fn required_query<W>(ctx: &crate::handler::HandlerCtx<W>, name: &str) -> Result<String> {

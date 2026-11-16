@@ -30,6 +30,7 @@ import {
   headlineMetric,
   instanceLabel,
   metricRows,
+  offered,
   orderInstances,
   outcomeSummary,
   parseGridValue,
@@ -365,3 +366,21 @@ describe("asking a fit about a row", () => {
 function field(name: string, type: string) {
   return { name, label: name, type, required: false, options: [], multiline: false };
 }
+
+describe("offered", () => {
+  const stan = { name: "stan", listed: false };
+  const formula = { name: "bayesian_regression", listed: true };
+
+  it("leaves an unlisted provider out of a new model's picker", () => {
+    expect(offered(stan, "", null)).toBe(false);
+    expect(offered(formula, "", null)).toBe(true);
+  });
+
+  it("keeps an unlisted provider for the model that already uses it", () => {
+    const saved = { provider: "stan" };
+    expect(offered(stan, "stan", saved)).toBe(true);
+    // Switching away and back must not lose the option.
+    expect(offered(stan, "linear-regression", saved)).toBe(true);
+    expect(offered(stan, "linear-regression", { provider: "bayesian_regression" })).toBe(false);
+  });
+});

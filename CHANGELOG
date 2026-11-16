@@ -2,6 +2,27 @@
 
 Changes in reverse chronological order.
 
+## The Stan provider is held back from the new-model picker
+
+The hand-written `stan` provider is not easy enough to use for the first release of the
+analytics app, so the model editor no longer offers it for a new model. Nothing is deleted.
+The provider stays registered, because `bayesian_regression` fits through it and existing Stan
+models must keep working. A model that already uses Stan still shows it in the picker, and it
+fits, edits and saves as before. Running applications are unaffected. There is no database
+change.
+
+- `listModelProviders` returns a new `listed` field for each provider. It is false for every
+  provider in `UNLISTED_PROVIDERS` (`crates/sc-server/src/handlers/models.rs`), which for now
+  holds only `stan`. To offer Stan again, empty that list.
+- `ModelEditor.tsx` filters the picker with the new `offered` helper in `models.ts`. An
+  unlisted provider appears only for the model that already uses it.
+- The formula editor's "Convert to Stan" is unchanged. It still makes a Stan model, and that
+  model can be edited.
+- Tests: `stan_is_unlisted_and_the_formula_provider_is_listed` in `model_admin_api.rs` (Stan
+  is unlisted, `bayesian_regression` and the built-ins are listed), a new assertion in
+  `a_stan_model_saves_only_with_its_programs_data_bound`, and `offered` cases in
+  `models.test.ts`. The four generated `client.ts` files were regenerated.
+
 ## Analytics A7 phase 4: documentation and the definition of done
 
 Analytics TODO A7.9–A7.10. Milestone A7 (simulation) is documented, and its Try it is a test.

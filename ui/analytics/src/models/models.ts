@@ -180,6 +180,20 @@ export type InstanceItem = ListModelInstancesResponse[number];
 /** One model provider the picker offers. */
 export type ProviderItem = ListModelProvidersResponse["providers"][number];
 
+/**
+ * Whether the provider picker offers `p`: every listed provider, and an
+ * unlisted one (the hand-written Stan provider, held back from the first
+ * release) only to the model that already uses it — or to the form that has
+ * it selected — so opening and saving that model does not repoint it.
+ */
+export function offered(
+  p: Pick<ProviderItem, "name" | "listed">,
+  selected: string,
+  saved: { provider: string } | null,
+): boolean {
+  return p.listed || p.name === selected || p.name === saved?.provider;
+}
+
 /** The three states a fit is in (`_fd_model_instances.status`). */
 export type FitStatus = "fitting" | "fitted" | "failed";
 

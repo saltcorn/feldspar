@@ -64,6 +64,7 @@ import {
   parseDrafts,
   printDrafts,
   printGridValue,
+  offered,
   readHyperparameters,
   readMetrics,
   readModelDataset,
@@ -554,7 +555,9 @@ export function ModelEditor({
                           {t("{name} (not on this server)", { name: provider })}
                         </option>
                       )}
-                      {providers.map((p) => (
+                      {/* An unlisted provider (Stan, for now) is offered only
+                          to the model that already uses it. */}
+                      {providers.filter((p) => offered(p, provider, model)).map((p) => (
                         <option key={p.name} value={p.name}>
                           {p.name}
                           {p.module ? ` (${p.module})` : ""}

@@ -658,6 +658,32 @@ model {
 }
 ";
 
+/// The hand-written Stan provider is not offered for a new model, while the
+/// formula provider that fits through it, and every built-in, still is.
+#[tokio::test]
+async fn stan_is_unlisted_and_the_formula_provider_is_listed() -> sc_error::Result<()> {
+    let mut server = setup().await?;
+    let (status, listed) = server
+        .client
+        .send("GET", "/api/model-providers", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let providers = listed["providers"].as_array().unwrap();
+    let listed_of = |name: &str| {
+        providers
+            .iter()
+            .find(|p| p["name"] == json!(name))
+            .unwrap_or_else(|| panic!("no {name} provider in {listed}"))["listed"]
+            .clone()
+    };
+    assert_eq!(listed_of("stan"), json!(false));
+    assert_eq!(listed_of(sc_bayesreg::PROVIDER), json!(true));
+    for p in providers.iter().filter(|p| p["name"] != json!("stan")) {
+        assert_eq!(p["listed"], json!(true), "{p}");
+    }
+    Ok(())
+}
+
 /// The Stan provider is registered beside the built-ins whether or not this
 /// machine has a CmdStan, reads its program out of a connected file store, and
 /// a Stan model saves only once every `data` variable of that program is bound
@@ -686,6 +712,8 @@ async fn a_stan_model_saves_only_with_its_programs_data_bound() -> sc_error::Res
         .unwrap_or_else(|| panic!("no stan provider in {listed}"))
         .clone();
     assert_eq!(stan["outcome_spec"]["kind"], json!("posterior"), "{stan}");
+    // Held back from the new-model picker, yet a Stan model still saves below.
+    assert_eq!(stan["listed"], json!(false), "{stan}");
     // The program's store is a picker over the connected stores.
     let store = stan["config_spec"]
         .as_array()
