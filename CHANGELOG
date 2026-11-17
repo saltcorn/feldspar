@@ -322,6 +322,40 @@ phase's tasks. Saltcorn keeps this state in three new tables and creates them at
 
 Tests: `crates/sc-construct/tests/store.rs`, `crates/sc-server/tests/constructions_api.rs`.
 
+## edit_schema and describe_schema restate a table's access rules in words
+
+A user reported that a coding agent misread the access rules. A row is reachable when the
+caller's role meets the floor **or** the ownership formula holds, so a formula only grants rows to
+the roles below the floor and never limits a role that meets it. Asked for "users see only their
+own notes", the agent set `min_role_read: 80` with `owner === user.id`, and every signed-in user
+read every row. The design is unchanged. The agent is now told what its rules mean.
+
+- New `sc_api::access_summary`. `summarise(table, roles)` says, for read and for write
+  (insert, update, delete), which of the deployment's roles (by name and number, from
+  `_fd_roles`) reach every row, which reach only the rows where the formula holds, and which
+  reach none. The formula is quoted, never paraphrased. Only what folds to a constant is worked
+  out: the operation flags (`_read && …` grants no writes), and, for a visitor who is not signed
+  in, `user` and comparisons with `user.…`, which grant such a visitor nothing, as the
+  translator has it. When a formula would grant something but nobody it could grant it to is
+  below the floor, the summary says the formula changes nobody's reads or writes, and how to set
+  the floor. It also mentions the `users` table's built-in self-read rule, a stored formula that
+  is not in force, and row-level security (from then on, only a person can change the rules).
+  It ends "Check that this is what was asked for." It is not a warning and refuses nothing.
+- `schema_edit::Applied::access` carries one summary per table the batch created or whose
+  floors, formula or `rls_enabled` it set, computed from the schema the batch ends with. A
+  **dry run** therefore says what the rules would mean, while changing them is still free.
+  `edit_schema` appends these to `notes`. A batch that leaves the access rules alone carries
+  none. The admin UI's endpoints ignore the field. Roles are read best effort, so the summary
+  never fails an applied batch; with no roles table it names Admin and Public.
+- `describe_schema` gives every table an `access_summary`.
+- The `min_role_read`/`min_role_write`/`ownership_formula` parameter descriptions, the
+  `edit_schema` description and the admin_copilot build playbook (step 3) now state the OR
+  rule. The `edit_schema` description says to send an access change as a `dry_run` first.
+- Tests: unit tests in `access_summary.rs` (the floor-80 mistake, a staff floor, operation
+  flags, plain role rules, RLS, the folding) and
+  `admin_copilot_schema_rules::access_rules_are_restated_in_words_on_a_dry_run_and_after_applying`
+  (dry run, applied, fixed, a batch that does not touch access, `describe_schema`).
+
 ## Releases: a failed release is finished by running it again; revoking a release
 
 A release that failed part-way through its uploads can now be finished under the same version

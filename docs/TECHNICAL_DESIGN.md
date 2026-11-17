@@ -1469,6 +1469,16 @@ Ownership *extends* access below the role floor; it never narrows it. A caller w
 meets `min_role` is unaffected by the formula (and by RLS, through a role-floor clause in
 every policy). A table with no formula behaves exactly as the plain role model does.
 
+**Said in words to agents.** This OR is the rule agents most often get backwards: they write
+"users see only their own rows" as floor 80 plus `owner === user.id`, which changes nothing for
+any signed-in user. The design stays as it is. Instead, `sc_api::access_summary` restates a
+table's rules with the deployment's role names: who reaches every row, who reaches only the rows
+the formula grants, and, when no role the formula could serve is below the floor, that the
+formula changes nobody's access. `edit_schema` returns it in `notes` for every table whose access
+settings a batch set or that it created, on a dry run too, and `describe_schema` returns it as
+`access_summary`. It is a restatement, not a warning: the schema cannot tell an intended
+"formula for public only" from a mistake.
+
 **The users table: you may always read yourself.** The one exception to "no formula, plain role
 model" is `users`. On it, a read is also granted by the built-in rule
 `_read && id === user.id` (`sc_catalog::SELF_READ_FORMULA`), ORed with whatever the admin's

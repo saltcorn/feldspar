@@ -15,6 +15,7 @@
 //! key its fields declare** — no `id` is invented (GOALS), so a model that wants
 //! one says `primary_key: true` on a field, exactly as an admin ticks the box.
 
+use crate::access_summary::RoleName;
 use crate::schema_edit::{
     self, ApplyOptions, FieldSettings, FieldSpec, Grants, Operation, TableSettings,
 };
@@ -60,7 +61,8 @@ impl AdminTool for DescribeSchema {
     }
 
     async fn call(&self, ctx: &ToolContext<'_>, _grants: &Grants, args: &Json) -> Result<Json> {
-        describe(ctx.catalog, args)
+        let roles = crate::access_summary::load_roles(ctx.catalog).await;
+        describe(ctx.catalog, args, &roles)
     }
 }
 
@@ -125,7 +127,7 @@ fn describe_parameters() -> Json {
     })
 }
 
-fn describe(catalog: &Catalog, args: &Json) -> Result<Json> {
+fn describe(catalog: &Catalog, args: &Json, roles: &[RoleName]) -> Result<Json> {
     let args = super::arguments(args, &[ARG_TABLE])?;
     let only = args
         .get(ARG_TABLE)
@@ -149,7 +151,7 @@ fn describe(catalog: &Catalog, args: &Json) -> Result<Json> {
     let described: Vec<Json> = tables
         .iter()
         .filter(|t| only.is_none_or(|name| t.name == name))
-        .map(|t| describe_table(t, &tables, rls_available))
+        .map(|t| describe_table(t, &tables, rls_available, roles))
         .collect();
     Ok(json!({
         "tables": described,
@@ -168,7 +170,7 @@ fn user_tables(catalog: &Catalog) -> Vec<Table> {
         .collect()
 }
 
-fn describe_table(table: &Table, all: &[Table], rls_available: bool) -> Json {
+fn describe_table(table: &Table, all: &[Table], rls_available: bool, roles: &[RoleName]) -> Json {
     // The formula **source**, not merely whether one is in effect: a tool that
     // may write the formula and can only read a boolean has no way to edit one
     // except by overwriting it blind. When the stored formula stopped validating
@@ -236,6 +238,10 @@ fn describe_table(table: &Table, all: &[Table], rls_available: bool) -> Json {
         "ownership_formula": formula,
         "ownership_error": table.ownership_error,
         "rls_enabled": table.rls_enabled,
+        // The four settings above in words, with this deployment's role names:
+        // a floor and a formula combine with OR, which the numbers alone do
+        // not say (§7.3).
+        "access_summary": crate::access_summary::summarise(table, roles),
         // Beside `rls_enabled`, because without it the model proposes RLS to a
         // database that will refuse it, once per conversation.
         "rls_available": rls_available,
@@ -394,8 +400,12 @@ fn edit_description(grants: &Grants, rls_available: bool) -> String {
     // security does. The reply an agent gets is `sc_query::rls_refusal`'s.
     let access = "You may set a table's access rules (`min_role_read`, `min_role_write`, \
                   `ownership_formula`) and turn row-level security on (`rls_enabled: true`). \
+                  A row is reachable when the caller's role meets the floor **or** the \
+                  formula holds, so a formula only matters for roles below the floor. \
                   These change what every other user of this deployment can reach, so say \
-                  plainly what you are about to do before you do it. **Once a table has \
+                  plainly what you are about to do before you do it, and send a change to \
+                  them as a `dry_run` first: the result restates the rules in words, \
+                  dry run or not, for you to check against what was asked. **Once a table has \
                   row-level security, its access rules are a person's**: changing its floors, \
                   its formula or `rls_enabled`, or dropping it, is refused — tell the user what \
                   change you need and why, and they make it in the admin UI. Do not ask for \
@@ -602,8 +612,10 @@ fn edit_parameters() -> Json {
                             "type": "integer",
                             "description":
                                 "Least-privileged role that may read the table's \
-                                 rows, 1 (admin) to 100 (anyone). Needs the \
-                                 access-rules permission.",
+                                 rows, 1 (admin) to 100 (anyone): every role with \
+                                 this number or a lower one (more privileged) reads \
+                                 **every** row, whatever the ownership formula says. \
+                                 Needs the access-rules permission.",
                             "minimum": 1,
                             "maximum": 100,
                         },
@@ -611,16 +623,24 @@ fn edit_parameters() -> Json {
                             "type": "integer",
                             "description":
                                 "Least-privileged role that may write the table's \
-                                 rows. Needs the access-rules permission.",
+                                 rows: every role with this number or a lower one \
+                                 inserts, updates and deletes **every** row, whatever \
+                                 the ownership formula says. Needs the access-rules \
+                                 permission.",
                             "minimum": 1,
                             "maximum": 100,
                         },
                         "ownership_formula": {
                             "type": "string",
                             "description":
-                                "A JavaScript expression deciding which rows a \
-                                 caller owns, e.g. `owner === user.id`. Empty \
-                                 clears it. Needs the access-rules permission.",
+                                "A JavaScript expression granting rows to the \
+                                 roles that do **not** meet a floor, e.g. `owner === \
+                                 user.id`. It adds access and never limits it: a \
+                                 role that meets the floor reaches every row anyway. \
+                                 So to limit signed-in users to their own rows, set \
+                                 the floors to a role more privileged than theirs \
+                                 (`1`) as well. Empty clears it. Needs the \
+                                 access-rules permission.",
                         },
                         "rls_enabled": {
                             "type": "boolean",
@@ -870,6 +890,7 @@ async fn edit(catalog: &Catalog, grants: &Grants, args: &Json) -> Result<Json> {
     )
     .await?;
     let mut notes = applied.notes.clone();
+    notes.extend(applied.access.iter().cloned());
     notes.extend(rebuild_notes(&applied.applications));
     Ok(json!({
         "applied": !applied.dry_run,
@@ -1909,7 +1930,7 @@ mod tests {
                 },
             ),
         ];
-        let out = describe_table(&table, std::slice::from_ref(&table), true);
+        let out = describe_table(&table, std::slice::from_ref(&table), true, &[]);
         assert_eq!(out["fields"][0]["unique"], json!(true), "{out}");
         assert_eq!(out["fields"][1]["unique"], json!(false), "{out}");
         assert_eq!(out["constraints"][1]["fields"], json!(["a", "b"]));

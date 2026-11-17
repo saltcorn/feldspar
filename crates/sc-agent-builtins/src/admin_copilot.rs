@@ -170,7 +170,10 @@ live in a git repository, first `create_file_store` with `backend: \"git\"` and 
 name as `file_store`.\n\
 3. Create every table the application needs with **one** `edit_schema` batch: fields, \
 types, required flags, keys between tables, and an ownership formula on every table \
-whose rows belong to a user. Tables come before code, because the application's queries \
+whose rows belong to a user — with `min_role_read`/`min_role_write` more privileged than \
+those users (`1`), because a role that meets the floor reads and writes every row and the \
+formula only grants rows to the roles below it. Read the access summary the result \
+returns against what was asked. Tables come before code, because the application's queries \
 are written against them.\n\
 4. `update_application` with `tables: { add: [...] }` to connect those tables to the \
 application. This publishes no endpoint: the application has **no generic row API**, \
