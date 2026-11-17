@@ -7,3 +7,6 @@ mod store;
 
 #[path = "phases.rs"]
 mod phases;
+
+#[path = "mockups.rs"]
+mod mockups;

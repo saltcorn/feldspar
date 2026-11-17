@@ -5,6 +5,7 @@
 //! - `_fd_construction_phases` — a construction's phases, in `position` order.
 //!   No status column: a phase's status follows from its tasks.
 //! - `_fd_construction_tasks` — a phase's tasks, in `position` order.
+//! - `_fd_construction_mockups` — a construction's mockups ([`crate::mockups`]).
 //!
 //! The tables have no foreign keys (the schema layer renders no `ON DELETE`),
 //! so [`delete_construction`] removes the tasks and phases itself, and the
@@ -89,7 +90,7 @@ fn task_fields() -> Vec<DataField> {
     ]
 }
 
-/// Ensure the three tables exist. Idempotent; called at startup.
+/// Ensure the construction tables exist. Idempotent; called at startup.
 pub async fn bootstrap_constructions(catalog: &Catalog) -> Result<()> {
     catalog
         .bootstrap_table(CONSTRUCTIONS_TABLE, &construction_fields())
@@ -98,6 +99,12 @@ pub async fn bootstrap_constructions(catalog: &Catalog) -> Result<()> {
         .bootstrap_table(PHASES_TABLE, &phase_fields())
         .await?;
     catalog.bootstrap_table(TASKS_TABLE, &task_fields()).await?;
+    catalog
+        .bootstrap_table(
+            crate::mockups::MOCKUPS_TABLE,
+            &crate::mockups::mockup_fields(),
+        )
+        .await?;
     Ok(())
 }
 
@@ -360,7 +367,7 @@ pub async fn running_constructions(catalog: &Catalog) -> Result<Vec<Construction
         .collect())
 }
 
-/// Delete the construction of `application` with its phases and tasks,
+/// Delete the construction of `application` with its phases, tasks and mockups,
 /// answering what it was. `None` when it had none.
 ///
 /// All in one transaction: a failure deletes nothing. The phases are locked
@@ -400,8 +407,11 @@ pub async fn delete_construction(
                     });
                     tx_run(tx, &Statement::from(tasks)).await?;
                 }
-                for (table, column) in [(PHASES_TABLE, "construction"), (CONSTRUCTIONS_TABLE, "id")]
-                {
+                for (table, column) in [
+                    (crate::mockups::MOCKUPS_TABLE, "construction"),
+                    (PHASES_TABLE, "construction"),
+                    (CONSTRUCTIONS_TABLE, "id"),
+                ] {
                     let delete = Delete::from(table)
                         .filter(Expr::col(column).eq(Expr::lit(construction.id)));
                     tx_run(tx, &Statement::from(delete)).await?;
@@ -413,7 +423,7 @@ pub async fn delete_construction(
     .await
 }
 
-async fn update_construction(
+pub(crate) async fn update_construction(
     catalog: &Catalog,
     id: Uuid,
     mut assignments: Vec<Assignment>,
@@ -726,7 +736,7 @@ fn task_from_row(row: &Row) -> Result<Task> {
 
 // --- helpers ------------------------------------------------------------------
 
-fn opt_text_value(text: Option<&str>) -> Value {
+pub(crate) fn opt_text_value(text: Option<&str>) -> Value {
     text.map_or(Value::Null, |t| Value::Text(t.to_owned()))
 }
 
@@ -734,7 +744,11 @@ pub(crate) fn to_json<T: serde::Serialize>(value: &T) -> Result<Json> {
     serde_json::to_value(value).map_err(|e| Error::serde(e.to_string()))
 }
 
-fn from_json<T: serde::de::DeserializeOwned>(row: &Row, table: &str, column: &str) -> Result<T> {
+pub(crate) fn from_json<T: serde::de::DeserializeOwned>(
+    row: &Row,
+    table: &str,
+    column: &str,
+) -> Result<T> {
     match row.get(column) {
         Some(Value::Json(value)) => serde_json::from_value(value.clone())
             .map_err(|e| Error::invalid(format!("{table}.{column} is malformed: {e}"))),
@@ -742,7 +756,7 @@ fn from_json<T: serde::de::DeserializeOwned>(row: &Row, table: &str, column: &st
     }
 }
 
-fn req_uuid(row: &Row, table: &str, column: &str) -> Result<Uuid> {
+pub(crate) fn req_uuid(row: &Row, table: &str, column: &str) -> Result<Uuid> {
     match row.get(column) {
         Some(Value::Uuid(u)) => Ok(*u),
         other => Err(bad(table, column, "a uuid", other)),
@@ -757,14 +771,14 @@ fn opt_uuid(row: &Row, table: &str, column: &str) -> Result<Option<Uuid>> {
     }
 }
 
-fn req_text(row: &Row, table: &str, column: &str) -> Result<String> {
+pub(crate) fn req_text(row: &Row, table: &str, column: &str) -> Result<String> {
     match row.get(column) {
         Some(Value::Text(t)) => Ok(t.clone()),
         other => Err(bad(table, column, "text", other)),
     }
 }
 
-fn opt_text(row: &Row, table: &str, column: &str) -> Result<Option<String>> {
+pub(crate) fn opt_text(row: &Row, table: &str, column: &str) -> Result<Option<String>> {
     match row.get(column) {
         Some(Value::Text(t)) if t.is_empty() => Ok(None),
         Some(Value::Text(t)) => Ok(Some(t.clone())),
@@ -781,7 +795,7 @@ fn opt_bool(row: &Row, table: &str, column: &str) -> Result<Option<bool>> {
     }
 }
 
-fn req_float(row: &Row, table: &str, column: &str) -> Result<f64> {
+pub(crate) fn req_float(row: &Row, table: &str, column: &str) -> Result<f64> {
     match row.get(column) {
         Some(Value::Float(f)) => Ok(*f),
         #[allow(clippy::cast_precision_loss)]
@@ -813,7 +827,7 @@ async fn insert(
     .await
 }
 
-fn insert_statement(table: &str, columns: &[&str], values: Vec<Value>) -> Insert {
+pub(crate) fn insert_statement(table: &str, columns: &[&str], values: Vec<Value>) -> Insert {
     Insert::row(
         table,
         columns.iter().map(|c| (*c).to_owned()).collect(),
@@ -821,7 +835,7 @@ fn insert_statement(table: &str, columns: &[&str], values: Vec<Value>) -> Insert
     )
 }
 
-async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
+pub(crate) async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
         .primary(crate::INTERNAL_TABLES)
         .query(&statement)
@@ -837,14 +851,14 @@ pub(crate) async fn tx_run(tx: &mut dyn Transaction, statement: &Statement) -> R
     Ok(())
 }
 
-async fn tx_rows(tx: &mut dyn Transaction, select: Select) -> Result<Vec<Row>> {
+pub(crate) async fn tx_rows(tx: &mut dyn Transaction, select: Select) -> Result<Vec<Row>> {
     tx.query(&Statement::from(select))
         .await?
         .try_collect()
         .await
 }
 
-async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
+pub(crate) async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
         .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))

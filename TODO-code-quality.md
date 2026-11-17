@@ -558,3 +558,15 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
       TODO file dropped, and the stale MVP statements fixed in `field.rs`, the catalog's docs and
       sc-types' `catchall` line. Test files and untouched crates are left for when they are
       touched.)
+- [ ] Q6.7 One pair of primary-database helpers instead of a copy per store. About 30 internal
+      stores define the same `run` / `exec(catalog, statement)` and 24 the same
+      `rows(catalog, select)`, each wrapping `catalog.primary(crate::INTERNAL_TABLES).query(…)
+      .try_collect()` (e.g. `sc-app/src/store.rs`, `sc-action/src/store.rs`, five files in
+      sc-catalog, `sc-construct/src/store.rs`). Add `Catalog::execute(access, &statement)` and
+      `Catalog::select_rows(access, select)`, taking the `Unchecked` token as a parameter, and
+      replace the copies. Each crate keeps its own crate-private `INTERNAL_TABLES`, so the
+      system-authority inventory (Q3.5, docs/SECURITY_REVIEW_2026-10.md) stays as it is. Also move
+      the strict column readers (`req_uuid`, `req_text`, `opt_text`, `opt_uuid`, `req_float`,
+      `opt_bool`, `from_json`) of sc-construct, sc-check and sc-auth's credits onto `sc_db::Row`,
+      with errors that name the table and column. Behaviour does not change; the existing store
+      tests cover it.

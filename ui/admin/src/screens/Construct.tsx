@@ -1,11 +1,15 @@
-// Plan & build (TODO-app-constructor AC4): an application built from a
-// description. Three steps, each a numbered tab:
+// Plan & build (TODO-app-constructor AC4, AC7): an application built from a
+// description. Four steps, each a numbered tab:
 //
-// 1. **Specification**: what the application should do, and "Plan phases",
-//    which has the construction agent turn it into phases.
-// 2. **Phases**: the plan, edited before anything runs, then "Run all" or
+// 1. **Specification**: what the application should do; "Propose mockups",
+//    or straight to "Plan phases", which has the construction agent turn it
+//    into phases.
+// 2. **Mockups** (optional): a few looks of the application's main screens,
+//    to choose one of or to comment on and have revised. The chosen one
+//    shapes the phases, the data model and the code.
+// 3. **Phases**: the plan, edited before anything runs, then "Run all" or
 //    a phase's own "Run", which runs the phases before it first.
-// 3. **Progress**: each phase's tasks as the runner works through them, with
+// 4. **Progress**: each phase's tasks as the runner works through them, with
 //    their runs, summaries, and Stop / Retry / Skip.
 //
 // The screen marks the current step's number and opens on it, except that a
@@ -28,6 +32,17 @@ import type { ListApplicationsResponse } from "../client";
 import {
   PRIORITIES,
   TABS,
+  DEFAULT_MOCKUPS,
+  MOCKUP_WIDTHS,
+  chosenMockup,
+  latestMockups,
+  mockupDocument,
+  mockupPages,
+  mockupsEditable,
+  revisionFeedback,
+  type ConstructionMockup,
+  type MockupWidth,
+  type MockupScreensLoader,
   addPhase,
   addRequirement,
   constructible,
@@ -70,10 +85,14 @@ import {
 import {
   IconArrowDown,
   IconArrowLeft,
+  IconChevronLeft,
   IconChevronRight,
   IconArrowUp,
   IconCheck,
   IconCode,
+  IconDeviceDesktop,
+  IconDeviceMobile,
+  IconLayoutDashboard,
   IconListCheck,
   IconPlayerPlay,
   IconRefresh,
@@ -169,6 +188,7 @@ export function StepTabs({
   const { t } = useT();
   const titles: Record<Tab, string> = {
     specification: t("Specification"),
+    mockups: t("Mockups"),
     phases: t("Phases"),
     progress: t("Progress"),
   };
@@ -425,11 +445,39 @@ export function Construct({
                     return calls.plan(specification);
                   }, t("Could not plan the phases."))
                 }
+                onPropose={(specification) =>
+                  void act(async () => {
+                    await started();
+                    return calls.proposeMockups(specification, DEFAULT_MOCKUPS);
+                  }, t("Could not propose mockups."))
+                }
                 onSave={(specification) =>
                   void act(async () => {
                     await started();
                     return calls.saveSpecification(specification);
                   }, t("Could not save the specification."))
+                }
+              />
+            )}
+            {construction && tab === "mockups" && (
+              <MockupsCard
+                construction={construction}
+                busy={busy}
+                onRevise={(feedback, note) =>
+                  void act(
+                    () => calls.reviseMockups(feedback, note),
+                    t("Could not revise the mockups."),
+                  )
+                }
+                onChoose={(mockup) =>
+                  void act(() => calls.chooseMockup(mockup), t("Could not choose the mockup."))
+                }
+                loadScreens={calls.mockupScreens}
+                onPlan={() =>
+                  void act(
+                    () => calls.plan(construction.specification),
+                    t("Could not plan the phases."),
+                  )
                 }
               />
             )}
@@ -468,11 +516,14 @@ export function SpecificationCard({
   construction,
   busy,
   onPlan,
+  onPropose,
   onSave,
 }: {
   construction: Construction;
   busy: boolean;
   onPlan: (specification: string) => void;
+  /** Have mockups proposed first: optional, so "Plan phases" stays. */
+  onPropose: (specification: string) => void;
   onSave: (specification: string) => void;
 }) {
   const { t } = useT();
@@ -486,8 +537,12 @@ export function SpecificationCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [construction.specification]);
 
-  const locked = construction.status === "running" || construction.planning;
+  const locked =
+    construction.status === "running" || construction.planning || construction.designing;
   const replan = construction.phases.length > 0;
+  // Before any phases, mockups are the suggested next step; once there are
+  // phases, planning again is.
+  const suggestMockups = !replan;
   const failure = planError(construction);
   const dirty = text !== saved;
   const words = text.trim() === "" ? 0 : text.trim().split(/\s+/).length;
@@ -528,7 +583,19 @@ export function SpecificationCard({
                 )}
                 <Button
                   disabled={busy || locked || !text.trim()}
-                  variant={replan ? "outline-primary" : "primary"}
+                  variant={suggestMockups ? "primary" : "outline-secondary"}
+                  onClick={() => onPropose(text)}
+                >
+                  {construction.designing ? (
+                    <Spinner animation="border" size="sm" className="me-2" />
+                  ) : (
+                    <IconLayoutDashboard className="icon-2" />
+                  )}
+                  {construction.mockups.length > 0 ? t("Propose new mockups") : t("Propose mockups")}
+                </Button>
+                <Button
+                  disabled={busy || locked || !text.trim()}
+                  variant={suggestMockups ? "outline-primary" : replan ? "outline-primary" : "primary"}
                   onClick={() => onPlan(text)}
                 >
                   {construction.planning ? (
@@ -540,9 +607,13 @@ export function SpecificationCard({
                 </Button>
               </div>
             </div>
-            {replan && (
+            {replan ? (
               <div className="spec-note">
                 <T text="Planning again replaces the phases. Phases that have tasks are kept." />
+              </div>
+            ) : (
+              <div className="spec-note">
+                <T text="Mockups are optional: see the main screens first and choose a look, or plan the phases now." />
               </div>
             )}
             {failure && (
@@ -579,6 +650,434 @@ export function SpecificationCard({
       </Card.Body>
     </Card>
   );
+}
+
+/** The Mockups step (AC7): the last round's mockups, each a few screens in a
+ * sandboxed frame, to choose one of or to comment on and have revised. Earlier
+ * rounds are listed below, and the chosen one may be among them. */
+export function MockupsCard({
+  construction,
+  busy,
+  onRevise,
+  onChoose,
+  onPlan,
+  loadScreens,
+}: {
+  construction: Construction;
+  busy: boolean;
+  onRevise: (feedback: { mockup: string; text: string }[], note: string | null) => void;
+  onChoose: (mockup: string) => void;
+  onPlan: () => void;
+  /** Fetches a mockup's screens with their HTML, which the construction
+   * leaves out. */
+  loadScreens: MockupScreensLoader;
+}) {
+  const { t } = useT();
+  const [width, setWidth] = useState<MockupWidth>("desktop");
+  // The admin's feedback per mockup, and a note on all of them, until sent.
+  const [notes, setNotes] = useState<Record<string, string>>({});
+  const [note, setNote] = useState("");
+  const latest = latestMockups(construction);
+  const chosen = chosenMockup(construction);
+  const editable = mockupsEditable(construction);
+  const feedback = revisionFeedback(construction, notes);
+  const failure = planError(construction);
+  const earlier = construction.mockups.filter((m) => !latest.includes(m));
+  const hasPhases = construction.phases.length > 0;
+  // Set when the admin picks a different mockup after the phases were
+  // planned. The phases still follow the old mockup, so we suggest planning
+  // them again. Reset as soon as planning starts.
+  const [rechosen, setRechosen] = useState(false);
+  useEffect(() => {
+    if (construction.planning) setRechosen(false);
+  }, [construction.planning]);
+  const choose = (mockup: string) => {
+    if (hasPhases && mockup !== chosen?.id) setRechosen(true);
+    onChoose(mockup);
+  };
+  // A new round arriving clears what was written about the last one.
+  const round = latest[0]?.round ?? 0;
+  useEffect(() => {
+    setNotes({});
+    setNote("");
+  }, [round]);
+
+  return (
+    <Card className="mb-3">
+      <StepHeader title={t("Mockups")}>
+        <div className="btn-group" role="group" aria-label={t("Width")}>
+          {(["desktop", "phone"] as const).map((w) => (
+            <Button
+              key={w}
+              size="sm"
+              variant={width === w ? "secondary" : "outline-secondary"}
+              aria-pressed={width === w}
+              onClick={() => setWidth(w)}
+            >
+              {w === "desktop" ? (
+                <IconDeviceDesktop className="icon-2" />
+              ) : (
+                <IconDeviceMobile className="icon-2" />
+              )}
+              {w === "desktop" ? t("Desktop") : t("Phone")}
+            </Button>
+          ))}
+        </div>
+        <Button
+          size="sm"
+          variant={chosen && (!hasPhases || rechosen) ? "primary" : "outline-primary"}
+          disabled={busy || !editable}
+          onClick={onPlan}
+        >
+          <IconSparkles className="icon-2" />
+          {hasPhases
+            ? chosen
+              ? t("Plan phases again from the chosen mockup")
+              : t("Plan phases again without a mockup")
+            : chosen
+              ? t("Plan phases from the chosen mockup")
+              : t("Plan phases without a mockup")}
+        </Button>
+      </StepHeader>
+      <Card.Body>
+        {construction.designing && (
+          <Alert variant="info" className="d-flex align-items-center gap-2">
+            <Spinner animation="border" size="sm" />
+            <T text="The construction agent is drawing the mockups. This takes a minute or two." />
+          </Alert>
+        )}
+        {failure && (
+          <Alert variant="danger">
+            <T text="Proposing the mockups failed:" /> {failure}
+          </Alert>
+        )}
+        {rechosen && hasPhases && chosen && (
+          <Alert variant="warning" className="d-flex align-items-center gap-3">
+            <div className="flex-fill">
+              <T text="The phases were planned for another mockup. Plan them again so they follow this one." />
+            </div>
+            <Button size="sm" variant="primary" disabled={busy || !editable} onClick={onPlan}>
+              <IconSparkles className="icon-2" />
+              <T text="Plan phases again" />
+            </Button>
+          </Alert>
+        )}
+        {chosen && !latest.includes(chosen) && (
+          <Alert variant="secondary">
+            {t("The chosen mockup is “{title}”, from an earlier round.", { title: chosen.title })}
+          </Alert>
+        )}
+        {latest.length > 1 && (
+          // The mockups are alternatives: say so, and name them by number,
+          // with a way to each, as the second is a long way down.
+          <div className="mockup-compare">
+            <span className="text-secondary">
+              {t("{n} alternatives: look at each, then choose one or say what should change.", {
+                n: latest.length,
+              })}
+            </span>
+            <div className="mockup-compare-links">
+              {latest.map((mockup, i) => (
+                <Button
+                  key={mockup.id}
+                  size="sm"
+                  variant="outline-secondary"
+                  onClick={() =>
+                    document
+                      .getElementById(mockupAnchor(mockup.id))
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                  }
+                >
+                  <span className="mockup-number mockup-number-sm">{i + 1}</span>
+                  {mockup.title}
+                </Button>
+              ))}
+            </div>
+          </div>
+        )}
+        <div className={width === "phone" ? "mockup-grid mockup-grid-phone" : "mockup-grid"}>
+          {latest.map((mockup, i) => (
+            <MockupPanel
+              key={mockup.id}
+              mockup={mockup}
+              number={i + 1}
+              total={latest.length}
+              loadScreens={loadScreens}
+              width={width}
+              busy={busy || !editable}
+              feedback={notes[mockup.id] ?? ""}
+              onFeedback={(text) => setNotes((n) => ({ ...n, [mockup.id]: text }))}
+              onChoose={() => choose(mockup.id)}
+            />
+          ))}
+        </div>
+        {latest.length > 0 && (
+          <div className="mockup-revise">
+            <Form.Label htmlFor="mockup-note">
+              <T text="A note on all of them (optional)" />
+            </Form.Label>
+            <Form.Control
+              id="mockup-note"
+              as="textarea"
+              rows={2}
+              value={note}
+              disabled={!editable}
+              placeholder={t("e.g. fewer screens, a sidebar instead of tabs")}
+              onChange={(e) => setNote(e.target.value)}
+            />
+            <div className="d-flex justify-content-between align-items-center mt-2">
+              <span className="text-secondary small">
+                <T text="Revising proposes a new round from your feedback; this round stays below." />
+              </span>
+              <Button
+                variant="outline-primary"
+                disabled={busy || !editable || (feedback.length === 0 && note.trim() === "")}
+                onClick={() => onRevise(feedback, note.trim() || null)}
+              >
+                <IconRefresh className="icon-2" />
+                <T text="Revise" />
+              </Button>
+            </div>
+          </div>
+        )}
+        {earlier.length > 0 && (
+          <details className="mockup-earlier">
+            <summary>{t("Earlier rounds ({n})", { n: earlier.length })}</summary>
+            <ul className="list-unstyled mb-0 mt-2">
+              {earlier.map((m) => (
+                <li key={m.id} className="d-flex align-items-start gap-2 mb-2">
+                  <span className="badge bg-secondary-lt">{t("Round {n}", { n: m.round })}</span>
+                  <div className="flex-fill">
+                    <strong>{m.title}</strong>
+                    {m.feedback && <div className="text-secondary small">{m.feedback}</div>}
+                  </div>
+                  {m.status === "chosen" ? (
+                    <StatusBadge tone="green">{t("Chosen")}</StatusBadge>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline-secondary"
+                      disabled={busy || !editable}
+                      onClick={() => choose(m.id)}
+                    >
+                      <T text="Choose" />
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </Card.Body>
+    </Card>
+  );
+}
+
+/** One mockup: a strip of its screens in miniature, the one picked large in a
+ * sandboxed frame with previous and next, its rationale, the admin's feedback
+ * on it, and Choose. The miniatures are there so a mockup's other screens are
+ * seen at a glance, not found behind a row of tabs. */
+function MockupPanel({
+  mockup,
+  number,
+  total,
+  loadScreens,
+  width,
+  busy,
+  feedback,
+  onFeedback,
+  onChoose,
+}: {
+  mockup: ConstructionMockup;
+  /** Its place among the round's mockups, from 1, and how many there are. */
+  number: number;
+  total: number;
+  loadScreens: MockupScreensLoader;
+  width: MockupWidth;
+  busy: boolean;
+  feedback: string;
+  onFeedback: (text: string) => void;
+  onChoose: () => void;
+}) {
+  const { t } = useT();
+  const [picked, setPicked] = useState(0);
+  const count = mockup.screens.length;
+  const screen = Math.min(picked, count - 1);
+  const shown = mockup.screens[screen];
+  const isChosen = mockup.status === "chosen";
+  const pages = useMockupPages(mockup.id, loadScreens);
+  const page = (i: number) => (Array.isArray(pages) ? pages[i] : undefined);
+  return (
+    <section
+      id={mockupAnchor(mockup.id)}
+      className={`mockup-panel${isChosen ? " mockup-chosen" : ""}`}
+      aria-label={t("Mockup {n} of {total}", { n: number, total })}
+    >
+      <div className="d-flex align-items-start gap-3 mb-2">
+        {total > 1 && (
+          <span className="mockup-number" aria-hidden="true">
+            {number}
+          </span>
+        )}
+        <div className="flex-fill">
+          {total > 1 && (
+            <div className="mockup-pretitle">{t("Mockup {n} of {total}", { n: number, total })}</div>
+          )}
+          <h3 className="mb-1">
+            {mockup.title}
+            {count > 1 && (
+              <span className="badge bg-blue-lt ms-2 align-middle">
+                {t("{n} screens", { n: count })}
+              </span>
+            )}
+          </h3>
+          {mockup.rationale && <div className="text-secondary">{mockup.rationale}</div>}
+        </div>
+        {isChosen && (
+          <StatusBadge tone="green">
+            <IconCheck className="icon-2 me-1" />
+            {t("Chosen")}
+          </StatusBadge>
+        )}
+      </div>
+      {count > 1 && (
+        <div className="mockup-strip" role="tablist" aria-label={t("Screens of {title}", { title: mockup.title })}>
+          {mockup.screens.map((s, i) => (
+            <button
+              key={s.file}
+              type="button"
+              role="tab"
+              aria-selected={i === screen}
+              className={`mockup-thumb${i === screen ? " active" : ""}`}
+              onClick={() => setPicked(i)}
+            >
+              <span className="mockup-thumb-view" aria-hidden="true">
+                {/* A picture of the screen, not a page to use: no focus, no
+                    pointer, and the same sandbox as the large frame. */}
+                {page(i) !== undefined && (
+                  <iframe
+                    title={s.name}
+                    sandbox=""
+                    tabIndex={-1}
+                    loading="lazy"
+                    srcDoc={mockupDocument(page(i) ?? "")}
+                  />
+                )}
+              </span>
+              <span className="mockup-thumb-name">
+                <span className="mockup-thumb-number">{i + 1}</span>
+                {s.name}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+      {shown && (
+        <div className="mockup-screen-bar">
+          <strong>{shown.name}</strong>
+          {count > 1 && (
+            <div className="d-flex align-items-center gap-2">
+              <span className="text-secondary small">
+                {t("Screen {n} of {total}", { n: screen + 1, total: count })}
+              </span>
+              <div className="btn-group">
+                <Button
+                  size="sm"
+                  variant="outline-secondary"
+                  aria-label={t("Previous screen")}
+                  disabled={screen === 0}
+                  onClick={() => setPicked(screen - 1)}
+                >
+                  <IconChevronLeft className="icon-2 m-0" />
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline-secondary"
+                  aria-label={t("Next screen")}
+                  disabled={screen === count - 1}
+                  onClick={() => setPicked(screen + 1)}
+                >
+                  <IconChevronRight className="icon-2 m-0" />
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {shown && (
+        <div className="mockup-frame-wrap">
+          {pages === "failed" ? (
+            <Alert variant="danger" className="m-3 align-self-start">
+              <T text="Could not load the screens of this mockup." />
+            </Alert>
+          ) : page(screen) === undefined ? (
+            <div className="mockup-frame-loading" role="status">
+              <Spinner animation="border" size="sm" />
+              <T text="Loading…" />
+            </div>
+          ) : (
+            // No `allow-*` at all: the page runs no script, submits no form,
+            // opens no window, and has an origin of its own.
+            <iframe
+              className="mockup-frame"
+              title={t("{mockup}: {screen}", { mockup: mockup.title, screen: shown.name })}
+              sandbox=""
+              srcDoc={mockupDocument(page(screen) ?? "")}
+              style={{ width: width === "phone" ? MOCKUP_WIDTHS.phone : "100%" }}
+            />
+          )}
+        </div>
+      )}
+      {/* The decision under the screens, where the admin is after looking
+          at them: what should change, or this one. */}
+      <div className="mockup-decide">
+        <Form.Control
+          as="textarea"
+          rows={2}
+          value={feedback}
+          disabled={busy}
+          aria-label={t("Feedback on {title}", { title: mockup.title })}
+          placeholder={t("What should change in this one?")}
+          onChange={(e) => onFeedback(e.target.value)}
+        />
+        {!isChosen && (
+          <Button variant="outline-primary" disabled={busy} onClick={onChoose}>
+            <IconCheck className="icon-2" />
+            {total > 1 ? t("Choose mockup {n}", { n: number }) : t("Choose this one")}
+          </Button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** The id of a mockup's panel, to scroll to. */
+function mockupAnchor(mockup: string): string {
+  return `mockup-${mockup}`;
+}
+
+/** The HTML of `mockup`'s screens, in order: `null` while it loads, or
+ * `"failed"`. Fetched once per mockup ({@link mockupPages}). */
+function useMockupPages(
+  mockup: string,
+  load: MockupScreensLoader,
+): string[] | null | "failed" {
+  const [pages, setPages] = useState<string[] | null | "failed">(null);
+  useEffect(() => {
+    let live = true;
+    setPages(null);
+    mockupPages(load, mockup).then(
+      (got) => live && setPages(got),
+      () => live && setPages("failed"),
+    );
+    return () => {
+      live = false;
+    };
+    // `load` is a new function on every render of the screen; the mockup
+    // decides what is fetched.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mockup]);
+  return pages;
 }
 
 /** A phase's Run: it runs the phases before it first, so when any of those is

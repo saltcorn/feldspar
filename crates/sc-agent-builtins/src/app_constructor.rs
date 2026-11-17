@@ -10,6 +10,8 @@
 //!   ([`sc_construct::save_phases`], the validation the admin's edits go
 //!   through too). Its result ends with the phase list, as `save_plan`'s ends
 //!   with the plan, so the freshest copy is the last thing the model read.
+//! - `save_mockups` saves a round of mockups for the admin to choose from
+//!   before the phases are planned (AC7); the chosen one shapes them.
 //! - `save_tasks` plans the tasks of one phase ([`sc_construct::save_tasks`],
 //!   AC3.1). The runner asks for it when it reaches the phase, so the tasks are
 //!   written against what the earlier phases actually made.
@@ -41,9 +43,13 @@ pub const TOOL_SAVE_PHASES: &str = "save_phases";
 /// Plans the tasks of one phase.
 pub const TOOL_SAVE_TASKS: &str = "save_tasks";
 
+/// Saves a round of mockups for the admin to choose from (AC7).
+pub const TOOL_SAVE_MOCKUPS: &str = "save_mockups";
+
 const ARG_PHASES: &str = "phases";
 const ARG_PHASE: &str = "phase";
 const ARG_TASKS: &str = "tasks";
+const ARG_MOCKUPS: &str = "mockups";
 
 /// The planning tools of one application's construction.
 pub struct AppConstructor;
@@ -70,7 +76,17 @@ const PROMPT: &str = "You plan the construction of an application in phases. A p
      feature task the application is built and checked anyway, and the task fails if it \
      does not build. A task's brief is all its agent reads, so say what to make and name \
      the tables and queries it uses. Never plan what exists already. `depends_on` lists \
-     earlier tasks of the same list by number.";
+     earlier tasks of the same list by number.\n\n\
+     Before the phases, you may be asked to propose mockups with `save_mockups`: a few \
+     different looks of the application, for the admin to choose from. Each mockup is the \
+     handful of screens that decide the application's shape (its main list, a form, a \
+     detail page, a dashboard), each a complete, self-contained HTML page with its CSS in a \
+     `<style>` element: no scripts, no external stylesheets, fonts or images (draw icons \
+     with inline SVG). Fill the screens with a few rows of realistic sample data, and show \
+     every field a person would see or enter, since the data model is built from them. \
+     Make the mockups differ in layout and navigation, not only in colour, and say in each \
+     one's rationale what sets it apart. When a mockup has been chosen, the phases and their \
+     tasks follow it: its screens are the features, and its fields are the data model.";
 
 fn configured(config: &Attrs) -> Result<String> {
     match config_str(config, CFG_CONSTRUCTED_APPLICATION) {
@@ -180,6 +196,56 @@ impl AgentTrait for AppConstructor {
                 }),
             ),
             ToolSpec::new(
+                TOOL_SAVE_MOCKUPS,
+                "Save a round of mockups for the admin to choose from: each a title, a \
+             one-sentence rationale, and its screens as self-contained HTML pages. A new \
+             round leaves the earlier ones as they are.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        ARG_MOCKUPS: {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": sc_construct::MAX_MOCKUPS,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": { "type": "string" },
+                                    "rationale": {
+                                        "type": "string",
+                                        "description": "What sets this mockup apart"
+                                    },
+                                    "screens": {
+                                        "type": "array",
+                                        "minItems": 1,
+                                        "maxItems": sc_construct::mockups::MAX_SCREENS,
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "name": {
+                                                    "type": "string",
+                                                    "description": "What the screen is, e.g. `Orders list`"
+                                                },
+                                                "html": {
+                                                    "type": "string",
+                                                    "description": "A complete HTML page, CSS in a `<style>` element, no scripts or external resources"
+                                                },
+                                            },
+                                            "required": ["name", "html"],
+                                            "additionalProperties": false,
+                                        },
+                                    },
+                                },
+                                "required": ["title", "rationale", "screens"],
+                                "additionalProperties": false,
+                            },
+                        },
+                    },
+                    "required": [ARG_MOCKUPS],
+                    "additionalProperties": false,
+                }),
+            ),
+            ToolSpec::new(
                 TOOL_SAVE_TASKS,
                 "Save the tasks of one phase, in order, replacing the tasks it has. Only for a \
              phase whose tasks have not started. Returns the tasks as saved.",
@@ -240,6 +306,9 @@ impl AgentTrait for AppConstructor {
         if tool == TOOL_SAVE_TASKS {
             return save_tasks(ctx.catalog, &app, args).await;
         }
+        if tool == TOOL_SAVE_MOCKUPS {
+            return save_mockups(ctx.catalog, &app, args).await;
+        }
         let phases = sc_construct::parse_phases(args.get(ARG_PHASES).unwrap_or(&Json::Null))?;
         let saved = sc_construct::save_phases(ctx.catalog, app.id.0, &phases).await?;
         let mut text = format!("Saved {} phase(s).", phases.len());
@@ -276,12 +345,43 @@ impl AgentTrait for AppConstructor {
             "" => "(none yet)",
             text => text,
         };
+        // Which mockup was chosen, by title: its screens are in the messages
+        // that need them, not repeated on every step.
+        let mockups = sc_construct::mockups_of(cx.catalog, construction.id).await?;
+        let mockups = match mockups
+            .iter()
+            .find(|m| m.status == sc_construct::MockupStatus::Chosen)
+        {
+            Some(chosen) => format!("\n\nChosen mockup: {}", chosen.title),
+            None if mockups.is_empty() => String::new(),
+            None => "\n\nMockups proposed; none chosen yet.".to_owned(),
+        };
         Ok(Some(format!(
-            "## The construction of `{}`\n\nSpecification:\n{specification}\n\nPhases:\n{}",
+            "## The construction of `{}`\n\nSpecification:\n{specification}{mockups}\n\nPhases:\n{}",
             app.name,
             sc_construct::phase_list(&phases)
         )))
     }
+}
+
+/// `save_mockups`: save a round of mockups and say what was saved. The HTML is
+/// not repeated: the model has just written it.
+async fn save_mockups(catalog: &Catalog, app: &Application, args: &Json) -> Result<Json> {
+    let mockups = sc_construct::parse_mockups(args.get(ARG_MOCKUPS).unwrap_or(&Json::Null))?;
+    let saved = sc_construct::save_mockups(catalog, app.id.0, &mockups).await?;
+    let list: Vec<String> = saved
+        .iter()
+        .map(|m| {
+            let screens: Vec<&str> = m.screens.iter().map(|s| s.name.as_str()).collect();
+            format!("- {}: {}", m.title, screens.join(", "))
+        })
+        .collect();
+    Ok(Json::String(format!(
+        "Saved {} mockup(s) as round {}, for the admin to choose from:\n{}",
+        saved.len(),
+        saved.first().map_or(1, |m| m.round),
+        list.join("\n")
+    )))
 }
 
 /// `save_tasks`: plan one phase's tasks and answer them as saved.

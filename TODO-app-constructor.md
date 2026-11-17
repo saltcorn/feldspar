@@ -1,4 +1,4 @@
-# Saltcorn v2 — The App Constructor (milestones AC1–AC5)
+# Saltcorn v2 — The App Constructor (milestones AC1–AC5, AC7)
 
 An admin describes an application in a few paragraphs. Saltcorn breaks the description into
 phases, plans each phase's tasks when it is reached, and runs one agent per task until the
@@ -164,6 +164,32 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
   the copilot chat (`ui/admin/src/onboarding/script.ts`).
 - [x] AC5.4 Tests: the attention item and its link; the progress badge; the onboarding path's
   last step.
+
+## AC7 — Mockups before the build
+
+The construction agent proposes mockups of the application's screens; the admin chooses one, or
+asks for a revision, before the phases are planned. Optional: "Plan phases" works without one.
+The chosen mockup shapes the phases, the data model and the feature tasks.
+
+- [x] AC7.1 `_fd_construction_mockups` (bootstrap, additive): construction, round, position,
+  title, rationale, the screens as `[{name, html}]`, status (`proposed` / `chosen`), and the
+  admin's feedback. Deleted with the construction.
+- [x] AC7.2 `save_mockups` (`app_constructor`): one to three mockups, each with one to eight
+  screens of self-contained HTML (inline CSS, no scripts, no outside resources), saved as a new
+  round.
+- [x] AC7.3 `proposeMockups` (`POST …/construction/mockups`, 202): a run of the construction agent
+  told the specification and how many to propose (2 by default). With feedback on the last
+  round's mockups it is a revision: the run is told each mockup and what the admin said about
+  it. `chooseMockup` marks one chosen and writes its screens into the application's file store
+  as `mockups/<screen>.html`. The construction reads `designing: true` while the run is driven.
+- [x] AC7.4 The chosen mockup reaches the build: the phase plan and the task plans are told its
+  screens (so the data model has the fields they show), and a feature task is told to match
+  the screens under `mockups/`.
+- [x] AC7.5 Plan & build: a Mockups tab between Specification and Phases. Each mockup's screens
+  shown in a sandboxed frame at phone or desktop width; Choose; feedback per mockup and
+  "Revise". The Specification tab offers "Propose mockups" and "Plan phases".
+- [x] AC7.6 Tests: the store and the tool's validation; a scripted proposal arrives as a round;
+  choosing writes the files; the plan message carries the chosen mockup; the screen's steps.
 
 ---
 

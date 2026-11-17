@@ -7,6 +7,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  chosenMockup,
+  latestMockups,
+  mockupDocument,
+  mockupPages,
+  mockupsEditable,
+  revisionFeedback,
+  type ConstructionMockup,
   addPhase,
   addRequirement,
   blankConstruction,
@@ -86,6 +93,8 @@ function construction(status: string, extra: Partial<Construction> = {}): Constr
     error: null,
     until_phase: null,
     plan_only: false,
+    designing: false,
+    mockups: [],
     updated_at: null,
     phases: [],
     ...extra,
@@ -336,6 +345,12 @@ describe("what the buttons call", () => {
       retryTask: answer("retryTask"),
       skipTask: answer("skipTask"),
       planPhaseTasks: answer("planPhaseTasks"),
+      proposeMockups: answer("proposeMockups"),
+      chooseMockup: answer("chooseMockup"),
+      getMockupScreens: vi.fn(async (...args: unknown[]) => {
+        calls.push(["getMockupScreens", ...args]);
+        return [];
+      }),
     };
     return { client, calls };
   }
@@ -552,5 +567,120 @@ describe("currentWork while only planning", () => {
       phases: [phase("p1", [task("done")], "done"), planned],
     });
     expect(currentWork(c)).toMatchObject({ kind: "planning", phase: { id: "p2" } });
+  });
+});
+
+describe("the mockups", () => {
+  function mockup(id: string, round: number, extra: Partial<ConstructionMockup> = {}) {
+    return {
+      id,
+      round,
+      title: `Mockup ${id}`,
+      rationale: "",
+      screens: [{ name: "Orders list", file: "orders-list.html" }],
+      status: "proposed",
+      feedback: null,
+      ...extra,
+    };
+  }
+
+  it("open their own step once proposed or being proposed, before the phases", () => {
+    expect(currentStep(construction("draft", { designing: true }))).toBe("mockups");
+    expect(currentStep(construction("draft", { mockups: [mockup("m1", 1)] }))).toBe("mockups");
+    expect(tabOpen(construction("draft"), "mockups")).toBe(false);
+    expect(tabOpen(construction("draft", { designing: true }), "mockups")).toBe(true);
+    // Planning the phases moves on, with or without a chosen mockup.
+    const planning = construction("draft", { planning: true, mockups: [mockup("m1", 1)] });
+    expect(currentStep(planning)).toBe("phases");
+    expect(shouldPoll(construction("draft", { designing: true }))).toBe(true);
+    expect(planError(construction("draft", { designing: true, error: "x" }))).toBeNull();
+  });
+
+  it("are chosen from the last round, and the chosen one may be older", () => {
+    const c = construction("draft", {
+      mockups: [mockup("m1", 1, { status: "chosen" }), mockup("m2", 1), mockup("m3", 2)],
+    });
+    expect(latestMockups(c).map((m) => m.id)).toEqual(["m3"]);
+    expect(chosenMockup(c)?.id).toBe("m1");
+    expect(chosenMockup(construction("draft"))).toBeNull();
+    expect(latestMockups(construction("draft"))).toEqual([]);
+  });
+
+  it("send the feedback written on the last round, blanks left out", () => {
+    const c = construction("draft", { mockups: [mockup("m1", 1), mockup("m2", 2), mockup("m3", 2)] });
+    expect(revisionFeedback(c, { m1: "old", m2: " denser ", m3: "  " })).toEqual([
+      { mockup: "m2", text: "denser" },
+    ]);
+  });
+
+  it("are not touched while the agent works or the construction runs", () => {
+    expect(mockupsEditable(construction("draft"))).toBe(true);
+    expect(mockupsEditable(construction("draft", { designing: true }))).toBe(false);
+    expect(mockupsEditable(construction("draft", { planning: true }))).toBe(false);
+    expect(mockupsEditable(construction("running"))).toBe(false);
+  });
+
+  it("keep a page's doctype first when links are sent nowhere", () => {
+    const base = '<base target="_blank">';
+    expect(mockupDocument("<!DOCTYPE html><html><head><title>x</title>")).toBe(
+      `<!DOCTYPE html><html><head>${base}<title>x</title>`,
+    );
+    expect(mockupDocument("<!doctype html><main>x</main>")).toBe(
+      `<!doctype html>${base}<main>x</main>`,
+    );
+    expect(mockupDocument("<main>x</main>")).toBe(`${base}<main>x</main>`);
+  });
+
+  it("save the specification before proposing, and revise or choose by id", async () => {
+    const calls: unknown[][] = [];
+    const answer = (name: string) =>
+      vi.fn(async (...args: unknown[]) => {
+        calls.push([name, ...args]);
+        return construction("draft");
+      });
+    const client = {
+      createConstruction: answer("createConstruction"),
+      saveConstructionSpecification: answer("saveConstructionSpecification"),
+      planConstruction: answer("planConstruction"),
+      savePhases: answer("savePhases"),
+      runConstruction: answer("runConstruction"),
+      stopConstruction: answer("stopConstruction"),
+      retryTask: answer("retryTask"),
+      skipTask: answer("skipTask"),
+      planPhaseTasks: answer("planPhaseTasks"),
+      proposeMockups: answer("proposeMockups"),
+      chooseMockup: answer("chooseMockup"),
+      getMockupScreens: vi.fn(async (...args: unknown[]) => {
+        calls.push(["getMockupScreens", ...args]);
+        return [];
+      }),
+    };
+    const buttons = constructionCalls(client, "a1");
+    await buttons.proposeMockups("A shop.", 2);
+    await buttons.reviseMockups([{ mockup: "m1", text: "denser" }], null);
+    await buttons.chooseMockup("m2");
+    await buttons.mockupScreens("m2");
+    expect(calls).toEqual([
+      ["saveConstructionSpecification", "a1", { specification: "A shop." }],
+      ["proposeMockups", "a1", { count: 2, feedback: null, note: null }],
+      ["proposeMockups", "a1", { count: null, feedback: [{ mockup: "m1", text: "denser" }], note: null }],
+      ["chooseMockup", "a1", "m2"],
+      ["getMockupScreens", "a1", "m2"],
+    ]);
+  });
+
+  it("fetch a mockup's screens once, and again only after a failure", async () => {
+    const load = vi.fn(async (mockup: string) => [{ html: `<p>${mockup} 1</p>` }, { html: "<p>2</p>" }]);
+    expect(await mockupPages(load, "cached-1")).toEqual(["<p>cached-1 1</p>", "<p>2</p>"]);
+    expect(await mockupPages(load, "cached-1")).toEqual(["<p>cached-1 1</p>", "<p>2</p>"]);
+    expect(load).toHaveBeenCalledTimes(1);
+
+    const failing = vi
+      .fn<(mockup: string) => Promise<{ html: string }[]>>()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce([{ html: "<p>back</p>" }]);
+    await expect(mockupPages(failing, "cached-2")).rejects.toThrow("offline");
+    expect(await mockupPages(failing, "cached-2")).toEqual(["<p>back</p>"]);
+    expect(failing).toHaveBeenCalledTimes(2);
   });
 });

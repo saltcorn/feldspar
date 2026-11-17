@@ -9,6 +9,8 @@
 //!   the admin's edits.
 //! - [`tasks`] — a phase's tasks, planned when the phase is reached, and what
 //!   the runner does next.
+//! - [`mockups`] — screens proposed before the phases are planned, one of
+//!   which the admin may choose.
 
 /// This crate's own tables' access to the primary database
 /// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
@@ -17,14 +19,20 @@
 pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
     sc_catalog::Unchecked::system("sc-construct: the construction store");
 
+pub mod mockups;
 pub mod model;
 pub mod plan;
 pub mod store;
 pub mod tasks;
 
+pub use mockups::{
+    DEFAULT_MOCKUPS, MAX_MOCKUPS, MOCKUPS_TABLE, MockupInput, choose_mockup, chosen_mockup,
+    latest_round, mockup_text, mockups_of, parse_mockups, save_mockups, screen_file,
+    set_mockup_feedback,
+};
 pub use model::{
-    Construction, ConstructionStatus, Phase, PhaseStatus, PhaseWithTasks, Priority, Requirement,
-    Task, TaskKind, TaskStatus, phase_status,
+    Construction, ConstructionStatus, Mockup, MockupFeedback, MockupScreen, MockupStatus, Phase,
+    PhaseStatus, PhaseWithTasks, Priority, Requirement, Task, TaskKind, TaskStatus, phase_status,
 };
 pub use plan::{MAX_PHASES, PhaseInput, SavedPhases, parse_phases, phase_list, save_phases};
 pub use store::{

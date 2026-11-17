@@ -159,6 +159,51 @@ impl Task {
     }
 }
 
+/// Whether the admin chose a mockup (TODO-app-constructor AC7). One of a
+/// construction's mockups at most is `Chosen`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MockupStatus {
+    Proposed,
+    Chosen,
+}
+
+/// One screen of a mockup: a self-contained HTML page.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MockupScreen {
+    /// What the screen is, e.g. "Orders list"; also its file's name.
+    pub name: String,
+    pub html: String,
+}
+
+/// One proposed look of the application, as screens. The agent proposes a
+/// few at a time, a **round**; a revision is the next round.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Mockup {
+    pub id: Uuid,
+    pub construction: Uuid,
+    /// Which proposal it came with: 1 for the first, one more per revision.
+    pub round: i64,
+    pub position: f64,
+    pub title: String,
+    /// What sets it apart from the others, in a sentence.
+    pub rationale: String,
+    pub screens: Vec<MockupScreen>,
+    pub status: MockupStatus,
+    /// What the admin said about it, for the next round.
+    pub feedback: Option<String>,
+}
+
+/// What the admin said about one mockup, for the next round. Blank text
+/// clears it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MockupFeedback {
+    pub mockup: Uuid,
+    pub text: String,
+}
+
 /// A phase's status, from its tasks: none is unplanned, any running is
 /// running, any failed is failed, all done or skipped is done, and anything
 /// else (some still to do) is planned.

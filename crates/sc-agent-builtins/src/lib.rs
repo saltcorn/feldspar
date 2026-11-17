@@ -156,8 +156,8 @@ pub use admin_copilot::{
     CFG_ALLOW_EDIT, CFG_ALLOW_TRIGGERS,
 };
 pub use app_constructor::{
-    AppConstructor, CFG_CONSTRUCTED_APPLICATION, DATA_MODEL_TOOLS, TOOL_SAVE_PHASES,
-    TOOL_SAVE_TASKS, app_constructor_config,
+    AppConstructor, CFG_CONSTRUCTED_APPLICATION, DATA_MODEL_TOOLS, TOOL_SAVE_MOCKUPS,
+    TOOL_SAVE_PHASES, TOOL_SAVE_TASKS, app_constructor_config,
 };
 pub use ask_user::{
     AskUser, CFG_ANSWER_PROMPT, CFG_ASK_PROMPT, CFG_ASK_TOOL_NAME, CFG_DISCUSS_LABEL,

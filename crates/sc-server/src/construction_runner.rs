@@ -315,7 +315,8 @@ impl ConstructionRunner {
     ) -> Result<Step> {
         let agent = construction_agent(construction)?;
         let driver = AgentDriver::load(&self.catalog, &self.apps, &agent, caller).await?;
-        let message = plan_tasks_message(&self.catalog, app, phase, phases, note)?;
+        let mockup = sc_construct::chosen_mockup(&self.catalog, construction.id).await?;
+        let message = plan_tasks_message(&self.catalog, app, phase, phases, note, mockup.as_ref())?;
         let mut run = driver.new_run(&message, &format!("Plan the tasks of `{}`", phase.title))?;
         sc_agent::save_run(&self.catalog, &run).await?;
         let Some(conclusion) = driver.drive(&mut run, &mut self.stopped).await? else {
@@ -359,7 +360,8 @@ impl ConstructionRunner {
         let mut run = match resumed {
             Some(run) => run,
             None => {
-                let message = task_message(&self.catalog, app, &task)?;
+                let mockup = sc_construct::chosen_mockup(&self.catalog, construction.id).await?;
+                let message = task_message(&self.catalog, app, &task, mockup.as_ref())?;
                 let run = driver.new_run(&message, &format!("Construct: {}", task.title))?;
                 sc_agent::save_run(&self.catalog, &run).await?;
                 task.runs.push(run.id.0);
@@ -577,8 +579,19 @@ fn plan_tasks_message(
     phase: &Phase,
     phases: &[PhaseWithTasks],
     note: Option<&str>,
+    mockup: Option<&sc_construct::Mockup>,
 ) -> Result<String> {
     let note = note.map_or_else(String::new, |n| format!("{}\n\n", n.trim_end()));
+    // The chosen mockup, so a data-model task has its fields and a feature
+    // task names the screens it builds.
+    let mockup = mockup.map_or_else(String::new, |m| {
+        format!(
+            "The application follows the mockup the admin chose. A `data_model` task makes \
+             the fields its screens show; a `feature` task's brief names the screens it \
+             builds by their files under `mockups/`, which the builder agent can read.\n\n{}\n",
+            sc_construct::mockup_text(m)
+        )
+    });
     let requirements: String = phase
         .requirements
         .iter()
@@ -596,6 +609,7 @@ fn plan_tasks_message(
     Ok(format!(
         "The construction of `{}` has reached the phase `{}` (id {}).\n\n{}\n\nRequirements:\n{}\n\
          {}\n\
+         {mockup}\
          {}\
          Plan this phase's tasks now with `{}`, giving the phase id above: few tasks, each a \
          sizeable piece of work, and none that only builds or checks. Only plan in this \
@@ -611,8 +625,15 @@ fn plan_tasks_message(
     ))
 }
 
-/// What the run of a task is told: its brief and what exists already.
-fn task_message(catalog: &Catalog, app: &Application, task: &Task) -> Result<String> {
+/// What the run of a task is told: its brief and what exists already, and for
+/// a feature task of a construction with a chosen mockup, where its screens
+/// are.
+fn task_message(
+    catalog: &Catalog,
+    app: &Application,
+    task: &Task,
+    mockup: Option<&sc_construct::Mockup>,
+) -> Result<String> {
     let tables = table_names(catalog)?;
     let tables = if tables.is_empty() {
         "none yet".to_owned()
@@ -621,13 +642,41 @@ fn task_message(catalog: &Catalog, app: &Application, task: &Task) -> Result<Str
     };
     Ok(format!(
         "A task of the construction of the `{}` application (subdomain `{}`):\n\n## {}\n\n{}\n\n\
-         Tables that exist already: {tables}. Do not recreate them.\n\n\
+         Tables that exist already: {tables}. Do not recreate them.\n\n{}\
          Do this one task, then answer with a short summary of what you made.",
         app.name,
         app.subdomain.trim(),
         task.title,
         task.brief,
+        mockup_hint(task, mockup),
     ))
+}
+
+/// What a feature task is told about the chosen mockup: where its screens
+/// are, to read before building them. A data-model task's brief carries the
+/// fields already.
+fn mockup_hint(task: &Task, mockup: Option<&sc_construct::Mockup>) -> String {
+    let Some(mockup) = mockup.filter(|_| task.kind == TaskKind::Feature) else {
+        return String::new();
+    };
+    let files: Vec<String> = mockup
+        .screens
+        .iter()
+        .map(|s| {
+            format!(
+                "`mockups/{}` ({})",
+                sc_construct::screen_file(&s.name),
+                s.name
+            )
+        })
+        .collect();
+    format!(
+        "The admin chose a mockup of the application (\"{}\"); its screens are in the \
+         application's files: {}. Read the ones this task builds first, and match their \
+         layout, fields and look, turning their CSS into the application's own styles.\n\n",
+        mockup.title,
+        files.join(", ")
+    )
 }
 
 /// Runs one agent for the runner: the construction agent to plan tasks
@@ -731,6 +780,35 @@ impl<'a> AgentDriver<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_feature_task_is_told_where_the_chosen_mockups_screens_are() {
+        let mockup = sc_construct::Mockup {
+            id: Uuid::nil(),
+            construction: Uuid::nil(),
+            round: 1,
+            position: 1.0,
+            title: "Dense table".into(),
+            rationale: String::new(),
+            screens: vec![sc_construct::MockupScreen {
+                name: "Orders list".into(),
+                html: "<table></table>".into(),
+            }],
+            status: sc_construct::MockupStatus::Chosen,
+            feedback: None,
+        };
+        let feature = Task::new(Uuid::nil(), 1.0, TaskKind::Feature, "Orders", "List them");
+        let hint = mockup_hint(&feature, Some(&mockup));
+        assert!(hint.contains("\"Dense table\""), "{hint}");
+        assert!(
+            hint.contains("`mockups/orders-list.html` (Orders list)"),
+            "{hint}"
+        );
+        // A data-model task's brief has the fields; no mockup, no hint.
+        let tables = Task::new(Uuid::nil(), 1.0, TaskKind::DataModel, "Tables", "Make them");
+        assert_eq!(mockup_hint(&tables, Some(&mockup)), "");
+        assert_eq!(mockup_hint(&feature, None), "");
+    }
 
     /// A run's stored context holding these tool results, as `(tool, result)`.
     fn run_of(results: &[(&str, Json)]) -> Json {

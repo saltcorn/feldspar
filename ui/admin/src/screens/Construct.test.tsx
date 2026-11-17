@@ -10,6 +10,7 @@ import {
   PhaseDetail,
   PhasesCard,
   ProgressCard,
+  MockupsCard,
   SpecificationCard,
   StepTabs,
 } from "./Construct";
@@ -27,6 +28,8 @@ function construction(status: string, taskStatus: string): Construction {
     error: status === "failed" ? "task `Books list` failed: the build is red" : null,
     until_phase: null,
     plan_only: false,
+    designing: false,
+    mockups: [],
     updated_at: null,
     phases: [
       {
@@ -175,7 +178,13 @@ describe("the specification", () => {
       error: "planning the phases failed: invalid x-api-key",
     };
     const html = renderToStaticMarkup(
-      <SpecificationCard construction={failed} busy={false} onPlan={noop} onSave={noop} />,
+      <SpecificationCard
+        construction={failed}
+        busy={false}
+        onPlan={noop}
+        onPropose={noop}
+        onSave={noop}
+      />,
     );
     expect(html).toContain("planning the phases failed: invalid x-api-key");
     expect(html).toContain('href="#/runs/r9"');
@@ -190,9 +199,11 @@ describe("the tabs", () => {
       <StepTabs construction={draft} tab="specification" onPick={noop} />,
     );
     expect(html).toMatch(/bg-primary[^"]*">1<\/span>Specification/);
-    expect(html).toMatch(/bg-secondary-lt">2<\/span>Phases/);
-    expect(html).toMatch(/disabled[^>]*>.*2<\/span>Phases/);
-    expect(html).toMatch(/disabled[^>]*>.*3<\/span>Progress/);
+    expect(html).toMatch(/bg-secondary-lt">2<\/span>Mockups/);
+    expect(html).toMatch(/disabled[^>]*>.*2<\/span>Mockups/);
+    expect(html).toMatch(/bg-secondary-lt">3<\/span>Phases/);
+    expect(html).toMatch(/disabled[^>]*>.*3<\/span>Phases/);
+    expect(html).toMatch(/disabled[^>]*>.*4<\/span>Progress/);
     expect(html).not.toMatch(/disabled[^>]*>.*1<\/span>Specification/);
   });
 });
@@ -285,5 +296,89 @@ describe("a phase's own page", () => {
       <PhaseDetail construction={c} phase={c.phases[0]} busy={false} onRetry={noop} onSkip={noop} onPlan={noop} />,
     );
     expect(ran).not.toContain("Plan again");
+  });
+});
+
+describe("the mockups", () => {
+  const screens = () => [
+    { name: "Orders list", file: "orders-list.html" },
+    { name: "Order form", file: "order-form.html" },
+  ];
+  // The screens' HTML is fetched after the first render, which is all a
+  // static render shows.
+  const loadScreens = async () => [{ html: "<p></p>" }, { html: "<p></p>" }];
+  const withMockups = {
+    ...construction("draft", "todo"),
+    phases: [],
+    mockups: [
+      { id: "m1", round: 1, title: "Table", rationale: "Rows.", screens: screens(), status: "chosen", feedback: "denser" },
+      { id: "m2", round: 2, title: "Cards", rationale: "A card per order.", screens: screens(), status: "proposed", feedback: null },
+      { id: "m3", round: 2, title: "Split view", rationale: "", screens: screens(), status: "proposed", feedback: null },
+    ],
+  };
+
+  it("shows the last round's screens in frames that run nothing", () => {
+    const html = renderToStaticMarkup(
+      <MockupsCard construction={withMockups} busy={false} onRevise={noop} onChoose={noop} onPlan={noop} loadScreens={loadScreens} />,
+    );
+    expect(html).toContain("Cards");
+    expect(html).toContain("Split view");
+    // The two are alternatives, numbered as such, with a way to each.
+    expect(html).toContain("2 alternatives");
+    expect(html).toContain("Mockup 1 of 2");
+    expect(html).toContain("Mockup 2 of 2");
+    expect(html).toMatch(/class="mockup-number"[^>]*>2</);
+    expect(html).toContain('id="mockup-m3"');
+    // The screens' HTML comes after, by mockup: until then, its place.
+    expect(html).toContain("mockup-frame-loading");
+    // Every screen of a mockup is in view as a miniature, the first picked.
+    expect(html.match(/class="mockup-thumb( active)?"/g)?.length).toBe(4);
+    expect(html).toMatch(/class="mockup-thumb active"[^>]*>.*?Orders list/);
+    expect(html).toContain("Screen 1 of 2");
+    expect(html).toContain("2 screens");
+    expect(html).toContain('aria-label="Next screen"');
+    // The first round is listed below, with the chosen one marked.
+    expect(html).toContain("Earlier rounds (1)");
+    expect(html).toContain("from an earlier round");
+    expect(html).toContain("Plan phases from the chosen mockup");
+  });
+
+  it("offers planning without a mockup when none is chosen", () => {
+    const none = {
+      ...withMockups,
+      mockups: withMockups.mockups.map((m) => ({ ...m, status: "proposed" })),
+    };
+    const html = renderToStaticMarkup(
+      <MockupsCard construction={none} busy={false} onRevise={noop} onChoose={noop} onPlan={noop} loadScreens={loadScreens} />,
+    );
+    expect(html).toContain("Plan phases without a mockup");
+    expect(html).toContain("Choose mockup 1");
+    expect(html).toContain("Choose mockup 2");
+  });
+
+  it("offers planning again once the phases are planned", () => {
+    const planned = {
+      ...withMockups,
+      status: "planned",
+      phases: construction("planned", "todo").phases,
+    };
+    const html = renderToStaticMarkup(
+      <MockupsCard construction={planned} busy={false} onRevise={noop} onChoose={noop} onPlan={noop} loadScreens={loadScreens} />,
+    );
+    expect(html).toContain("Plan phases again from the chosen mockup");
+    // Choosing another stays possible.
+    const button = html.match(/<button[^>]*>(?:(?!<\/button>).)*Choose mockup 1<\/button>/)?.[0];
+    expect(button).toBeDefined();
+    expect(button).not.toContain("disabled");
+  });
+
+  it("offers mockups first on the specification, and planning straight away", () => {
+    const draft = { ...construction("draft", "todo"), phases: [] };
+    const html = renderToStaticMarkup(
+      <SpecificationCard construction={draft} busy={false} onPlan={noop} onPropose={noop} onSave={noop} />,
+    );
+    expect(html).toMatch(/btn-primary[^>]*>.*Propose mockups/);
+    expect(html).toContain("Plan phases");
+    expect(html).toContain("Mockups are optional");
   });
 });

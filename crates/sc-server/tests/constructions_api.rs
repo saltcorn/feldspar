@@ -491,11 +491,12 @@ async fn the_construction_agent_is_offered_only_the_tools_a_construction_needs()
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     assert_eq!(planned(&mut admin, &path).await["status"], json!("planned"));
 
-    // The data-model tools and its own two, nothing else, and none of the
+    // The data-model tools and its own three, nothing else, and none of the
     // copilot's playbook for delegating code.
     let mut expected: Vec<String> = sc_agent_builtins::DATA_MODEL_TOOLS
         .iter()
         .chain(&[
+            sc_agent_builtins::TOOL_SAVE_MOCKUPS,
             sc_agent_builtins::TOOL_SAVE_PHASES,
             sc_agent_builtins::TOOL_SAVE_TASKS,
         ])
@@ -757,6 +758,244 @@ async fn the_construction_agent_plans_phases_and_the_admin_edits_them() -> sc_er
         format!("{:?}", model.last_request().unwrap())
             .contains("Kept, because they have tasks: `Data model`")
     );
+    assert_eq!(model.remaining(), 0);
+    Ok(())
+}
+
+// --- mockups (AC7) ------------------------------------------------------------
+
+/// Poll the construction until its mockup run is no longer driven.
+async fn designed(admin: &mut Client, path: &str) -> Value {
+    for _ in 0..200 {
+        let (status, read) = admin.send("GET", path, None).await;
+        assert_eq!(status, StatusCode::OK, "{read}");
+        if read["designing"] == json!(false) {
+            return read;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("the mockup run did not finish");
+}
+
+fn mockup(title: &str, field: &str) -> Value {
+    json!({
+        "title": title,
+        "rationale": format!("{title}, explained"),
+        "screens": [
+            { "name": "Orders list", "html": format!("<table><th>{field}</th></table>") },
+            { "name": "Order form", "html": format!("<form><label>{field}</label></form>") },
+        ],
+    })
+}
+
+#[tokio::test]
+async fn mockups_are_proposed_revised_and_the_chosen_one_shapes_the_plan() -> sc_error::Result<()> {
+    let tmp = TempDir::new("mockups");
+    let model = Arc::new(FakeProvider::new([
+        Reply::calls(
+            "save_mockups",
+            json!({ "mockups": [mockup("Table", "Customer"), mockup("Cards", "Client")] }),
+        ),
+        Reply::says("Two mockups."),
+        Reply::calls(
+            "save_mockups",
+            json!({ "mockups": [mockup("Dense table", "Delivery date")] }),
+        ),
+        Reply::says("Revised."),
+        Reply::calls("save_phases", json!({ "phases": [phase("Data model")] })),
+        Reply::says("One phase."),
+    ]));
+    let (mut admin, _anonymous, _catalog, _db) = setup_with(&tmp, model.clone()).await?;
+    let id = create_app(&mut admin, "shop", react("shop")).await;
+    let path = format!("/api/applications/{id}/construction");
+    let (status, created) = admin.send("POST", &path, Some(json!({}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["mockups"], json!([]));
+
+    // No specification, no mockups; a count out of range is refused.
+    let mockups_path = format!("{path}/mockups");
+    let (status, body) = admin.send("POST", &mockups_path, Some(json!({}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("no specification"), "{body}");
+    let (status, _) = admin
+        .send(
+            "PUT",
+            &format!("{path}/specification"),
+            Some(json!({ "specification": "A shop's order book." })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = admin
+        .send("POST", &mockups_path, Some(json!({ "count": 4 })))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // The first round: two, as asked by default.
+    let (status, started) = admin.send("POST", &mockups_path, Some(json!({}))).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    let read = designed(&mut admin, &path).await;
+    assert_eq!(read["error"], Value::Null, "{read}");
+    assert_eq!(read["status"], json!("draft"));
+    let first = read["mockups"].as_array().unwrap().clone();
+    assert_eq!(first.len(), 2, "{read}");
+    assert_eq!(first[0]["round"], json!(1));
+    assert_eq!(first[0]["screens"][0]["file"], json!("orders-list.html"));
+    // The construction lists the screens without their HTML; it is fetched
+    // per mockup.
+    assert_eq!(first[0]["screens"][0].get("html"), None, "{read}");
+    let mockup = first[0]["id"].as_str().unwrap();
+    let (status, screens) = admin
+        .send("GET", &format!("{mockups_path}/{mockup}/screens"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{screens}");
+    assert_eq!(screens[0]["file"], json!("orders-list.html"));
+    assert!(
+        screens[0]["html"]
+            .as_str()
+            .unwrap()
+            .contains("<th>Customer</th>"),
+        "{screens}"
+    );
+    let (status, _) = admin
+        .send(
+            "GET",
+            &format!("{mockups_path}/{}/screens", Uuid::new_v4()),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let asked = format!("{:?}", model.requests()[0]);
+    assert!(asked.contains("Propose 2 different mockups"), "{asked}");
+    assert!(asked.contains("A shop's order book."), "{asked}");
+
+    // A revision: the run is told the feedback and the mockup it is about.
+    let (status, started) = admin
+        .send(
+            "POST",
+            &mockups_path,
+            Some(json!({ "feedback": [{ "mockup": first[0]["id"], "text": "denser rows" }] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    let read = designed(&mut admin, &path).await;
+    let all = read["mockups"].as_array().unwrap().clone();
+    assert_eq!(all.len(), 3, "{read}");
+    assert_eq!(all[0]["feedback"], json!("denser rows"));
+    assert_eq!(all[2]["round"], json!(2));
+    let asked = format!("{:?}", model.requests()[2]);
+    assert!(asked.contains("denser rows"), "{asked}");
+    assert!(asked.contains("<th>Customer</th>"), "{asked}");
+
+    // Choosing writes the screens beside the project's `src/`.
+    let chosen = all[2]["id"].as_str().unwrap();
+    let (status, read) = admin
+        .send("POST", &format!("{mockups_path}/{chosen}/choose"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{read}");
+    assert_eq!(read["mockups"][2]["status"], json!("chosen"));
+    let written = tmp.path().join("shop/mockups/orders-list.html");
+    assert_eq!(
+        std::fs::read_to_string(&written).unwrap(),
+        "<table><th>Delivery date</th></table>"
+    );
+    assert!(tmp.path().join("shop/mockups/order-form.html").exists());
+    let (status, _) = admin
+        .send(
+            "POST",
+            &format!("{mockups_path}/{}/choose", Uuid::new_v4()),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // The phase plan is told the chosen mockup, fields and all.
+    let (status, started) = admin.send("POST", &format!("{path}/plan"), None).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    let read = planned(&mut admin, &path).await;
+    assert_eq!(titles(&read), ["Data model"]);
+    let asked = format!("{:?}", model.requests()[4]);
+    assert!(asked.contains("The chosen mockup: Dense table"), "{asked}");
+    assert!(asked.contains("<th>Delivery date</th>"), "{asked}");
+    assert_eq!(model.remaining(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn choosing_another_mockup_and_planning_again_replans_the_phases() -> sc_error::Result<()> {
+    let tmp = TempDir::new("mockup-replan");
+    let model = Arc::new(FakeProvider::new([
+        Reply::calls(
+            "save_mockups",
+            json!({ "mockups": [mockup("Table", "Customer"), mockup("Cards", "Client")] }),
+        ),
+        Reply::says("Two mockups."),
+        Reply::calls(
+            "save_phases",
+            json!({ "phases": [phase("Customers table"), phase("Order list")] }),
+        ),
+        Reply::says("Planned for the table."),
+        Reply::calls("save_phases", json!({ "phases": [phase("Client cards")] })),
+        Reply::says("Planned for the cards."),
+    ]));
+    let (mut admin, _anonymous, _catalog, _db) = setup_with(&tmp, model.clone()).await?;
+    let id = create_app(&mut admin, "shop", react("shop")).await;
+    let path = format!("/api/applications/{id}/construction");
+    let mockups_path = format!("{path}/mockups");
+    admin.send("POST", &path, Some(json!({}))).await;
+    admin
+        .send(
+            "PUT",
+            &format!("{path}/specification"),
+            Some(json!({ "specification": "A shop's order book." })),
+        )
+        .await;
+    let (status, _) = admin.send("POST", &mockups_path, Some(json!({}))).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let read = designed(&mut admin, &path).await;
+    let (first, second) = (
+        read["mockups"][0]["id"].as_str().unwrap().to_owned(),
+        read["mockups"][1]["id"].as_str().unwrap().to_owned(),
+    );
+
+    // The first mockup chosen and planned for.
+    let (status, _) = admin
+        .send("POST", &format!("{mockups_path}/{first}/choose"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    admin.send("POST", &format!("{path}/plan"), None).await;
+    let read = planned(&mut admin, &path).await;
+    assert_eq!(read["status"], json!("planned"), "{read}");
+    assert_eq!(titles(&read), ["Customers table", "Order list"]);
+    let asked = format!("{:?}", model.requests()[2]);
+    assert!(!asked.contains("has phases already"), "{asked}");
+
+    // The second chosen once the phases are planned: it replaces the first,
+    // in the mockups and in the files the builder reads.
+    let (status, read) = admin
+        .send("POST", &format!("{mockups_path}/{second}/choose"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{read}");
+    assert_eq!(read["mockups"][0]["status"], json!("proposed"));
+    assert_eq!(read["mockups"][1]["status"], json!("chosen"));
+    let written = tmp.path().join("shop/mockups/orders-list.html");
+    assert!(
+        std::fs::read_to_string(&written)
+            .unwrap()
+            .contains("Client"),
+        "the second mockup's screens are written"
+    );
+
+    // Planning again is told the second mockup and to plan anew, and its
+    // phases replace the first plan's.
+    let (status, started) = admin.send("POST", &format!("{path}/plan"), None).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    let read = planned(&mut admin, &path).await;
+    assert_eq!(read["error"], Value::Null, "{read}");
+    assert_eq!(titles(&read), ["Client cards"]);
+    let asked = format!("{:?}", model.requests()[4]);
+    assert!(asked.contains("<th>Client</th>"), "{asked}");
+    assert!(!asked.contains("<th>Customer</th>"), "{asked}");
+    assert!(asked.contains("has phases already"), "{asked}");
     assert_eq!(model.remaining(), 0);
     Ok(())
 }

@@ -41,7 +41,7 @@
 pub(crate) const ADMIN_TASKS: sc_catalog::Unchecked<'static> = sc_catalog::Unchecked::system(
     "sc-server: an administrator's task on the primary database or a raw file store (clear all, \
          table rename, the user and checklist-user lists, system info, an application's \
-         translation catalogues)",
+         translation catalogues and its chosen mockup's screens)",
 );
 
 mod admin_host;

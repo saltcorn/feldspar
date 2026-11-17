@@ -1,5 +1,5 @@
 //! The admin API's endpoints: the App Constructor (TODO-app-constructor AC1.3,
-//! AC2.2, AC2.3, AC3.4).
+//! AC2.2, AC2.3, AC3.4, AC7).
 //!
 //! An application has one construction at most, so a construction is
 //! addressed by its application's id. Their handlers are registered by
@@ -7,14 +7,16 @@
 
 use super::*;
 
+/// The path of an application's construction.
+fn construction_path() -> PathSpec {
+    api()
+        .lit("applications")
+        .param("id", ValueType::Uuid)
+        .lit("construction")
+}
+
 /// Declare this domain's endpoints on `set`.
 pub(super) fn register(set: &mut EndpointSet) {
-    let construction = || {
-        api()
-            .lit("applications")
-            .param("id", ValueType::Uuid)
-            .lit("construction")
-    };
     // One line per construction, for the Home screen.
     set.register(
         Endpoint::new(
@@ -25,7 +27,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::array(construction_summary_schema())),
     );
     set.register(
-        Endpoint::new(ids::GET_CONSTRUCTION, Method::Get, construction())
+        Endpoint::new(ids::GET_CONSTRUCTION, Method::Get, construction_path())
             .output(construction_schema()),
     );
     // Starts a construction for a React application, with the agent that plans
@@ -33,7 +35,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // application's settings choose, else the builder agent's, else the
     // default.
     set.register(
-        Endpoint::new(ids::CREATE_CONSTRUCTION, Method::Post, construction())
+        Endpoint::new(ids::CREATE_CONSTRUCTION, Method::Post, construction_path())
             .input(TypeSchema::struct_of([StructField::new(
                 "provider",
                 TypeSchema::optional(TypeSchema::text()),
@@ -44,7 +46,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         Endpoint::new(
             ids::SAVE_CONSTRUCTION_SPECIFICATION,
             Method::Put,
-            construction().lit("specification"),
+            construction_path().lit("specification"),
         )
         .input(TypeSchema::struct_of([StructField::new(
             "specification",
@@ -59,25 +61,30 @@ pub(super) fn register(set: &mut EndpointSet) {
         Endpoint::new(
             ids::PLAN_CONSTRUCTION,
             Method::Post,
-            construction().lit("plan"),
+            construction_path().lit("plan"),
         )
         .output(construction_schema()),
     );
+    register_mockups(set);
     // Replaces the phases, in order; the validation the agent's `save_phases`
     // goes through. A phase named by `id` is updated in place, and one with
     // tasks that the list leaves out is kept.
     set.register(
-        Endpoint::new(ids::SAVE_PHASES, Method::Put, construction().lit("phases"))
-            .input(TypeSchema::struct_of([StructField::new(
-                "phases",
-                TypeSchema::array(TypeSchema::struct_of([
-                    StructField::new("id", TypeSchema::optional(TypeSchema::uuid())),
-                    StructField::new("title", TypeSchema::text()),
-                    StructField::new("description", TypeSchema::text()),
-                    StructField::new("requirements", TypeSchema::array(requirement_schema())),
-                ])),
-            )]))
-            .output(construction_schema()),
+        Endpoint::new(
+            ids::SAVE_PHASES,
+            Method::Put,
+            construction_path().lit("phases"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "phases",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("id", TypeSchema::optional(TypeSchema::uuid())),
+                StructField::new("title", TypeSchema::text()),
+                StructField::new("description", TypeSchema::text()),
+                StructField::new("requirements", TypeSchema::array(requirement_schema())),
+            ])),
+        )]))
+        .output(construction_schema()),
     );
     // Starts the runner (202): it plans each phase's tasks when it reaches the
     // phase and runs them, until every phase is done, or `until_phase` is. Poll
@@ -86,7 +93,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         Endpoint::new(
             ids::RUN_CONSTRUCTION,
             Method::Post,
-            construction().lit("run"),
+            construction_path().lit("run"),
         )
         .input(TypeSchema::struct_of([StructField::new(
             "until_phase",
@@ -103,7 +110,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         Endpoint::new(
             ids::PLAN_PHASE_TASKS,
             Method::Post,
-            construction()
+            construction_path()
                 .lit("phases")
                 .param("phase", ValueType::Uuid)
                 .lit("plan"),
@@ -120,11 +127,15 @@ pub(super) fn register(set: &mut EndpointSet) {
         Endpoint::new(
             ids::STOP_CONSTRUCTION,
             Method::Post,
-            construction().lit("stop"),
+            construction_path().lit("stop"),
         )
         .output(construction_schema()),
     );
-    let task = || construction().lit("tasks").param("task", ValueType::Uuid);
+    let task = || {
+        construction_path()
+            .lit("tasks")
+            .param("task", ValueType::Uuid)
+    };
     // A failed task back to `todo`; a failed construction carries on.
     set.register(
         Endpoint::new(ids::RETRY_TASK, Method::Post, task().lit("retry"))
@@ -139,12 +150,75 @@ pub(super) fn register(set: &mut EndpointSet) {
     // Deletes the construction, its phases and tasks, and the agent made for
     // it. What it built stays. Refused while it runs.
     set.register(
-        Endpoint::new(ids::DELETE_CONSTRUCTION, Method::Delete, construction()).output(
-            TypeSchema::struct_of([
-                StructField::new("deleted", TypeSchema::bool()),
-                StructField::new("agent", TypeSchema::optional(TypeSchema::text())),
-            ]),
-        ),
+        Endpoint::new(
+            ids::DELETE_CONSTRUCTION,
+            Method::Delete,
+            construction_path(),
+        )
+        .output(TypeSchema::struct_of([
+            StructField::new("deleted", TypeSchema::bool()),
+            StructField::new("agent", TypeSchema::optional(TypeSchema::text())),
+        ])),
+    );
+}
+
+/// The mockups' endpoints (AC7).
+fn register_mockups(set: &mut EndpointSet) {
+    // Starts the run that proposes mockups (AC7), answering at once (202) with
+    // `designing` true; the run saves them as a new round. `count` is how many
+    // (2 when absent). `feedback` on the last round's mockups, or a `note`,
+    // makes it a revision: the run is told them and the mockups they are
+    // about. Poll `getConstruction` until `designing` is false.
+    set.register(
+        Endpoint::new(
+            ids::PROPOSE_MOCKUPS,
+            Method::Post,
+            construction_path().lit("mockups"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("count", TypeSchema::optional(TypeSchema::int())),
+            StructField::new(
+                "feedback",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::struct_of([
+                    StructField::new("mockup", TypeSchema::uuid()),
+                    StructField::new("text", TypeSchema::text()),
+                ]))),
+            ),
+            StructField::new("note", TypeSchema::optional(TypeSchema::text())),
+        ]))
+        .output(construction_schema()),
+    );
+    // A mockup's screens with their HTML. The construction lists the screens
+    // without it, so a poll does not carry every page: the screen fetches
+    // them per mockup, once, as a mockup never changes after it is saved.
+    set.register(
+        Endpoint::new(
+            ids::GET_MOCKUP_SCREENS,
+            Method::Get,
+            construction_path()
+                .lit("mockups")
+                .param("mockup", ValueType::Uuid)
+                .lit("screens"),
+        )
+        .output(TypeSchema::array(TypeSchema::struct_of([
+            StructField::new("name", TypeSchema::text()),
+            StructField::new("file", TypeSchema::text()),
+            StructField::new("html", TypeSchema::text()),
+        ]))),
+    );
+    // Chooses one mockup, unchoosing any other, and writes its screens into
+    // the application's file store as `mockups/<screen>.html`, where the
+    // builder agent reads them. The phases are then planned to follow it.
+    set.register(
+        Endpoint::new(
+            ids::CHOOSE_MOCKUP,
+            Method::Post,
+            construction_path()
+                .lit("mockups")
+                .param("mockup", ValueType::Uuid)
+                .lit("choose"),
+        )
+        .output(construction_schema()),
     );
 }
 
@@ -179,6 +253,10 @@ fn construction_schema() -> TypeSchema {
         StructField::new("until_phase", TypeSchema::optional(TypeSchema::uuid())),
         // The run only plans `until_phase`'s tasks (`planPhaseTasks`).
         StructField::new("plan_only", TypeSchema::bool()),
+        // Whether a run proposing mockups is being driven now.
+        StructField::new("designing", TypeSchema::bool()),
+        // Every round's mockups, oldest first.
+        StructField::new("mockups", TypeSchema::array(mockup_schema())),
         StructField::new("updated_at", TypeSchema::optional(TypeSchema::timestamp())),
         StructField::new("phases", TypeSchema::array(phase_schema())),
     ]))
@@ -193,6 +271,26 @@ fn phase_schema() -> TypeSchema {
         // unplanned | planned | running | failed | done: from the tasks.
         StructField::new("status", TypeSchema::text()),
         StructField::new("tasks", TypeSchema::array(task_schema())),
+    ])
+}
+
+fn mockup_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::uuid()),
+        StructField::new("round", TypeSchema::int()),
+        StructField::new("title", TypeSchema::text()),
+        StructField::new("rationale", TypeSchema::text()),
+        StructField::new(
+            "screens",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("name", TypeSchema::text()),
+                // Its file under `mockups/` once the mockup is chosen.
+                StructField::new("file", TypeSchema::text()),
+            ])),
+        ),
+        // proposed | chosen
+        StructField::new("status", TypeSchema::text()),
+        StructField::new("feedback", TypeSchema::optional(TypeSchema::text())),
     ])
 }
 

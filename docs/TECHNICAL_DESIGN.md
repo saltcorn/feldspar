@@ -6188,6 +6188,27 @@ and the planning run is told the old list and the note (the construction's `plan
 flag and the note are columns of the construction, so a restart in the middle resumes the same
 planning run, and an ordinary run clears them.
 
+**Mockups before the phases, when the admin wants them** (AC7). The construction agent
+proposes a few mockups of the application's main screens (two by default) with `save_mockups`;
+the admin chooses one, or comments on them and has them revised, before the phases are planned.
+- **What a mockup is:** each screen a self-contained HTML page with its CSS inline, no scripts
+  and nothing loaded from elsewhere. That is quick for a model to write and needs no build. The
+  generated React apps style themselves with their own plain CSS, so a mockup's CSS carries over
+  to the app's styles directly.
+- **Shown safely:** the admin shows a screen in an `<iframe sandbox srcdoc>` with no `allow-*`.
+  It runs no script, submits no form, opens no window and has an origin of its own, and the
+  admin's own content security policy still applies to it.
+- **Rounds, not edits:** a proposal is a round of rows in `_fd_construction_mockups`. A
+  revision is the next round, written from the admin's feedback, which is stored on the mockups
+  it is about, so earlier rounds stay readable. One mockup at most is chosen.
+- **The chosen one reaches the build** in three places. The phase plan and each phase's task
+  plan are told its screens, HTML included, so the data model has the fields they show and the
+  features follow its screens. Choosing it writes the screens into the application's source tree
+  as `mockups/<screen>.html`, and a feature task is told which files to read and match.
+- **Optional:** the phases can be planned without a mockup, or without choosing one. A mockup
+  run is driven as a plan run is, flagged in the process's memory (`designing`), and one run of
+  the construction agent is allowed at a time.
+
 **Two kinds of task, two agents.**
 - A `data_model` task runs the construction's own agent, which has the copilot's tools.
 - A `feature` task is delegated to the application's builder agent. Its own check decides

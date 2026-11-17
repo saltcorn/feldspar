@@ -2,6 +2,18 @@
 
 Changes in reverse chronological order.
 
+## Plan & build: mockups to choose from before the build
+
+After writing the specification, "Propose mockups" has the construction agent draw two mockups
+of the application's main screens, each a different layout. A new Mockups step shows them as
+numbered alternatives (Mockup 1, Mockup 2), every screen of a mockup in miniature and the one
+picked large, at desktop or phone width. You can choose one, or comment on any of them and have them
+revised in a new round; earlier rounds stay listed. The chosen mockup shapes the build: the
+phases follow its screens, the data model gets the fields they show, and its screens are saved
+in the application's files under `mockups/` for the builder agent to match. Mockups are optional:
+"Plan phases" still works straight from the specification. Before, the first look at the
+application was once the phases had been built.
+
 ## Plan & build: review a phase's tasks before they run
 
 A phase's page now has "Plan tasks" for the phase the construction reaches next: the

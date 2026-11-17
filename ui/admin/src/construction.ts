@@ -1,8 +1,9 @@
 // The Plan & build screen's decisions (TODO-app-constructor AC4), as pure
 // functions so they are tested without a browser.
 //
-// The screen shows one application's construction in three numbered tabs:
-// the specification, the phases, and the progress of their tasks. Which one
+// The screen shows one application's construction in four numbered tabs:
+// the specification, the mockups (optional, AC7), the phases, and the
+// progress of their tasks. Which one
 // opens follows from the construction's status. The phases are edited as a
 // draft on the screen and saved whole, as the server's `savePhases` takes
 // them.
@@ -12,6 +13,7 @@ import type { ApiClient, GetConstructionResponse, SavePhasesRequest } from "./cl
 export type Construction = GetConstructionResponse;
 export type ConstructionPhase = Construction["phases"][number];
 export type ConstructionTask = ConstructionPhase["tasks"][number];
+export type ConstructionMockup = Construction["mockups"][number];
 
 /** A phase as the admin edits it before saving. */
 export type PhaseDraft = SavePhasesRequest["phases"][number];
@@ -60,21 +62,23 @@ export function constructible(app: { framework: { name: string } }): boolean {
 }
 
 /** The step the screen opens on. */
-export type Step = "start" | "specification" | "phases" | "progress";
+export type Step = "start" | "specification" | "mockups" | "phases" | "progress";
 
 /** Which step is open for `construction` (`null`: the application has none).
  *
  * - None yet: start one.
- * - A draft has no phases: write the specification.
+ * - A draft has no phases: write the specification, or, once mockups are
+ *   proposed or being proposed, choose one.
  * - Planned: edit the phases, until a task has run. From then on the progress
  *   is what the admin comes back to see.
  * - Running, stopped, failed or done: the progress. */
 export function currentStep(construction: Construction | null): Step {
   if (!construction) return "start";
   if (construction.planning) return "phases";
+  if (construction.designing) return "mockups";
   switch (construction.status) {
     case "draft":
-      return "specification";
+      return construction.mockups.length > 0 ? "mockups" : "specification";
     case "planned":
       return started(construction) ? "progress" : "phases";
     default:
@@ -92,12 +96,14 @@ export function blankConstruction(appId: string): Construction {
     specification: "",
     planning: false,
     plan_only: false,
+    designing: false,
+    mockups: [],
     phases: [],
   };
 }
 
 /** The screen's tabs, in order; each is one step. */
-export const TABS = ["specification", "phases", "progress"] as const;
+export const TABS = ["specification", "mockups", "phases", "progress"] as const;
 export type Tab = (typeof TABS)[number];
 
 /** The tab the screen opens on: the current step's, except that a build under
@@ -107,12 +113,15 @@ export function landingTab(step: Exclude<Step, "start">): Tab {
   return step === "progress" ? "phases" : step;
 }
 
-/** Whether `tab` can be opened yet: the specification always, the phases once
- * they are planned or being planned, the progress once the step is reached. */
+/** Whether `tab` can be opened yet: the specification always, the mockups once
+ * some are proposed or being proposed, the phases once they are planned or
+ * being planned, the progress once the step is reached. */
 export function tabOpen(construction: Construction, tab: Tab): boolean {
   switch (tab) {
     case "specification":
       return true;
+    case "mockups":
+      return construction.designing || construction.mockups.length > 0;
     case "phases":
       return construction.planning || construction.phases.length > 0;
     case "progress":
@@ -125,10 +134,13 @@ export function started(construction: Construction): boolean {
   return construction.phases.some((p) => p.tasks.some((t) => t.status !== "todo"));
 }
 
-/** Whether the screen should keep reloading: while the construction runs or
- * its phases are being planned. */
+/** Whether the screen should keep reloading: while the construction runs, or
+ * its phases are being planned or its mockups proposed. */
 export function shouldPoll(construction: Construction | null): boolean {
-  return !!construction && (construction.status === "running" || construction.planning);
+  return (
+    !!construction &&
+    (construction.status === "running" || construction.planning || construction.designing)
+  );
 }
 
 /** Keep `construction` up to date while it runs or is being planned: every
@@ -173,7 +185,8 @@ export function pollConstruction(
  * construction's error while it is not being planned or run. Once tasks have
  * run, the error is the progress's to show. */
 export function planError(construction: Construction): string | null {
-  if (construction.planning || currentStep(construction) === "progress") return null;
+  if (construction.planning || construction.designing) return null;
+  if (currentStep(construction) === "progress") return null;
   return construction.error ?? null;
 }
 
@@ -300,6 +313,79 @@ export function unfinishedBefore(
   return construction.phases.slice(0, index).filter((p) => p.status !== "done");
 }
 
+/** How many mockups a proposal asks for unless the admin picks another number,
+ * as the server's default. */
+export const DEFAULT_MOCKUPS = 2;
+
+/** The widths a mockup is shown at, in CSS pixels. */
+export const MOCKUP_WIDTHS = { desktop: 1280, phone: 390 } as const;
+export type MockupWidth = keyof typeof MOCKUP_WIDTHS;
+
+/** The last round's mockups, in order: what the admin chooses from. */
+export function latestMockups(construction: Construction): ConstructionMockup[] {
+  const round = Math.max(0, ...construction.mockups.map((m) => m.round));
+  return construction.mockups.filter((m) => m.round === round);
+}
+
+/** The chosen mockup, if one is. It may be from an earlier round. */
+export function chosenMockup(construction: Construction): ConstructionMockup | null {
+  return construction.mockups.find((m) => m.status === "chosen") ?? null;
+}
+
+/** The feedback a revision sends: what the admin wrote per mockup, blank ones
+ * left out, for the last round's mockups only. */
+export function revisionFeedback(
+  construction: Construction,
+  notes: Record<string, string>,
+): { mockup: string; text: string }[] {
+  return latestMockups(construction)
+    .map((m) => ({ mockup: m.id, text: (notes[m.id] ?? "").trim() }))
+    .filter((f) => f.text !== "");
+}
+
+/** Whether mockups can be proposed, revised or chosen now: not while the
+ * agent plans or proposes, or the construction runs. */
+export function mockupsEditable(construction: Construction): boolean {
+  return (
+    !construction.planning && !construction.designing && construction.status !== "running"
+  );
+}
+
+/** A screen's HTML as the frame shows it. The page runs no script and loads
+ * nothing (the frame is sandboxed and the admin's policy applies), so a link
+ * in it would only navigate the frame away from the mockup: the base target
+ * sends it to a new window, which the sandbox does not allow, so nowhere. */
+export function mockupDocument(html: string): string {
+  const base = '<base target="_blank">';
+  // Inside `<head>`, or after the doctype: before it, the page would render
+  // in quirks mode.
+  if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, (head) => head + base);
+  const doctype = html.match(/^\s*<!doctype[^>]*>/i);
+  if (doctype) return doctype[0] + base + html.slice(doctype[0].length);
+  return base + html;
+}
+
+/** Fetches a mockup's screens with their HTML, in order. */
+export type MockupScreensLoader = (mockup: string) => Promise<{ html: string }[]>;
+
+// The screens' HTML fetched so far, by mockup. The construction lists the
+// screens without it, so a poll stays small; a mockup never changes once it is
+// saved, so each is fetched once. A failed fetch is forgotten, so the next
+// asks again.
+const mockupPagesCache = new Map<string, Promise<string[]>>();
+
+/** The HTML of `mockup`'s screens, in order: fetched with `load` the first
+ * time, and from then on answered from what that fetch got. */
+export function mockupPages(load: MockupScreensLoader, mockup: string): Promise<string[]> {
+  let pages = mockupPagesCache.get(mockup);
+  if (!pages) {
+    pages = load(mockup).then((screens) => screens.map((s) => s.html));
+    pages.catch(() => mockupPagesCache.delete(mockup));
+    mockupPagesCache.set(mockup, pages);
+  }
+  return pages;
+}
+
 /** The endpoints the screen calls for one application. */
 export type ConstructionClient = Pick<
   ApiClient,
@@ -312,6 +398,9 @@ export type ConstructionClient = Pick<
   | "retryTask"
   | "skipTask"
   | "planPhaseTasks"
+  | "proposeMockups"
+  | "chooseMockup"
+  | "getMockupScreens"
 >;
 
 /** What the screen's buttons do, each answering the construction as the
@@ -327,6 +416,18 @@ export function constructionCalls(client: ConstructionClient, appId: string) {
       await client.saveConstructionSpecification(appId, { specification });
       return client.planConstruction(appId);
     },
+    /** Save the specification as it is on the screen, then have `count`
+     * mockups proposed from it. */
+    proposeMockups: async (specification: string, count: number) => {
+      await client.saveConstructionSpecification(appId, { specification });
+      return client.proposeMockups(appId, { count, feedback: null, note: null });
+    },
+    /** A new round, revising the last one as `feedback` and `note` ask. */
+    reviseMockups: (feedback: { mockup: string; text: string }[], note: string | null) =>
+      client.proposeMockups(appId, { count: null, feedback, note }),
+    chooseMockup: (mockup: string) => client.chooseMockup(appId, mockup),
+    /** A mockup's screens with their HTML, which the construction leaves out. */
+    mockupScreens: (mockup: string) => client.getMockupScreens(appId, mockup),
     savePhases: (phases: PhaseDraft[]) => client.savePhases(appId, { phases }),
     /** Run every phase, or up to and including the phase `until`. */
     run: (until: string | null) => client.runConstruction(appId, { until_phase: until }),
