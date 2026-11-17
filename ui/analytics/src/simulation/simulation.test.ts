@@ -195,7 +195,7 @@ describe("panels", () => {
     expect(profiler.content).toEqual({ model: "m1", level: 0.8, values: { area: 150 }, scenarios: state.scenarios });
     // A copy: changing the workspace afterwards does not reach the panel.
     state.values.area = 1;
-    expect((profiler.content as { values: { area: number } }).values.area).toBe(150);
+    expect((profiler.content as unknown as { values: { area: number } }).values.area).toBe(150);
     state.values.area = 150;
 
     const data = new Map<string, string>();
