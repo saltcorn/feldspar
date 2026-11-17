@@ -82,6 +82,10 @@ pub const COL_EXPIRES_AT: &str = "expires_at";
 /// being typed ends the sign-in. `NULL` for every other purpose, and for a
 /// challenge from before epochs, which reads as the initial epoch.
 pub(crate) const COL_AUTH_EPOCH: &str = "auth_epoch";
+/// A second-factor challenge's identity-provider details
+/// ([`PasswordVerified::identity`](crate::PasswordVerified::identity)), so
+/// the `login` event after the code still carries them. Nullable JSON.
+pub(crate) const COL_SIGN_IN: &str = "sign_in";
 
 /// How many random bytes a token carries: 256 bits, as a session token has.
 pub const PASSWORD_TOKEN_BYTES: usize = 32;
@@ -174,6 +178,8 @@ fn token_fields() -> Vec<DataField> {
         DataField::plain(COL_EXPIRES_AT, timestamp()).required(),
         // Nullable, so the bootstrap adds it to an existing table.
         DataField::plain(COL_AUTH_EPOCH, TypeRef::Basic(BasicType::Int)),
+        // Nullable too, for the same reason.
+        DataField::plain(COL_SIGN_IN, TypeRef::Basic(BasicType::Json)),
     ]
 }
 
@@ -198,14 +204,15 @@ pub async fn issue_password_token(
 }
 
 /// Issue a second-factor challenge for `user_id`, recording the epoch its
-/// password was checked at.
+/// password was checked at and the identity provider's details, if any.
 pub(crate) async fn issue_challenge_token(
     catalog: &Catalog,
     user_id: Uuid,
     purpose: PasswordTokenPurpose,
     epoch: AuthEpoch,
+    sign_in: Option<&serde_json::Value>,
 ) -> Result<String> {
-    issue(catalog, user_id, purpose, Some(epoch)).await
+    issue_with(catalog, user_id, purpose, Some(epoch), sign_in).await
 }
 
 async fn issue(
@@ -213,6 +220,16 @@ async fn issue(
     user_id: Uuid,
     purpose: PasswordTokenPurpose,
     epoch: Option<AuthEpoch>,
+) -> Result<String> {
+    issue_with(catalog, user_id, purpose, epoch, None).await
+}
+
+async fn issue_with(
+    catalog: &Catalog,
+    user_id: Uuid,
+    purpose: PasswordTokenPurpose,
+    epoch: Option<AuthEpoch>,
+    sign_in: Option<&serde_json::Value>,
 ) -> Result<String> {
     let mut bytes = [0u8; PASSWORD_TOKEN_BYTES];
     OsRng.fill_bytes(&mut bytes);
@@ -237,6 +254,10 @@ async fn issue(
     if let Some(epoch) = epoch {
         columns.push(COL_AUTH_EPOCH);
         values.push(Expr::lit(epoch.value()));
+    }
+    if let Some(sign_in) = sign_in {
+        columns.push(COL_SIGN_IN);
+        values.push(Expr::Lit(Value::Json(sign_in.clone())));
     }
     let insert = Insert::row(
         PASSWORD_TOKENS_TABLE,
@@ -400,14 +421,22 @@ pub(crate) async fn password_token_holder(
     }
 }
 
+/// A second-factor challenge, spent: the account, the purpose, the epoch and
+/// the identity-provider details it recorded.
+pub(crate) struct SpentChallengeToken {
+    pub user: Uuid,
+    pub purpose: PasswordTokenPurpose,
+    pub epoch: AuthEpoch,
+    pub sign_in: Option<serde_json::Value>,
+}
+
 /// Spend a second-factor challenge `token` if it is live and was issued for
-/// one of `purposes`, returning the account, the purpose and the epoch it
-/// recorded. Exactly one of two racing callers gets `Some`.
+/// one of `purposes`. Exactly one of two racing callers gets `Some`.
 pub(crate) async fn spend_challenge_token(
     catalog: &Catalog,
     token: &str,
     purposes: &[PasswordTokenPurpose],
-) -> Result<Option<(Uuid, PasswordTokenPurpose, AuthEpoch)>> {
+) -> Result<Option<SpentChallengeToken>> {
     let token = token.trim();
     if token.is_empty() {
         return Ok(None);
@@ -417,6 +446,7 @@ pub(crate) async fn spend_challenge_token(
         Projection::expr(Expr::col(COL_USER)),
         Projection::expr(Expr::col(COL_PURPOSE)),
         Projection::expr(Expr::col(COL_AUTH_EPOCH)),
+        Projection::expr(Expr::col(COL_SIGN_IN)),
     ];
     let spent = match spend_rows(&tx, token, purposes, returning).await {
         Ok(spent) => {
@@ -445,11 +475,15 @@ pub(crate) async fn spend_challenge_token(
     }) else {
         return Ok(None);
     };
-    Ok(Some((
+    Ok(Some(SpentChallengeToken {
         user,
         purpose,
-        AuthEpoch::of_column(row.get(COL_AUTH_EPOCH))?,
-    )))
+        epoch: AuthEpoch::of_column(row.get(COL_AUTH_EPOCH))?,
+        sign_in: match row.get(COL_SIGN_IN) {
+            Some(Value::Json(json)) if !json.is_null() => Some(json.clone()),
+            _ => None,
+        },
+    }))
 }
 
 /// Delete the live token `token`, if it was issued for one of `purposes`, and

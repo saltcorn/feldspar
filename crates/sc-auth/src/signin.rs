@@ -57,6 +57,9 @@ pub struct PasswordVerified {
     user: User,
     epoch: AuthEpoch,
     how: FirstFactor,
+    /// What an identity provider said about the person
+    /// ([`with_identity`](PasswordVerified::with_identity)).
+    identity: Option<serde_json::Value>,
 }
 
 impl PasswordVerified {
@@ -66,17 +69,42 @@ impl PasswordVerified {
     /// other half.
     pub async fn by(catalog: &Catalog, user: User, how: FirstFactor) -> Result<PasswordVerified> {
         let epoch = current_epoch(catalog, user.id()).await?;
-        Ok(PasswordVerified { user, epoch, how })
+        Ok(PasswordVerified {
+            user,
+            epoch,
+            how,
+            identity: None,
+        })
     }
 
     /// A sign-in resumed from the challenge it was given, at the epoch the
-    /// challenge recorded.
-    pub(crate) fn resumed(user: User, epoch: AuthEpoch) -> PasswordVerified {
+    /// challenge recorded, with the identity it recorded.
+    pub(crate) fn resumed(
+        user: User,
+        epoch: AuthEpoch,
+        identity: Option<serde_json::Value>,
+    ) -> PasswordVerified {
         PasswordVerified {
             user,
             epoch,
             how: FirstFactor::Password,
+            identity,
         }
+    }
+
+    /// This sign-in with what the identity provider said about the person —
+    /// `{ provider, claims }` — which the `login` event carries as its
+    /// payload. Kept through a second-factor challenge. Says nothing about
+    /// who may sign in: it is data for the application.
+    #[must_use]
+    pub fn with_identity(mut self, identity: serde_json::Value) -> PasswordVerified {
+        self.identity = Some(identity);
+        self
+    }
+
+    /// What [`with_identity`](PasswordVerified::with_identity) recorded.
+    pub fn identity(&self) -> Option<&serde_json::Value> {
+        self.identity.as_ref()
     }
 
     /// The account signing in.
@@ -116,6 +144,7 @@ impl PasswordVerified {
             user: self.user,
             epoch: Some(self.epoch),
             how: How::SignedIn(second),
+            identity: self.identity,
         })
     }
 }
@@ -214,6 +243,8 @@ pub struct FullyAuthenticated {
     /// is issued at whatever epoch the account is at when it starts.
     epoch: Option<AuthEpoch>,
     how: How,
+    /// [`PasswordVerified::identity`]; `None` for a waiver.
+    identity: Option<serde_json::Value>,
 }
 
 impl FullyAuthenticated {
@@ -224,7 +255,14 @@ impl FullyAuthenticated {
             user,
             epoch: None,
             how: How::Waived(waiver),
+            identity: None,
         }
+    }
+
+    /// What the identity provider said about the person, for a provider's
+    /// sign-in ([`PasswordVerified::with_identity`]).
+    pub fn identity(&self) -> Option<&serde_json::Value> {
+        self.identity.as_ref()
     }
 
     /// The account.

@@ -125,8 +125,9 @@ struct Pending {
 
 /// What the provider granted.
 enum Outcome {
-    /// The account it vouched for.
-    SignIn(User),
+    /// The account it vouched for, and what the provider said about the
+    /// person (`{ provider, claims }`), for the `login` event.
+    SignIn { user: User, identity: Value },
     /// The token response, for the module's row.
     Consent {
         flow: Box<ConsentFlow>,
@@ -531,12 +532,20 @@ pub(crate) async fn callback(State(state): State<AppState>, uri: Uri) -> Respons
                 Ok(Some(provider)) if offered(&provider, *admin) => provider,
                 _ => return back("unknown identity provider"),
             };
-            let email = match signed_in_email(&provider, code, &pending).await {
-                Ok(email) => email,
+            let (email, claims) = match signed_in_email(&provider, code, &pending).await {
+                Ok(signed_in) => signed_in,
                 Err(message) => return back(&message),
             };
-            match account_for(&catalog, &state.sessions, &provider, &email, *admin).await {
-                Ok(user) => Outcome::SignIn(user),
+            let signed_in = SignedIn {
+                email: &email,
+                claims: &claims,
+                groups: groups_claim(&claims, &provider.groups_claim),
+            };
+            match account_for(&catalog, &state.sessions, &provider, &signed_in, *admin).await {
+                Ok(user) => Outcome::SignIn {
+                    user,
+                    identity: json!({ "provider": provider.name, "claims": claims }),
+                },
                 Err(message) => return back(&message),
             }
         }
@@ -624,13 +633,14 @@ async fn exchange(
     Ok((client, token))
 }
 
-/// Exchange `code` for an access token and read the verified email it is for.
-/// `Err` is a sentence for the sign-in page.
+/// Exchange `code` for an access token and read the verified email it is for,
+/// and the whole userinfo answer (its claims: `name`, `groups`, …). `Err` is a
+/// sentence for the sign-in page.
 async fn signed_in_email(
     provider: &OAuthProvider,
     code: &str,
     pending: &Pending,
-) -> std::result::Result<String, String> {
+) -> std::result::Result<(String, Value), String> {
     let as_client = Client {
         token_url: &provider.token_url,
         client_id: &provider.client_id,
@@ -662,7 +672,7 @@ async fn signed_in_email(
         .filter(|e| !e.is_empty())
     {
         if email_vouched_for(&info, provider.trust_emails) {
-            return Ok(email.trim().to_owned());
+            return Ok((email.trim().to_owned(), info.clone()));
         }
         if !github {
             return Err("the identity provider has not verified that email address".to_owned());
@@ -687,7 +697,7 @@ async fn signed_in_email(
                     .flatten()
             })
         }) {
-            return Ok(email.to_owned());
+            return Ok((email.to_owned(), info));
         }
     }
     Err("the identity provider did not say which email address you signed in with".to_owned())
@@ -705,16 +715,26 @@ fn email_vouched_for(info: &Value, trust_unsaid: bool) -> bool {
     }
 }
 
+/// Who the provider signed in: the verified address, and its userinfo answer.
+struct SignedIn<'a> {
+    email: &'a str,
+    claims: &'a Value,
+    /// Its groups claim ([`groups_claim`]).
+    groups: Option<Vec<String>>,
+}
+
 /// The account `email` signs in to. An administrator, on the admin UI's host;
 /// on an application's, anybody enabled — and, when the provider creates
-/// accounts, somebody new.
+/// accounts, somebody new. The provider's mapped claims are written onto it
+/// and its groups set its role ([`apply_claims`]).
 async fn account_for(
     catalog: &sc_catalog::Catalog,
     sessions: &sc_auth::SessionStore,
     provider: &OAuthProvider,
-    email: &str,
+    signed_in: &SignedIn<'_>,
     admin: bool,
 ) -> std::result::Result<User, String> {
+    let email = signed_in.email;
     let failed = |e: sc_error::Error| {
         log_failure(
             "could not look up the account for an identity provider sign-in",
@@ -734,13 +754,17 @@ async fn account_for(
                 // A password nobody is told: this account signs in through the
                 // provider, or sets one with a forgotten-password link.
                 password: sc_error::Secret::default(),
-                role: provider.new_user_role,
+                role: provider
+                    .role_from_groups(provider.new_user_role, signed_in.groups.as_deref())
+                    .unwrap_or(provider.new_user_role),
+                extra: claim_values(catalog, provider, signed_in.claims),
                 ..Default::default()
             };
-            sc_auth::create_user_with(catalog, new)
+            // Made with its claims and role already: nothing to apply.
+            return sc_auth::create_user_with(catalog, new)
                 .await
-                .map_err(failed)?
-                .user
+                .map(|created| created.user)
+                .map_err(failed);
         }
         None => return Err(no_account()),
     };
@@ -756,16 +780,173 @@ async fn account_for(
     // claimed — their password and sessions gone — not joined (security
     // review #41). The store ends the sessions too, so this node's cached
     // copies and the sockets listening for them go with the rows.
-    if user.email_unproven() {
+    let user = if user.email_unproven() {
         let claimed = sc_auth::claim_unproven_account(catalog, user)
             .await
             .map_err(failed)?;
         if let Some(changed) = claimed.credentials {
             sessions.bump_epoch(changed, None).await.map_err(failed)?;
         }
-        return Ok(claimed.user);
+        claimed.user
+    } else {
+        user
+    };
+    Ok(apply_claims(catalog, sessions, provider, signed_in, user).await)
+}
+
+/// The groups `claims` lists under `claim`: a list of names, or one name.
+/// `None` when the claim is not there, which leaves the role alone
+/// ([`OAuthProvider::role_from_groups`]).
+fn groups_claim(claims: &Value, claim: &str) -> Option<Vec<String>> {
+    match claims.get(claim)? {
+        Value::Array(items) => Some(
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+        ),
+        Value::String(one) => Some(vec![one.clone()]),
+        _ => None,
     }
-    Ok(user)
+}
+
+/// Refuse a provider record whose claims are mapped onto a field that is not
+/// an admin-added column of the users table: checked when the admin saves it,
+/// so the form says so. A field dropped later is skipped at sign-in instead
+/// ([`claim_values`]).
+pub(crate) fn check_claim_fields(
+    catalog: &sc_catalog::Catalog,
+    record: &sc_types::Attrs,
+) -> sc_error::Result<()> {
+    let provider = OAuthProvider::from_attrs(record)?;
+    if provider.claim_fields.is_empty() {
+        return Ok(());
+    }
+    let users = catalog.require(sc_auth::USERS_TABLE)?;
+    for (claim, field) in &provider.claim_fields {
+        if sc_auth::is_system_user_column(field) || users.field(field).is_none() {
+            return Err(sc_error::Error::invalid(format!(
+                "identity provider `{}`: claim `{claim}` is mapped onto `{field}`, which is not \
+                 a field added to the users table",
+                provider.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The mapped claims ([`OAuthProvider::claim_fields`]) as values for the
+/// users table's columns. A field that is not an admin-added column of the
+/// table, or a claim that does not fit its column, is skipped and logged: a
+/// mapping gone stale must not stop anybody signing in. A list (`groups`)
+/// fits a text column as its items joined with commas.
+fn claim_values(
+    catalog: &sc_catalog::Catalog,
+    provider: &OAuthProvider,
+    claims: &Value,
+) -> std::collections::BTreeMap<String, sc_query::Value> {
+    let mut out = std::collections::BTreeMap::new();
+    if provider.claim_fields.is_empty() {
+        return out;
+    }
+    let users = match catalog.require(sc_auth::USERS_TABLE) {
+        Ok(users) => users,
+        Err(e) => {
+            log_failure(
+                "could not read the users table for an identity provider's claims",
+                &e,
+            );
+            return out;
+        }
+    };
+    for (claim, field) in &provider.claim_fields {
+        let Some(json) = claims.get(claim) else {
+            continue;
+        };
+        if sc_auth::is_system_user_column(field) {
+            eprintln!(
+                "feldspar: identity provider `{}`: claim `{claim}` is mapped onto `{field}`, \
+                 which is not a field an administrator added; skipped",
+                provider.name
+            );
+            continue;
+        }
+        let value =
+            sc_access::rows::column_value(&users, field, json).or_else(|e| match json.as_array() {
+                Some(items) => {
+                    let joined = items
+                        .iter()
+                        .map(|item| {
+                            item.as_str()
+                                .map_or_else(|| item.to_string(), str::to_owned)
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    sc_access::rows::column_value(&users, field, &Value::String(joined))
+                }
+                None => Err(e),
+            });
+        match value {
+            Ok(value) => {
+                out.insert(field.clone(), value);
+            }
+            Err(e) => log_failure(
+                &format!(
+                    "identity provider `{}`: claim `{claim}` could not be written to `{field}`",
+                    provider.name
+                ),
+                &e,
+            ),
+        }
+    }
+    out
+}
+
+/// Write the provider's mapped claims onto `user`, and set its role from its
+/// groups, at every sign-in. A failure is logged and the sign-in goes on as
+/// the account was: what the provider says about the person is a copy, and a
+/// stale copy is better than no sign-in.
+async fn apply_claims(
+    catalog: &sc_catalog::Catalog,
+    sessions: &sc_auth::SessionStore,
+    provider: &OAuthProvider,
+    signed_in: &SignedIn<'_>,
+    user: User,
+) -> User {
+    let update = sc_auth::UserUpdate {
+        role: provider.role_from_groups(user.role(), signed_in.groups.as_deref()),
+        extra: claim_values(catalog, provider, signed_in.claims)
+            .into_iter()
+            .filter(|(field, value)| user.extra().get(field).is_none_or(|stored| stored != value))
+            .collect(),
+        ..Default::default()
+    };
+    if update.role.is_none() && update.extra.is_empty() {
+        return user;
+    }
+    match sc_auth::update_user(catalog, user.id(), update).await {
+        Ok(changed) => {
+            // A role that now requires a second factor the account lacks
+            // ended its sessions, as an admin's change would.
+            if let Some(credentials) = changed.credentials
+                && let Err(e) = sessions.bump_epoch(credentials, None).await
+            {
+                log_failure("could not end the sessions a role change ended", &e);
+            }
+            changed.user
+        }
+        Err(e) => {
+            log_failure(
+                &format!(
+                    "identity provider `{}`: could not update the account from its claims",
+                    provider.name
+                ),
+                &e,
+            );
+            user
+        }
+    }
 }
 
 /// `GET /_feldspar/oauth/complete`: the session, on the host the flow started
@@ -795,14 +976,14 @@ pub(crate) async fn complete(
         return Redirect::to(&with_error(
             &completion.return_to,
             match completion.outcome {
-                Outcome::SignIn(_) => "the sign-in was started in another browser",
+                Outcome::SignIn { .. } => "the sign-in was started in another browser",
                 Outcome::Consent { .. } => "connecting the account was started in another browser",
             },
         ))
         .into_response();
     }
-    let user = match completion.outcome {
-        Outcome::SignIn(user) => user,
+    let (user, identity) = match completion.outcome {
+        Outcome::SignIn { user, identity } => (user, identity),
         Outcome::Consent { flow, tokens } => {
             let jar = jar.remove(binding_removal());
             let target = match state.apps.catalog() {
@@ -849,7 +1030,8 @@ pub(crate) async fn complete(
             )
             .await
             {
-                Ok(signing_in) => signing_in,
+                // The `login` event's payload, through a second factor too.
+                Ok(signing_in) => signing_in.with_identity(identity),
                 Err(e) => {
                     log_failure("could not finish an identity provider's sign-in", &e);
                     return Redirect::to(&with_error(
@@ -1033,7 +1215,10 @@ mod tests {
         assert!(flows.take("s").is_some());
         assert!(flows.take("s").is_none());
         let token = flows.complete(Completion {
-            outcome: Outcome::SignIn(User::new(uuid::Uuid::new_v4(), Role::ADMIN)),
+            outcome: Outcome::SignIn {
+                user: User::new(uuid::Uuid::new_v4(), Role::ADMIN),
+                identity: Value::Null,
+            },
             host: TrustedHost::served("h").unwrap(),
             return_to: RedirectTarget::root(),
             binding: "b".into(),

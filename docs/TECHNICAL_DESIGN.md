@@ -1336,6 +1336,26 @@ pub struct User {
   An application's generated client has `oauthProviders()` and
   `oauthSignInUrl(provider, returnTo)` whenever it has `login`, and the scaffold's
   `Login.tsx` renders a button per provider.
+
+  **Claims, groups and the `login` event** (TODO F8.6). A provider record may also have:
+  `claim_fields`, one `claim=field` per line, copying userinfo claims onto fields an admin added
+  to the users table (a system column or a field that is not there is refused on save, and
+  skipped and logged at sign-in if it went away since; a list goes into a JSON column as it is,
+  into a text column joined with commas); and `groups_claim` (default `groups`) with
+  `group_roles`, one `group=role` per line (a leading `/` of a Keycloak path is ignored; the
+  admin role is refused). Both apply at **every** sign-in, in `account_for`, before the
+  admin-host check and the second-factor decision, and a new account is created with them.
+  The most privileged matching group's role wins; a promotion always applies, while a lower
+  role, or falling back to `new_user_role` when no group matches, applies only to a role the
+  mapping manages (one it lists, or `new_user_role`), so an administrator or a role given by
+  hand is never lowered. A userinfo answer without the groups claim leaves the role alone. A
+  failure to write is logged and the sign-in goes on. The `login` event's payload for a
+  provider's sign-in is `{ provider, claims }` (the provider's name and its whole userinfo
+  answer, never a token), beside `guest_session` when there is one; a password sign-in's stays
+  null. It rides on `PasswordVerified::with_identity` → `FullyAuthenticated::identity`, and
+  through a second-factor challenge in the nullable JSON column `_fd_password_tokens.sign_in`.
+  Only the userinfo endpoint is read, not the ID token, so a Keycloak mapper must have "Add to
+  userinfo" on.
 - **Two-factor authentication** (`sc_auth::second_factor`, `sc-server/src/second_factor.rs`).
   Codes from an authenticator app (TOTP, RFC 6238: HMAC-SHA-1, 6 digits, 30 seconds, one step
   of drift either way), and 10 single-use recovery codes. It belongs to the **account**, not
@@ -2350,7 +2370,8 @@ signed-in user owns them by `user`.
   cleared — and the `login` event's payload is `{ guest_session: <public id> }`, which the
   application's own trigger uses to move the guest's rows to the account (`update_rows` where
   `session_id !== null && session_id === payload.guest_session`). A login from a browser that was
-  nobody's guest has no payload, as before — and a field a payload does not have reads as null,
+  nobody's guest has no payload, as before (an identity provider's sign-in has
+  `{ provider, claims }`, §7.2) — and a field a payload does not have reads as null,
   so the trigger's first half is what keeps it from matching every row with no session.
 - **The live socket** (P2.8) is resolved like a REST request: the upgrade's cookie names the
   guest session (an upgrade is a GET, and a cross-site one is refused by its `Origin`), the

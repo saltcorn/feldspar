@@ -673,6 +673,13 @@ sign in with. The shared cookie and the lifetime apply to those sign-ins too.
 - [x] **F8.5** Applications: `oauthProviders()` / `oauthSignInUrl()` in the generated client,
   buttons on the scaffold's `Login.tsx`, the runtime README. Tests: the generated client and the
   scaffold's login screen type-check.
+- [x] **F8.6** User feedback: an OIDC provider's claims (`name`, `given_name`, `groups`, …) are
+  thrown away. Per provider: `claim_fields` (`claim=field` lines) writes claims onto admin-added
+  users columns at every sign-in; `groups_claim` + `group_roles` (`group=role` lines, never the
+  admin role) set the role at every sign-in, demoting only a role the mapping manages; the
+  `login` event's payload gains `{ provider, claims }`, carried through a second-factor
+  challenge (a nullable `sign_in` column on `_fd_password_tokens`). Tests: `sc-config` unit
+  tests, `oauth_sign_in.rs`.
 
 ## F9 — Who may use an application
 

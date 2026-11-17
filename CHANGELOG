@@ -2,6 +2,52 @@
 
 Changes in reverse chronological order.
 
+## Identity providers: claims fill in the account, groups set the role, `login` sees both
+
+A user reported that a Keycloak (OIDC) provider sends `name`, `given_name`, `family_name` and
+`groups`, and Feldspar kept only the email: the account had no name, the `login` trigger's
+payload was null, and apps had to ask people for a name the provider already knew. (Writing
+the claims into `users.attributes`, as the report suggested, would not have helped: that is a
+system column, which no API returns and no formula sees.) TODO F8.6.
+
+- Three new, optional settings on a provider (Settings → Authentication; the form is generated,
+  so no UI change). A provider saved before keeps working exactly as before.
+  - **Copy claims to user fields** (`claim_fields`): one `claim=field` per line, e.g.
+    `given_name=first_name` or `groups=groups`. Claims are written onto fields an admin added
+    to the users table at every sign-in, and onto a new account when it is created, so they
+    show up as `user.first_name` everywhere. A save that maps onto a system column (`role`,
+    `email`, `attributes`, …) or a missing field is refused. If the field disappears later,
+    the claim is skipped and logged at sign-in. A list goes into a JSON column as it is, or
+    into a text column joined with commas.
+  - **Groups claim** (`groups_claim`, default `groups`) and **Roles from groups**
+    (`group_roles`): one `group=role` per line, e.g. `apps-plus=30`. A leading `/` on a
+    Keycloak path is ignored. No group may give the admin role: the save is refused. At every
+    sign-in the most privileged matching group's role wins. A promotion always applies. A
+    lower role, or falling back to `new_user_role` when no group matches, applies only to a
+    role the mapping manages (one it lists, or `new_user_role`). So an administrator, or a role
+    an admin gave by hand, is never lowered. A userinfo answer without the groups claim (the
+    mapper switched off) leaves the role alone. When the new role requires a second factor the
+    account lacks, its sessions end, as an admin's change would end them.
+- The **`login` event's payload** for a provider's sign-in is `{ provider, claims }`: the
+  provider's name and its whole userinfo answer (never a token), beside `guest_session` when
+  there is one. A password sign-in's payload is still null, so a formula should read
+  `payload.claims ? payload.claims.given_name : null`. **Behaviour change:** a trigger that
+  tested `payload === null` now sees an object on a provider's sign-ins.
+- The payload survives a second factor: `PasswordVerified::with_identity` →
+  `FullyAuthenticated::identity`, stored with the challenge in a new nullable JSON column,
+  `_fd_password_tokens.sign_in`, which the bootstrap adds. No migration. A node still on the
+  old release ignores the column, and the trigger then gets no claims.
+- Only the userinfo endpoint is read, not the ID token, so a Keycloak group mapper must have
+  "Add to userinfo" on (Keycloak's default).
+- The six new form strings are translated in `de`, `fr`, `es`, `ar` and `zh-Hans`.
+- Tests: `sc-config` unit tests (parsing, refusing the admin role, the role rule case by case),
+  a router unit test for the payload, and `oauth_sign_in.rs`
+  `a_providers_claims_fill_in_the_account_and_its_groups_set_the_role`. It covers saves that
+  are refused, a new account made with its claims and role, updates at later sign-ins,
+  falling back to `new_user_role`, a missing groups claim, hand-given and administrator roles
+  left alone, the `login` trigger's payload through a second factor, and a password sign-in's
+  payload staying null.
+
 ## edit_schema and describe_schema restate a table's access rules in words
 
 A user reported that a coding agent misread the access rules. A row is reachable when the

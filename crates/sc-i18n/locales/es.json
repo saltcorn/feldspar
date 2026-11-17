@@ -589,5 +589,11 @@
   "Let an admin open Claude Code in a terminal tab of the file-store IDE. It runs on this server, in the store's directory, as the server's operating-system user, and can run any command that user can. Only stores on this machine's disk can have one.": "Permite que un administrador abra Claude Code en una pestaña de terminal del IDE de almacenes de archivos. Se ejecuta en este servidor, en el directorio del almacén, como el usuario del sistema operativo del servidor, y puede ejecutar cualquier comando que ese usuario pueda. Solo los almacenes en el disco de esta máquina pueden tener uno.",
   "Claude Code executable": "Ejecutable de Claude Code",
   "The full path of the claude program, such as /home/me/.local/bin/claude. Leave empty to look for it on the server's PATH and in the usual install locations. The server's --claude-cli option, when given, comes first.": "La ruta completa del programa claude, por ejemplo /home/me/.local/bin/claude. Déjelo vacío para buscarlo en el PATH del servidor y en las ubicaciones de instalación habituales. La opción --claude-cli del servidor, si se indica, tiene prioridad.",
-  "—": "—"
+  "—": "—",
+  "Copy claims to user fields": "Copiar claims a campos de usuario",
+  "One claim=field per line, e.g. given_name=first_name. Written at every sign-in onto fields you added to the users table.": "Un claim=campo por línea, p. ej. given_name=first_name. Se escribe en cada inicio de sesión en los campos que añadió a la tabla de usuarios.",
+  "Groups claim": "Claim de grupos",
+  "The claim listing the person's groups.": "El claim que enumera los grupos de la persona.",
+  "Roles from groups": "Roles a partir de grupos",
+  "One group=role per line, e.g. apps-plus=30. Set at every sign-in: the most privileged matching group wins. A role not listed here is never lowered, and no group can give the admin role.": "Un grupo=rol por línea, p. ej. apps-plus=30. Se aplica en cada inicio de sesión: gana el grupo con más privilegios. Un rol que no figure aquí nunca se rebaja, y ningún grupo puede otorgar el rol de administrador."
 }
