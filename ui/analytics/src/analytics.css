@@ -1495,6 +1495,136 @@
   min-height: 7rem;
 }
 
+/* The Simulation workspace (A7.6) and its panels (A7.8): the inputs beside
+   the prediction and a small chart per input, the scenarios below. */
+.an-sim-side {
+  flex-basis: 17rem;
+}
+
+.an-sim-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.an-sim-panel .an-sim-inputs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.6rem;
+}
+
+.an-sim-input .form-range {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.an-sim-number {
+  flex: 0 0 6rem;
+  width: 6rem;
+}
+
+.an-sim-profile {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-start;
+  transition: opacity 0.15s;
+}
+
+.an-sim-profile.an-stale {
+  opacity: 0.6;
+}
+
+.an-sim-prediction {
+  flex: 0 0 11rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--tblr-border-color);
+  border-radius: 4px;
+  background: var(--tblr-bg-surface);
+}
+
+.an-sim-value {
+  font-size: 1.6rem;
+  font-weight: 600;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.an-sim-curves {
+  flex: 1 1 24rem;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: 0.5rem;
+}
+
+.an-sim-curve {
+  display: flex;
+  height: 12rem;
+  border: 1px solid var(--tblr-border-color);
+  border-radius: 4px;
+}
+
+.an-sim-chart {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+}
+
+.an-sim-compare {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.an-sim-compare-chart {
+  flex: 1 1 22rem;
+  min-width: 0;
+  display: flex;
+  height: 16rem;
+}
+
+.an-sim-table {
+  flex: 1 1 18rem;
+  width: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.an-sim-save {
+  max-width: 32rem;
+}
+
+.an-sim-scenarios li {
+  padding: 0.15rem 0;
+  border-bottom: 1px solid var(--tblr-border-color);
+}
+
+.an-sim-panel {
+  padding: 0.5rem;
+  min-width: 0;
+}
+
+/* A phone: the inputs above the outputs, not beside them. */
+@media (max-width: 640px) {
+  .an-sim {
+    flex-direction: column;
+    height: auto;
+  }
+
+  .an-sim .an-sim-side {
+    flex-basis: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--tblr-border-color);
+  }
+
+  .an-sim-prediction {
+    flex-basis: 100%;
+  }
+}
+
 @media print {
   /* Everything but the report and what holds it goes… */
   html.an-printing body *:not(:has(.an-print-root)):not(.an-print-root):not(.an-print-root *) {

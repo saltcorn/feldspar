@@ -1171,7 +1171,7 @@ async fn model_usage(catalog: &Catalog, model: &sc_model::Model) -> Result<Json>
         .map(|i| i.id.0);
     let workspaces = sc_analytics::panel::UsageIndex::build(catalog)
         .await?
-        .fits(fits);
+        .model(model.id.0, fits);
     Ok(json!({ "fields": fields, "triggers": triggers, "workspaces": workspaces }))
 }
 

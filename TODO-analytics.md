@@ -649,15 +649,18 @@ with the profiler, scenarios and scoring (goals document "Simulation workspace")
 
 ## Phase 3 — The workspace
 
-- [ ] A7.6 The Simulation workspace: model picker, input controls by column type, the
-      prediction, the profile curves, saving and comparing scenarios. Tests.
-- [ ] A7.7 Scoring: choose a dataset; a new dataset based on it with a Model predictions
+- [x] A7.6 The Simulation workspace: model picker, input controls by column type, the
+      prediction, the profile curves, saving and comparing scenarios. Tests. *(Not offered
+      to an Analytics application: models are the admin's.)*
+- [x] A7.7 Scoring: choose a dataset; a new dataset based on it with a Model predictions
       operation is created and can be opened in the Dataset editor or the explorer. Tests.
       *(A stage after a Model predictions is computed in memory, and `plot_rows_in` reads a
       dataset as SQL: load the evaluated rows into an in-memory SQLite as a fit's output data
-      is, so the explorer can plot them.)*
-- [ ] A7.8 The profiler and scenario comparison as panel kinds: interactive in dashboards,
-      static at the saved scenarios in reports. Tests.
+      is, so the explorer can plot them. Done for plots, tables, tests and stat cards.)*
+- [x] A7.8 The profiler and scenario comparison as panel kinds: interactive in dashboards,
+      static at the saved scenarios in reports. Tests. *(`profiler` and `scenarios`, drawn
+      by the browser from `profileModel` and `compareScenarios`; outside the unrestricted
+      UI they say a simulation is the admin's.)*
 
 ## Phase 4 — Documentation, definition of done
 

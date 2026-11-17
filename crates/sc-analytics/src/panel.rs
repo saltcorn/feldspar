@@ -20,11 +20,21 @@
 //! | `fit_table` | `{ fit, output }` — a table output of a model fit |
 //! | `map` | `{ spec }` — a [`MapSpec`]: a map panel of the explorer, or a whole Map workspace |
 //! | `stat_card` | a [`StatCard`]: one number from a dataset, compared and with a sparkline |
+//! | `profiler` | a [`SimulationPanel`]: a model's prediction and profile curves at its values |
+//! | `scenarios` | a [`SimulationPanel`]: its scenarios' predicted distributions side by side |
 //! | `custom` | `{ renderer, config }` — a plugin's panel kind |
 //!
 //! `fit_table` is a sixth kind beside the plan's five: a coefficient table is
 //! not a summary table of a dataset but a table a fit recorded, so it names
 //! the fit and the output rather than a spec.
+//!
+//! `profiler` and `scenarios` (A7.8) are a Simulation workspace's two
+//! outputs. What they draw is a model's prediction, which needs the model
+//! providers this crate does not hold: [`render_panel`] checks them and
+//! answers nothing more, and the browser draws them from `profileModel` and
+//! `compareScenarios` — interactive on a dashboard, still at the values and
+//! scenarios they were dragged with in a report. Models are the admin's, so
+//! outside the unrestricted Analytics UI they say so instead.
 //!
 //! Panels live in workspaces' states, which this crate otherwise does not look
 //! into. [`panels_in_state`] is the one place that knows where each kind keeps
@@ -50,6 +60,7 @@ use crate::plot::render::plot_rows;
 use crate::plot::{
     Channel, DataRef, PlotSpec, Rendered, RenderedTable, TableSpec, render_plot_in, render_table_in,
 };
+use crate::simulate::{Scenario, check_scenarios};
 use crate::stats::{TestSpec, TestsAnswer, run_tests_in};
 use crate::workspace::{Workspace, WorkspaceId, WorkspaceKind, list_workspaces};
 
@@ -105,6 +116,12 @@ pub enum PanelBody {
     },
     /// One number from a dataset: a dashboard's stat card.
     StatCard(StatCard),
+    /// A Simulation workspace's profiler (A7.8): the prediction at the
+    /// values, and a curve per input.
+    Profiler(SimulationPanel),
+    /// A Simulation workspace's scenarios compared (A7.8): each one's
+    /// predicted distribution.
+    Scenarios(SimulationPanel),
     /// A table output of a model fit — a coefficient table, cluster sizes, a
     /// posterior summary.
     FitTable {
@@ -134,6 +151,8 @@ impl PanelBody {
             PanelBody::FitTable { .. } => "fit_table",
             PanelBody::Map { .. } => "map",
             PanelBody::StatCard(_) => "stat_card",
+            PanelBody::Profiler(_) => "profiler",
+            PanelBody::Scenarios(_) => "scenarios",
             PanelBody::Custom { .. } => "custom",
         }
     }
@@ -150,6 +169,8 @@ impl PanelBody {
             | PanelBody::FitTable { .. }
             | PanelBody::Map { .. }
             | PanelBody::StatCard(_)
+            | PanelBody::Profiler(_)
+            | PanelBody::Scenarios(_)
             | PanelBody::Custom { .. } => vec![],
         }
     }
@@ -215,10 +236,22 @@ impl Panel {
                 DataRef::Dataset { .. } => None,
             })
             .collect();
-        if let PanelBody::FitTable { fit, .. } = &self.body {
-            fits.insert(*fit);
+        match &self.body {
+            PanelBody::FitTable { fit, .. } => {
+                fits.insert(*fit);
+            }
+            PanelBody::Profiler(sim) | PanelBody::Scenarios(sim) => fits.extend(sim.fit),
+            _ => {}
         }
         fits
+    }
+
+    /// The models it predicts with: a profiler's, a comparison's.
+    pub fn models(&self) -> BTreeSet<Uuid> {
+        match &self.body {
+            PanelBody::Profiler(sim) | PanelBody::Scenarios(sim) => BTreeSet::from([sim.model]),
+            _ => BTreeSet::new(),
+        }
     }
 
     /// What is wrong with it on its own, before anything is read.
@@ -238,8 +271,48 @@ impl Panel {
             }
             PanelBody::Map { spec } => spec.check(false),
             PanelBody::StatCard(card) => card.check(),
+            PanelBody::Profiler(sim) => sim.check(),
+            PanelBody::Scenarios(sim) if sim.scenarios.is_empty() => Err(Error::invalid(
+                "a comparison of scenarios has at least one scenario",
+            )),
+            PanelBody::Scenarios(sim) => sim.check(),
             _ => Ok(()),
         }
+    }
+}
+
+/// What a profiler or a scenario comparison panel is made from (A7.8): the
+/// Simulation workspace's model, fit, level, inputs and scenarios when it was
+/// dragged. On a dashboard the inputs are where it starts; in a report they
+/// are what it shows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SimulationPanel {
+    /// The model, by id.
+    pub model: Uuid,
+    /// A fixed fit; the model's active one when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit: Option<Uuid>,
+    /// The interval's level; 0.9 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<f64>,
+    /// Input values, by input; the others are typical.
+    #[serde(default)]
+    pub values: serde_json::Map<String, Json>,
+    /// The scenarios, in order.
+    #[serde(default)]
+    pub scenarios: Vec<Scenario>,
+}
+
+impl SimulationPanel {
+    fn check(&self) -> Result<()> {
+        if let Some(level) = self.level
+            && !(level > 0.0 && level < 1.0)
+        {
+            return Err(Error::invalid(format!(
+                "an interval's level is a probability between 0 and 1, not {level}"
+            )));
+        }
+        check_scenarios(&self.scenarios)
     }
 }
 
@@ -571,6 +644,7 @@ pub struct WorkspaceUse {
 pub struct UsageIndex {
     datasets: BTreeMap<DatasetId, Vec<WorkspaceUse>>,
     fits: BTreeMap<Uuid, Vec<WorkspaceUse>>,
+    models: BTreeMap<Uuid, Vec<WorkspaceUse>>,
 }
 
 impl UsageIndex {
@@ -586,8 +660,12 @@ impl UsageIndex {
             let panels = panels_in_state(ws.kind, &ws.state);
             let mut datasets: BTreeMap<DatasetId, usize> = BTreeMap::new();
             let mut fits: BTreeMap<Uuid, usize> = BTreeMap::new();
+            let mut models: BTreeMap<Uuid, usize> = BTreeMap::new();
             for (d, n) in state_datasets(ws.kind, &ws.state) {
                 *datasets.entry(d).or_default() += n;
+            }
+            if let Some(m) = state_model(ws.kind, &ws.state) {
+                models.entry(m).or_default();
             }
             for panel in &panels {
                 for d in panel.datasets() {
@@ -595,6 +673,9 @@ impl UsageIndex {
                 }
                 for f in panel.fits() {
                     *fits.entry(f).or_default() += 1;
+                }
+                for m in panel.models() {
+                    *models.entry(m).or_default() += 1;
                 }
             }
             let entry = |panels: usize| WorkspaceUse {
@@ -609,8 +690,16 @@ impl UsageIndex {
             for (f, n) in fits {
                 index.fits.entry(f).or_default().push(entry(n));
             }
+            for (m, n) in models {
+                index.models.entry(m).or_default().push(entry(n));
+            }
         }
-        for uses in index.datasets.values_mut().chain(index.fits.values_mut()) {
+        for uses in index
+            .datasets
+            .values_mut()
+            .chain(index.fits.values_mut())
+            .chain(index.models.values_mut())
+        {
             uses.sort_by(|a, b| a.name.cmp(&b.name));
         }
         index
@@ -626,15 +715,43 @@ impl UsageIndex {
     pub fn fits(&self, ids: impl IntoIterator<Item = Uuid>) -> Vec<WorkspaceUse> {
         let mut out: Vec<WorkspaceUse> = Vec::new();
         for id in ids {
-            for found in self.fits.get(&id).map_or(&[][..], Vec::as_slice) {
-                match out.iter_mut().find(|u| u.id == found.id) {
-                    Some(seen) => seen.panels += found.panels,
-                    None => out.push(found.clone()),
-                }
-            }
+            merge_uses(&mut out, self.fits.get(&id));
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
         out
+    }
+
+    /// The workspaces that use a model — a Simulation workspace on it, a
+    /// profiler or a comparison of it (A7.8), or a panel on one of its
+    /// `fits` — each once: the model's delete warning.
+    pub fn model(&self, id: Uuid, fits: impl IntoIterator<Item = Uuid>) -> Vec<WorkspaceUse> {
+        let mut out = self.fits(fits);
+        merge_uses(&mut out, self.models.get(&id));
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+}
+
+/// `found` added to `out`, a workspace already there counting its panels
+/// once more.
+fn merge_uses(out: &mut Vec<WorkspaceUse>, found: Option<&Vec<WorkspaceUse>>) {
+    for found in found.map_or(&[][..], Vec::as_slice) {
+        match out.iter_mut().find(|u| u.id == found.id) {
+            Some(seen) => seen.panels += found.panels,
+            None => out.push(found.clone()),
+        }
+    }
+}
+
+/// The model a kind's state predicts with, outside any panel: a Simulation
+/// workspace's.
+fn state_model(kind: WorkspaceKind, state: &Json) -> Option<Uuid> {
+    match kind {
+        WorkspaceKind::Simulation => state
+            .get("model")
+            .and_then(Json::as_str)
+            .and_then(|s| s.parse().ok()),
+        _ => None,
     }
 }
 
@@ -709,6 +826,16 @@ pub async fn missing_reference(catalog: &Catalog, panel: &Panel) -> Result<Optio
         {
             return Ok(Some(
                 "The model fit this panel shows has been deleted.".to_owned(),
+            ));
+        }
+    }
+    for id in panel.models() {
+        if sc_model::load_model(catalog, sc_model::ModelId(id))
+            .await?
+            .is_none()
+        {
+            return Ok(Some(
+                "The model this panel simulates has been deleted.".to_owned(),
             ));
         }
     }
@@ -791,6 +918,15 @@ pub async fn render_panel_in(
         PanelBody::StatCard(card) => {
             out.card = Some(render_card_in(catalog, caller, card, &scope).await?);
         }
+        // A model's predictions are the admin's, as its outputs are.
+        PanelBody::Profiler(_) | PanelBody::Scenarios(_) if !caller.is_admin() => {
+            out.error = Some(
+                "A model's simulation is shown only in the unrestricted Analytics UI.".to_owned(),
+            );
+        }
+        // The browser draws them from `profileModel` and `compareScenarios`:
+        // the model providers are the server's, not this crate's.
+        PanelBody::Profiler(_) | PanelBody::Scenarios(_) => {}
         PanelBody::Custom { renderer, .. } => {
             out.error = Some(format!(
                 "This panel is drawn by `{renderer}`, which is not installed."
@@ -854,6 +990,16 @@ mod tests {
                 json!({ "dataset": d, "value": { "function": "count" },
                         "time": { "column": "at", "period": "month" },
                         "comparison": "previous_period", "sparkline": true }),
+            ),
+            (
+                "profiler",
+                json!({ "model": fit, "level": 0.8, "values": { "area": 120 },
+                        "scenarios": [{ "name": "baseline", "values": {} }] }),
+            ),
+            (
+                "scenarios",
+                json!({ "model": fit, "fit": fit,
+                        "scenarios": [{ "name": "baseline", "values": { "area": 90 } }] }),
             ),
             (
                 "custom",
@@ -1141,5 +1287,72 @@ mod tests {
         );
         // The panels in it are still what the usage index reads.
         assert_eq!(panels_in_state(WorkspaceKind::Report, &document).len(), 1);
+    }
+
+    #[test]
+    fn simulation_panels_name_their_model_and_check_their_scenarios() {
+        let model = Uuid::new_v4();
+        let fit = Uuid::new_v4();
+        let profiler = Panel::from_json(&json!({
+            "id": Uuid::new_v4(), "kind": "profiler",
+            "content": { "model": model, "values": { "area": 120 } }
+        }))
+        .expect("a profiler");
+        assert_eq!(profiler.models(), BTreeSet::from([model]));
+        assert!(profiler.fits().is_empty());
+        assert!(profiler.datasets().is_empty());
+        let pinned = Panel::from_json(&json!({
+            "id": Uuid::new_v4(), "kind": "scenarios",
+            "content": { "model": model, "fit": fit,
+                         "scenarios": [{ "name": "a" }, { "name": "b" }] }
+        }))
+        .expect("a comparison");
+        assert_eq!(pinned.fits(), BTreeSet::from([fit]));
+
+        let refused = |content: Json, kind: &str, why: &str| {
+            let err = Panel::from_json(
+                &json!({ "id": Uuid::new_v4(), "kind": kind, "content": content }),
+            )
+            .expect_err(why);
+            assert!(err.to_string().contains(why), "{err}");
+        };
+        refused(
+            json!({ "model": model, "scenarios": [] }),
+            "scenarios",
+            "at least one scenario",
+        );
+        refused(
+            json!({ "model": model, "scenarios": [{ "name": "a" }, { "name": "a" }] }),
+            "scenarios",
+            "two scenarios are called",
+        );
+        refused(
+            json!({ "model": model, "level": 1.5 }),
+            "profiler",
+            "between 0 and 1",
+        );
+        refused(json!({ "values": {} }), "profiler", "this is not a panel");
+    }
+
+    #[test]
+    fn a_model_is_used_by_its_simulation_workspace_and_its_panels() {
+        let model = Uuid::new_v4();
+        let fit = Uuid::new_v4();
+        let mut sim = Workspace::new("Prices", WorkspaceKind::Simulation, None);
+        sim.state = json!({ "model": model, "scenarios": [] });
+        let mut dash = Workspace::new("Board", WorkspaceKind::Dashboard, None);
+        dash.state = json!({ "tiles": [
+            { "id": "t1", "x": 0, "y": 0, "w": 6, "h": 4, "panel": {
+                "id": Uuid::new_v4(), "kind": "profiler", "content": { "model": model } } },
+            { "id": "t2", "x": 6, "y": 0, "w": 6, "h": 4, "panel": {
+                "id": Uuid::new_v4(), "kind": "fit_table",
+                "content": { "fit": fit, "output": "coefficients" } } },
+        ] });
+        let index = UsageIndex::of_workspaces(&[sim, dash]);
+        let uses = index.model(model, [fit]);
+        let seen: Vec<(&str, usize)> = uses.iter().map(|u| (u.name.as_str(), u.panels)).collect();
+        // The dashboard once, its profiler and its fit's table both counted.
+        assert_eq!(seen, vec![("Board", 2), ("Prices", 0)]);
+        assert!(index.model(Uuid::new_v4(), []).is_empty());
     }
 }

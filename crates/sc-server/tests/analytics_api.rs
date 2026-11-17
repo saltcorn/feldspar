@@ -434,11 +434,12 @@ async fn workspaces_are_listed_renamed_saved_and_deleted() -> sc_error::Result<(
         .iter()
         .filter(|k| k["available"] == json!(true))
         .collect();
-    assert_eq!(here.len(), 4);
+    assert_eq!(here.len(), 5);
     assert_eq!(here[0]["kind"], json!("data_explorer"));
     assert_eq!(here[1]["kind"], json!("report"));
     assert_eq!(here[2]["kind"], json!("map"));
     assert_eq!(here[3]["kind"], json!("dashboard"));
+    assert_eq!(here[4]["kind"], json!("simulation"));
     assert_eq!(here[0]["arrives_in"], Value::Null);
     assert!(!kinds.iter().any(|k| k["kind"] == "dataset_editor"));
     assert!(!kinds.iter().any(|k| k["kind"] == "model_fit"));
@@ -447,10 +448,10 @@ async fn workspaces_are_listed_renamed_saved_and_deleted() -> sc_error::Result<(
         .refused(
             "POST",
             "/api/workspaces",
-            Some(json!({ "name": "Draft", "kind": "simulation" })),
+            Some(json!({ "name": "Draft", "kind": "notebook" })),
         )
         .await;
-    assert!(err.contains("milestone A7"), "{err}");
+    assert!(err.contains("a later milestone"), "{err}");
     // Models open in the model editor, not in a workspace.
     let err = client
         .refused(

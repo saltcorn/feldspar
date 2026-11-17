@@ -292,8 +292,8 @@ async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
 
     // 1. The front page: only the demo's datasets (A2.15) and no workspaces
     // yet, and every kind of workspace listed with the milestone that brings
-    // it — every kind but those here now: the Data explorer, the Report and
-    // the Map.
+    // it — every kind but those here now: the Data explorer, the Report, the
+    // Map, the Dashboard and the Simulation.
     let listed = client.ok("GET", "/api/datasets", None).await;
     let mut names: Vec<&str> = listed
         .as_array()
@@ -310,8 +310,10 @@ async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
             .as_array()
             .unwrap()
             .iter()
-            .filter(|k| !["data_explorer", "report", "map", "dashboard"]
-                .contains(&k["kind"].as_str().unwrap_or("")))
+            .filter(
+                |k| !["data_explorer", "report", "map", "dashboard", "simulation"]
+                    .contains(&k["kind"].as_str().unwrap_or(""))
+            )
             .all(|k| k["available"] == json!(false) && k["arrives_in"].is_string()),
         "{kinds}"
     );
@@ -3997,5 +3999,239 @@ async fn a_regression_is_profiled_and_its_scenarios_compared() -> sc_error::Resu
         refused.to_string().contains("has not been fitted"),
         "{refused}"
     );
+    Ok(())
+}
+
+/// Analytics TODO A7.6–A7.8 through the API, as the Simulation workspace's
+/// screen drives it: a Simulation workspace keeps its model and scenarios;
+/// Score makes a dataset based on another with a Model predictions
+/// operation, and that dataset is plotted, carded and tested like any other
+/// (its rows computed in memory and loaded into SQLite); the profiler and the
+/// comparison are panels a dashboard keeps, which the model's usage lists.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn a_simulation_scores_a_dataset_and_its_panels_are_kept() -> sc_error::Result<()> {
+    let (mut client, _db) = setup().await?;
+    let client = &mut client;
+    let sold = client
+        .ok(
+            "POST",
+            "/api/datasets",
+            Some(json!({
+                "name": "Simulated sales",
+                "base": { "kind": "table", "table": "houses" },
+                "operations": [
+                    op("s", "filter", json!({ "formula": "sold === true" })),
+                    op("k", "select", json!({ "columns": [
+                        { "column": "price" }, { "column": "area" }, { "column": "bedrooms" }
+                    ]})),
+                ],
+            })),
+        )
+        .await;
+    let model = fit_on(
+        client,
+        "Simulated prices",
+        "linear_regression",
+        &sold,
+        json!({ "label": "price" }),
+    )
+    .await;
+
+    // A7.6: the workspace, its model and its scenarios.
+    let workspace = client
+        .ok(
+            "POST",
+            "/api/workspaces",
+            Some(json!({ "name": "What if", "kind": "simulation" })),
+        )
+        .await;
+    let workspace = workspace["id"].as_str().unwrap().to_owned();
+    let profile = client
+        .ok(
+            "POST",
+            &format!("/api/models/{model}/profile"),
+            Some(json!({ "values": { "area": 150 } })),
+        )
+        .await;
+    let fit = profile["fit"]["id"].as_str().unwrap().to_owned();
+    let state = json!({
+        "model": model,
+        "level": 0.8,
+        "values": { "area": 150 },
+        "scenarios": [
+            { "name": "baseline", "values": {} },
+            { "name": "bigger", "values": { "area": 150 } },
+        ],
+    });
+    client
+        .ok(
+            "PUT",
+            &format!("/api/workspaces/{workspace}/state"),
+            Some(json!({ "state": state })),
+        )
+        .await;
+    let reopened = client
+        .ok("GET", &format!("/api/workspaces/{workspace}"), None)
+        .await;
+    assert_eq!(reopened["state"], state);
+    let mut twice = state.clone();
+    twice["scenarios"][1]["name"] = json!("baseline");
+    let (_, why) = client
+        .refused(
+            "PUT",
+            &format!("/api/workspaces/{workspace}/state"),
+            Some(json!({ "state": twice })),
+        )
+        .await;
+    assert!(why.contains("two scenarios are called"), "{why}");
+
+    // A7.7: Score the unsold houses — a dataset based on theirs, with the
+    // model's predictions added.
+    let unsold = client
+        .ok(
+            "POST",
+            "/api/datasets",
+            Some(json!({
+                "name": "Unsold houses",
+                "base": { "kind": "table", "table": "houses" },
+                "operations": [op("u", "filter", json!({ "formula": "sold === false" }))],
+            })),
+        )
+        .await;
+    let unsold_id = unsold["dataset"]["id"].as_str().unwrap().to_owned();
+    let scored_def = json!({
+        "name": "Unsold houses scored by Simulated prices",
+        "base": { "kind": "dataset", "dataset": unsold_id },
+        "operations": [op("score", "model_predictions", json!({
+            "model": "Simulated prices", "name": "predicted", "interval": true, "fit": fit,
+        }))],
+    });
+    let scored = client
+        .ok("POST", "/api/datasets", Some(scored_def.clone()))
+        .await;
+    let scored_id = scored["dataset"]["id"].as_str().unwrap().to_owned();
+    let (names, rows, total) = client.stage(&scored_def, 1).await;
+    assert!(total > 0);
+    let predicted = names.iter().position(|n| n == "predicted").unwrap();
+    let values: Vec<f64> = rows
+        .iter()
+        .map(|r| r[predicted].as_f64().unwrap())
+        .collect();
+    #[allow(clippy::cast_precision_loss, reason = "a row count")]
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+
+    // Opened in the explorer, it is plotted: a histogram of the predictions
+    // counts every scored house.
+    let histogram = client
+        .suggest(json!({ "dataset": scored_id, "preset": "histogram",
+                         "assignment": { "x": { "field": "predicted" } } }))
+        .await;
+    let drawn = client.draw(&histogram["spec"]).await;
+    let layer = &drawn["layers"][0];
+    let counted: i64 = layer["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| cell(layer, b, "y").as_i64().unwrap())
+        .sum();
+    assert_eq!(counted, total, "{drawn}");
+    // A scatter plot of the prediction against the area, and a test of the
+    // two, read the same rows.
+    let scatter = client
+        .suggest(json!({ "dataset": scored_id, "assignment": {
+            "x": { "field": "area" }, "y": [{ "field": "predicted" }] } }))
+        .await;
+    let drawn = client.draw(&scatter["spec"]).await;
+    assert_eq!(
+        drawn["layers"][0]["rows"].as_array().unwrap().len(),
+        usize::try_from(total).unwrap()
+    );
+    // A stat card of the mean prediction.
+    let card = panel_of(
+        "Mean predicted price",
+        "stat_card",
+        json!({ "dataset": scored_id, "value": { "function": "mean", "column": "predicted" } }),
+    );
+    let (value, _, _) = card_numbers(&client.render_in(&card, &[]).await);
+    assert!(
+        (value - mean).abs() < 1e-6 * mean.abs(),
+        "{value} != {mean}"
+    );
+
+    // A7.8: the profiler and the comparison as a dashboard's panels.
+    let profiler = panel_of(
+        "Profiler — Simulated prices",
+        "profiler",
+        json!({ "model": model, "level": 0.8, "values": { "area": 150 },
+                "scenarios": state["scenarios"] }),
+    );
+    let compared = panel_of(
+        "Scenarios — Simulated prices",
+        "scenarios",
+        json!({ "model": model, "scenarios": state["scenarios"] }),
+    );
+    for panel in [&profiler, &compared] {
+        let drawn = client.render_in(panel, &[]).await;
+        assert!(drawn.get("error").is_none(), "{drawn}");
+    }
+    let dashboard = client
+        .ok(
+            "POST",
+            "/api/workspaces",
+            Some(json!({ "name": "Price board", "kind": "dashboard" })),
+        )
+        .await;
+    let dashboard = dashboard["id"].as_str().unwrap().to_owned();
+    client
+        .ok(
+            "PUT",
+            &format!("/api/workspaces/{dashboard}/state"),
+            Some(json!({ "state": { "tiles": [
+                tile("t1", &profiler, [0, 0, 12, 8]),
+                tile("t2", &compared, [0, 8, 6, 6]),
+            ] } })),
+        )
+        .await;
+    let usage = client
+        .ok("GET", &format!("/api/models/{model}/usage"), None)
+        .await;
+    assert_eq!(
+        users(&usage),
+        [
+            ("Price board".to_owned(), "dashboard".to_owned(), 2),
+            ("What if".to_owned(), "simulation".to_owned(), 0),
+        ]
+    );
+    // A panel whose model is gone says so.
+    let orphan = panel_of("Gone", "profiler", json!({ "model": uuid::Uuid::new_v4() }));
+    let drawn = client
+        .ok(
+            "POST",
+            "/api/panels/render",
+            Some(json!({ "panel": orphan })),
+        )
+        .await;
+    assert!(
+        drawn["error"]
+            .as_str()
+            .unwrap()
+            .contains("has been deleted"),
+        "{drawn}"
+    );
+    // A comparison without scenarios is not a panel.
+    let empty = panel_of(
+        "Empty",
+        "scenarios",
+        json!({ "model": model, "scenarios": [] }),
+    );
+    let (_, why) = client
+        .refused(
+            "POST",
+            "/api/panels/render",
+            Some(json!({ "panel": empty })),
+        )
+        .await;
+    assert!(why.contains("at least one scenario"), "{why}");
     Ok(())
 }

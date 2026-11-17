@@ -542,7 +542,8 @@ async fn card_rows(
     extra: &[Operation],
 ) -> Result<Result<PlotRows>> {
     let schema = Schema::of_catalog(catalog)?;
-    let library = sc_dataset::load_library(catalog).await?;
+    let mut library = sc_dataset::load_library(catalog).await?;
+    sc_dataset::load_models(catalog, &mut library).await;
     let mut def = def.clone();
     def.operations.extend(extra.iter().cloned());
     let compiled = compile(&schema, &library, &def, Options::default());
@@ -550,6 +551,10 @@ async fn card_rows(
         Ok(stage) => stage,
         Err(e) => return Ok(Err(e)),
     };
+    // A scored dataset (A7.7): its rows are computed in memory.
+    if stage.tail().is_some() {
+        return crate::plot::render::tail_rows(catalog, caller, stage).await;
+    }
     let reader = Reader::new(catalog, caller)?;
     Ok(stage.unordered_query().map(|query| PlotRows {
         query,

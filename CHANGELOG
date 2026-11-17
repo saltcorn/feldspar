@@ -2,6 +2,95 @@
 
 Changes in reverse chronological order.
 
+## Analytics A7 phase 3: the Simulation workspace, scoring, and simulation panels
+
+Analytics TODO A7.6–A7.8. The Simulation workspace can now be created. Its screen sets a fitted
+model's inputs by hand, shows the prediction and a profile curve per input, keeps named
+scenarios and compares them, and scores a dataset with the model. The profiler and the
+comparison can be dragged into dashboards and reports.
+
+Running applications are unaffected. There is no database change and no migration, and no
+`sc-api` schema change, so no client is regenerated. Stored states are untouched: a Simulation
+workspace could not be created before, and the two panel kinds are new. One configuration
+becomes refusable: an Analytics application's `workspace_kinds` refuses `simulation`. No
+existing application can have it, since the kind was unavailable until now.
+
+- **A7.6: the Simulation workspace** (`ui/analytics/src/simulation/`). `WorkspaceKind::Simulation`
+  is available (`arrives_in` is `None`). The screen:
+  - A picker of the models with a fitted fit, and the interval's level.
+  - A control per input, by the kind `profileModel` describes: a slider with a number box for
+    a number or an integer (stepping about a hundredth of the range), a date picker, a drop-down
+    of a category's levels, and a switch for yes/no. Each moved input can be put back at its
+    typical value, and **All typical** resets every input.
+  - The prediction with its interval (or a classifier's probability), and a small chart per
+    input: a line with its interval as a band over a number or a date, or a point and whisker
+    per level over a category. A classifier gets one line (or bar) per class. Every curve
+    marks the input's current value.
+  - Requests wait 150 ms after the last change, and the old curves stay on screen, faded, until
+    the new ones arrive. So dragging a slider updates the prediction and every curve together.
+  - **Save scenario**: by default a name no scenario has, and an existing name replaces that
+    scenario's values. Saved scenarios can be used or deleted. The comparison
+    (`compareScenarios`) draws the saved scenarios, and the current inputs as "Current" when
+    they differ from all of them. A regression or a posterior draws densities on the shared
+    grid with each prediction marked, a classifier draws grouped bars per class, and a model
+    with no uncertainty draws plain bars. A table shows the inputs where the scenarios differ,
+    with each prediction and interval.
+  - The state is `{ model, fit?, level?, values, scenarios }`, checked by the server as in A7.5.
+    `values` holds only the inputs that were moved. Picking another model clears the values
+    and the scenarios, since its inputs are not the old model's.
+  - An Analytics application cannot open the kind (`WorkspaceKind::in_applications`). A
+    simulation predicts with a model, and models are the admin's alone, so `workspace_kinds:
+    ["simulation"]` is refused with a sentence.
+- **A7.7: scoring.** **Score a dataset** picks a dataset and creates "<dataset> scored by
+  <model>" (a free name), based on it, with one Model predictions operation:
+  - The prediction column is `predicted` unless the source already has one. It carries the
+    interval, the workspace's fit (when it names one) and its level.
+  - The dataset opens in the Dataset editor or in a new Data explorer.
+  - Server side, the deviation A7.3 left open is closed: a stage after a Model predictions
+    operation is read with `sc_dataset::read_rows` and loaded into a private in-memory
+    SQLite (`plot::render::tail_rows`). This is how a fit's output data is already loaded, and
+    the loader is now shared (`memory_rows`, typed by `ColType`).
+  - So plots, summary tables, hypothesis tests and stat cards of a scored dataset work
+    unchanged. A dashboard's conditions reach it too, as a Filter run in memory.
+  - A read refused inside the tail (more than `MAX_IN_MEMORY_ROWS`, a prediction refused) is
+    the plot's sentence, not a failure. `card_rows` now loads the models into the library, as
+    `plot_rows_in` does.
+- **A7.8: the profiler and the comparison as panels.** Two new panel kinds:
+  - `profiler` and `scenarios`, both a `SimulationPanel { model, fit?, level?, values,
+    scenarios }`: the workspace's model and level, and its inputs and scenarios when dragged.
+  - `Panel::check` refuses a level outside (0, 1), duplicate scenario names, and a comparison
+    without scenarios.
+  - `Panel::models` names the model. The usage index also maps models: a Simulation
+    workspace's model and these panels. The model's usage (`UsageIndex::model`, which the
+    delete warning reads) lists them beside the panels on its fits.
+  - `render_panel` answers the sentence when the model is gone. For a caller who is not the
+    admin, it answers that a simulation is shown only in the unrestricted Analytics UI. For
+    the admin it answers nothing more: the model providers are the server's, not
+    `sc-analytics`'s, so the browser draws the panels from `profileModel` and
+    `compareScenarios`.
+  - On a dashboard the profiler is interactive: its inputs move and the curves follow, for the
+    viewer only, and the panel keeps what it was dropped with.
+  - In a report (`still`, SVG) it is drawn once at the inputs it was dragged with, beside the
+    saved scenarios' comparison.
+  - The workspace has drag handles for both kinds. The dashboard gives a profiler a 12×8 tile
+    and a comparison a 6×6 one.
+  - Deviation: models stay the admin's, as A9 decided for fit outputs. So "what an
+    application's dashboard may call" (A7.4's note) is answered "neither endpoint", and
+    these panels say so there rather than predicting through an application.
+- Tests:
+  - `sc-analytics`: the new panel kinds round-trip and are checked, the usage index finds a
+    model through its workspace and its panels, and the Simulation kind is available but not
+    in an application.
+  - `analytics_done.rs`'s `a_simulation_scores_a_dataset_and_its_panels_are_kept`:
+    - A Simulation workspace's state is kept, and a duplicate scenario is refused.
+    - A scored dataset's histogram counts every scored house, its scatter plot has a point
+      per row, and a stat card's mean is the mean of the predictions.
+    - A dashboard with both panels is saved, and the model's usage lists it and the workspace.
+    - A panel on a deleted model says so, and a comparison without scenarios is refused.
+  - `analytics_api.rs` and `analytics_apps.rs` follow the kind's arrival.
+  - vitest: `simulation.test.ts` (state, scenarios, controls, scoring definition, panels and
+    their drag) and `charts.test.ts` (each curve and comparison option, spec in, option out).
+
 ## Analytics A7 phase 2: the profiler and scenario comparison
 
 Analytics TODO A7.4–A7.5. A fitted model can be profiled — its prediction at chosen inputs and

@@ -1,6 +1,8 @@
 // One panel, drawn live (analytics TODO A4.2–A4.3): what it is stored as —
 // a spec, a fit and an output's name, some text — sent to `renderPanel`, and
-// the answer drawn with the explorer's and the model editor's own views.
+// the answer drawn with the explorer's and the model editor's own views. A
+// simulation's profiler and scenarios (A7.8) are checked there and drawn from
+// `profileModel` and `compareScenarios`, which predict with the model.
 //
 // Live, so a report's plot includes the row added a minute ago, and a panel
 // on a dataset edited on the other side of a split view is drawn again. A
@@ -30,6 +32,7 @@ import { Markdown } from "./MarkdownView";
 import type { MapData, MapSpec } from "../map/spec";
 import { isCardData } from "./card";
 import { setPanelDrag, type Panel } from "./panel";
+import { ProfilerPanelView, ScenariosPanelView } from "../simulation/SimulationPanels";
 import { StatCardView } from "./StatCardView";
 
 /** MapLibre, fetched when a map panel is first drawn. */
@@ -201,6 +204,10 @@ function Drawn({
       ) : isCardData(answer.card) ? (
         <StatCardView card={panel.content} data={answer.card} />
       ) : null;
+    case "profiler":
+      return <ProfilerPanelView content={panel.content} look={look} />;
+    case "scenarios":
+      return <ScenariosPanelView content={panel.content} look={look} />;
     case "custom":
       return <Missing>{t("This panel's kind is not installed.")}</Missing>;
   }
