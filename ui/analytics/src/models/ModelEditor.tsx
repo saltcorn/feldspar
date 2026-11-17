@@ -54,17 +54,22 @@ import {
   POLICIES_KEY,
   buildHyperparameters,
   buildPolicies,
+  featureChoices,
+  featuresBody,
   formatTimestamp,
   gridPoints,
   headlineMetric,
   instanceLabel,
   orderInstances,
+  outcomeLabel,
   outcomeSummary,
   parseDraft,
   parseDrafts,
   printDrafts,
   printGridValue,
   offered,
+  readColumns,
+  readFeatures,
   readHyperparameters,
   readMetrics,
   readModelDataset,
@@ -127,6 +132,8 @@ export function ModelEditor({
   const [provider, setProvider] = useState("");
   const [config, setConfig] = useState<Record<string, string>>({});
   const [hyper, setHyper] = useState<Record<string, string>>({});
+  // The columns a fit encodes, or null for every column but the label.
+  const [features, setFeatures] = useState<string[] | null>(null);
   const [split, setSplit] = useState<SplitForm>({
     train: String(DEFAULT_SPLIT.train),
     validation: String(DEFAULT_SPLIT.validation),
@@ -185,6 +192,7 @@ export function ModelEditor({
       bindings: printDrafts(BINDING_KINDS, configuration[BINDINGS_KEY]),
     });
     setHyper(readHyperparameters(existing.hyperparameters));
+    setFeatures(readFeatures(existing.features));
     const storedSplit = readSplit(existing.split);
     setSplit({
       train: String(storedSplit.train),
@@ -324,6 +332,18 @@ export function ModelEditor({
   const hyperSpace = buildHyperparameters(chosen?.hyperparameters ?? [], hyper);
   const points = gridPoints(hyperSpace);
   const validationRows = Number(split.validation) > 0;
+  const takesFeatures = Boolean(chosen?.takes_features);
+  const label = outcomeLabel(outcome);
+  const datasetColumns = readColumns(mainDataset?.columns);
+  const choices = featureChoices(datasetColumns, label);
+  /** Tick or untick one feature, keeping the dataset's order. */
+  const toggleFeature = (column: string, on: boolean) =>
+    setFeatures((current) => {
+      const next = new Set(current ?? []);
+      if (on) next.add(column);
+      else next.delete(column);
+      return choices.map((c) => c.name).filter((name) => next.has(name));
+    });
   // A binding provider's own controls edit these settings; the rest (the
   // sampler's, the runs store) are rendered as settings like any provider's.
   const settingsSpec = (chosen?.config_spec ?? []).filter(
@@ -356,6 +376,7 @@ export function ModelEditor({
           test: Number(split.test),
           seed: Math.trunc(Number(split.seed)) || 0,
         },
+    features: featuresBody(features, label, takesFeatures, datasetColumns),
     attributes: {},
   });
 
@@ -613,6 +634,60 @@ export function ModelEditor({
                     onChange={(key, value) => setConfig((c) => ({ ...c, [key]: value }))}
                     idPrefix="model-config"
                   />
+                </>
+              )}
+
+              {chosen && takesFeatures && (
+                <>
+                  <hr />
+                  <h4 className="h5"><T text="Features" /></h4>
+                  <Form.Check
+                    type="radio"
+                    id="model-features-all"
+                    name="model-features"
+                    label={t("Every column but the label")}
+                    checked={features === null}
+                    onChange={() => setFeatures(null)}
+                  />
+                  <Form.Check
+                    type="radio"
+                    id="model-features-chosen"
+                    name="model-features"
+                    label={t("Only the columns ticked below")}
+                    checked={features !== null}
+                    // Starts from every column, so choosing is unticking the
+                    // few to leave out.
+                    onChange={() => setFeatures(choices.map((c) => c.name))}
+                  />
+                  {features !== null && (
+                    <div className="d-flex flex-wrap gap-3 mt-2 ms-4">
+                      {choices.length === 0 && (
+                        <span className="text-muted small">
+                          <T text="The dataset's columns are not known yet: pick a dataset that reads." />
+                        </span>
+                      )}
+                      {choices.map((column) => (
+                        <Form.Check
+                          key={column.name}
+                          type="checkbox"
+                          id={`model-feature-${column.name}`}
+                          label={
+                            <>
+                              {column.name}
+                              {column.type && column.type !== "unknown" && (
+                                <span className="text-muted small"> {column.type}</span>
+                              )}
+                            </>
+                          }
+                          checked={features.includes(column.name)}
+                          onChange={(e) => toggleFeature(column.name, e.target.checked)}
+                        />
+                      ))}
+                    </div>
+                  )}
+                  <Form.Text muted className="d-block mt-2">
+                    <T text="A row with a null in any feature or in the label is left out of the fit, so a column that is mostly empty can leave nothing to fit on: leave it out here." />
+                  </Form.Text>
                 </>
               )}
 

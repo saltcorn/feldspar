@@ -151,7 +151,7 @@ export function DatasetPicker({
           </a>
         </div>
         <Form.Text muted>
-          <T text="A dataset is a table, then operations — calculated columns, filters, aggregates, joins — and every column but the label is a feature. A fit records the dataset it read, and says when the dataset has changed since. A clone of a model shares its dataset: “Use a copy” gives this model one of its own to change." />
+          <T text="A dataset is a table, then operations — calculated columns, filters, aggregates, joins — and every column but the label is a feature unless the model chooses its features. A fit records the dataset it read, and says when the dataset has changed since. A clone of a model shares its dataset: “Use a copy” gives this model one of its own to change." />
         </Form.Text>
       </Form.Group>
       {copyError && <Alert variant="danger">{copyError}</Alert>}

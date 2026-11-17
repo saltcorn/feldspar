@@ -172,7 +172,65 @@ pub async fn validate_model(
             .validate(shape, &model.configuration)
             .map_err(|e| problem(e.to_string()))?;
     }
+    check_features(provider.as_ref(), model, shape).map_err(|e| problem(e.to_string()))?;
 
+    Ok(())
+}
+
+/// Check a model's [feature list](Model::features) — on save, and again before
+/// a fit, which has the shape a save may not.
+///
+/// `None` is every column but the label and is always fine. A list must be for
+/// a provider that encodes features at all, name at least one column, name
+/// each once, and — where the shape is known — name columns of the dataset
+/// other than the label.
+pub(crate) fn check_features(
+    provider: &dyn ModelProvider,
+    model: &Model,
+    shape: Option<&DatasetShape>,
+) -> sc_error::Result<()> {
+    let Some(features) = &model.features else {
+        return Ok(());
+    };
+    if !provider.outcome_spec().takes_features() || provider.binds_data() {
+        return Err(Error::invalid(format!(
+            "`{}` names the columns it reads in its own settings, so it takes no list of features",
+            provider.name()
+        )));
+    }
+    if features.is_empty() {
+        return Err(Error::invalid(
+            "no features are chosen: choose at least one column, or none to use every column \
+             but the label",
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for name in features {
+        if !seen.insert(name.as_str()) {
+            return Err(Error::invalid(format!(
+                "the feature `{name}` is listed twice"
+            )));
+        }
+    }
+    let Some(shape) = shape else {
+        return Ok(());
+    };
+    for name in features {
+        if !shape.columns.iter().any(|c| &c.name == name) {
+            return Err(Error::invalid(format!(
+                "the feature `{name}` is not a column of the dataset `{}`",
+                model.dataset.name
+            )));
+        }
+    }
+    let outcome = provider.outcome(shape, &model.configuration)?;
+    if let Some(label) = outcome.label()
+        && features.iter().any(|f| f == label)
+    {
+        return Err(Error::invalid(format!(
+            "`{label}` is the label, so it cannot also be a feature"
+        )));
+    }
     Ok(())
 }
 

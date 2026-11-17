@@ -570,13 +570,50 @@ impl Encoded {
 /// or a PCA over unscaled columns is a fit dominated by whichever column happens
 /// to be measured in larger units.
 pub fn fit_encoding(frame: &Frame, outcome: &Outcome, standardise: bool) -> Result<Encoding> {
+    fit_encoding_of(frame, outcome, standardise, None)
+}
+
+/// [`fit_encoding`] over **chosen** features: `features` names the columns
+/// encoded, in that order, and `None` is every column but the label — what
+/// [`Model::features`](crate::Model::features) stores.
+///
+/// A named column the frame does not have is refused by name rather than
+/// skipped, and so is the label: a model that silently fitted on fewer features
+/// than it was given, or on its own answer, would be wrong without saying so.
+pub fn fit_encoding_of(
+    frame: &Frame,
+    outcome: &Outcome,
+    standardise: bool,
+    features: Option<&[String]>,
+) -> Result<Encoding> {
     let label = outcome.label();
     let mut columns = Vec::new();
-    for (name, column) in &frame.columns {
-        if Some(name.as_str()) == label {
-            continue;
+    match features {
+        None => {
+            for (name, column) in &frame.columns {
+                if Some(name.as_str()) == label {
+                    continue;
+                }
+                columns.push(fit_column(name, column, standardise)?);
+            }
         }
-        columns.push(fit_column(name, column, standardise)?);
+        Some(features) => {
+            for name in features {
+                if Some(name.as_str()) == label {
+                    return Err(Error::invalid(format!(
+                        "`{name}` is the label, so it cannot also be a feature"
+                    )));
+                }
+                let column = frame.column(name).ok_or_else(|| {
+                    Error::invalid(format!(
+                        "the feature `{name}` is not a column of this dataset; the columns \
+                         are {}",
+                        frame.names().join(", ")
+                    ))
+                })?;
+                columns.push(fit_column(name, column, standardise)?);
+            }
+        }
     }
     let target = match outcome {
         Outcome::Regression { label } => {
@@ -695,6 +732,31 @@ pub fn apply_encoding(encoding: &Encoding, frame: &Frame) -> Result<Encoded> {
 /// are different functions and not a flag somebody could get wrong.
 pub fn apply_encoding_dropping(encoding: &Encoding, frame: &Frame) -> Result<Encoded> {
     apply(encoding, frame, true)
+}
+
+/// How many of `frame`'s rows have a null in each column `encoding` reads —
+/// its features, then its label — leaving out the columns with none, most
+/// nulls first.
+///
+/// What a fit that dropped every training row says: the columns with the most
+/// nulls are the ones to take out of the features, and "a null in a feature or
+/// in the label" alone does not say which those are.
+pub fn null_counts(encoding: &Encoding, frame: &Frame) -> Vec<(String, usize)> {
+    let names = encoding
+        .columns
+        .iter()
+        .map(ColumnEncoding::column)
+        .chain(encoding.target.as_ref().map(|t| t.column.as_str()));
+    let mut counts: Vec<(String, usize)> = names
+        .filter_map(|name| {
+            let column = frame.column(name)?;
+            let nulls = (0..column.len()).filter(|i| column.is_null_at(*i)).count();
+            (nulls > 0).then(|| (name.to_owned(), nulls))
+        })
+        .collect();
+    // Stable, so columns with as many nulls keep the encoding's order.
+    counts.sort_by_key(|c| std::cmp::Reverse(c.1));
+    counts
 }
 
 /// The one implementation behind the two entry points.

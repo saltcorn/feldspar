@@ -636,6 +636,12 @@ fn model_schema() -> TypeSchema {
         StructField::new("configuration", TypeSchema::json()),
         StructField::new("hyperparameters", TypeSchema::json()),
         StructField::new("split", TypeSchema::json()),
+        // The columns a fit encodes as features, or null for every column but
+        // the label.
+        StructField::new(
+            "features",
+            TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+        ),
         StructField::new("attributes", TypeSchema::json()),
         StructField::new("error", TypeSchema::optional(TypeSchema::text())),
         StructField::new("instances", TypeSchema::int()),
@@ -698,6 +704,11 @@ fn model_input_schema() -> TypeSchema {
         // list of one and a scalar are the same search.
         StructField::new("hyperparameters", TypeSchema::optional(TypeSchema::json())),
         StructField::new("split", TypeSchema::optional(TypeSchema::json())),
+        // Absent or null: every column but the label is a feature.
+        StructField::new(
+            "features",
+            TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+        ),
         StructField::new("attributes", TypeSchema::optional(TypeSchema::json())),
     ])
 }

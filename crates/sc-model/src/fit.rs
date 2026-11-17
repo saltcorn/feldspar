@@ -72,7 +72,7 @@ use crate::bind::{
 use crate::dataset::DatasetShape;
 use crate::diagnose;
 use crate::draws::{check_planned_draws, declared_elements, human_bytes, plan_draws, stored_bytes};
-use crate::encode::{Encoded, Encoding, apply_encoding_dropping, fit_encoding};
+use crate::encode::{Encoded, Encoding, apply_encoding_dropping, fit_encoding_of, null_counts};
 use crate::frame::ColumnType;
 use crate::frame::Frame;
 use crate::instance::{InstanceId, ModelInstance};
@@ -399,6 +399,42 @@ pub async fn fit_model_with(
     Ok(finished)
 }
 
+/// Why a fit has no training rows left once the encoding dropped the ones it
+/// cannot represent: which columns have nulls, and how many.
+///
+/// The bare fact ("every row has a null somewhere") leaves the admin to find
+/// the columns themselves. Naming them says what to change: the Titanic
+/// passengers' `body` is null for everyone who survived, and `boat` for nearly
+/// everyone who did not, so with both as features no row is complete.
+fn all_rows_dropped(encoding: &Encoding, train: &Frame, every_column: bool) -> String {
+    let rows = train.rows;
+    let counts = null_counts(encoding, train);
+    let mut sentence = format!(
+        "every one of the {rows} training rows was dropped, because each has a null in a \
+         feature or in the label"
+    );
+    if !counts.is_empty() {
+        const SHOWN: usize = 6;
+        let mut listed: Vec<String> = counts
+            .iter()
+            .take(SHOWN)
+            .map(|(name, nulls)| format!("`{name}` in {nulls}"))
+            .collect();
+        if counts.len() > SHOWN {
+            listed.push(format!("{} more", counts.len() - SHOWN));
+        }
+        sentence.push_str(&format!(". Nulls by column: {}", listed.join(", ")));
+    }
+    sentence.push_str(if every_column {
+        ". Every column but the label is a feature until features are chosen: choose them, \
+         leaving out the columns with the most nulls, or filter those rows out of the dataset"
+    } else {
+        ". Leave the columns with the most nulls out of the features, or filter those rows \
+         out of the dataset"
+    });
+    sentence
+}
+
 /// Run a fit and answer what it produced, touching no store.
 ///
 /// The half worth testing, and the half a caller with its own instance handling
@@ -431,6 +467,7 @@ pub async fn run_fit_with(
     }
     let shape = DatasetShape::of_frame(model.table(), &frame);
     provider.validate(&shape, &model.configuration)?;
+    crate::validate::check_features(provider.as_ref(), model, Some(&shape))?;
     let outcome = provider.outcome(&shape, &model.configuration)?;
     let points = grid(&model.hyperparameters)?;
 
@@ -456,13 +493,18 @@ pub async fn run_fit_with(
     }
 
     let splits = frame.split(&model.split)?;
-    let encoding = fit_encoding(&splits.train, &outcome, provider.standardise())?;
+    let encoding = fit_encoding_of(
+        &splits.train,
+        &outcome,
+        provider.standardise(),
+        model.features.as_deref(),
+    )?;
     let train = apply_encoding_dropping(&encoding, &splits.train)?;
     if train.is_empty() {
-        return Err(Error::invalid(format!(
-            "every one of the {} training rows was dropped by the encoding: they have a null in \
-             a feature or in the label",
-            splits.counts.train
+        return Err(Error::invalid(all_rows_dropped(
+            &encoding,
+            &splits.train,
+            model.features.is_none(),
         )));
     }
     let validation = apply_encoding_dropping(&encoding, &splits.validation)?;
@@ -1116,6 +1158,7 @@ mod tests {
 
     use super::*;
     use crate::dataset::Dataset;
+    use crate::encode::{ColumnEncoding, fit_encoding};
     use crate::frame::Column;
     use crate::provider::{FitResult, OutcomeSpec, Prediction};
     use crate::split::Split;
@@ -1268,6 +1311,104 @@ mod tests {
         let encoding = fit.encoding.expect("encoding");
         assert_eq!(encoding.feature_names(), vec!["x"]);
         assert_eq!(encoding.target.expect("target").column, "y".to_owned());
+    }
+
+    /// [`rows`] with two columns whose nulls are complementary, as the Titanic
+    /// passengers' `boat` and `body` are: `boat` is null on the odd rows and
+    /// `body` on the even ones, so no row has both.
+    fn rows_with_gaps(n: usize) -> Frame {
+        let mut frame = rows(n);
+        frame.columns.push((
+            "boat".to_owned(),
+            Column::Str(
+                (0..n)
+                    .map(|i| (i % 2 == 0).then(|| "A".to_owned()))
+                    .collect(),
+            ),
+        ));
+        frame.columns.push((
+            "body".to_owned(),
+            Column::Float((0..n).map(|i| (i % 2 == 1).then_some(i as f64)).collect()),
+        ));
+        frame
+    }
+
+    #[tokio::test]
+    async fn a_fit_that_drops_every_row_names_the_columns_with_nulls() {
+        let fits = Arc::new(AtomicUsize::new(0));
+        let err = run_fit(
+            &registry(&fits),
+            &Fixed(rows_with_gaps(100)),
+            &model(),
+            1000,
+        )
+        .await
+        .expect_err("no complete row");
+        let msg = err.to_string();
+        assert!(msg.contains("training rows was dropped"), "{msg}");
+        // Each gap column is named with its count, and `x`, which has no
+        // nulls, is not.
+        assert!(
+            msg.contains("`boat` in ") && msg.contains("`body` in "),
+            "{msg}"
+        );
+        assert!(!msg.contains("`x` in"), "{msg}");
+        // With no features chosen, it says that every column is one.
+        assert!(msg.contains("until features are chosen"), "{msg}");
+        assert_eq!(fits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_fit_encodes_only_the_chosen_features_in_their_order() {
+        let fits = Arc::new(AtomicUsize::new(0));
+        // `boat` and `x`, in that order, and `body` left out: every row with
+        // a boat is complete.
+        let fit = run_fit(
+            &registry(&fits),
+            &Fixed(rows_with_gaps(200)),
+            &model().features(["boat", "x"]),
+            1000,
+        )
+        .await
+        .expect("fit");
+        let encoding = fit.encoding.expect("encoding");
+        let columns: Vec<&str> = encoding
+            .columns
+            .iter()
+            .map(ColumnEncoding::column)
+            .collect();
+        assert_eq!(columns, vec!["boat", "x"]);
+        // Half the rows have no boat, and those are the ones dropped.
+        assert_eq!(fit.rows.dropped, 100);
+
+        // The label is not a feature, and a column the dataset lacks is named.
+        let err = run_fit(
+            &registry(&fits),
+            &Fixed(rows_with_gaps(50)),
+            &model().features(["x", "y"]),
+            1000,
+        )
+        .await
+        .expect_err("label as a feature");
+        assert!(err.to_string().contains("`y` is the label"), "{err}");
+        let err = run_fit(
+            &registry(&fits),
+            &Fixed(rows_with_gaps(50)),
+            &model().features(["x", "cabin"]),
+            1000,
+        )
+        .await
+        .expect_err("no such column");
+        assert!(err.to_string().contains("`cabin` is not a column"), "{err}");
+        let err = run_fit(
+            &registry(&fits),
+            &Fixed(rows_with_gaps(50)),
+            &model().features(Vec::<String>::new()),
+            1000,
+        )
+        .await
+        .expect_err("empty list");
+        assert!(err.to_string().contains("no features are chosen"), "{err}");
     }
 
     #[tokio::test]

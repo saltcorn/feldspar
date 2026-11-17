@@ -356,8 +356,8 @@ model editor, the fit selected.
 
 ### Step 2 — A model on a dataset
 
-A model's features are every column of its dataset but the label, so the dataset is where you
-choose them. Make a dataset `Price, area and neighbourhood` on the table `houses` with three
+A model's features are every column of its dataset but the label, unless you tick the ones to use
+under **Features** in the model editor. Here the dataset chooses them. Make a dataset `Price, area and neighbourhood` on the table `houses` with three
 operations: a Filter `sold === true` (an unsold house has no price to learn from), a Calculated
 column `neighbourhood_name = neighbourhoodⱵname`, and a Select columns keeping `price`, `area`
 and `neighbourhood_name`.

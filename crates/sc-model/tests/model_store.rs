@@ -658,6 +658,7 @@ fn assert_same(a: &Model, b: &Model) {
     assert_eq!(a.hyperparameters, b.hyperparameters);
     assert_eq!(a.split, b.split);
     assert_eq!(a.attributes, b.attributes);
+    assert_eq!(a.features, b.features);
     let related = |m: &Model| -> Vec<(String, sc_dataset::DatasetId, Option<String>)> {
         m.related
             .iter()
@@ -794,6 +795,75 @@ async fn an_existing_models_table_gains_the_related_column_on_boot() -> Result<(
     let loaded = load_model(&cat, model.id).await?.expect("stored");
     assert!(loaded.related.is_empty());
     assert_same(&loaded, &model);
+    Ok(())
+}
+
+/// A model's chosen features round-trip, and a row from before the column
+/// existed reads as "every column but the label".
+#[tokio::test]
+async fn chosen_features_round_trip_and_an_old_row_has_none() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = setup(&db).await?;
+    let reg = registry()?;
+
+    let chosen = house_prices().features(["per_room", "bedrooms"]);
+    save_model(&cat, &reg, &chosen, None).await?;
+    let loaded = load_model(&cat, chosen.id).await?.expect("stored");
+    assert_eq!(
+        loaded.features,
+        Some(vec!["per_room".to_owned(), "bedrooms".to_owned()])
+    );
+    // Cleared again by a save that chooses none: NULL, not `[]`.
+    let mut cleared = loaded;
+    cleared.features = None;
+    save_model(&cat, &reg, &cleared, None).await?;
+    assert_eq!(
+        load_model(&cat, chosen.id).await?.expect("stored").features,
+        None
+    );
+
+    // An empty list and a column named twice are refused on save.
+    let msg = save_model(
+        &cat,
+        &reg,
+        &house_prices().features(Vec::<String>::new()),
+        None,
+    )
+    .await
+    .expect_err("no features")
+    .to_string();
+    assert!(msg.contains("no features are chosen"), "{msg}");
+    let msg = save_model(
+        &cat,
+        &reg,
+        &house_prices().features(["bedrooms", "bedrooms"]),
+        None,
+    )
+    .await
+    .expect_err("twice")
+    .to_string();
+    assert!(msg.contains("`bedrooms` is listed twice"), "{msg}");
+
+    // An installation from before feature lists: no column, and a row.
+    cat.primary(sc_catalog::Unchecked::system("test"))
+        .query(&Statement::raw(
+            r#"ALTER TABLE "_fd_models" DROP COLUMN "features""#,
+            Vec::new(),
+        ))
+        .await?
+        .try_collect()
+        .await?;
+    cat.reload().await?;
+    assert_eq!(
+        load_model(&cat, chosen.id).await?.expect("stored").features,
+        None
+    );
+    bootstrap_models(&cat).await?;
+    assert!(cat.require(MODELS_TABLE)?.field("features").is_some());
+    assert_eq!(
+        load_model(&cat, chosen.id).await?.expect("stored").features,
+        None
+    );
     Ok(())
 }
 

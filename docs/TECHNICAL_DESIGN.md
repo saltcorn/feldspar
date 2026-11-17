@@ -2812,6 +2812,7 @@ erDiagram
     json configuration
     json hyperparameters "per key a value, or a list to search over"
     json split "train/validation/test fractions + the hash seed"
+    json features "nullable: the chosen feature columns; NULL = every column but the label"
     json attributes
     json view_state "A3.4: the model editor's, never read by a fit"
   }
@@ -10001,6 +10002,18 @@ and reported on the instance) and an **error at predict time** — at fit time d
 defensible sample restriction we report, at predict time it would mean answering a question about
 a row we cannot represent.
 
+**Which columns are features** is the model's, not the provider's: `Model::features` (the
+nullable `_fd_models.features`) lists them, in the order they are encoded, and NULL — every model
+saved before the list existed — is every column of the dataset but the label. It sits beside the
+split rather than in the configuration because the host does the encoding for every provider
+whose outcome is per row, so one list serves them all and no provider's own setting can collide
+with it. A hypothesis test and a posterior take none (`OutcomeSpec::takes_features`, sent to the
+form as the provider's `takes_features`): they name the columns they read in their own settings.
+Saving refuses an empty list, a column named twice, a column the dataset does not have and the
+label. Choosing is how a mostly-null column is kept out of a fit: a fit whose every training row
+was dropped names the columns with nulls and how many, rather than saying only that each row has
+one somewhere.
+
 Whether the numeric features are standardised is the *provider's declaration*
 (`ModelProviderKind::standardise`) rather than something the provider does privately, because the
 constants have to be stored on the instance and applied identically at predict time. A k-means or
@@ -10531,8 +10544,9 @@ prediction.
 dataset's rows start from, written on save), `provider`, `dataset` (JSON, `{ "dataset_id": … }`),
 `related` (JSON, nullable — a posterior's related datasets, `[{ name, dataset_id, label }]`),
 `configuration` (JSON),
-`hyperparameters` (JSON — values or lists), `split` (JSON — fractions and seed), `attributes`
-(JSON), `view_state` (JSON object, A3.4).
+`hyperparameters` (JSON — values or lists), `split` (JSON — fractions and seed), `features`
+(JSON, nullable — the columns a fit encodes as features, in order; NULL for every column but the
+label), `attributes` (JSON), `view_state` (JSON object, A3.4).
 
 `view_state` is **not part of the model**: a dictionary the Analytics UI's model editor (and any
 other screen showing the model) keeps its layout in — which outputs are open, the optional plots
@@ -11515,7 +11529,8 @@ explorer's ECharts compiler like every other plot; their data reference names th
 
 **Open as model** (A3.7; `explorer/openAsModel.ts`) asks the explorer's question as a model when
 the roles are one response on Y and one factor on X: a dataset based on the explorer's with a
-Select columns keeping the two (a model's features are every column but its label), and a linear
+Select columns keeping the two (a model's features are every column but its label until it
+chooses them), and a linear
 regression of Y — a logistic one when Y is not a number — opened in the editor.
 
 **The Data explorer** (A2.7–A2.14; `ui/analytics/src/explorer`, `src/plot`). Its state is what

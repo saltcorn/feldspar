@@ -56,15 +56,19 @@ const SCHEMA: &str = "
         bedrooms bigint,
         price double precision,
         estimate double precision,
-        neighbourhood bigint references neighbourhoods(id)
+        neighbourhood bigint references neighbourhoods(id),
+        garage text,
+        pool double precision
     );
     INSERT INTO neighbourhoods VALUES (1, 40000), (2, 90000);
-    INSERT INTO houses (id, area, bedrooms, price, neighbourhood)
+    INSERT INTO houses (id, area, bedrooms, price, neighbourhood, garage, pool)
       SELECT i,
              50 + i,
              1 + (i % 5),
              1000 * (50 + i) + 20000 * (1 + (i % 5)),
-             1 + (i % 2)
+             1 + (i % 2),
+             CASE WHEN i % 2 = 0 THEN 'double' END,
+             CASE WHEN i % 2 = 1 THEN i % 3 END
       FROM generate_series(1, 60) AS i;
 ";
 
@@ -527,6 +531,101 @@ async fn a_fit_that_fails_leaves_the_sentence_on_the_instance() -> sc_error::Res
     body["dataset"]["filter"] = json!("bedrooms > 100");
     let (status, refused) = server.client.send("POST", "/api/models", Some(body)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    Ok(())
+}
+
+/// The Titanic's problem in miniature: `garage` is null on the odd rows and
+/// `pool` on the even ones, so with every column a feature no row is complete.
+/// The failed fit names them, and a model that chooses its features fits.
+#[tokio::test]
+async fn a_model_chooses_its_features_and_a_fit_with_no_complete_row_names_the_gaps()
+-> sc_error::Result<()> {
+    let mut server = setup().await?;
+
+    // Every provider that encodes features says it takes a list; a
+    // hypothesis test, which names its columns itself, does not.
+    let (_, listed) = server
+        .client
+        .send("GET", "/api/model-providers", None)
+        .await;
+    let takes = |name: &str| {
+        listed["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == json!(name))
+            .map(|p| p["takes_features"].clone())
+    };
+    assert_eq!(takes("linear_regression"), Some(json!(true)));
+    assert_eq!(takes("random_forest"), Some(json!(true)));
+    assert_eq!(takes("t_test"), Some(json!(false)));
+
+    let mut body = model_body("with gaps");
+    body["dataset"]["columns"] = json!([
+        { "name": "price", "expr": "price" },
+        { "name": "area", "expr": "area" },
+        { "name": "bedrooms", "expr": "bedrooms" },
+        { "name": "garage", "expr": "garage" },
+        { "name": "pool", "expr": "pool" },
+    ]);
+    let (status, saved) = server
+        .client
+        .send("POST", "/api/models", Some(body.clone()))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{saved}");
+    assert_eq!(saved["features"], Value::Null);
+    let id = saved["id"].as_str().unwrap().to_owned();
+
+    let (_, started) = server
+        .client
+        .send("POST", &format!("/api/models/{id}/fit"), Some(json!({})))
+        .await;
+    let failed = server
+        .client
+        .await_fit(started["id"].as_str().unwrap())
+        .await;
+    assert_eq!(failed["status"], json!("failed"), "{failed}");
+    let error = failed["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("`garage` in ") && error.contains("`pool` in "),
+        "{error}"
+    );
+    assert!(!error.contains("`area` in"), "{error}");
+
+    // Choose the features, leaving the two gap columns out.
+    body["id"] = json!(id);
+    body["features"] = json!(["area", "bedrooms"]);
+    let (status, saved) = server
+        .client
+        .send("POST", "/api/models", Some(body.clone()))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["features"], json!(["area", "bedrooms"]));
+    let (_, got) = server
+        .client
+        .send("GET", &format!("/api/models/{id}"), None)
+        .await;
+    assert_eq!(got["features"], json!(["area", "bedrooms"]));
+
+    let (_, started) = server
+        .client
+        .send("POST", &format!("/api/models/{id}/fit"), Some(json!({})))
+        .await;
+    let fitted = server
+        .client
+        .await_fit(started["id"].as_str().unwrap())
+        .await;
+    assert_eq!(fitted["status"], json!("fitted"), "{fitted}");
+    assert_eq!(fitted["rows"]["dropped"], json!(0), "{fitted}");
+
+    // The label is not a feature: the save says so.
+    body["features"] = json!(["area", "price"]);
+    let (status, refused) = server.client.send("POST", "/api/models", Some(body)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert!(
+        refused.to_string().contains("`price` is the label"),
+        "{refused}"
+    );
     Ok(())
 }
 

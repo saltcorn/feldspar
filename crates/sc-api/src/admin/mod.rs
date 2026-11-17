@@ -416,6 +416,10 @@ fn model_provider_schema() -> TypeSchema {
         // Whether it takes a program's data bound from the datasets — what the
         // form renders the binding editor for (Stan TODO §18).
         StructField::new("binds_data", TypeSchema::bool()),
+        // Whether a model of it takes a list of features — every provider whose
+        // fit goes through the host's encoding; not a hypothesis test or a
+        // posterior, which name their columns in their own settings.
+        StructField::new("takes_features", TypeSchema::bool()),
         // Whether a running fit can be cancelled — what the instance screen
         // renders Cancel for.
         StructField::new("cancellable", TypeSchema::bool()),

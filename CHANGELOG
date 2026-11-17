@@ -2,6 +2,49 @@
 
 Changes in reverse chronological order.
 
+## A model chooses its features, and a fit with no complete row says which columns are null
+
+A random forest on the Titanic dataset ("Get datasets") with the label `survived` failed with
+"every one of the 1030 training rows was dropped by the encoding". Every column but the label was
+a feature, and no passenger has a value in every column: `body` is null for 1188 of the 1309,
+`cabin` for 1014, `boat` for 823, and no row has both a `boat` and a `body`. A row with a null in
+any feature is dropped, so every row was dropped.
+
+- **Features can be chosen.** `Model::features: Option<Vec<String>>` is stored in a new nullable
+  `_fd_models.features` column (JSON array). The bootstrap adds it, and NULL means every column
+  but the label, so every existing model reads and fits exactly as before. No migration is
+  needed. The list belongs to the model, not to a provider's configuration, so it works for every
+  provider whose fit goes through the host's encoding: linear and logistic regression, random
+  forest, k-means, PCA and module providers. `OutcomeSpec::takes_features` is false for a
+  hypothesis test and for a posterior, which name their columns in their own settings, and the
+  save refuses a feature list for them. `fit_encoding_of` encodes the chosen columns in the order
+  given. `fit_encoding` is unchanged and means "every column but the label".
+- **Validation** (`validate::check_features`, run on save and again before a fit) refuses an
+  empty list, a column named twice, a column the dataset does not have and the label.
+- **API.** `saveModel` takes an optional `features`, and `getModel` and `listModels` return it
+  (null when not chosen). `listModelProviders` returns `takes_features` for each provider. The
+  backup format carries `features` through `model_from_body`, and an older backup without it
+  restores as "every column". The four generated `client.ts` files are regenerated.
+- **Model editor.** The provider card has a **Features** section for a provider that takes them:
+  "Every column but the label" (the default), or "Only the columns ticked below", which starts
+  with every column ticked and shows each column's type. The label is never offered. A label
+  changed after the features were chosen is taken out of the list on save, and so are columns the
+  dataset no longer has (`featuresBody`). The dataset picker's help text and
+  `docs/tutorial-analytics.md` step 2 mention the choice.
+- **The error says which columns.** When every training row is dropped, the fit now fails with
+  each feature or label column that has nulls and how many, most first (`encode::null_counts`):
+  "… Nulls by column: `body` in …, `cabin` in …, …". It then says to choose the features or
+  filter the rows.
+- **Tests.** `fit::tests::a_fit_that_drops_every_row_names_the_columns_with_nulls` and
+  `a_fit_encodes_only_the_chosen_features_in_their_order` (sc-model).
+  `chosen_features_round_trip_and_an_old_row_has_none` (`sc-model/tests/model_store.rs`) covers
+  the round trip, clearing the list, the refusals, and a table from before the column that gains
+  it on boot. `a_model_chooses_its_features_and_a_fit_with_no_complete_row_names_the_gaps`
+  (`sc-server/tests/model_admin_api.rs`, whose `houses` table gains two columns with
+  complementary nulls) covers it end to end: `takes_features`, the failed fit naming the columns,
+  a save with features, a successful fit, and refusing the label. There are vitest tests for the
+  editor's helpers in `models.test.ts`.
+
 ## Test suite green again after the analytics, Bayesian-regression and agent-form changes
 
 Fixes to tests and docs only. The one product change is in the agent form: its labels,

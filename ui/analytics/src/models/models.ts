@@ -228,6 +228,51 @@ export function readColumns(raw: unknown): DatasetColumnInfo[] {
   );
 }
 
+// --- the features ------------------------------------------------------------
+//
+// A model's `features` is the list of columns a fit encodes, or `null` for
+// every column but the label — what every model saved before the list existed
+// means, and what the form sends until somebody chooses.
+
+/** A model's feature list off the wire: column names, or `null` for every
+ * column but the label. */
+export function readFeatures(raw: unknown): string[] | null {
+  if (!Array.isArray(raw)) return null;
+  return raw.filter((c): c is string => typeof c === "string");
+}
+
+/** The column an outcome predicts, for the two that have one. */
+export function outcomeLabel(outcome: Outcome | null): string | null {
+  if (outcome && (outcome.outcome === "regression" || outcome.outcome === "classification")) {
+    return outcome.label;
+  }
+  return null;
+}
+
+/** The columns offered as features: the dataset's, in its order, without the
+ * label — which is the answer, not a question asked of it. */
+export function featureChoices(columns: DatasetColumnInfo[], label: string | null): DatasetColumnInfo[] {
+  return columns.filter((c) => c.name !== label);
+}
+
+/**
+ * The `features` a save sends: `null` for a provider that takes none (a test,
+ * a posterior) or while every column is used, and otherwise the chosen list
+ * with the label taken out — a label chosen after the features were is not
+ * also a feature — and columns the dataset no longer has dropped, where the
+ * dataset's columns are known.
+ */
+export function featuresBody(
+  features: string[] | null,
+  label: string | null,
+  takesFeatures: boolean,
+  columns: DatasetColumnInfo[],
+): string[] | null {
+  if (!takesFeatures || features === null) return null;
+  const known = new Set(columns.map((c) => c.name));
+  return features.filter((f) => f !== label && (known.size === 0 || known.has(f)));
+}
+
 /** The default split: four fifths fitted, one fifth held out, no validation
  * rows — the shape of a fit with no hyperparameter search (`Split::default`). */
 export const DEFAULT_SPLIT: Split = { train: 0.8, validation: 0.0, test: 0.2, seed: 0 };

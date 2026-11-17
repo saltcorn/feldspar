@@ -134,7 +134,7 @@ pub use draws::{
 };
 pub use encode::{
     ColumnEncoding, Encoded, Encoding, Matrix, TargetEncoding, apply_encoding,
-    apply_encoding_dropping, fit_encoding,
+    apply_encoding_dropping, fit_encoding, fit_encoding_of, null_counts,
 };
 pub use fit::{
     ATTR_AXES, ATTR_BINDING, ATTR_CANCEL_REQUESTED, ATTR_COORDINATES, ATTR_LOWERED, ATTR_OUTCOME,

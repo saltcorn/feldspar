@@ -89,6 +89,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                         "outcome_error": outcome_error,
                         "standardise": kind.standardise,
                         "binds_data": kind.binds_data,
+                        "takes_features": kind.outcome.takes_features() && !kind.binds_data,
                         "cancellable": kind.cancellable,
                         // Whether the new-model picker offers it (see
                         // `UNLISTED_PROVIDERS`).
@@ -1244,6 +1245,7 @@ async fn model_json(
         "hyperparameters": Json::Object(model.hyperparameters.clone()),
         "split": serde_json::to_value(model.split)
             .map_err(|e| Error::msg(format!("split: {e}")))?,
+        "features": model.features,
         "attributes": Json::Object(model.attributes.clone()),
         "error": problem,
         "instances": instances.len(),

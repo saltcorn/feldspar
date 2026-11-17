@@ -322,6 +322,18 @@ impl OutcomeSpec {
         }
     }
 
+    /// Whether a model of this provider takes a feature list
+    /// ([`Model::features`](crate::Model::features)): whether its fit goes
+    /// through the host's encoding, where the features are chosen.
+    ///
+    /// Every per-row outcome does. A hypothesis test and a posterior do not:
+    /// each names the columns it reads in its own configuration (a test's
+    /// groups and values, a posterior's bindings), so a second list beside
+    /// those would be one the fit never reads.
+    pub fn takes_features(&self) -> bool {
+        !matches!(self, OutcomeSpec::Test | OutcomeSpec::Posterior { .. })
+    }
+
     /// The prediction types a fit of this declaration could produce, **without a
     /// dataset to resolve it against**.
     ///
