@@ -2,6 +2,63 @@
 
 Changes in reverse chronological order.
 
+## Analytics A7 phase 4: documentation and the definition of done
+
+Analytics TODO A7.9–A7.10. Milestone A7 (simulation) is documented, and its Try it is a test.
+
+Running applications are unaffected: only documentation and tests change.
+
+- **A7.9: documentation.**
+  - `TECHNICAL_DESIGN.md` §14.2 has a new subsection, "Uncertainty, and simulation (analytics
+    milestone A7)". It covers what each provider declares and returns (a table by provider),
+    `Prediction::Distribution`, prediction for new rows from a posterior through `new` and
+    standalone generated quantities, and the Model predictions operation with its in-memory tail
+    and the SQLite load that lets plots read it. It also covers the inputs of a prediction, the
+    profiler, scenarios and their spreads, the Simulation workspace, scoring, the `profiler` and
+    `scenarios` panels, and why simulation stays the admin's.
+  - In the same file, the Bayesian models' "What was left out" now says prediction from a
+    posterior arrived with A7. §14.4 lists Model predictions among the operations, and §14.5 no
+    longer lists the Simulation kind as disabled.
+  - `tutorial-analytics.md` has a new part 7, "Simulation": a Simulation workspace on part 3's
+    `House prices`, moving an input, saving and comparing `baseline` and `north side`, scoring an
+    `Unsold houses` dataset and exploring it, the profiler in part 6's dashboard and the
+    comparison in part 4's report, and the Radon posterior. The parts list at the top names it.
+  - `tutorial-stan.md`: "Doing prediction in code" becomes "Prediction for new homes". The
+    program declares `N_new`, `county_new` and `x_new` over `new` and a `y_new` generated
+    quantity, and **Prediction** names it. The section then covers what predicts afterwards
+    (formulas, `predictRows`, `m.predict`, Model predictions, the Simulation workspace), the
+    unknown-county refusal, and the cost of a prediction. The code-body route over `m.draws`
+    stays, as "Or in code, from the draws". The introduction says so too.
+- **A7.10: the definition of done.** `analytics_done.rs`'s `the_try_it_of_milestone_a7`, over
+  `feldspar demo analytics`'s rows. Linear regression half:
+  - A linear regression of `price` on `area` and the neighbourhood's name, with the Simulation
+    kind available and a workspace on the model.
+  - The profile starts at typical values, with an interval and a curve per input.
+  - Moving `area` raises the prediction by the area curve's slope, shifts every point of the
+    neighbourhood's curve by the same amount, and leaves the area's curve as it was.
+  - `baseline` and `north side` are saved in the workspace state and compared on one 128-point
+    grid, and their difference is the neighbourhood curve's.
+  - The unsold houses are scored by a dataset based on theirs, with intervals around every
+    prediction and each prediction equal to `predictRows`'s for the same house. A Data
+    explorer's histogram of the predictions counts every scored house.
+  - The profiler is dropped into a dashboard and the comparison into a report. Both draw, the
+    report keeps the saved scenarios, and the model's usage lists the workspace, the dashboard
+    and the report.
+
+  Stub posterior half (`posterior_api.rs`'s `Predictor`, now registered in this file's server
+  beside the `Sampler`):
+  - It is bound over the sold houses and the neighbourhoods, with `new` bindings, and fitted.
+  - Its profile has a distribution, the neighbourhood as a category of five levels, an area slope
+    of 0.5, and each level about one above the last.
+  - Two scenarios are compared by their draws, and the second's mean is its neighbourhood's
+    alpha plus half its area.
+  - Scoring the unsold houses gives each a prediction inside its interval, equal to an integer
+    alpha plus half the area.
+
+  The real CmdStan half is still `stan_models.rs`'s
+  `radon_predicts_new_homes_by_standalone_generated_quantities`, behind `#[ignore]`. Not run
+  here: the Try it walked by hand in the browser.
+
 ## Analytics A7 phase 3: the Simulation workspace, scoring, and simulation panels
 
 Analytics TODO A7.6–A7.8. The Simulation workspace can now be created. Its screen sets a fitted

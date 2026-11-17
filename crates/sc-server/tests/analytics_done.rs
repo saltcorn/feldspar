@@ -61,6 +61,18 @@
 //! which filters did not reach a panel; a filter of the dashboard's own
 //! saved and cleared; and the dashboard reopened as it was left.
 //!
+//! **A7** (analytics TODO A7.10): the Simulation workspace's Try it — a
+//! linear regression of `price` on `area` and the neighbourhood profiled
+//! from typical values, `area` moved and every curve following it by the
+//! slope, two scenarios saved and compared, the unsold houses scored into a
+//! dataset (each prediction `predictRows`'s) and plotted in an explorer, the
+//! profiler in a dashboard and the comparison in a report listed by the
+//! model's usage; then the stub predicting posterior (`posterior_api.rs`'s
+//! predictor) profiled, compared by its draws and scored the same way. The
+//! real CmdStan half is `stan_models.rs`'s
+//! `radon_predicts_new_homes_by_standalone_generated_quantities`, behind
+//! `#[ignore]`.
+//!
 //! **A9** (analytics TODO A9.6): applications with a restricted Analytics UI,
 //! on their own subdomains. A fixed application showing one dashboard of the
 //! admin's for `staff`: before `staff` may read `houses` its tiles say so;
@@ -239,6 +251,8 @@ async fn serve(
     // The stub posterior provider, for A3's posterior half without CmdStan.
     let mut registry = models.base_registry()?;
     registry.register(Arc::new(crate::posterior_api::Sampler))?;
+    // And the stub that predicts through `new`, for A7's posterior half.
+    registry.register(Arc::new(crate::posterior_api::Predictor))?;
     models.set_registry(Arc::new(registry));
     let dispatcher = install_triggers(&catalog, default_js_evaluator(), &agents, &models).await?;
     // Off by default for the first release; these tests are about it.
@@ -4233,5 +4247,480 @@ async fn a_simulation_scores_a_dataset_and_its_panels_are_kept() -> sc_error::Re
         )
         .await;
     assert!(why.contains("at least one scenario"), "{why}");
+    Ok(())
+}
+
+/// The point predictions along a profile's curve for `input`, by `x`.
+fn curve_of(profile: &Value, input: &str) -> Vec<(Value, f64)> {
+    profile["curves"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["input"] == json!(input))
+        .unwrap_or_else(|| panic!("no curve for {input}: {profile}"))["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| (p["x"].clone(), p["prediction"]["value"].as_f64().unwrap()))
+        .collect()
+}
+
+/// The profile input `name`.
+fn input_of<'a>(profile: &'a Value, name: &str) -> &'a Value {
+    profile["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"] == json!(name))
+        .unwrap_or_else(|| panic!("no input {name}: {profile}"))
+}
+
+/// A level of a category input other than its typical one (`prefer` when
+/// it is one).
+fn other_level(input: &Value, prefer: &Value) -> Value {
+    let levels = input["levels"].as_array().unwrap();
+    if levels.contains(prefer) && *prefer != input["typical"] {
+        return prefer.clone();
+    }
+    levels
+        .iter()
+        .find(|l| **l != input["typical"])
+        .unwrap()
+        .clone()
+}
+
+/// The prediction at `level` along a category's curve.
+fn at_level(curve: &[(Value, f64)], level: &Value) -> f64 {
+    curve.iter().find(|(x, _)| x == level).unwrap().1
+}
+
+/// **A7** (analytics TODO A7.10): the Simulation workspace's Try it, through
+/// the API. A linear regression of `price` on `area` and the neighbourhood:
+/// the profiler starting at typical values, with an interval; `area` moved,
+/// so the prediction rises by the slope and every other curve with it;
+/// "baseline" and "north side" saved in the workspace and compared, their
+/// difference the neighbourhood curve's; the unsold houses scored into a
+/// dataset based on theirs, each prediction `predictRows`'s for the same
+/// house, plotted in a Data explorer; the profiler in a dashboard and the
+/// comparison in a report, which the model's usage lists. Then the same
+/// for the stub posterior provider (`posterior_api.rs`'s predictor,
+/// `alpha[neighbourhood] + 0.5 · area` with `alpha` near 1…5): posterior
+/// predictive distributions with their draws for a new home, its profile,
+/// two scenarios, and a scored dataset. The real CmdStan half is
+/// `stan_models.rs`'s `radon_predicts_new_homes_by_standalone_generated_quantities`.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn the_try_it_of_milestone_a7() -> sc_error::Result<()> {
+    let (mut client, _db) = setup().await?;
+    let client = &mut client;
+
+    // 1. A linear regression predicting `price` from `area` and the
+    //    neighbourhood, opened in a Simulation workspace.
+    let sold = client
+        .dataset(json!({
+            "name": "Sold houses by area",
+            "base": { "kind": "table", "table": "houses" },
+            "operations": [
+                op("s", "filter", json!({ "formula": "sold === true" })),
+                op("h", "calculated", json!({ "name": "hood", "formula": "neighbourhoodⱵname" })),
+                op("k", "select", json!({ "columns": [
+                    { "column": "price" }, { "column": "area" }, { "column": "hood" }
+                ]})),
+            ],
+        }))
+        .await;
+    let model = client
+        .ok(
+            "POST",
+            "/api/models",
+            Some(json!({
+                "name": "Price by area",
+                "provider": "linear_regression",
+                "dataset": { "dataset_id": sold },
+                "configuration": { "label": "price" },
+                "split": { "train": 1.0, "validation": 0.0, "test": 0.0, "seed": 7 },
+            })),
+        )
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let fit = client.fit(&model).await["id"].as_str().unwrap().to_owned();
+    let kinds = client.ok("GET", "/api/workspace-kinds", None).await;
+    let simulation = kinds
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["kind"] == json!("simulation"))
+        .unwrap();
+    assert_eq!(simulation["available"], json!(true), "{simulation}");
+    let workspace = client.workspace("Pricing a house", "simulation").await;
+    client
+        .save_state(
+            &workspace,
+            &json!({ "model": model, "values": {}, "scenarios": [] }),
+        )
+        .await;
+
+    // One input per predictor at its typical value, the predicted price
+    // with its interval, and a curve per predictor.
+    let start = client
+        .ok(
+            "POST",
+            &format!("/api/models/{model}/profile"),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(start["fit"]["id"], json!(fit), "{start}");
+    assert_eq!(start["uncertainty"], json!("interval"), "{start}");
+    let (area, hood) = (input_of(&start, "area"), input_of(&start, "hood"));
+    assert_eq!(area["kind"], json!("number"), "{start}");
+    assert_eq!(hood["kind"], json!("category"), "{start}");
+    assert_eq!(
+        start["values"],
+        json!({ "area": area["typical"], "hood": hood["typical"] })
+    );
+    let price = &start["prediction"];
+    let typical_price = price["value"].as_f64().unwrap();
+    assert!(
+        price["lower"].as_f64().unwrap() < typical_price
+            && typical_price < price["upper"].as_f64().unwrap(),
+        "{start}"
+    );
+    let along_area = curve_of(&start, "area");
+    let along_hood = curve_of(&start, "hood");
+    assert_eq!(along_area.len(), 21);
+    assert_eq!(along_hood.len(), hood["levels"].as_array().unwrap().len());
+    let (first, last) = (&along_area[0], &along_area[20]);
+    let slope = (last.1 - first.1) / (last.0.as_f64().unwrap() - first.0.as_f64().unwrap());
+    assert!(slope > 0.0, "{along_area:?}");
+
+    // 2. Move the area: the prediction rises by the slope, every point of
+    //    the neighbourhood's curve with it, and the area's curve stays.
+    let moved_area = (area["typical"].as_f64().unwrap() + 20.0).round();
+    let moved = client
+        .ok(
+            "POST",
+            &format!("/api/models/{model}/profile"),
+            Some(json!({ "values": { "area": moved_area } })),
+        )
+        .await;
+    let rise = moved["prediction"]["value"].as_f64().unwrap() - typical_price;
+    let expected = slope * (moved_area - area["typical"].as_f64().unwrap());
+    assert!(
+        (rise - expected).abs() < 1e-6 * expected.abs(),
+        "{rise} {expected}"
+    );
+    for ((x, before), (x2, after)) in along_hood.iter().zip(curve_of(&moved, "hood")) {
+        assert_eq!(*x, x2);
+        assert!((after - before - rise).abs() < 1e-6 * rise.abs(), "{x}");
+    }
+    for ((_, before), (_, after)) in along_area.iter().zip(curve_of(&moved, "area")) {
+        assert!((after - before).abs() < 1e-6 * before.abs());
+    }
+
+    // 3. "baseline", and "north side" in another neighbourhood, saved in
+    //    the workspace and compared side by side.
+    let north = other_level(hood, &json!("Northgate"));
+    let scenarios = json!([
+        { "name": "baseline", "values": {} },
+        { "name": "north side", "values": { "hood": north } },
+    ]);
+    let state = json!({ "model": model, "values": { "hood": north }, "scenarios": scenarios });
+    client.save_state(&workspace, &state).await;
+    assert_eq!(client.state_of(&workspace).await, state);
+    let compared = client
+        .ok(
+            "POST",
+            &format!("/api/models/{model}/scenarios"),
+            Some(json!({ "scenarios": scenarios })),
+        )
+        .await;
+    assert_eq!(
+        compared["grid"].as_array().unwrap().len(),
+        128,
+        "{compared}"
+    );
+    let pair = compared["scenarios"].as_array().unwrap();
+    let names: Vec<&str> = pair.iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["baseline", "north side"]);
+    for s in pair {
+        assert_eq!(s["spread"]["kind"], json!("interval"), "{compared}");
+        assert_eq!(s["spread"]["density"].as_array().unwrap().len(), 128);
+    }
+    let gap = pair[1]["prediction"]["value"].as_f64().unwrap()
+        - pair[0]["prediction"]["value"].as_f64().unwrap();
+    let want = at_level(&along_hood, &north) - at_level(&along_hood, &hood["typical"]);
+    assert!(
+        (gap - want).abs() < 1e-6 * want.abs().max(1.0),
+        "{gap} {want}"
+    );
+
+    // 4. Score the unsold houses: a dataset based on theirs with a Model
+    //    predictions operation, its inputs matched by name.
+    let unsold = client
+        .dataset(json!({
+            "name": "Unsold houses by area",
+            "base": { "kind": "table", "table": "houses" },
+            "operations": [
+                op("u", "filter", json!({ "formula": "sold === false" })),
+                op("h", "calculated", json!({ "name": "hood", "formula": "neighbourhoodⱵname" })),
+            ],
+        }))
+        .await;
+    let scored_def = json!({
+        "name": "Unsold houses by area scored by Price by area",
+        "base": { "kind": "dataset", "dataset": unsold },
+        "operations": [op("score", "model_predictions", json!({
+            "model": "Price by area", "name": "predicted", "interval": true, "fit": fit,
+        }))],
+    });
+    let scored = client.dataset(scored_def.clone()).await;
+    let (names, rows, total) = client.stage(&scored_def, 1).await;
+    assert!(total > 0, "{rows:?}");
+    let at = |name: &str| names.iter().position(|n| n == name).unwrap();
+    for row in &rows {
+        let (v, l, u) = (
+            row[at("predicted")].as_f64().unwrap(),
+            row[at("predicted_lower")].as_f64().unwrap(),
+            row[at("predicted_upper")].as_f64().unwrap(),
+        );
+        assert!(l < v && v < u, "{row:?}");
+    }
+    let house = &rows[0];
+    let direct = client
+        .ok(
+            "POST",
+            "/api/model-predictions",
+            Some(json!({ "instance": fit, "rows": [{
+                "area": house[at("area")], "hood": house[at("hood")],
+            }] })),
+        )
+        .await;
+    let direct = direct["predictions"][0]["value"].as_f64().unwrap();
+    let in_dataset = house[at("predicted")].as_f64().unwrap();
+    assert!((direct - in_dataset).abs() < 1e-6, "{direct} {in_dataset}");
+    // Opened in the Data explorer: a histogram of the predictions counts
+    // every scored house.
+    let explorer = client.workspace("Scored houses", "data_explorer").await;
+    let assignment = json!({ "x": { "field": "predicted" } });
+    client
+        .save_state(
+            &explorer,
+            &json!({ "dataset": scored, "assignment": assignment, "view": "plot" }),
+        )
+        .await;
+    let histogram = client
+        .suggest(json!({ "dataset": scored, "preset": "histogram", "assignment": assignment }))
+        .await;
+    let drawn = client.draw(&histogram["spec"]).await;
+    let layer = &drawn["layers"][0];
+    let counted: i64 = layer["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| cell(layer, b, "y").as_i64().unwrap())
+        .sum();
+    assert_eq!(counted, total, "{drawn}");
+
+    // 5. The profiler dragged into a dashboard, and the comparison at the
+    //    saved scenarios into a report: both drawn, and both listed where
+    //    the model is used.
+    let profiler = dropped(&panel_of(
+        "Profiler — Price by area",
+        "profiler",
+        json!({ "model": model, "values": state["values"], "scenarios": scenarios }),
+    ));
+    let comparison = dropped(&panel_of(
+        "Scenarios — Price by area",
+        "scenarios",
+        json!({ "model": model, "scenarios": scenarios }),
+    ));
+    let dashboard = client.workspace("Pricing board", "dashboard").await;
+    client
+        .save_state(
+            &dashboard,
+            &json!({ "tiles": [tile("t1", &profiler, [0, 0, 12, 8])] }),
+        )
+        .await;
+    let report = client.workspace("Pricing report", "report").await;
+    client
+        .save_state(&report, &json!({ "blocks": [panel_block(&comparison)] }))
+        .await;
+    for panel in [&profiler, &comparison] {
+        client.render(panel).await;
+    }
+    let kept = client.state_of(&report).await;
+    assert_eq!(
+        kept["blocks"][0]["panel"]["content"]["scenarios"],
+        scenarios
+    );
+    let usage = client
+        .ok("GET", &format!("/api/models/{model}/usage"), None)
+        .await;
+    let mut listed = users(&usage);
+    listed.sort();
+    assert_eq!(
+        listed,
+        [
+            ("Pricing a house".to_owned(), "simulation".to_owned(), 0),
+            ("Pricing board".to_owned(), "dashboard".to_owned(), 1),
+            ("Pricing report".to_owned(), "report".to_owned(), 1),
+        ]
+    );
+
+    // 6. A posterior — the stub predictor standing in for CmdStan — over the
+    //    sold houses and their neighbourhoods, predicting new homes through
+    //    `new`: `alpha[neighbourhood] + 0.5 · area` per draw.
+    let homes = client
+        .dataset(json!({
+            "name": "Sold homes",
+            "base": { "kind": "table", "table": "houses" },
+            "operations": [
+                op("s", "filter", json!({ "formula": "sold === true" })),
+                op("k", "select", json!({ "columns": [
+                    { "column": "neighbourhood" }, { "column": "area" }, { "column": "price" },
+                ] })),
+            ],
+        }))
+        .await;
+    let areas = client
+        .dataset(json!({
+            "name": "Neighbourhood list",
+            "base": { "kind": "table", "table": "neighbourhoods" },
+            "operations": [],
+        }))
+        .await;
+    let posterior = client
+        .ok(
+            "POST",
+            "/api/models",
+            Some(json!({
+                "name": "Posterior prices",
+                "provider": "predictor",
+                "dataset": { "dataset_id": homes },
+                "related": [{ "name": "neighbourhoods", "dataset_id": areas, "label": "name" }],
+                "configuration": {
+                    "prediction": "y_new",
+                    "bindings": {
+                        "N": { "kind": "count", "dataset": "main" },
+                        "J": { "kind": "size", "dimension": "neighbourhoods" },
+                        "county": { "kind": "index", "dataset": "main",
+                                    "column": "neighbourhood", "dimension": "neighbourhoods" },
+                        "x": { "kind": "column", "dataset": "main", "column": "area" },
+                        "y": { "kind": "column", "dataset": "main", "column": "price" },
+                        "N_new": { "kind": "count", "dataset": "new" },
+                        "county_new": { "kind": "index", "dataset": "new",
+                                        "column": "neighbourhood",
+                                        "dimension": "neighbourhoods" },
+                        "x_new": { "kind": "column", "dataset": "new", "column": "area" },
+                    },
+                },
+            })),
+        )
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let sampled = client.fit(&posterior).await;
+    assert_eq!(
+        sampled["outcome"]["outcome"],
+        json!("posterior"),
+        "{sampled}"
+    );
+
+    // Its profile: the neighbourhood a category (an index), the area a
+    // number along which the prediction rises by a half.
+    let profile = client
+        .ok(
+            "POST",
+            &format!("/api/models/{posterior}/profile"),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(profile["outcome"], json!("posterior"), "{profile}");
+    assert_eq!(profile["uncertainty"], json!("distribution"), "{profile}");
+    let (hood, area) = (
+        input_of(&profile, "neighbourhood"),
+        input_of(&profile, "area"),
+    );
+    assert_eq!(hood["kind"], json!("category"), "{profile}");
+    assert_eq!(hood["levels"].as_array().unwrap().len(), 5, "{profile}");
+    assert_eq!(area["kind"], json!("number"), "{profile}");
+    let mean = profile["prediction"]["value"].as_f64().unwrap();
+    assert!(
+        profile["prediction"]["lower"].as_f64().unwrap() < mean
+            && mean < profile["prediction"]["upper"].as_f64().unwrap(),
+        "{profile}"
+    );
+    let along = curve_of(&profile, "area");
+    let (first, last) = (&along[0], &along[along.len() - 1]);
+    let slope = (last.1 - first.1) / (last.0.as_f64().unwrap() - first.0.as_f64().unwrap());
+    assert!((slope - 0.5).abs() < 0.01, "{slope}");
+    // Each neighbourhood's level sits about one above the one before.
+    let by_hood: Vec<f64> = curve_of(&profile, "neighbourhood")
+        .iter()
+        .map(|(_, y)| y - 0.5 * area["typical"].as_f64().unwrap())
+        .collect();
+    for (k, y) in by_hood.iter().enumerate() {
+        #[allow(clippy::cast_precision_loss, reason = "five levels")]
+        let alpha = (k + 1) as f64;
+        assert!((y - alpha).abs() < 0.05, "{by_hood:?}");
+    }
+
+    // A new home in two scenarios: posterior predictive distributions, by
+    // their draws, one neighbourhood apart.
+    let other = other_level(hood, &json!(null));
+    let compared = client
+        .ok(
+            "POST",
+            &format!("/api/models/{posterior}/scenarios"),
+            Some(json!({ "scenarios": [
+                { "name": "baseline" },
+                { "name": "elsewhere", "values": { "neighbourhood": other, "area": 100 } },
+            ] })),
+        )
+        .await;
+    let pair = compared["scenarios"].as_array().unwrap();
+    for s in pair {
+        assert_eq!(s["spread"]["kind"], json!("draws"), "{compared}");
+        let draws = s["spread"]["draws"].as_array().unwrap();
+        assert!(!draws.is_empty() && draws.len() <= 1000, "{compared}");
+    }
+    let levels = hood["levels"].as_array().unwrap();
+    let position = |level: &Value| levels.iter().position(|l| l == level).unwrap();
+    #[allow(clippy::cast_precision_loss, reason = "five levels")]
+    let want = (position(&other) + 1) as f64 + 50.0;
+    let elsewhere = pair[1]["prediction"]["value"].as_f64().unwrap();
+    assert!((elsewhere - want).abs() < 0.05, "{elsewhere} {want}");
+
+    // Score the unsold houses with it, at the fit the profile used (a
+    // posterior's fit is not made active by itself): each prediction is its
+    // neighbourhood's alpha plus half the area, inside its interval.
+    let scored_def = json!({
+        "name": "Unsold homes scored by Posterior prices",
+        "base": { "kind": "dataset", "dataset": unsold },
+        "operations": [op("score", "model_predictions", json!({
+            "model": "Posterior prices", "name": "predicted", "interval": true,
+            "fit": profile["fit"]["id"],
+        }))],
+    });
+    client.dataset(scored_def.clone()).await;
+    let (names, rows, total) = client.stage(&scored_def, 1).await;
+    assert!(total > 0, "{rows:?}");
+    let at = |name: &str| names.iter().position(|n| n == name).unwrap();
+    for row in &rows {
+        let (v, l, u) = (
+            row[at("predicted")].as_f64().unwrap(),
+            row[at("predicted_lower")].as_f64().unwrap(),
+            row[at("predicted_upper")].as_f64().unwrap(),
+        );
+        assert!(l < v && v < u, "{row:?}");
+        let alpha = v - 0.5 * row[at("area")].as_f64().unwrap();
+        assert!(
+            (alpha - alpha.round()).abs() < 0.05 && (1.0..=5.0).contains(&alpha.round()),
+            "{row:?}"
+        );
+    }
     Ok(())
 }

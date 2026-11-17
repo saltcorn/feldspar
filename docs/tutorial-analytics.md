@@ -16,10 +16,12 @@ models, draw maps and write reports. Its design is in
   report.
 - **Part 6 — Dashboards:** tiles from any source, stat cards, and filtering every tile by a
   click, a brush or a district on a map, with drill paths and a filter bar.
+- **Part 7 — Simulation:** a model's prediction with its uncertainty, how it changes along each
+  input, named scenarios compared, and a dataset scored with the model's predictions.
 - **Part 9 — Applications:** publishing part of the Analytics UI to your users, as a
   dashboard they can use but not change, or a small Analytics UI of their own over the tables
-  you pick, each reading only the rows their permissions allow. (Parts 7 and 8, simulation and
-  spatial statistics, come with their milestones.)
+  you pick, each reading only the rows their permissions allow. (Part 8, spatial statistics,
+  comes with its milestone.)
 
 You need a server and an admin login. Nothing else: the data comes from a command.
 
@@ -845,6 +847,129 @@ delete warning for `Incidents` now lists the dashboard too.
 - **On the server, a filter is a Filter.** The dashboard's conditions become one more Filter
   operation at the end of each dataset, so a plot, a card, a table, a test and a map are filtered
   the same way.
+
+---
+
+## Part 7 — Simulation
+
+A fitted model answers "what if": what would this house sell for with twenty more square
+metres, or in another neighbourhood? A **Simulation** workspace turns a model's inputs into
+controls and shows the prediction **with its uncertainty**, which is how sure the model is, and
+how the prediction changes along each input. Named **scenarios** are compared side by side, and
+**Score** adds the model's predictions to every row of a dataset.
+
+A simulation uses a fitted model, and models are the admin's. A Simulation workspace and its
+panels are shown only in the unrestricted Analytics UI, not in an Analytics application.
+
+### Step 1 — A Simulation workspace
+
+Use `House prices` from part 3: a linear regression of `price` on `area` and
+`neighbourhood_name`. If part 3's step 6 left its fit marked *dataset changed*, fit it again
+first. Create a workspace of the kind **Simulation**, called `Pricing a house`, and pick
+`House prices` under **Model**. The list only offers models with a fitted fit.
+
+The left side has one control per input, each starting at its **typical value**:
+
+- `area` is a number, so a slider with a box to type into. It starts at the mean area of the
+  houses the model was fitted on, and its range is theirs.
+- `neighbourhood_name` is a category, so a drop-down of its levels. It starts at the most
+  common one.
+
+A date would be a date picker and a yes/no a switch. Beside them is the **Predicted** price
+with its **90 % interval** (change the level under **Interval**). For a linear regression this
+is a *prediction interval*: where the price of one such house is expected to fall, not just the
+average of many. Below is a small chart per input: the prediction as that input changes and the
+others stay where they are, with the interval as a band. The neighbourhood's chart is a point
+and whisker per level. Each chart marks the input's current value.
+
+### Step 2 — Move an input
+
+Drag the `area` slider. The prediction and **every** chart follow together: the neighbourhood
+chart moves up as the area grows, because each of its points is a house of the new area. The old
+curves stay on screen, faded, until the new ones arrive. Look at the `area` chart's band: it is
+narrowest near the mean area and widens towards the ends, because the model has seen fewer
+houses there.
+
+A moved input's label has a **typical** link that puts it back at its typical value, and **All
+typical** resets them all.
+
+### Step 3 — Scenarios
+
+Type `baseline` under **Scenarios** and press **Save scenario**. Now pick `Northgate` as the
+neighbourhood (or any other) and save that as `north side`. The comparison below draws **the
+two predicted distributions** on one axis, each prediction marked, and a table lists the inputs
+where the scenarios differ, with each prediction and its interval. If the current inputs differ
+from every saved scenario, they are drawn too, as *Current*.
+
+**Use** puts a scenario's inputs back on the controls, and **Delete** removes it. Saving under
+an existing name replaces that scenario. The workspace keeps the model, the moved inputs and the
+scenarios, so it reopens as you left it. Picking another model clears the inputs and scenarios,
+because they belong to the old model.
+
+The distributions depend on the model. A regression draws the t distribution its interval came
+from, a Bayesian model the density of its draws, a classifier grouped bars of its class
+probabilities, and a model that cannot say how sure it is (a random forest) plain bars.
+
+### Step 4 — Score a dataset
+
+On the front page, make a dataset `Unsold houses` on the table `houses`, with a Filter
+`sold === false` and a Calculated column `neighbourhood_name = neighbourhoodⱵname`. A model
+reads its inputs from a row **by name**, so the dataset needs columns called `area` and
+`neighbourhood_name`.
+
+Back in the workspace, under **Score a dataset**, pick `Unsold houses` and press **Score**. A
+new dataset, `Unsold houses scored by House prices`, is made. It is **based on** `Unsold
+houses`, with one more operation, **Model predictions**. That operation adds `predicted`,
+`predicted_lower` and `predicted_upper` to every row, using this workspace's fit and interval.
+**Open in the Dataset editor** shows it like any other dataset. **Open in a Data explorer**
+opens a new explorer on it: put `predicted` on X for a histogram of the predicted prices, or
+`area` on X and `predicted` on Y.
+
+The operation can also be added by hand in the Dataset editor, from the operations menu. A
+prediction is not SQL, so the operations after one run in memory, over at most 100 000 rows:
+a Calculated column, Filter, Select columns, Sort, Aggregate, Limit, or another Model
+predictions. A Join or a Window column after it is refused with a sentence. Put those before
+it.
+
+### Step 5 — Into a dashboard and a report
+
+The **profiler** (the prediction and its charts) and the **comparison** each have a drag
+handle. Drag the profiler into the dashboard from part 6. There it stays interactive: its
+inputs move and its charts follow, for whoever is looking, and the tile keeps the inputs it was
+dropped with. Drag the comparison into the report from part 4. A report is still, so it shows
+the scenarios as they were saved, and prints like every other panel.
+
+Now try to delete `House prices` from the front page. The warning lists the Simulation
+workspace, the dashboard and the report.
+
+### Step 6 — A posterior
+
+With CmdStan installed, open the Radon model from [tutorial-stan.md](tutorial-stan.md), in the
+version whose program predicts new homes (its *Prediction for new homes* section names `y_new`
+as the model's **Prediction**). Pick it in a Simulation workspace. Its inputs are the columns
+the program's `new` bindings read: `county` and `floor`. The county is a drop-down because it is
+bound by `index`. Every prediction is now a **posterior predictive distribution**: the county's
+uncertainty and a home's own spread, from the fit's draws. The comparison draws each scenario's
+draws as a density.
+
+A profile is **one** prediction call however many points its charts have. For a Stan model that
+is one run of CmdStan's standalone generated quantities per chain, so moving a slider takes a
+moment longer than for a regression. Scoring a dataset with a posterior works the same way, and
+adds the mean and the interval of each row's distribution.
+
+### What to remember
+
+- **A prediction comes with how sure it is.** A regression gives a prediction interval, a
+  classifier its class probabilities, a posterior its draws. A model that cannot say gives the
+  point prediction alone.
+- **A profile holds the others fixed.** Each chart moves one input with the rest at their current
+  values, so moving any input moves every chart.
+- **Scenarios are named inputs.** They are kept in the workspace and compared by their whole
+  predicted distributions, not just their means.
+- **Scoring is a dataset.** Score makes a dataset based on yours with a Model predictions
+  operation, and anything can read it: the explorer, a dashboard, a map, another dataset.
+- **Simulation is the admin's.** Models are, so a Simulation workspace and its panels are not
+  offered in an Analytics application.
 
 ---
 

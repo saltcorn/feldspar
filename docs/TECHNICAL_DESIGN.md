@@ -10386,6 +10386,143 @@ is every row of two tables. A non-stored field is computed when it is read, batc
 (§6.2). An `update_rows` trigger that stores the value puts the recomputation where somebody
 chose it.
 
+#### Uncertainty, and simulation (analytics milestone A7)
+
+A prediction that says only "312 000" invites more trust than the model has earned. Milestone A7
+makes every provider that can say how sure it is say so, lets a dataset carry a model's
+predictions as columns, and builds the Simulation workspace on those two.
+
+**What a provider declares** (A7.2). `ModelProvider::uncertainty()` is one of `none`,
+`interval`, `probabilities` or `distribution`, and `ModelSummary` carries it, so a screen knows
+what to draw before it asks. `predict_uncertain(state, frame, level)` returns predictions with
+it, and defaults to the point prediction, so a provider that declares nothing keeps working. The
+host's `predict_rows_at` and `predict_subject_at` take the level; `predict_rows` and
+`predict_subject` are unchanged and answer the point prediction as before.
+
+| provider | uncertainty | what it is |
+|---|---|---|
+| linear regression | `interval` | the prediction interval ŷ ± t·s·√(1 + x₀ᵀ(XᵀX)⁻¹x₀); the fit stores (XᵀX)⁻¹, σ² and the residual degrees of freedom (a fit from before A7 predicts without one) |
+| logistic regression | `probabilities` | every class's probability, by class name (`Prediction::Class::probabilities`) |
+| `bayesian_regression` | `distribution` | the posterior of each row's expected response, from the draws the fit kept |
+| `stan` with a `prediction` | `distribution` | the posterior predictive draws of the named generated quantity (below) |
+| random forest, k-means | `none` | smartcore gives no vote shares |
+
+A draw-based prediction is summarised as **`Prediction::Distribution { mean, sd, lower, upper,
+level }`**, whose value in a row is its mean. An explicit `level` (0.9 by default, the 5 % and
+95 % quantiles) rather than fixed `q5`/`q95` fields gives a regression's interval and a
+posterior's the same shape. `predictRows`, `m.predict(…, { detail: true })` and the `ModelHost`
+detail objects carry `sd`, `lower`, `upper` and `level`, or `probabilities`.
+
+**Prediction for new rows from a posterior** (A7.1, the design carried from TODO-post-mvp-30 §19).
+A Stan program predicts by declaring data for the rows being predicted and a generated quantity
+over them. Its bindings may name the pseudo-dataset **`new`**: the main dataset's columns, the
+rows being predicted. A fit binds `new` with no rows. Over `new` a binding is a `count`, a
+`column`, `columns` or an `index` into a dimension the fit made; nothing may index into `new` and
+no dimension is declared over it. The configuration key `prediction` names the generated quantity,
+which the save check requires to have one axis sized by the count of `new` (and a `runs_store`, so
+the run can be read back).
+
+A fit of such a model keeps a `PredictionPack` on the instance (`ATTR_PREDICTION`): the generated
+quantity, the interface and binding keys as fitted, and the bound scalars. At predict time only the
+`new` variables are bound again (`sc_model::bind_new_rows`), against the instance's stored
+coordinates, so a county the fit never saw, or a null, is refused by name. The provider's
+`predict_posterior` then answers each row's draws: for `stan`, CmdStan's **standalone generated
+quantities**, reading the published run back (data.json and each chain's CSV), merging in the new
+rows' data, compiling from the fit's program snapshot (a cache hit, as a rule), and running one
+process per chain. `predict()` in a formula, `m.predict` and `predictRows` accept such a posterior;
+`describe_model` says a Stan model predicts only when its `prediction` is set, so a `predict("…")`
+over one that names none is still refused on save. `sc_model::predict_rows_draws` (and
+`ModelProvider::predict_draws`, default `None`) gives the draws themselves, which the scenario
+comparison uses.
+
+**The Model predictions operation** (A7.3, §14.4's table). `kind: "model_predictions"`,
+`PredictOp { model, fit, name, interval, level }`: the model by name, the fit by id (the active fit
+when absent), the column's name, and whether to add the interval. It adds `name` and, as the
+provider gives them, `name_lower` and `name_upper` or `name_probability`. The inputs are the row's
+columns, matched to the model's by name (`ModelHost::predict_inputs`), in one batched call per
+operation, and the new columns' types come from the model's description, which
+`sc_dataset::load_models` loads into the `Library`.
+
+A prediction is not SQL, so the operation **ends the query**. The stage before the first Model
+predictions is read (at most `MAX_IN_MEMORY_ROWS`, 100 000) and the operations from there on are a
+`Stage::tail()` run in memory: Calculated column and Filter in the reified formula evaluator; Select
+columns, Sort, Aggregate (every summary but geometry union) and Limit in Rust; and another Model
+predictions. Anything that needs SQL after a prediction — a Window column, a Join, a formula that
+follows a key — is refused on the operation with a sentence. `read_stage`, `read_page`,
+`read_rows`, `count` and `column_values` evaluate the tail, so the Dataset editor pages through it;
+a SQL read of such a stage (`rows_query` and its kin) is refused the same way. For the plots,
+tables, tests and stat cards that do read SQL (A7.7), `plot::render::tail_rows` reads the evaluated
+rows and loads them into a private in-memory SQLite, as a fit's output data is loaded
+(`memory_rows`, typed by `ColType`), so the stat compiler runs unchanged and a dashboard's
+conditions reach the rows as a Filter run in memory. `load_library` does not load the models: a
+model's own dataset is resolved through the library, and describing models there would recurse
+once a saved dataset names one.
+
+**The inputs of a prediction** (A7.4). `sc_model::prediction_inputs` gives the columns a
+prediction reads, each a `PredictionInput { column, categorical }`: from the fit's encoding (a
+one-hot column is categorical), from the `new` bindings of a posterior (an `index` binding is
+categorical, so a county id is a choice of levels and not a slider), or from the provider's own
+`ModelProvider::inputs(state)` (the formula provider lists its bound columns less the response's
+own). When nothing knows them, they are every training column but the label.
+
+**The profiler** (`sc_analytics::simulate`, `profileModel`: `POST /api/models/{id}/profile` with
+`{ fit?, values?, level?, points? }`). Each input is described from up to 100 000 training rows as a
+number, integer, date, category or yes/no, starting at its **typical value**: the mean (rounded for
+an integer), the median date, or the most common level, with its range or up to 50 levels (the fit's
+own levels for a one-hot column). Values sent are checked against the input's kind, and an input the
+model does not read is refused by name. The answer is the prediction at the values and **a curve per
+input**, the others held where they are: 21 points across the range (2 to 101 on request; integers
+and whole-day dates deduplicated), or one point per level. Every row of every curve goes into **one
+batched** `predict_rows_at` call, so a posterior runs its standalone generated quantities once per
+profile, not once per point. Without `fit`, the active fit is used, else the newest fitted one; a
+model never fitted is refused, and the answer says whether the fit's dataset has changed since.
+
+**Scenarios** (A7.5, `compareScenarios`: `POST /api/models/{id}/scenarios` with `{ fit?, level?,
+scenarios: [{ name, values? }] }`). Each scenario is a set of input values over the typical ones,
+and the comparison answers each one's prediction and its **spread** on one shared 128-point grid:
+`draws` (at most 1 000, with a kernel density) where the model predicts from draws, `interval` for a
+regression — drawn as the Student t it came from, its degrees of freedom recovered from the
+interval's width (`t_degrees_of_freedom`), or a normal when the interval is no wider than a normal
+one — `classes` for a classifier, and `point` otherwise. The scenarios come in the request, not
+from a workspace, so the workspace, a dashboard's profiler and a report's still comparison all ask
+the same way.
+
+**The Simulation workspace** (A7.6, `ui/analytics/src/simulation/`). Its state is `SimulationState
+{ model, fit?, level?, values, scenarios }`; `values` holds only the inputs that were moved, and
+`check_state` allows at most 20 scenarios, each with a name of 1 to 200 bytes, no two alike, and a
+level in (0, 1). Picking another model clears the values and the scenarios, since its inputs are
+not the old model's. The screen has a control per input by its kind (a slider with a number box, a
+date picker, a drop-down of levels, a switch), the prediction with its interval or probabilities,
+and a small chart per input with its interval as a band (or a point and whisker per level), each
+marking the input's current value. Requests wait 150 ms after the last change and the old curves
+stay, faded, until the new ones arrive, so a dragged slider moves the prediction and every curve
+together. **Save scenario** names the current inputs; the comparison draws the saved scenarios
+(and "Current" when it differs from all of them) as densities, grouped bars per class, or bars, with
+a table of the inputs where they differ.
+
+**Scoring** (A7.7). **Score a dataset** creates "<dataset> scored by <model>", based on the chosen
+dataset, with one Model predictions operation carrying the interval, the workspace's fit and its
+level. The prediction column is `predicted` unless the source has one. The new dataset opens in the
+Dataset editor or a new Data explorer, and is plotted like any other through the in-memory tail
+above.
+
+**The panels** (A7.8). `profiler` and `scenarios` are panel kinds whose content is a
+`SimulationPanel { model, fit?, level?, values, scenarios }`, dragged from the workspace with its
+model, inputs and scenarios. `Panel::check` refuses a level outside (0, 1), duplicate scenario
+names, and a comparison without scenarios. `Panel::models` names the model, and the usage index maps
+models as it maps datasets, so the model's delete warning lists the Simulation workspaces and the
+dashboards and reports that hold these panels. `render_panel` answers a sentence when the model is
+gone; otherwise the browser draws the panels from `profileModel` and `compareScenarios`, because the
+model providers are the server's and not `sc-analytics`'s. On a dashboard the profiler is
+interactive (its inputs move for the viewer, and the panel keeps what it was dropped with); in a
+report it is drawn once at the inputs it was dragged with, beside the saved scenarios' comparison.
+
+**Models stay the admin's.** Both endpoints are admin only, like the model editor. An Analytics
+application cannot open a Simulation workspace (`WorkspaceKind::in_applications`, so
+`workspace_kinds: ["simulation"]` is refused), and these panels there say a simulation is shown only
+in the unrestricted Analytics UI. This is the decision A9 made for fit outputs, applied to
+prediction.
+
 #### Storage
 
 `_fd_models`: `id` (uuid pk), `name` (unique), `description`, `table_name` (the table the
@@ -10650,11 +10787,12 @@ then a `run_js_code` step that calls `models.get("Radon")` and `m.writePosterior
 the draws as `m.draws`, `m.summary` and `m.variables` on the same handle (above).
 
 **What was left out, and why.** Prediction for new rows from a posterior (CmdStan's standalone
-generated quantities over a `new` pseudo-dataset) is **carried past** this design. A posterior
-declares no prediction, so `predict("Radon")` in a formula is refused when it is saved, and
-`m.predict` on its handle throws a sentence pointing at `m.draws`. When it is picked up, it
-arrives as those two accepting a posterior, not as an action. A forecast needs none of it: a time grid's horizon is a generated quantity of
-the fit itself. LOO/WAIC, Bayesian providers from modules, and adjacency from geometry are later
+generated quantities over a `new` pseudo-dataset) was **carried past** this design and arrived
+with analytics milestone A7 (A7.1, "Uncertainty, and simulation" above), as `predict()`,
+`m.predict` and `predictRows` accepting a posterior, not as an action. A posterior that names no
+`prediction` still predicts nothing: `predict("Radon")` over it is refused when it is saved, and
+`m.predict` on its handle throws a sentence saying how to name one and pointing at `m.draws`. A
+forecast needs none of it: a time grid's horizon is a generated quantity of the fit itself. LOO/WAIC, Bayesian providers from modules, and adjacency from geometry are later
 work; a formula front end generating Stan is the next subsection. A fit still doesn't survive a
 restart; the chains die with the server. The admin-facing walk-through is `docs/tutorial-stan.md`; operating it
 (installing CmdStan, the flags, the cache, the size of the draws) is `OPERATIONS.md` §9.
@@ -11155,9 +11293,10 @@ pub struct Operation { id: String, enabled: bool, #[serde(flatten)] op: Op }  //
 pub enum Op { Calculated, Filter, Select, Sort, Window, Aggregate, Limit, Stack, Split, Complete, Join, Union, SpatialJoin }
 ```
 
-The operations are the goals document's, less the two that need later machinery
-(Neighbourhood column in A8, Model predictions in A7). Milestone A1 built the first twelve; the
-Spatial join and the geometry union came with A5 (§14.6):
+The operations are the goals document's, less the Neighbourhood column, which needs A8's
+machinery. Milestone A1 built the first twelve; the Spatial join and the geometry union came with
+A5 (§14.6), and Model predictions with A7 (§14.2, "Uncertainty, and simulation"), which adds a
+model's prediction and its interval as columns and runs the operations after it in memory:
 
 | keep the grain | change the grain | combine |
 |---|---|---|
@@ -11302,7 +11441,7 @@ reads. Split view (A4) holds either editor or a workspace on each side.
 Dashboard, Simulation, Notebook). The store keeps any kind; `createWorkspace`
 refuses one whose milestone has not arrived, naming it ("arrives with milestone A2"), and
 `listWorkspaceKinds` says which are here so the create dialog lists the rest disabled — since
-A6.1, the Simulation and the Notebook. `state` is JSON owned by the kind — an explorer's is its dataset and
+A7.6, the Notebook. `state` is JSON owned by the kind — an explorer's is its dataset and
 drop zones — saved as it changes (`saveWorkspaceState`) and restored when the workspace is
 opened.
 

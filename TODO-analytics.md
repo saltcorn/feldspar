@@ -664,9 +664,9 @@ with the profiler, scenarios and scoring (goals document "Simulation workspace")
 
 ## Phase 4 — Documentation, definition of done
 
-- [ ] A7.9 `TECHNICAL_DESIGN.md` §14.2 (uncertainty, the operation, the workspace);
+- [x] A7.9 `TECHNICAL_DESIGN.md` §14.2 (uncertainty, the operation, the workspace);
       `tutorial-analytics.md` part 7; `tutorial-stan.md` (prediction from a posterior).
-- [ ] A7.10 Definition of done: an `sc-server` test that profiles, compares two scenarios and
+- [x] A7.10 Definition of done: an `sc-server` test that profiles, compares two scenarios and
       scores a dataset for the linear regression and the stub posterior provider. Walk the
       Try it by hand.
 
