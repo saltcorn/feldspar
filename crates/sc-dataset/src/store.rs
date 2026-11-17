@@ -29,8 +29,9 @@ use sc_types::{Attrs, BasicType, TypeRef};
 use serde_json::Value as Json;
 
 use crate::access::Sharing;
-use crate::compile::Library;
+use crate::compile::{Library, ModelInfo};
 use crate::def::{Base, DatasetDef, DatasetId, Operation};
+use crate::shape::ColType;
 
 /// Name of the datasets table in the primary database.
 pub const DATASETS_TABLE: &str = "_fd_datasets";
@@ -232,8 +233,75 @@ pub async fn list_datasets(catalog: &Catalog) -> Result<Vec<DatasetDef>> {
 }
 
 /// Every dataset, as a [`Library`] a compile reads from.
+///
+/// The models its Model predictions operations name are not loaded: a model's
+/// own dataset is resolved through this library, so describing them here
+/// would go round in a circle. A caller that reads such a stage calls
+/// [`load_models`] — [`read_stage`](crate::read_stage) does.
 pub async fn load_library(catalog: &Catalog) -> Result<Library> {
     Ok(Library::new(list_datasets(catalog).await?))
+}
+
+/// What every model a Model predictions operation in `library` names is —
+/// those it does not know yet —
+/// (analytics TODO A7.3), from the catalog's model host — or the sentence
+/// saying why it cannot be used, which the operation then reports.
+pub async fn load_models(catalog: &Catalog, library: &mut Library) {
+    let names: Vec<String> = library
+        .models_named()
+        .into_iter()
+        .filter(|n| !library.knows_model(n))
+        .collect();
+    if names.is_empty() {
+        return;
+    }
+    let host = catalog.model_host();
+    for name in names {
+        let info = match &host {
+            None => Err(format!(
+                "this server has no model support, so `{name}` cannot predict here"
+            )),
+            Some(host) => match host.describe(&name).await {
+                Err(e) => Err(sentence(&e)),
+                Ok(summary) => model_info(&summary),
+            },
+        };
+        library.set_model(name, info);
+    }
+}
+
+/// A model's summary as what a compile needs of it.
+fn model_info(summary: &sc_catalog::ModelSummary) -> std::result::Result<ModelInfo, String> {
+    if let Some(why) = &summary.no_prediction {
+        return Err(format!("`{}` is {why}", summary.name));
+    }
+    let prediction = match summary.prediction_types.as_slice() {
+        [] => {
+            return Err(format!(
+                "`{}` answers nothing per row, so it has no predictions to add",
+                summary.name
+            ));
+        }
+        [BasicType::Float] => ColType::Float,
+        [BasicType::Int] => ColType::Int,
+        [BasicType::Text] => ColType::Text,
+        [BasicType::Json] => ColType::Json,
+        _ => ColType::Unknown,
+    };
+    Ok(ModelInfo {
+        prediction,
+        uncertainty: summary.uncertainty.clone(),
+    })
+}
+
+/// An error's message without its kind's prefix.
+fn sentence(e: &Error) -> String {
+    match e.repr() {
+        sc_error::Repr::NotFound(m) | sc_error::Repr::Invalid(m) | sc_error::Repr::Config(m) => {
+            m.clone()
+        }
+        _ => e.to_string(),
+    }
 }
 
 /// The datasets that read `id`: based on it, or joining or appending it.

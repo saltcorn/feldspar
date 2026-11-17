@@ -1180,20 +1180,34 @@ async fn an_application_on_an_unknown_framework_is_listed_but_not_served() -> sc
 
     // Not built: the refusal names the framework.
     let (status, refused) = admin
-        .send("POST", &format!("/api/applications/{}/build", ids["retired"]), None)
+        .send(
+            "POST",
+            &format!("/api/applications/{}/build", ids["retired"]),
+            None,
+        )
         .await;
     assert!(!status.is_success(), "{status} {refused}");
-    assert!(refused.to_string().contains("retired-framework"), "{refused}");
+    assert!(
+        refused.to_string().contains("retired-framework"),
+        "{refused}"
+    );
 
     // Not mounted at boot; the other application is.
     let apps = AppMounts::new(catalog.clone()).with_base_domain(Some(BASE_DOMAIN.to_owned()));
     sc_server::mount_all(&apps).await;
     assert!(apps.get("kept").is_some(), "the known application mounts");
-    assert!(apps.get("retired").is_none(), "the unknown one is not served");
+    assert!(
+        apps.get("retired").is_none(),
+        "the unknown one is not served"
+    );
 
     // And it can still be deleted.
     let (status, deleted) = admin
-        .send("DELETE", &format!("/api/applications/{}", ids["retired"]), None)
+        .send(
+            "DELETE",
+            &format!("/api/applications/{}", ids["retired"]),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{deleted}");
     Ok(())

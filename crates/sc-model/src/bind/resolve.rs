@@ -127,19 +127,19 @@ pub struct VariableReport {
 }
 
 /// A binding's value, with what sentences need to know about it.
-struct Bound {
-    tensor: Tensor,
+pub(super) struct Bound {
+    pub(super) tensor: Tensor,
     /// The dataset whose rows its first axis runs over.
     rows_of: Option<String>,
     /// For a scalar size, what it is the size of: "the row count of `main`".
-    what: Option<String>,
+    pub(super) what: Option<String>,
     /// For an `index`, the size of the dimension it indexes into.
     groups: Option<usize>,
 }
 
 /// "`y`, declared `vector[N]` and bound to `main.log_radon`" — the start of
 /// every sentence about one variable.
-fn about(decl: &Declaration, binding: &Binding) -> String {
+pub(super) fn about(decl: &Declaration, binding: &Binding) -> String {
     format!(
         "`{}`, declared `{}` and bound to `{}`",
         decl.name,
@@ -205,6 +205,13 @@ pub(crate) struct Lookup<'a> {
     dimension: &'a str,
     /// For a rows dimension, the column of its dataset compared with.
     match_column: Option<&'a str>,
+}
+
+impl Lookup<'_> {
+    /// The dimension it is looked up in.
+    pub(crate) fn dimension(&self) -> &str {
+        self.dimension
+    }
 }
 
 /// Every lookup `binding` makes. An axis with no column reads its declared
@@ -667,15 +674,15 @@ fn resolution_order<'a>(spec: &Spec, datasets: &'a [DatasetColumns<'a>]) -> Resu
 }
 
 /// One dataset while it is resolved.
-struct Working {
-    frame: Frame,
-    labels: Option<Vec<String>>,
-    read: usize,
+pub(super) struct Working {
+    pub(super) frame: Frame,
+    pub(super) labels: Option<Vec<String>>,
+    pub(super) read: usize,
 }
 
 impl Working {
     /// Row `i`'s name in a sentence: its key, or its number.
-    fn row_name(&self, i: usize) -> String {
+    pub(super) fn row_name(&self, i: usize) -> String {
         self.frame
             .keys
             .get(i)
@@ -707,6 +714,19 @@ pub fn bind_data(
     max_values: u64,
 ) -> Result<BoundData> {
     let spec = Spec::parse(config)?;
+    // The rows being predicted (§19): none at fit time.
+    let extended;
+    let datasets = if super::names_new_rows(config)
+        && !datasets.iter().any(|(n, _)| n == super::NEW_DATASET)
+    {
+        super::new_rows::check_new_rows(&spec)?;
+        let mut all = datasets.to_vec();
+        super::add_new_rows(&mut all, config)?;
+        extended = all;
+        extended.as_slice()
+    } else {
+        datasets
+    };
     let mut work: BTreeMap<&str, Working> = BTreeMap::new();
     for (name, frame) in datasets {
         let mut frame = frame.clone();
@@ -1358,7 +1378,7 @@ fn numbers(
 /// One binding's value.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines)]
-fn evaluate(
+pub(super) fn evaluate(
     decl: &Declaration,
     binding: &Binding,
     spec: &Spec,
@@ -1937,13 +1957,13 @@ fn sites(
 }
 
 /// Each bound integer scalar, and what it is the size of.
-type Sizes<'a> = HashMap<&'a str, (i64, Option<String>)>;
+pub(super) type Sizes<'a> = HashMap<&'a str, (i64, Option<String>)>;
 
 /// One declaration against its bound value (§10's data-time half): the
 /// element type, the rank, every size expression that evaluates, and every
 /// bound that evaluates. Answers the value as the data file writes it — a
 /// `real` declaration's ints as reals.
-fn check_declaration(
+pub(super) fn check_declaration(
     decl: &Declaration,
     binding: &Binding,
     bound: Bound,

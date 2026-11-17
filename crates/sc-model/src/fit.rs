@@ -149,6 +149,11 @@ pub const ATTR_WARNINGS: &str = "warnings";
 /// the model and never an existing instance (Stan TODO §§8, 16).
 pub const ATTR_AXES: &str = "axes";
 
+/// The attribute holding what a posterior that predicts new rows through a
+/// `new` dataset needs to bind them (Stan TODO §19, analytics TODO A7.1): a
+/// [`PredictionPack`](crate::PredictionPack).
+pub const ATTR_PREDICTION: &str = "prediction";
+
 /// One point of the hyperparameter grid and what it scored on the validation
 /// rows (§11).
 ///
@@ -224,6 +229,9 @@ pub struct Fit {
     /// [`apply`](Fit::apply): they go to `_fd_model_outputs`, in the
     /// transaction that saves the instance.
     pub output_data: BTreeMap<String, OutputData>,
+    /// What a posterior that predicts new rows binds them with. Written to
+    /// [`ATTR_PREDICTION`].
+    pub prediction: Option<crate::PredictionPack>,
 }
 
 impl Fit {
@@ -280,6 +288,13 @@ impl Fit {
                 ATTR_SEARCH.to_owned(),
                 serde_json::to_value(&self.search)
                     .map_err(|e| Error::msg(format!("search: {e}")))?,
+            );
+        }
+        if let Some(pack) = &self.prediction {
+            instance.attributes.insert(
+                ATTR_PREDICTION.to_owned(),
+                serde_json::to_value(pack)
+                    .map_err(|e| Error::msg(format!("prediction pack: {e}")))?,
             );
         }
         if !self.outputs.is_empty() {
@@ -551,6 +566,7 @@ pub async fn run_fit_with(
         lowered: None,
         outputs,
         output_data,
+        prediction: None,
     })
 }
 
@@ -613,6 +629,7 @@ async fn fit_test(
         lowered: None,
         outputs,
         output_data: result.outputs,
+        prediction: None,
     })
 }
 
@@ -712,6 +729,20 @@ async fn fit_posterior(
             }
         }
     }
+    // A posterior that predicts through the rows being predicted keeps what
+    // binding them needs (§19).
+    let prediction = match (&outcome, &interface) {
+        (
+            Outcome::Posterior {
+                prediction: Some(variable),
+            },
+            Some(interface),
+        ) if crate::names_new_rows(config) => {
+            crate::check_prediction(interface, config, variable)?;
+            Some(crate::prediction_pack(variable, interface, config, &data))
+        }
+        _ => None,
+    };
     let input = PosteriorInput {
         model: model.name.clone(),
         instance: ctx.instance(),
@@ -810,6 +841,7 @@ async fn fit_posterior(
         lowered,
         outputs,
         output_data,
+        prediction,
     })
 }
 

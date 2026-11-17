@@ -141,6 +141,22 @@ pub async fn validate_model(
             .map_err(|e| problem(e.to_string()))?;
         if let Some(interface) = interface {
             check_bindings_with(&interface, model, &config).map_err(|e| problem(e.to_string()))?;
+            // A posterior that predicts the rows of `new` (Stan TODO §19):
+            // the generated quantity it names is one per new row.
+            if let OutcomeSpec::Posterior {
+                prediction: Some(key),
+            } = provider.outcome_spec()
+            {
+                if let Some(variable) = config
+                    .get(&key)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                {
+                    crate::bind::check_prediction(&interface, &config, variable)
+                        .map_err(|e| problem(e.to_string()))?;
+                }
+            }
         }
     }
 

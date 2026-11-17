@@ -166,6 +166,29 @@ impl Dimension {
         }
     }
 
+    /// A dimension rebuilt from the coordinates a fit stored, so the rows
+    /// being predicted find their positions as the fit's rows did (analytics
+    /// TODO A7.1). `None` for a time grid, whose positions are arithmetic
+    /// the coordinates do not record.
+    pub(crate) fn from_coordinates(coords: &DimensionCoordinates) -> Option<Dimension> {
+        let texts: Vec<String> = match coords.kind {
+            DimensionKind::TimeGrid => return None,
+            DimensionKind::Names => coords.labels.clone(),
+            DimensionKind::Rows | DimensionKind::Values => coords
+                .keys
+                .iter()
+                .map(|k| match k {
+                    Json::String(s) => s.clone(),
+                    other => other.to_string(),
+                })
+                .collect(),
+        };
+        Some(Dimension {
+            coords: coords.clone(),
+            lookup: Lookup::Text(texts.into_iter().enumerate().map(|(i, t)| (t, i)).collect()),
+        })
+    }
+
     /// A names dimension: one position per label, keyed by the label.
     pub(crate) fn names(name: &str, dataset: &str, of: &str, labels: &[String]) -> Dimension {
         Dimension {

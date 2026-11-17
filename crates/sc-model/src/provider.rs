@@ -591,6 +591,10 @@ pub enum Prediction {
         /// is for.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         probability: Option<f64>,
+        /// The probability of every class, by index, where the provider gives
+        /// them (analytics TODO A7.2); empty otherwise.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        probabilities: Vec<f64>,
     },
     /// A named class: what the host answers, once the target encoding has been
     /// undone.
@@ -600,6 +604,10 @@ pub enum Prediction {
         /// The probability the provider gave it, where it has one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         probability: Option<f64>,
+        /// The probability of every class, by name, where the provider gives
+        /// them (analytics TODO A7.2); empty otherwise.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        probabilities: BTreeMap<String, f64>,
     },
     /// A cluster number.
     Cluster {
@@ -611,6 +619,97 @@ pub enum Prediction {
         /// The components, in the fitted order.
         values: Vec<f64>,
     },
+    /// A distribution over a number (analytics TODO A7.1, A7.2): a posterior
+    /// predictive distribution summarised from its draws, or a regression's
+    /// prediction interval. Its value in a row is its mean.
+    Distribution {
+        /// The mean — what the prediction writes into a row.
+        mean: f64,
+        /// The standard deviation.
+        sd: f64,
+        /// The lower end of the central interval holding `level` of it.
+        lower: f64,
+        /// The upper end of that interval.
+        upper: f64,
+        /// The interval's probability: 0.9 for the 5 % and 95 % quantiles.
+        level: f64,
+    },
+}
+
+/// The interval a prediction's uncertainty is given at when the caller asks
+/// for none: the 5 % and 95 % quantiles, Stan's convention.
+pub const DEFAULT_LEVEL: f64 = 0.9;
+
+/// What a provider can say about how sure a prediction is (analytics TODO
+/// A7.2) — a declaration, so the Model predictions operation and the
+/// profiler know which columns a prediction will have before asking for one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Uncertainty {
+    /// Only the prediction.
+    #[default]
+    None,
+    /// A prediction interval around a number
+    /// ([`Distribution`](Prediction::Distribution)).
+    Interval,
+    /// A probability for every class.
+    Probabilities,
+    /// A distribution from draws ([`Distribution`](Prediction::Distribution)).
+    Distribution,
+}
+
+impl Uncertainty {
+    /// The stable wire name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Uncertainty::None => "none",
+            Uncertainty::Interval => "interval",
+            Uncertainty::Probabilities => "probabilities",
+            Uncertainty::Distribution => "distribution",
+        }
+    }
+}
+
+/// A [`Distribution`](Prediction::Distribution) summarising `draws` of one
+/// row's prediction: their mean, standard deviation and the central interval
+/// holding `level` of them (quantiles as R's type 7, numpy's default). `None`
+/// when no draw is finite.
+pub fn distribution_of(draws: &[f64], level: f64) -> Option<Prediction> {
+    let mut sorted: Vec<f64> = draws.iter().copied().filter(|d| d.is_finite()).collect();
+    if sorted.is_empty() {
+        return None;
+    }
+    sorted.sort_by(f64::total_cmp);
+    #[allow(clippy::cast_precision_loss, reason = "a count of draws")]
+    let n = sorted.len() as f64;
+    let mean = sorted.iter().sum::<f64>() / n;
+    let sd = if sorted.len() > 1 {
+        (sorted.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / (n - 1.0)).sqrt()
+    } else {
+        0.0
+    };
+    let tail = (1.0 - level.clamp(0.0, 1.0)) / 2.0;
+    Some(Prediction::Distribution {
+        mean,
+        sd,
+        lower: quantile(&sorted, tail),
+        upper: quantile(&sorted, 1.0 - tail),
+        level,
+    })
+}
+
+/// The `p` quantile of sorted values, interpolated (R's type 7).
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "positions in a slice of draws"
+)]
+fn quantile(sorted: &[f64], p: f64) -> f64 {
+    let h = (sorted.len() - 1) as f64 * p;
+    let lo = h.floor() as usize;
+    let hi = (lo + 1).min(sorted.len() - 1);
+    sorted[lo] + (h - lo as f64) * (sorted[hi] - sorted[lo])
 }
 
 impl Prediction {
@@ -621,7 +720,11 @@ impl Prediction {
 
     /// A provider's answer for a classification: an index into the encoding.
     pub fn class_index(index: usize, probability: Option<f64>) -> Prediction {
-        Prediction::ClassIndex { index, probability }
+        Prediction::ClassIndex {
+            index,
+            probability,
+            probabilities: Vec::new(),
+        }
     }
 
     /// The host's answer for a classification.
@@ -629,6 +732,46 @@ impl Prediction {
         Prediction::Class {
             class: class.into(),
             probability,
+            probabilities: BTreeMap::new(),
+        }
+    }
+
+    /// The same prediction with the probability of every class, by index —
+    /// for a [`ClassIndex`](Prediction::ClassIndex); anything else is
+    /// returned as it is.
+    #[must_use]
+    pub fn with_probabilities(self, all: Vec<f64>) -> Prediction {
+        match self {
+            Prediction::ClassIndex {
+                index, probability, ..
+            } => Prediction::ClassIndex {
+                index,
+                probability,
+                probabilities: all,
+            },
+            other => other,
+        }
+    }
+
+    /// A distribution's summary: its mean, standard deviation and the
+    /// central interval holding `level` of it.
+    pub fn distribution(mean: f64, sd: f64, lower: f64, upper: f64, level: f64) -> Prediction {
+        Prediction::Distribution {
+            mean,
+            sd,
+            lower,
+            upper,
+            level,
+        }
+    }
+
+    /// The number a prediction of a number is — a regression's value, or a
+    /// distribution's mean.
+    pub fn number_value(&self) -> Option<f64> {
+        match self {
+            Prediction::Number { value } => Some(*value),
+            Prediction::Distribution { mean, .. } => Some(*mean),
+            _ => None,
         }
     }
 
@@ -655,6 +798,9 @@ impl Prediction {
                     })
                     .collect(),
             )),
+            Prediction::Distribution { mean, .. } => Ok(serde_json::Number::from_f64(*mean)
+                .map(Json::Number)
+                .unwrap_or(Json::Null)),
             Prediction::ClassIndex { index, .. } => Err(Error::msg(format!(
                 "a class index ({index}) reached a caller: it should have been mapped back \
                  through the instance's target encoding first"
@@ -709,6 +855,8 @@ pub struct ModelProviderKind {
     /// refused by name for every other, since stopping a `smartcore` or a
     /// Python call mid-flight is not something the host can do.
     pub cancellable: bool,
+    /// What it can say about how sure a prediction is (analytics TODO A7.2).
+    pub uncertainty: Uncertainty,
     /// The outputs a module's provider declares in its manifest (analytics
     /// TODO A3.1), or `None` for the [standard ones](crate::standard_outputs).
     /// A provider written in Rust decides them in
@@ -733,6 +881,7 @@ impl ModelProviderKind {
             standardise: false,
             binds_data: false,
             cancellable: false,
+            uncertainty: Uncertainty::None,
             outputs: None,
         }
     }
@@ -840,6 +989,13 @@ pub trait ModelProvider: Send + Sync {
         false
     }
 
+    /// What this provider can say about how sure a prediction is — see
+    /// [`ModelProviderKind::uncertainty`]. What
+    /// [`predict_uncertain`](ModelProvider::predict_uncertain) answers with.
+    fn uncertainty(&self) -> Uncertainty {
+        Uncertainty::None
+    }
+
     /// What a fit of *this configuration* over *this dataset* will produce.
     ///
     /// Not a constant: a random forest is a regressor or a classifier depending
@@ -886,6 +1042,7 @@ pub trait ModelProvider: Send + Sync {
             standardise: self.standardise(),
             binds_data: self.binds_data(),
             cancellable: self.cancellable(),
+            uncertainty: self.uncertainty(),
             outputs: None,
         }
     }
@@ -900,6 +1057,44 @@ pub trait ModelProvider: Send + Sync {
     /// A frame, not a row: a single row is a frame of one, and batching is what
     /// makes a provider in another language usable at all.
     async fn predict(&self, state: &Json, frame: &Frame) -> Result<Vec<Prediction>>;
+
+    /// [`predict`](ModelProvider::predict), with each prediction's uncertainty
+    /// as this provider [declares](ModelProvider::uncertainty) it (analytics
+    /// TODO A7.2): a [`Distribution`](Prediction::Distribution) whose interval
+    /// holds `level` of it, or a class with the probability of every class.
+    ///
+    /// The default is the point prediction: a provider that declares no
+    /// uncertainty has none to give.
+    async fn predict_uncertain(
+        &self,
+        state: &Json,
+        frame: &Frame,
+        level: f64,
+    ) -> Result<Vec<Prediction>> {
+        let _ = level;
+        self.predict(state, frame).await
+    }
+
+    /// Predict new rows from a fitted posterior (Stan TODO §19, analytics
+    /// TODO A7.1): the program's generated quantity
+    /// [`variable`](PosteriorPrediction::variable), computed for every draw
+    /// with the `new` rows' data in place of the empty `new` the fit was
+    /// bound with. Answers, for each new row, its draws.
+    ///
+    /// Called for a posterior whose outcome names a prediction and whose fit
+    /// was bound with a `new` dataset; the host has bound the rows. The
+    /// default refuses by name.
+    async fn predict_posterior(
+        &self,
+        state: &Json,
+        request: &PosteriorPrediction,
+    ) -> Result<Vec<Vec<f64>>> {
+        let _ = (state, request);
+        Err(Error::invalid(format!(
+            "the model provider `{}` does not predict new rows from a posterior",
+            self.name()
+        )))
+    }
 
     /// The configuration the host should bind with, derived from this one
     /// (TODO-bayesian-regression §7): the provider's own keys plus generated
@@ -987,6 +1182,19 @@ pub trait ModelProvider: Send + Sync {
         let _ = state;
         Ok(())
     }
+}
+
+/// New rows to predict from a posterior (analytics TODO A7.1): what
+/// [`ModelProvider::predict_posterior`] is handed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PosteriorPrediction {
+    /// The generated quantity a prediction reads: one element per new row.
+    pub variable: String,
+    /// How many rows are being predicted.
+    pub rows: usize,
+    /// The `data` variables bound from the new rows, by name — the members of
+    /// the fit's data that change; every other member is as it was fitted.
+    pub data: serde_json::Map<String, Json>,
 }
 
 /// What [`ModelProvider::lower`] is lowering against.
@@ -1141,6 +1349,10 @@ impl ModelProvider for HostProvider {
 
     fn binds_data(&self) -> bool {
         self.kind.binds_data
+    }
+
+    fn uncertainty(&self) -> Uncertainty {
+        self.kind.uncertainty
     }
 
     fn kind(&self) -> ModelProviderKind {

@@ -99,6 +99,46 @@ generated quantities {
 }
 "#;
 
+/// §19's radon, written to predict: the rows being predicted are `new`, and
+/// `y_new` is a home's log radon drawn from the posterior predictive.
+const RADON_PREDICT: &str = r#"// Varying intercepts by county, predicting new homes.
+data {
+  int<lower=1> N;
+  int<lower=1> J;
+  array[N] int<lower=1, upper=J> county;
+  vector[N] x;
+  vector[J] u;
+  vector[N] y;
+  int<lower=0> N_new;                                // count(new)
+  array[N_new] int<lower=1, upper=J> county_new;     // index(new.county -> counties)
+  vector[N_new] x_new;                               // column(new.floor)
+}
+parameters {
+  real gamma0;
+  real gamma1;
+  real beta;
+  real<lower=0> sigma_a;
+  real<lower=0> sigma_y;
+  vector[J] alpha_raw;
+}
+transformed parameters {
+  vector[J] alpha = gamma0 + gamma1 * u + sigma_a * alpha_raw;
+}
+model {
+  alpha_raw ~ std_normal();
+  gamma0 ~ normal(0, 5);
+  gamma1 ~ normal(0, 5);
+  beta ~ normal(0, 5);
+  sigma_a ~ normal(0, 2);
+  sigma_y ~ normal(0, 2);
+  y ~ normal(alpha[county] + beta * x, sigma_y);
+}
+generated quantities {
+  vector[N_new] y_new;
+  for (i in 1:N_new) y_new[i] = normal_rng(alpha[county_new[i]] + beta * x_new[i], sigma_y);
+}
+"#;
+
 /// An AR(1) about a mean, over a daily grid with gaps and a horizon: the
 /// missing days are parameters, and the horizon is simulated forward.
 const SALES: &str = r#"// A daily AR(1) with missing days and a forecast.
@@ -1401,5 +1441,85 @@ async fn a_bym2_over_a_lattice_with_a_weekly_random_walk() -> Result<()> {
     assert_eq!(weeks.len(), WEEKS);
     assert_eq!(weeks[0], "2025-01-06");
     assert_eq!(weeks[WEEKS - 1], "2025-03-24");
+    Ok(())
+}
+
+/// Analytics TODO A7.1 with a real CmdStan: the radon program written to
+/// predict, fitted with its raw run kept, predicts new homes by standalone
+/// generated quantities — a posterior predictive distribution each, the
+/// basement one higher than the first-floor one by about −β, about σ_y wide —
+/// and refuses a county the fit never saw by name.
+#[tokio::test]
+#[ignore = "needs a real CmdStan: `feldspar cmdstan install`, or set $CMDSTAN"]
+async fn radon_predicts_new_homes_by_standalone_generated_quantities() -> Result<()> {
+    let mut server = setup(
+        "radon-predict",
+        &radon_sql(),
+        &[("models/radon_predict.stan", RADON_PREDICT)],
+    )
+    .await?;
+    let client = &mut server.client;
+    let mut model = radon_model(json!({
+        "N": { "kind": "count", "dataset": "main" },
+        "J": { "kind": "size", "dimension": "counties" },
+        "county": { "kind": "index", "dataset": "main", "column": "county",
+                    "dimension": "counties" },
+        "x": { "kind": "column", "dataset": "main", "column": "floor" },
+        "u": { "kind": "column", "dataset": "counties", "column": "log_uranium" },
+        "y": { "kind": "column", "dataset": "main", "column": "y" },
+        "N_new": { "kind": "count", "dataset": "new" },
+        "county_new": { "kind": "index", "dataset": "new", "column": "county",
+                        "dimension": "counties" },
+        "x_new": { "kind": "column", "dataset": "new", "column": "floor" },
+    }));
+    model["name"] = json!("Radon predicting");
+    model["configuration"]["program"] = json!("models/radon_predict.stan");
+    model["configuration"]["prediction"] = json!("y_new");
+    model["configuration"]["iter_sampling"] = json!(500);
+    let instance = client.fit(model).await;
+    let id = instance["id"].as_str().unwrap().to_owned();
+    client
+        .ok("POST", &format!("/api/model-instances/{id}/activate"), None)
+        .await;
+
+    let county = fips(5);
+    let answer = client
+        .ok(
+            "POST",
+            "/api/model-predictions",
+            Some(json!({ "instance": id, "rows": [
+                { "county": county, "floor": 0.0, "y": null },
+                { "county": county, "floor": 1.0, "y": null },
+            ] })),
+        )
+        .await;
+    let at = |i: usize, key: &str| {
+        answer["predictions"][i]["prediction"][key]
+            .as_f64()
+            .unwrap()
+    };
+    for i in 0..2 {
+        assert_eq!(
+            answer["predictions"][i]["prediction"]["prediction"],
+            json!("distribution"),
+            "{answer}"
+        );
+        assert!(at(i, "lower") < at(i, "mean") && at(i, "mean") < at(i, "upper"));
+        // A home's predictive spread is mostly σ_y.
+        assert!((0.6..1.0).contains(&at(i, "sd")), "{answer}");
+    }
+    let floor_effect = at(1, "mean") - at(0, "mean");
+    assert!((floor_effect - BETA).abs() < 0.3, "{answer}");
+
+    let (status, _, bytes) = client
+        .raw(
+            "POST",
+            "/api/model-predictions",
+            Some(json!({ "instance": id, "rows": [{ "county": 1, "floor": 0.0, "y": null }] })),
+        )
+        .await;
+    let refused = String::from_utf8_lossy(&bytes);
+    assert!(!status.is_success(), "{refused}");
+    assert!(refused.contains("`county` is `1`"), "{refused}");
     Ok(())
 }

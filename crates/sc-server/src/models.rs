@@ -344,6 +344,26 @@ impl sc_catalog::ModelHost for ModelServices {
     async fn describe(&self, model: &str) -> Result<sc_catalog::ModelSummary> {
         sc_api::models::describe_model(&self.catalog, &self.registry(), model).await
     }
+
+    async fn predict_inputs(
+        &self,
+        model: &str,
+        fit: Option<&str>,
+        rows: &[serde_json::Value],
+        level: f64,
+    ) -> Result<Vec<serde_json::Value>> {
+        sc_api::models::predict_inputs(
+            &self.catalog,
+            &self.registry(),
+            self.source.as_ref(),
+            self.max_rows,
+            model,
+            fit,
+            rows,
+            level,
+        )
+        .await
+    }
 }
 
 /// Install `services` as the catalog's [`ModelHost`](sc_catalog::ModelHost).

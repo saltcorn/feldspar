@@ -765,6 +765,43 @@ async fn predicts_as_the_program_does(
             i + 1
         );
     }
+    // Analytics TODO A7.2: the distribution of each row's expected response,
+    // which is the program's `epred_1` draws summarised.
+    let uncertain = sc_model::ModelProvider::predict_uncertain(&provider, &f.state, &frame, 0.9)
+        .await
+        .unwrap_or_else(|e| panic!("case {case}: {}", sc_error::format_chain(&e)));
+    for (i, p) in uncertain.iter().enumerate() {
+        let draws: Vec<f64> = f
+            .draws
+            .iter()
+            .filter(|s| s.variable == "epred_1" && s.element == [i + 1] && !s.warmup)
+            .flat_map(|s| s.draws.iter().copied())
+            .collect();
+        let Some(sc_model::Prediction::Distribution {
+            lower: want_lower,
+            upper: want_upper,
+            ..
+        }) = sc_model::distribution_of(&draws, 0.9)
+        else {
+            panic!("case {case}: no draws of epred_1[{}]", i + 1);
+        };
+        let sc_model::Prediction::Distribution {
+            mean, lower, upper, ..
+        } = p
+        else {
+            panic!("case {case}: {p:?}");
+        };
+        let tolerance = 1e-4 * want[i].abs().max(1.0);
+        assert!((mean - want[i]).abs() <= tolerance, "case {case}: {p:?}");
+        assert!(
+            (lower - want_lower).abs() <= tolerance,
+            "case {case}: {p:?}"
+        );
+        assert!(
+            (upper - want_upper).abs() <= tolerance,
+            "case {case}: {p:?}"
+        );
+    }
 }
 
 #[tokio::test]

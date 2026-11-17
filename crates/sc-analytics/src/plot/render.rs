@@ -301,7 +301,8 @@ pub(crate) async fn plot_rows_in(
             };
             let def = scope.extend(&def);
             let schema = Schema::of_catalog(catalog)?;
-            let library = sc_dataset::load_library(catalog).await?;
+            let mut library = sc_dataset::load_library(catalog).await?;
+            sc_dataset::load_models(catalog, &mut library).await;
             let compiled = compile(&schema, &library, &def, Options::default());
             let stage = match compiled.last() {
                 Ok(stage) => stage,

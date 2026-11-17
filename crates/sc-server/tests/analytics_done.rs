@@ -3529,3 +3529,170 @@ async fn the_try_it_of_milestone_a9() -> sc_error::Result<()> {
     std::fs::remove_dir_all(bundle).ok();
     Ok(())
 }
+
+/// Analytics TODO A7.3 through the API, with a real linear regression: a
+/// dataset over the unsold houses scored by the Model predictions operation —
+/// each a prediction inside its 90 % prediction interval — and the operations
+/// after it computed in memory (a Calculated column, a Filter, an Aggregate).
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn a_dataset_is_scored_by_the_model_predictions_operation() -> sc_error::Result<()> {
+    let (mut client, _db) = setup().await?;
+    let client = &mut client;
+    let prices = client
+        .ok(
+            "POST",
+            "/api/datasets",
+            Some(json!({
+                "name": "Sold house prices",
+                "base": { "kind": "table", "table": "houses" },
+                "operations": [
+                    op("s", "filter", json!({ "formula": "sold === true" })),
+                    op("i", "calculated", json!({ "name": "income", "formula": "neighbourhoodⱵaverage_income" })),
+                    op("k", "select", json!({ "columns": [
+                        { "column": "price" }, { "column": "area" },
+                        { "column": "bedrooms" }, { "column": "income" }
+                    ]})),
+                ],
+            })),
+        )
+        .await;
+    let model = client
+        .ok(
+            "POST",
+            "/api/models",
+            Some(json!({
+                "name": "Scored prices",
+                "provider": "linear_regression",
+                "dataset": { "dataset_id": prices["dataset"]["id"] },
+                "configuration": { "label": "price" },
+                "split": { "train": 1.0, "validation": 0.0, "test": 0.0, "seed": 7 },
+            })),
+        )
+        .await;
+    let model_id = model["id"].as_str().unwrap().to_owned();
+    let started = client
+        .ok(
+            "POST",
+            &format!("/api/models/{model_id}/fit"),
+            Some(json!({})),
+        )
+        .await;
+    let instance = started["id"].as_str().unwrap().to_owned();
+    for _ in 0..600 {
+        let fitted = client
+            .ok("GET", &format!("/api/model-instances/{instance}"), None)
+            .await;
+        if fitted["status"] != json!("fitting") {
+            assert_eq!(fitted["status"], json!("fitted"), "{fitted}");
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    client
+        .ok(
+            "POST",
+            &format!("/api/model-instances/{instance}/activate"),
+            None,
+        )
+        .await;
+
+    // The unsold houses, scored: the inputs matched to the model's columns
+    // by name, and the interval beside each prediction.
+    let mut def = json!({
+        "name": "Unsold houses, scored",
+        "base": { "kind": "table", "table": "houses" },
+        "operations": [
+            op("u", "filter", json!({ "formula": "sold === false" })),
+            op("i", "calculated", json!({ "name": "income", "formula": "neighbourhoodⱵaverage_income" })),
+            op("p", "model_predictions", json!({ "model": "Scored prices", "name": "predicted" })),
+        ],
+    });
+    let (names, rows, total) = client.stage(&def, 3).await;
+    assert!(total > 0, "{rows:?}");
+    let at = |name: &str| names.iter().position(|n| n == name).unwrap();
+    let (value, lower, upper) = (
+        at("predicted"),
+        at("predicted_lower"),
+        at("predicted_upper"),
+    );
+    for row in &rows {
+        let (v, l, u) = (
+            row[value].as_f64().unwrap(),
+            row[lower].as_f64().unwrap(),
+            row[upper].as_f64().unwrap(),
+        );
+        assert!(l < v && v < u, "{row:?}");
+    }
+    // The prediction is the model's, as `predictRows` answers it for the
+    // same house.
+    let id = rows[0][at("id")].clone();
+    let answer = client
+        .ok(
+            "POST",
+            "/api/model-predictions",
+            Some(json!({ "model": model_id, "filter": format!("id === {id}") })),
+        )
+        .await;
+    let direct = answer["predictions"][0]["value"].as_f64().unwrap();
+    assert!(
+        (direct - rows[0][value].as_f64().unwrap()).abs() < 1e-6,
+        "{answer}"
+    );
+
+    // In memory after it: the interval's width, the wide ones, and a mean
+    // per neighbourhood.
+    let ops = def["operations"].as_array_mut().unwrap();
+    ops.push(op(
+        "w",
+        "calculated",
+        json!({ "name": "width", "formula": "predicted_upper - predicted_lower" }),
+    ));
+    ops.push(op("f", "filter", json!({ "formula": "width > 0" })));
+    ops.push(op(
+        "a",
+        "aggregate",
+        json!({
+            "group_by": [{ "name": "neighbourhood", "formula": "neighbourhood" }],
+            "summaries": [
+                { "name": "mean_predicted", "function": "mean", "column": "predicted" },
+                { "name": "n", "function": "count" },
+            ],
+        }),
+    ));
+    let (names, grouped, _) = client.stage(&def, 6).await;
+    assert_eq!(names, ["neighbourhood", "mean_predicted", "n"]);
+    let counted: i64 = grouped.iter().map(|r| r[2].as_i64().unwrap()).sum();
+    assert_eq!(counted, total, "{grouped:?}");
+
+    // Saved, it reports every operation as compiled.
+    let saved = client.ok("POST", "/api/datasets", Some(def.clone())).await;
+    let report = &saved["report"]["operations"];
+    assert!(
+        report
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["status"] == json!("ok")),
+        "{saved}"
+    );
+    // A Join after the predictions is refused on the operation.
+    def["operations"].as_array_mut().unwrap().push(op(
+        "j",
+        "join",
+        json!({ "with": { "kind": "table", "table": "neighbourhoods" }, "kind": "left",
+                "keys": [{ "left": "neighbourhood", "right": "id" }] }),
+    ));
+    let id = saved["dataset"]["id"].as_str().unwrap().to_owned();
+    let report = client.save(&id, &def).await;
+    let join = &report["operations"][6];
+    assert_eq!(join["status"], json!("invalid"), "{report}");
+    assert!(
+        join["error"]
+            .as_str()
+            .unwrap()
+            .contains("cannot follow a Model predictions operation"),
+        "{report}"
+    );
+    Ok(())
+}

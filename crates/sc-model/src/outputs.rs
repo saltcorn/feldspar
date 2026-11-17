@@ -750,8 +750,8 @@ pub(crate) fn rows_output(
             let fitted: Vec<Option<f64>> = kept
                 .iter()
                 .map(|(p, i)| match prediction(*p, *i) {
-                    Some(Prediction::Number { value }) => Some(*value),
-                    _ => None,
+                    Some(p) => p.number_value(),
+                    None => None,
                 })
                 .collect();
             let residual: Vec<Option<f64>> = actual
@@ -788,6 +788,7 @@ pub(crate) fn rows_output(
                     Some(Prediction::ClassIndex {
                         index,
                         probability: pr,
+                        ..
                     }) => {
                         probability.push(*pr);
                         class(*index as f64)
@@ -795,6 +796,7 @@ pub(crate) fn rows_output(
                     Some(Prediction::Class {
                         class,
                         probability: pr,
+                        ..
                     }) => {
                         probability.push(*pr);
                         Some(class.clone())

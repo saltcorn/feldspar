@@ -42,13 +42,14 @@ mod walk;
 
 pub use access::{Caller, Reader, Sharing, TableScope, tables_read};
 pub use compile::{
-    BaseReport, Compilation, Library, MAX_RANGE_VALUES, OpStatus, OperationReport, Options,
-    ROW_KEY, Restriction, Stage, compile, scramble,
+    BaseReport, Compilation, DEFAULT_LEVEL, Library, MAX_IN_MEMORY_ROWS, MAX_RANGE_VALUES,
+    ModelInfo, OpStatus, OperationReport, Options, ROW_KEY, Restriction, Stage, Tail, compile,
+    scramble,
 };
 pub use def::{
     AggregateOp, Base, CalculatedOp, CompleteColumn, CompleteOp, CompleteValues, DatasetDef,
     DatasetId, FillValue, FilterOp, GroupKey, JoinKey, JoinKind, JoinOp, LimitMode, LimitOp, Op,
-    Operation, OrderKey, Other, SelectColumn, SelectOp, SortKey, SortOp, SpatialJoinOp,
+    Operation, OrderKey, Other, PredictOp, SelectColumn, SelectOp, SortKey, SortOp, SpatialJoinOp,
     SpatialRelation, SplitOp, SplitSummary, StackOp, Summary, SummaryFunction, UnionOp,
     WindowFunction, WindowOp,
 };
@@ -61,5 +62,6 @@ pub use snapshot::Snapshot;
 pub use store::{
     COL_BASE, COL_OPERATIONS, DATASETS_TABLE, bootstrap_datasets, clone_dataset, dataset_sharing,
     datasets_using, delete_dataset, list_dataset_sharing, list_datasets, load_dataset,
-    load_dataset_by_name, load_library, require_dataset, save_dataset, set_dataset_sharing,
+    load_dataset_by_name, load_library, load_models, require_dataset, save_dataset,
+    set_dataset_sharing,
 };

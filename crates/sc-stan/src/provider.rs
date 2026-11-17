@@ -87,6 +87,9 @@ pub mod config_keys {
     /// Whether the draws are kept at all (the summary always is) — the
     /// host's key.
     pub const KEEP_DRAWS: &str = sc_model::KEEP_DRAWS_KEY;
+    /// The generated quantity that predicts the rows of `new` (§19), if the
+    /// program has one: `vector[N_new] y_new`.
+    pub const PREDICTION: &str = "prediction";
 }
 
 use config_keys::*;
@@ -182,6 +185,11 @@ impl StanProvider {
     /// The node's chain-process budget.
     pub fn budget(&self) -> &ProcessBudget {
         &self.budget
+    }
+
+    /// How the provider reaches a file store by name.
+    pub(crate) fn stores(&self) -> &dyn StoreLookup {
+        self.stores.as_ref()
     }
 
     /// The CmdStan this provider compiles with, when one was found.
@@ -529,16 +537,28 @@ impl ModelProvider for StanProvider {
             FormField::new(RUNS_DIR, BasicType::Text).label("Directory in that store"),
             FormField::new(EXCLUDE_VARIABLES, BasicType::Json)
                 .label("Variables whose draws are not kept"),
+            FormField::new(PREDICTION, BasicType::Text).label(
+                "Prediction: the generated quantity predicting the rows of `new` (needs a runs \
+                 store)",
+            ),
             FormField::new(KEEP_DRAWS, BasicType::Bool)
                 .label("Keep the draws")
                 .default_value(true),
         ]
     }
 
+    /// A posterior, predicting the rows of `new` when the configuration
+    /// names the generated quantity that does (§19).
     fn outcome_spec(&self) -> OutcomeSpec {
-        // Prediction for new rows (§19) is carried past this milestone, so a
-        // posterior names none and `predict()` over one is refused on save.
-        OutcomeSpec::Posterior { prediction: None }
+        OutcomeSpec::Posterior {
+            prediction: Some(PREDICTION.to_owned()),
+        }
+    }
+
+    /// A prediction is the posterior predictive distribution of each new row
+    /// (§19), from the generated quantity's draws.
+    fn uncertainty(&self) -> sc_model::Uncertainty {
+        sc_model::Uncertainty::Distribution
     }
 
     fn binds_data(&self) -> bool {
@@ -609,6 +629,15 @@ impl ModelProvider for StanProvider {
                 )));
             }
         }
+        if let Some(prediction) = text(config, PREDICTION) {
+            if text(config, RUNS_STORE).is_none() {
+                return Err(Error::invalid(format!(
+                    "`{PREDICTION}` is `{prediction}`, and a prediction runs the program's \
+                     generated quantities over the fit's own draws, which CmdStan reads only \
+                     from its raw run: choose a `{RUNS_STORE}` to keep it in"
+                )));
+            }
+        }
         if text(config, RUNS_DIR).is_some() && text(config, RUNS_STORE).is_none() {
             return Err(Error::invalid(format!(
                 "`{RUNS_DIR}` is set but `{RUNS_STORE}` is not: choose the file store the runs \
@@ -626,8 +655,18 @@ impl ModelProvider for StanProvider {
 
     async fn predict(&self, _state: &Json, _frame: &Frame) -> Result<Vec<Prediction>> {
         Err(Error::invalid(
-            "this Stan model does not predict rows: it is inspected through its posterior",
+            "a Stan model predicts rows through its `new` dataset and the generated quantity \
+             its `prediction` names, not from one frame",
         ))
+    }
+
+    /// Standalone generated quantities over the fit's draws (§19).
+    async fn predict_posterior(
+        &self,
+        state: &Json,
+        request: &sc_model::PosteriorPrediction,
+    ) -> Result<Vec<Vec<f64>>> {
+        self.generate_quantities(state, request).await
     }
 
     async fn interface(&self, config: &Attrs) -> Result<Option<Interface>> {

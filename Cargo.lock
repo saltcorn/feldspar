@@ -9457,6 +9457,7 @@ dependencies = [
 name = "sc-dataset"
 version = "0.1.3-dev"
 dependencies = [
+ "async-trait",
  "chrono",
  "sc-auth",
  "sc-catalog",

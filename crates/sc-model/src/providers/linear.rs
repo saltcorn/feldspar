@@ -37,7 +37,7 @@ use statrs::distribution::{ContinuousCDF, StudentsT};
 
 use crate::frame::Frame;
 use crate::provider::{
-    FitResult, ModelProvider, OutcomeSpec, ParameterBlock, ParameterRow, Prediction,
+    FitResult, ModelProvider, OutcomeSpec, ParameterBlock, ParameterRow, Prediction, Uncertainty,
     numeric_column_field,
 };
 use crate::providers::{
@@ -65,6 +65,17 @@ struct State {
     coefficients: Vec<f64>,
     /// The constant term, or `None` for a fit without one.
     intercept: Option<f64>,
+    /// (XᵀX)⁻¹, row-major over the terms (the intercept first, where there is
+    /// one): with `sigma2` and `df`, what a prediction interval is computed
+    /// from (analytics TODO A7.2). Absent from a fit made before intervals.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    covariance: Vec<f64>,
+    /// The residual variance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sigma2: Option<f64>,
+    /// The residual degrees of freedom.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    df: Option<f64>,
 }
 
 /// Ordinary least squares.
@@ -137,7 +148,8 @@ impl ModelProvider for LinearRegression {
         let df = n - k;
         let sigma2 = rss / df as f64;
 
-        let inverse = gram_inverse(&rows, k)?;
+        let full = gram_inverse(&rows, k)?;
+        let inverse: Vec<f64> = (0..k).map(|j| full[j * k + j]).collect();
         let t_dist = StudentsT::new(0.0, 1.0, df as f64).map_err(|e| {
             Error::msg(format!(
                 "the t distribution for {df} degrees of freedom could not be built: {e}"
@@ -184,6 +196,9 @@ impl ModelProvider for LinearRegression {
             features,
             coefficients: beta[usize::from(intercept)..].to_vec(),
             intercept: intercept.then(|| beta[0]),
+            covariance: full,
+            sigma2: Some(sigma2),
+            df: Some(df as f64),
         };
         Ok(FitResult::new(to_state(&state)?)
             .parameter(ParameterBlock::table(
@@ -224,6 +239,61 @@ impl ModelProvider for LinearRegression {
                         .map(|(x, b)| x * b)
                         .sum::<f64>();
                 Prediction::number(value)
+            })
+            .collect())
+    }
+
+    fn uncertainty(&self) -> Uncertainty {
+        Uncertainty::Interval
+    }
+
+    /// The prediction interval of each row: ŷ ± t · s · √(1 + x₀ᵀ(XᵀX)⁻¹x₀),
+    /// for a new observation rather than the mean. A fit from before
+    /// intervals answers the point prediction.
+    async fn predict_uncertain(
+        &self,
+        state: &Json,
+        frame: &Frame,
+        level: f64,
+    ) -> Result<Vec<Prediction>> {
+        let points = self.predict(state, frame).await?;
+        let state: State = from_state(self.name(), state)?;
+        let (Some(sigma2), Some(df)) = (state.sigma2, state.df) else {
+            return Ok(points);
+        };
+        let intercept = state.intercept.is_some();
+        let k = state.features.len() + usize::from(intercept);
+        if state.covariance.len() != k * k || df <= 0.0 {
+            return Ok(points);
+        }
+        let x = design(frame, &state.features)?;
+        let t = StudentsT::new(0.0, 1.0, df)
+            .map_err(|e| {
+                Error::msg(format!(
+                    "the t distribution for {df} degrees of freedom: {e}"
+                ))
+            })?
+            .inverse_cdf(0.5 + level / 2.0);
+        Ok(points
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let Some(value) = p.number_value() else {
+                    return p;
+                };
+                let mut x0 = Vec::with_capacity(k);
+                if intercept {
+                    x0.push(1.0);
+                }
+                x0.extend_from_slice(x.row(i).unwrap_or(&[]));
+                let mut leverage = 0.0;
+                for a in 0..k {
+                    for b in 0..k {
+                        leverage += x0[a] * state.covariance[a * k + b] * x0[b];
+                    }
+                }
+                let sd = (sigma2 * (1.0 + leverage)).sqrt();
+                Prediction::distribution(value, sd, value - t * sd, value + t * sd, level)
             })
             .collect())
     }
@@ -292,8 +362,8 @@ fn gram_inverse(rows: &[Vec<f64>], k: usize) -> Result<Vec<f64>> {
     })
 }
 
-/// A `k`×`k` matrix inverted in place by Gauss–Jordan with partial pivoting, or
-/// `None` when it is singular to the working precision.
+/// A `k`×`k` matrix inverted in place by Gauss–Jordan with partial pivoting,
+/// row-major, or `None` when it is singular to the working precision.
 ///
 /// The pivot is compared against the largest entry the matrix started with, so
 /// the test is on the *conditioning* and not on an absolute size: a Gram matrix
@@ -343,7 +413,7 @@ fn invert(mut a: Vec<Vec<f64>>, k: usize) -> Option<Vec<f64>> {
             }
         }
     }
-    Some((0..k).map(|j| inverse[j][j]).collect())
+    Some(inverse.into_iter().flatten().collect())
 }
 
 #[cfg(test)]
@@ -480,6 +550,62 @@ mod tests {
             1.26375 + 1.2287500000000002 + 2.0 * 0.30874999999999986,
             1e-9,
         );
+    }
+
+    /// The 90 % prediction interval (analytics TODO A7.2) against R's
+    /// `predict(lm(y ~ x1 + x2), newdata, interval = "prediction", level =
+    /// 0.9)` on the same ten rows, one row inside the data and one outside
+    /// it: the second is wider, as an extrapolation should be.
+    #[tokio::test]
+    async fn a_prediction_interval_agrees_with_r() {
+        let config = attrs(&[("label", "y".into())]);
+        let fit = LinearRegression
+            .fit(&data(), &config, &Attrs::new())
+            .await
+            .unwrap();
+        assert_eq!(LinearRegression.uncertainty(), Uncertainty::Interval);
+        let rows = frame(vec![
+            ("x1", floats(&[2.5, 12.])),
+            ("x2", floats(&[1., 11.])),
+        ]);
+        let predicted = LinearRegression
+            .predict_uncertain(&fit.state, &rows, 0.9)
+            .await
+            .unwrap();
+        let expected = [
+            (4.644375, 4.384_881_590_233_173, 4.903_868_409_766_828),
+            (19.405, 19.132_911_862_856_744, 19.677_088_137_143_25),
+        ];
+        for (p, (fit, lower, upper)) in predicted.iter().zip(expected) {
+            let Prediction::Distribution {
+                mean,
+                sd,
+                lower: lo,
+                upper: up,
+                level,
+            } = p
+            else {
+                panic!("an interval, not {p:?}");
+            };
+            close(*mean, fit, 1e-9);
+            close(*lo, lower, 1e-9);
+            close(*up, upper, 1e-9);
+            assert!((*level - 0.9).abs() < 1e-12);
+            assert!(
+                *sd > 0.1118,
+                "the residual standard error is the least it can be"
+            );
+        }
+        // A fit stored before intervals answers the point prediction.
+        let mut old = fit.state.clone();
+        for key in ["covariance", "sigma2", "df"] {
+            old.as_object_mut().unwrap().remove(key);
+        }
+        let point = LinearRegression
+            .predict_uncertain(&old, &rows, 0.9)
+            .await
+            .unwrap();
+        assert!(matches!(point[0], Prediction::Number { .. }), "{point:?}");
     }
 
     /// More terms than rows has no least-squares answer and — more to the point

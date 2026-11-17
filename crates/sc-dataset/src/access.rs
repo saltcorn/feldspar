@@ -269,6 +269,10 @@ struct ReaderInner {
     tables: BTreeMap<String, Table>,
     shape: SchemaShape,
     row_level_security: bool,
+    /// The models a Model predictions operation calls (analytics TODO A7.3).
+    models: Option<Arc<dyn sc_catalog::ModelHost>>,
+    /// The formula evaluator the operations after one run in.
+    evaluator: Option<Arc<dyn sc_expr::JsEvaluator>>,
 }
 
 impl std::fmt::Debug for Reader {
@@ -299,8 +303,21 @@ impl Reader {
                     .collect(),
                 shape: catalog.schema_shape()?,
                 row_level_security,
+                models: catalog.model_host(),
+                evaluator: catalog.formula_evaluator(),
             }),
         })
+    }
+
+    /// The catalog's model host, which a Model predictions operation asks.
+    pub(crate) fn models(&self) -> Option<Arc<dyn sc_catalog::ModelHost>> {
+        self.inner.models.clone()
+    }
+
+    /// The catalog's formula evaluator, which the operations after a Model
+    /// predictions operation run in.
+    pub(crate) fn evaluator(&self) -> Option<Arc<dyn sc_expr::JsEvaluator>> {
+        self.inner.evaluator.clone()
     }
 
     /// Who reads.

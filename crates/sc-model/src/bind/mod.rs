@@ -29,6 +29,7 @@ mod assist;
 mod derived;
 mod dimension;
 mod labels;
+mod new_rows;
 mod resolve;
 mod spec;
 mod structured;
@@ -56,6 +57,10 @@ pub use dimension::{
 pub use labels::{
     Axis, EXCLUDE_VARIABLES_KEY, KEEP_DRAWS_KEY, Labeller, RecordedAxes, element_label,
     excluded_variables, keeps_draws, named_axes, recorded_axes,
+};
+pub use new_rows::{
+    NEW_DATASET, PredictionPack, add_new_rows, bind_new_rows, check_prediction, names_new_rows,
+    prediction_pack,
 };
 pub use resolve::{
     BindReport, BoundData, DEFAULT_MAX_DATA_VALUES, DatasetReport, DropReport, VariableReport,
@@ -132,6 +137,16 @@ pub fn check_bindings_with(interface: &Interface, model: &Model, config: &Attrs)
                 .iter()
                 .map(|c| c.name.as_str())
                 .collect(),
+        });
+    }
+    // The rows being predicted (§19): the main dataset's columns, unless a
+    // related dataset already has the name.
+    if new_rows::names_new_rows(config) && !model.related.iter().any(|r| r.name == NEW_DATASET) {
+        new_rows::check_new_rows(&spec)?;
+        let columns = datasets[0].columns.clone();
+        datasets.push(resolve::DatasetColumns {
+            name: NEW_DATASET,
+            columns,
         });
     }
     for (name, derived) in &spec.derived {

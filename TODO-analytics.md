@@ -619,17 +619,22 @@ with the profiler, scenarios and scoring (goals document "Simulation workspace")
 
 ## Phase 1 — Prediction with uncertainty
 
-- [ ] A7.1 Prediction for new rows from a posterior, carried from TODO-post-mvp-30 Phase 9
+- [x] A7.1 Prediction for new rows from a posterior, carried from TODO-post-mvp-30 Phase 9
       (its §19 design): the `new` pseudo-dataset, standalone generated quantities,
       `Prediction::Distribution`, and `predict()`, `m.predict` and `predictRows` accepting a
       posterior, with an unknown group refused by name. Tests with the stub posterior
-      provider; real CmdStan behind `#[ignore]`.
-- [ ] A7.2 Providers declare and return uncertainty: prediction intervals for linear
+      provider; real CmdStan behind `#[ignore]`. *(`Distribution` is `{ mean, sd, lower,
+      upper, level }` rather than §19's `q5`/`q95`, so a regression's interval has the same
+      shape; the default level is 0.9.)*
+- [x] A7.2 Providers declare and return uncertainty: prediction intervals for linear
       regression, class probabilities for classifiers, distributions for posteriors. Tests.
-- [ ] A7.3 The Model predictions operation: inputs matched to columns by name, prediction and
+      *(`ModelProvider::uncertainty` and `predict_uncertain`; the random forest declares none,
+      since smartcore gives no vote shares.)*
+- [x] A7.3 The Model predictions operation: inputs matched to columns by name, prediction and
       interval columns added. It runs after the SQL, so the operations after it are evaluated
       in memory over the frame (Calculated column through the reified evaluator, Filter,
-      Select columns, Sort, Aggregate, Limit). Tests.
+      Select columns, Sort, Aggregate, Limit). Tests. *(At most 100 000 rows are read into
+      memory. A plot of such a dataset is still refused with a sentence; A7.7 needs it.)*
 
 ## Phase 2 — Profiler and scenarios
 
@@ -645,6 +650,9 @@ with the profiler, scenarios and scoring (goals document "Simulation workspace")
       prediction, the profile curves, saving and comparing scenarios. Tests.
 - [ ] A7.7 Scoring: choose a dataset; a new dataset based on it with a Model predictions
       operation is created and can be opened in the Dataset editor or the explorer. Tests.
+      *(A stage after a Model predictions is computed in memory, and `plot_rows_in` reads a
+      dataset as SQL: load the evaluated rows into an in-memory SQLite as a fit's output data
+      is, so the explorer can plot them.)*
 - [ ] A7.8 The profiler and scenario comparison as panel kinds: interactive in dashboards,
       static at the saved scenarios in reports. Tests.
 

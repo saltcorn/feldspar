@@ -2,6 +2,98 @@
 
 Changes in reverse chronological order.
 
+## Analytics A7 phase 1: prediction with uncertainty, and the Model predictions operation
+
+Analytics TODO A7.1–A7.3. A posterior predicts new rows, every provider that can says how sure a
+prediction is, and a dataset can add a model's predictions to its rows.
+
+Running applications are unaffected: there is no database change and no migration. Every new
+field is optional and left out of its JSON when unused (`Prediction::Class`'s and
+`ClassIndex`'s `probabilities`, a linear regression's stored covariance, the instance's
+`prediction` attribute), and a linear regression fitted before this change predicts as before,
+without an interval. A Stan model predicts only once its new `prediction` setting is filled in, so
+every existing Stan model is still a posterior that names no prediction.
+
+- **A7.1: prediction for new rows from a posterior** (TODO-post-mvp-30 §19, as designed there).
+  - Bindings may name the pseudo-dataset **`new`**: the main dataset's columns, the rows being
+    predicted. A fit binds it with no rows. Over `new` a binding is a `count`, a `column`,
+    `columns` or an `index` (no `match`, no time grid). Nothing may index into `new`, and no
+    dimension is declared over it. Each refusal is a sentence. A related dataset already called
+    `new` keeps that meaning.
+  - A posterior whose outcome names a prediction and whose bindings name `new` keeps a
+    `PredictionPack` on the instance (`ATTR_PREDICTION`): the generated quantity, the interface
+    and binding keys as fitted, and the bound scalars. At predict time only the `new` variables
+    are bound again (`sc_model::bind_new_rows`), against the instance's stored coordinates. A
+    county the fit never saw is refused by name ("`county` is `27099` in row `#1` of the rows
+    being predicted, which is not one of the 3 values the fit saw in `counties`…"), and so is a
+    null.
+  - New provider method `ModelProvider::predict_posterior` (`PosteriorPrediction`): each new
+    row's draws of the prediction. The host summarises them as the new
+    **`Prediction::Distribution { mean, sd, lower, upper, level }`**, whose value in a row is its
+    mean. (§19 named the fields `q5`/`q95`. An explicit level is used instead, so a regression's
+    interval has the same shape; the default level is 0.9, the 5 % and 95 % quantiles.)
+  - Stan: the configuration key **`prediction`** names the generated quantity
+    (`vector[N_new] y_new`). Saving refuses it without a `runs_store`, and the host's save check
+    refuses one that is not a generated quantity with one axis sized by the count of `new`. A
+    prediction is CmdStan's **standalone generated quantities**: it reads the published run back
+    (data.json and each chain's CSV), merges in the new rows' data, compiles from the fit's
+    program snapshot (a cache hit, as a rule) and runs one process per chain.
+  - `predict()` in a formula, `m.predict` in a code body and `predictRows` all accept such a
+    posterior. `describe_model` now says a Stan model predicts only when its `prediction` is set,
+    so the save check of a `predict("…")` still refuses one that names none. The refusal now says
+    how to name a prediction and still points at `m.draws(…)`.
+  - Tests: `posterior_api.rs`'s `a_posterior_predicts_new_rows_through_its_new_dataset`, a stub
+    posterior whose `y_new` is computed per draw, through `predictRows` (literal rows and a filter),
+    a calculated field's `predict()` and `m.predict`, plus the unknown county and the save-time
+    refusals. `stan_models.rs`'s `radon_predicts_new_homes_by_standalone_generated_quantities`
+    runs real CmdStan and is `#[ignore]`d. It passes here.
+- **A7.2: providers declare and return uncertainty.**
+  - `ModelProvider::uncertainty()` (and `ModelProviderKind::uncertainty`) declares `none`,
+    `interval`, `probabilities` or `distribution`. `ModelProvider::predict_uncertain(state,
+    frame, level)` returns the predictions with it, and defaults to the point prediction. The host
+    has `predict_rows_at` and `predict_subject_at`, which take a level. `predict_rows` and
+    `predict_subject` are unchanged.
+  - Linear regression: the prediction interval ŷ ± t·s·√(1 + x₀ᵀ(XᵀX)⁻¹x₀). The fit now stores
+    (XᵀX)⁻¹, σ² and the residual degrees of freedom. Tested against R's `predict(lm, interval =
+    "prediction", level = 0.9)`.
+  - Logistic regression: the probability of every class, mapped to class names by the host
+    (`Prediction::Class::probabilities`).
+  - Bayesian regression (`bayesian_regression`): the posterior distribution of each row's
+    expected response from the kept draws (`predict::predict_draws`). Checked against the
+    program's own `epred_1` quantiles in the `#[ignore]`d R2.4 recovery test, which passes here.
+  - Stan models answer distributions (A7.1).
+  - `predictRows`, `m.predict(…, { detail: true })` and the `ModelHost` detail objects carry
+    `sd`, `lower`, `upper` and `level` for a distribution, and `probabilities` for a class.
+    `ModelSummary` gains `uncertainty`.
+- **A7.3: the Model predictions operation** (`kind: "model_predictions"`, `sc_dataset::PredictOp
+  { model, fit, name, interval, level }`).
+  - It adds `name` and, as the provider gives them, `name_lower` and `name_upper`, or
+    `name_probability`. The inputs are the row's columns, matched to the model's by name, through
+    the new `ModelHost::predict_inputs`, one batched call per operation. The column types come
+    from the model's description, loaded into the `Library` by the new `sc_dataset::load_models`.
+  - It runs after the SQL. The stage before the first Model predictions is read (at most
+    `MAX_IN_MEMORY_ROWS`, 100 000), and the operations from there on run in memory as a
+    `Stage::tail()`: Calculated column and Filter in the reified formula evaluator, and Select
+    columns, Sort, Aggregate (every summary but geometry union) and Limit (first, seeded sample,
+    top per group) in Rust. Another Model predictions may follow too.
+  - Anything else after a prediction is refused on the operation with a sentence: a Window
+    column, a Join, or a formula that follows a key. A SQL read of such a stage (`rows_query`,
+    `unordered_query`, …) is refused the same way. `read_stage`, `read_page`, `read_rows`,
+    `count` and `column_values` evaluate the tail, so the Dataset editor's spreadsheet, paging
+    and the explorer's value lists work. Plots of such a dataset are A7.7.
+  - Deviation: `load_library` does **not** load the models. A model's own dataset is resolved
+    through the library, so describing models there would recurse once a saved dataset names
+    one (it overflowed the stack). `read_stage`, the editor's `world` and the dataset list call
+    `load_models` after the definitions are in place.
+  - The Dataset editor offers the operation (a model picker, the column's name, the interval and
+    its level) and describes it in the side panel.
+  - Tests: `sc-dataset`'s `predictions.rs` runs on both drivers with a stub model host and the
+    real formula evaluator, checking the predictions and intervals, every in-memory operation
+    against rows worked out by hand, paging, distinct values and the refusals.
+    `analytics_done.rs`'s `a_dataset_is_scored_by_the_model_predictions_operation` scores the
+    demo's unsold houses with a real linear regression through the API. A vitest covers the
+    editor's defaults and summary.
+
 ## Bayesian regression from a formula, R2: breadth, prediction, and conversion to Stan
 
 Milestone R2 of `TODO-bayesian-regression.md`. The `bayesian_regression` provider now covers

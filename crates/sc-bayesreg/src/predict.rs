@@ -207,9 +207,22 @@ impl Draws {
 }
 
 /// The posterior mean of E[y] for each row of `frame`, from a fit's `state`.
+pub fn predict(state: &Json, frame: &Frame) -> Result<Vec<f64>> {
+    Ok(predict_draws(state, frame)?
+        .into_iter()
+        .map(|draws| {
+            #[allow(clippy::cast_precision_loss, reason = "a count of draws")]
+            let n = draws.len().max(1) as f64;
+            draws.iter().sum::<f64>() / n
+        })
+        .collect())
+}
+
+/// E[y] for each row of `frame` under each kept draw (analytics TODO A7.2):
+/// the posterior distribution of the expected response, row by row.
 #[allow(clippy::too_many_lines)] // the steps in order
 #[allow(clippy::needless_range_loop)] // rows and columns of two matrices at once
-pub fn predict(state: &Json, frame: &Frame) -> Result<Vec<f64>> {
+pub fn predict_draws(state: &Json, frame: &Frame) -> Result<Vec<Vec<f64>>> {
     let Some(pack) = state.get(PACK_KEY) else {
         let why = state
             .get(NO_PACK_KEY)
@@ -329,8 +342,7 @@ pub fn predict(state: &Json, frame: &Frame) -> Result<Vec<f64>> {
         structure.predictor_position("mu").unwrap_or(1)
     ));
 
-    let mut sums = vec![0.0; n_rows];
-    let count = draws.count.max(1);
+    let mut out = vec![Vec::with_capacity(draws.count); n_rows];
     for d in 0..draws.count {
         // Each linear predictor's value per row, through its inverse link.
         let mut values: BTreeMap<String, Vec<f64>> = BTreeMap::new();
@@ -468,10 +480,10 @@ pub fn predict(state: &Json, frame: &Frame) -> Result<Vec<f64>> {
                 }
                 _ => mu,
             };
-            sums[r] += e;
+            out[r].push(e);
         }
     }
-    Ok(sums.into_iter().map(|s| s / count as f64).collect())
+    Ok(out)
 }
 
 /// An ordinal family's category probabilities (as `ord_lprobs` in the

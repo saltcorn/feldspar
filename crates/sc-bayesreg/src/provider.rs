@@ -214,6 +214,33 @@ impl ModelProvider for BayesRegProvider {
             .collect())
     }
 
+    /// The expected response's posterior distribution (analytics TODO A7.2).
+    fn uncertainty(&self) -> sc_model::Uncertainty {
+        sc_model::Uncertainty::Distribution
+    }
+
+    /// The posterior of each row's expected response, from the kept draws,
+    /// summarised at `level`.
+    async fn predict_uncertain(
+        &self,
+        state: &Json,
+        frame: &Frame,
+        level: f64,
+    ) -> Result<Vec<Prediction>> {
+        crate::predict::predict_draws(state, frame)?
+            .iter()
+            .enumerate()
+            .map(|(i, draws)| {
+                sc_model::distribution_of(draws, level).ok_or_else(|| {
+                    Error::invalid(format!(
+                        "no draw of the expected response of row {} is a finite number",
+                        i + 1
+                    ))
+                })
+            })
+            .collect()
+    }
+
     fn lower(&self, config: &Attrs, input: LowerInput<'_>) -> Result<Option<Attrs>> {
         Ok(Some(lower_config(config, input)?.1))
     }

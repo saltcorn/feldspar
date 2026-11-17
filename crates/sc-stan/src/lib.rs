@@ -37,6 +37,7 @@
 pub mod cmdstan;
 pub mod compile;
 pub mod output;
+mod predict;
 mod process;
 pub mod program;
 mod provider;

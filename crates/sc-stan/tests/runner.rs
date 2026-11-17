@@ -323,14 +323,19 @@ async fn a_fit_compiles_once_runs_every_chain_with_cmdstans_arguments_and_reads_
         assert!(
             allowed.contains(&var)
                 || sc_proc::BASE_ENV.contains(&var)
-                || sc_proc::BASE_ENV_PREFIXES.iter().any(|p| var.starts_with(p))
+                || sc_proc::BASE_ENV_PREFIXES
+                    .iter()
+                    .any(|p| var.starts_with(p))
                 || var.starts_with("STAN_"),
             "the model saw `{var}`"
         );
     }
     // `cargo test` set these for the test binary; the model sees none.
     let env = fx.read("env-1.log");
-    assert!(!env.split_whitespace().any(|v| v.starts_with("CARGO")), "{env}");
+    assert!(
+        !env.split_whitespace().any(|v| v.starts_with("CARGO")),
+        "{env}"
+    );
 
     // The draws: every column of every chain, elements by name.
     assert_eq!(result.draws.len(), 2 * 5);

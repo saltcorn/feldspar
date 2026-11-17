@@ -112,10 +112,12 @@ pub use bind::{
     DEFAULT_MAX_DATA_VALUES, DERIVED_COLUMNS_KEY, DIMENSIONS_KEY, DataPreview, DatasetReport,
     DerivedColumn, DesignCoordinates, DimensionCoordinates, DimensionKind, DimensionSpec,
     DropReport, EXCLUDE_VARIABLES_KEY, Edges, KEEP_DRAWS_KEY, LABEL_COLUMN, LABELS_KEY, Labeller,
-    MAX_DISTANCE_SITES, MAX_GRID_STEPS, MAX_ICAR_NODES, POLICIES_KEY, Points, Policies, Policy,
-    RecordedAxes, Suggestions, Symmetric, TimeScale, VariablePreview, VariableReport, bind_data,
-    binding_dataset, check_bindings, check_bindings_declared, check_bindings_with, element_label,
-    excluded_variables, keeps_draws, named_axes, preview_data, recorded_axes, suggest_bindings,
+    MAX_DISTANCE_SITES, MAX_GRID_STEPS, MAX_ICAR_NODES, NEW_DATASET, POLICIES_KEY, Points,
+    Policies, Policy, PredictionPack, RecordedAxes, Suggestions, Symmetric, TimeScale,
+    VariablePreview, VariableReport, add_new_rows, bind_data, bind_new_rows, binding_dataset,
+    check_bindings, check_bindings_declared, check_bindings_with, check_prediction, element_label,
+    excluded_variables, keeps_draws, named_axes, names_new_rows, prediction_pack, preview_data,
+    recorded_axes, suggest_bindings,
 };
 pub use dataset::{
     ATTR_DATASETS, Dataset, DatasetColumn, DatasetColumnShape, DatasetOrder, DatasetShape,
@@ -136,9 +138,9 @@ pub use encode::{
 };
 pub use fit::{
     ATTR_AXES, ATTR_BINDING, ATTR_CANCEL_REQUESTED, ATTR_COORDINATES, ATTR_LOWERED, ATTR_OUTCOME,
-    ATTR_PROGRESS, ATTR_ROWS, ATTR_SEARCH, ATTR_WARNINGS, Activation, CANCELLED, Fit, FitStarter,
-    GridPoint, MAX_GRID_POINTS, RowCounts, fit_model, fit_model_with, fitted_cleanly, grid,
-    run_fit, run_fit_with,
+    ATTR_PREDICTION, ATTR_PROGRESS, ATTR_ROWS, ATTR_SEARCH, ATTR_WARNINGS, Activation, CANCELLED,
+    Fit, FitStarter, GridPoint, MAX_GRID_POINTS, RowCounts, fit_model, fit_model_with,
+    fitted_cleanly, grid, run_fit, run_fit_with,
 };
 pub use frame::{Column, ColumnType, Frame, canonical_key};
 pub use instance::{ATTR_ERROR, FitStatus, InstanceId, ModelInstance, RESTARTED};
@@ -165,14 +167,15 @@ pub use posterior::{
     PosteriorMethod, PosteriorResult, PosteriorRun, Progress,
 };
 pub use predict::{
-    Predictions, Subject, name_classes, no_per_row_prediction, predict_rows, predict_subject,
-    prediction_values,
+    Predictions, Subject, name_classes, no_per_row_prediction, predict_rows, predict_rows_at,
+    predict_subject, predict_subject_at, prediction_values,
 };
 pub use provider::{
-    CATEGORICAL_COLUMNS_QUERY, COLUMNS_QUERY, FitResult, HostProvider, LowerInput, ModelProvider,
-    ModelProviderHost, ModelProviderKind, NUMERIC_COLUMNS_QUERY, Outcome, OutcomeSpec,
-    ParameterBlock, ParameterRow, Prediction, categorical_column_field, column_field,
-    is_column_query, lowered_configuration, numeric_column_field, resolve_column_options,
+    CATEGORICAL_COLUMNS_QUERY, COLUMNS_QUERY, DEFAULT_LEVEL, FitResult, HostProvider, LowerInput,
+    ModelProvider, ModelProviderHost, ModelProviderKind, NUMERIC_COLUMNS_QUERY, Outcome,
+    OutcomeSpec, ParameterBlock, ParameterRow, PosteriorPrediction, Prediction, Uncertainty,
+    categorical_column_field, column_field, distribution_of, is_column_query,
+    lowered_configuration, numeric_column_field, resolve_column_options,
 };
 pub use providers::{BUILTINS_COMPILED_OUT, SMARTCORE, builtin_providers, builtin_registry};
 pub use reading::{

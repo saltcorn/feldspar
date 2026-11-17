@@ -26,12 +26,13 @@ use sc_error::{Error, Result};
 use sc_query::Expr;
 use serde_json::Value as Json;
 
+use crate::bind::{PredictionPack, bind_new_rows};
 use crate::encode::{Encoding, apply_encoding};
-use crate::fit::ATTR_OUTCOME;
+use crate::fit::{ATTR_OUTCOME, ATTR_PREDICTION};
 use crate::frame::Frame;
 use crate::instance::ModelInstance;
 use crate::model::Model;
-use crate::provider::{Outcome, Prediction};
+use crate::provider::{DEFAULT_LEVEL, Outcome, PosteriorPrediction, Prediction, distribution_of};
 use crate::registry::ModelRegistry;
 use crate::source::{DatasetSource, Read};
 
@@ -51,6 +52,20 @@ impl ModelInstance {
         serde_json::from_value(json.clone()).map_err(|e| {
             Error::invalid(format!(
                 "instance {}: its recorded outcome cannot be read: {e}",
+                self.id
+            ))
+        })
+    }
+
+    /// What this fit binds new rows with, when it is a posterior that
+    /// predicts through a `new` dataset (Stan TODO §19).
+    pub fn prediction_pack(&self) -> Result<Option<PredictionPack>> {
+        let Some(json) = self.attributes.get(ATTR_PREDICTION) else {
+            return Ok(None);
+        };
+        serde_json::from_value(json.clone()).map(Some).map_err(|e| {
+            Error::invalid(format!(
+                "instance {}: what it binds new rows with cannot be read: {e}",
                 self.id
             ))
         })
@@ -81,6 +96,28 @@ pub async fn predict_rows(
     instance: &ModelInstance,
     frame: &Frame,
 ) -> Result<Vec<Prediction>> {
+    predict_rows_at(registry, provider, instance, frame, None).await
+}
+
+/// [`predict_rows`], each prediction with its uncertainty at `level` as the
+/// provider [declares](crate::ModelProvider::uncertainty) it (analytics TODO
+/// A7.2) — `None` for the point prediction. A posterior predicting through
+/// its `new` rows always answers a distribution, at [`DEFAULT_LEVEL`] when no
+/// level is asked for.
+pub async fn predict_rows_at(
+    registry: &ModelRegistry,
+    provider: &str,
+    instance: &ModelInstance,
+    frame: &Frame,
+    level: Option<f64>,
+) -> Result<Vec<Prediction>> {
+    if let Some(l) = level {
+        if !(l > 0.0 && l < 1.0) {
+            return Err(Error::invalid(format!(
+                "an interval's level is a probability between 0 and 1, not {l}"
+            )));
+        }
+    }
     if !instance.is_usable() {
         return Err(Error::invalid(match instance.error() {
             Some(why) => format!(
@@ -106,7 +143,26 @@ pub async fn predict_rows(
         // (TODO-bayesian-regression §8): the rows go to the provider as they
         // are, and it refuses by name what the fit cannot represent.
         let provider = registry.require(provider.trim())?;
-        let raw = provider.predict(&instance.state, frame).await?;
+        let raw = match instance.prediction_pack()? {
+            Some(pack) => {
+                predict_new_rows(
+                    provider.as_ref(),
+                    instance,
+                    &pack,
+                    frame,
+                    level.unwrap_or(DEFAULT_LEVEL),
+                )
+                .await?
+            }
+            None => match level {
+                Some(level) => {
+                    provider
+                        .predict_uncertain(&instance.state, frame, level)
+                        .await?
+                }
+                None => provider.predict(&instance.state, frame).await?,
+            },
+        };
         if raw.len() != frame.rows {
             return Err(Error::msg(format!(
                 "the model provider `{}` answered {} predictions for {} rows",
@@ -127,9 +183,15 @@ pub async fn predict_rows(
     // rows it exists to answer about. See [`Encoding::features_only`].
     let encoded = apply_encoding(&encoding.features_only(), frame)?;
     let provider = registry.require(provider.trim())?;
-    let raw = provider
-        .predict(&instance.state, &encoded.features_frame())
-        .await?;
+    let features = encoded.features_frame();
+    let raw = match level {
+        Some(level) => {
+            provider
+                .predict_uncertain(&instance.state, &features, level)
+                .await?
+        }
+        None => provider.predict(&instance.state, &features).await?,
+    };
     if raw.len() != frame.rows {
         return Err(Error::msg(format!(
             "the model provider `{}` answered {} predictions for {} rows",
@@ -139,6 +201,53 @@ pub async fn predict_rows(
         )));
     }
     name_classes(raw, &encoding)
+}
+
+/// A posterior's predictions for `frame`'s rows through its `new` dataset
+/// (Stan TODO §19): the rows bound against the fit's coordinates, the
+/// provider's draws of the prediction for each, each summarised at `level`.
+async fn predict_new_rows(
+    provider: &dyn crate::ModelProvider,
+    instance: &ModelInstance,
+    pack: &PredictionPack,
+    frame: &Frame,
+    level: f64,
+) -> Result<Vec<Prediction>> {
+    if frame.rows == 0 {
+        return Ok(Vec::new());
+    }
+    let coordinates = crate::instance_coordinates(instance)?;
+    let data = bind_new_rows(pack, &coordinates, frame)?;
+    let request = PosteriorPrediction {
+        variable: pack.variable.clone(),
+        rows: frame.rows,
+        data,
+    };
+    let draws = provider
+        .predict_posterior(&instance.state, &request)
+        .await?;
+    if draws.len() != frame.rows {
+        return Err(Error::msg(format!(
+            "the model provider `{}` answered draws of `{}` for {} rows, and {} were asked about",
+            provider.name(),
+            pack.variable,
+            draws.len(),
+            frame.rows
+        )));
+    }
+    draws
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            distribution_of(row, level).ok_or_else(|| {
+                Error::invalid(format!(
+                    "no draw of `{}` for row {} of the rows being predicted is a finite number",
+                    pack.variable,
+                    i + 1
+                ))
+            })
+        })
+        .collect()
 }
 
 /// What a prediction is asked **about** (task 5.4, §12).
@@ -189,6 +298,20 @@ pub async fn predict_subject(
     subject: Subject<'_>,
     cap: u64,
 ) -> Result<Predictions> {
+    predict_subject_at(registry, source, model, instance, subject, cap, None).await
+}
+
+/// [`predict_subject`] with each prediction's uncertainty at `level` — see
+/// [`predict_rows_at`].
+pub async fn predict_subject_at(
+    registry: &ModelRegistry,
+    source: &dyn DatasetSource,
+    model: &Model,
+    instance: &ModelInstance,
+    subject: Subject<'_>,
+    cap: u64,
+    level: Option<f64>,
+) -> Result<Predictions> {
     let frame = match subject {
         Subject::Rows(rows) => {
             let types = if instance.outcome()?.is_posterior() {
@@ -218,7 +341,7 @@ pub async fn predict_subject(
             source.read(&dataset, &how).await?
         }
     };
-    let predictions = predict_rows(registry, &model.provider, instance, &frame).await?;
+    let predictions = predict_rows_at(registry, &model.provider, instance, &frame, level).await?;
     Ok(Predictions {
         predictions,
         keys: frame.keys,
@@ -266,7 +389,11 @@ pub fn name_classes(predictions: Vec<Prediction>, encoding: &Encoding) -> Result
     predictions
         .into_iter()
         .map(|prediction| match prediction {
-            Prediction::ClassIndex { index, probability } => {
+            Prediction::ClassIndex {
+                index,
+                probability,
+                probabilities,
+            } => {
                 let target = encoding.target.as_ref().ok_or_else(|| {
                     Error::msg(
                         "the provider answered a class, but this instance was not fitted with a \
@@ -274,7 +401,15 @@ pub fn name_classes(predictions: Vec<Prediction>, encoding: &Encoding) -> Result
                             .to_owned(),
                     )
                 })?;
-                Ok(Prediction::class(target.class(index)?, probability))
+                let mut named = std::collections::BTreeMap::new();
+                for (i, p) in probabilities.into_iter().enumerate() {
+                    named.insert(target.class(i)?.to_owned(), p);
+                }
+                Ok(Prediction::Class {
+                    class: target.class(index)?.to_owned(),
+                    probability,
+                    probabilities: named,
+                })
             }
             other => Ok(other),
         })
@@ -291,14 +426,14 @@ pub fn prediction_values(predictions: &[Prediction]) -> Result<Vec<Json>> {
 /// end of every refusal to predict with one, after "… is".
 ///
 /// A posterior is refused in its own words rather than a hypothesis test's:
-/// prediction for new rows from a posterior (standalone generated quantities,
-/// Stan TODO §19) is carried past the Stan milestone, and the draws in a code
-/// body are the way to it meanwhile.
+/// a posterior predicts new rows only when its program was written to and its
+/// configuration names the generated quantity that does (Stan TODO §19), and
+/// the draws in a code body are the way to anything else.
 pub fn no_per_row_prediction(posterior: bool) -> &'static str {
     if posterior {
-        "a posterior: its draws are the answer, and a posterior does not predict rows here — \
-         read its draws in a code body (`m.draws(…)`, on `models.get(…)`) and compute the \
-         prediction there"
+        "a posterior that names no prediction: its draws are the answer — name the generated \
+         quantity that predicts the rows of `new` as its `prediction`, or read its draws in a \
+         code body (`m.draws(…)`, on `models.get(…)`) and compute the prediction there"
     } else {
         "a hypothesis test: its parameters are the answer, and there is no per-row prediction \
          to make"
@@ -629,6 +764,61 @@ mod tests {
         assert!(err.contains("is a posterior"), "{err}");
         assert!(err.contains("`m.draws(…)`, on `models.get(…)`"), "{err}");
         assert!(!err.contains("hypothesis test"), "{err}");
+    }
+
+    /// A distribution of draws (analytics TODO A7.1): their mean, standard
+    /// deviation and central interval, as R's `mean`, `sd` and `quantile`
+    /// (type 7) give them for `1:100`.
+    #[test]
+    fn a_distribution_summarises_draws_as_r_does() {
+        let draws: Vec<f64> = (1..=100).map(f64::from).collect();
+        let Some(Prediction::Distribution {
+            mean,
+            sd,
+            lower,
+            upper,
+            level,
+        }) = crate::distribution_of(&draws, 0.9)
+        else {
+            panic!("a distribution");
+        };
+        assert!((mean - 50.5).abs() < 1e-12);
+        assert!((sd - 29.011_491_975_882_016).abs() < 1e-9);
+        assert!((lower - 5.95).abs() < 1e-9 && (upper - 95.05).abs() < 1e-9);
+        assert!((level - 0.9).abs() < 1e-12);
+        // Its value in a row is its mean, and no finite draw is no answer.
+        let p = crate::distribution_of(&draws, 0.9).unwrap();
+        assert_eq!(p.to_json().unwrap(), serde_json::json!(50.5));
+        assert!(crate::distribution_of(&[f64::NAN], 0.9).is_none());
+    }
+
+    /// Every class's probability is mapped through the encoding to its name
+    /// with the answered class (analytics TODO A7.2).
+    #[test]
+    fn every_class_probability_is_named_with_the_class() {
+        let encoding = Encoding {
+            columns: Vec::new(),
+            target: Some(TargetEncoding {
+                column: "sold".to_owned(),
+                classes: Some(vec!["no".to_owned(), "yes".to_owned()]),
+            }),
+        };
+        let named = name_classes(
+            vec![Prediction::class_index(1, Some(0.7)).with_probabilities(vec![0.3, 0.7])],
+            &encoding,
+        )
+        .unwrap();
+        let Prediction::Class {
+            class,
+            probabilities,
+            ..
+        } = &named[0]
+        else {
+            panic!("{named:?}");
+        };
+        assert_eq!(class, "yes");
+        assert_eq!(probabilities["no"], 0.3);
+        assert_eq!(probabilities["yes"], 0.7);
     }
 
     #[test]

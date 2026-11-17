@@ -38,6 +38,8 @@ export function opKindName(kind: string, t: Translate): string {
       return t("Union");
     case "spatial_join":
       return t("Spatial join");
+    case "model_predictions":
+      return t("Model predictions");
     default:
       return kind;
   }
@@ -72,6 +74,10 @@ export function opKindAbout(kind: string, t: Translate): string {
       return t("Append the rows of another table or dataset.");
     case "spatial_join":
       return t("Join another table or dataset where the geometries meet, or to the nearest.");
+    case "model_predictions":
+      return t(
+        "Add a model's prediction for every row, with its interval. The operations after it are computed in memory.",
+      );
     default:
       return "";
   }

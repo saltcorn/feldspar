@@ -68,7 +68,15 @@ fn it_declares_a_posterior_that_binds_data_and_the_whole_form() {
     let kind = provider.kind();
     assert_eq!(kind.name, STAN_PROVIDER);
     assert!(kind.binds_data);
-    assert_eq!(kind.outcome, OutcomeSpec::Posterior { prediction: None });
+    // It predicts the rows of `new` when `prediction` names the generated
+    // quantity that does (analytics TODO A7.1), as a distribution.
+    assert_eq!(
+        kind.outcome,
+        OutcomeSpec::Posterior {
+            prediction: Some("prediction".to_owned())
+        }
+    );
+    assert_eq!(kind.uncertainty, sc_model::Uncertainty::Distribution);
     assert!(kind.hyperparameters.is_empty());
     let fields: Vec<&str> = kind.config_spec.iter().map(|f| f.name()).collect();
     assert_eq!(
@@ -95,6 +103,7 @@ fn it_declares_a_posterior_that_binds_data_and_the_whole_form() {
             "runs_store",
             "runs_dir",
             "exclude_variables",
+            "prediction",
             "keep_draws",
         ]
     );
@@ -218,7 +227,7 @@ fn the_configuration_is_checked_for_what_only_the_provider_knows() {
     check(
         json!({"chains": 4, "parallel_chains": 2, "adapt_delta": 0.95, "seed": 4711,
                  "exclude_variables": ["log_lik"], "runs_store": "models", "runs_dir": "runs",
-                 BINDINGS_KEY: {"N": {"kind": "count"}}}),
+                 "prediction": "y_new", BINDINGS_KEY: {"N": {"kind": "count"}}}),
     )
     .unwrap();
 
@@ -260,6 +269,12 @@ fn the_configuration_is_checked_for_what_only_the_provider_knows() {
         (
             json!({"program": "../radon.stan"}),
             "must be a path inside the file store",
+        ),
+        // A prediction runs generated quantities over the fit's own draws,
+        // which CmdStan reads from its raw run (analytics TODO A7.1).
+        (
+            json!({"prediction": "y_new"}),
+            "`prediction` is `y_new`, and a prediction runs the program's generated quantities",
         ),
     ];
     for (extra, expected) in refused {

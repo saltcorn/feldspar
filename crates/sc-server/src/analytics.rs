@@ -252,7 +252,8 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
             async move {
                 let access = Access::of(&ctx);
                 let schema = Schema::of_catalog(&catalog)?;
-                let library = sc_dataset::load_library(&catalog).await?;
+                let mut library = sc_dataset::load_library(&catalog).await?;
+                sc_dataset::load_models(&catalog, &mut library).await;
                 let sharing = sc_dataset::list_dataset_sharing(&catalog).await?;
                 let out: Vec<Json> = library
                     .defs()
@@ -1385,6 +1386,7 @@ async fn world(catalog: &Catalog, def: &DatasetDef) -> Result<(Schema, Library)>
     let schema = Schema::of_catalog(catalog)?;
     let mut library = sc_dataset::load_library(catalog).await?;
     library.insert(def.clone());
+    sc_dataset::load_models(catalog, &mut library).await;
     Ok((schema, library))
 }
 

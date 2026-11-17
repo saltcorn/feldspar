@@ -16,7 +16,7 @@ use sc_error::{Error, Result};
 use sc_query::Value;
 
 use crate::access::{Caller, Reader};
-use crate::compile::{Library, Options, Restriction, Stage, compile};
+use crate::compile::{Library, Options, Restriction, Stage, compile, evaluate_tail};
 use crate::def::DatasetDef;
 use crate::shape::{ColType, Grain, Schema, StageColumn};
 use crate::store::load_library;
@@ -66,6 +66,7 @@ pub async fn read_stage(
     let schema = Schema::of_catalog(catalog)?;
     let mut library = load_library(catalog).await?;
     library.insert(def.clone());
+    crate::store::load_models(catalog, &mut library).await;
     let compiled = compile(&schema, &library, def, Options::default());
     let upto = upto.unwrap_or(def.operations.len());
     let stage = compiled.stage(upto).map_err(|e| {
@@ -87,6 +88,22 @@ pub async fn read_page(
 ) -> Result<StagePage> {
     let reader = Reader::new(catalog, caller)?;
     let limit = page.limit.clamp(1, MAX_PAGE);
+    if let Some(tail) = stage.tail() {
+        let all = evaluate_tail(&reader, stage, tail, None).await?;
+        let total = all.rows.len() as u64;
+        let rows = all
+            .rows
+            .into_iter()
+            .skip(usize::try_from(page.offset).unwrap_or(usize::MAX))
+            .take(usize::try_from(limit).unwrap_or(usize::MAX))
+            .collect();
+        return Ok(StagePage {
+            columns: all.columns,
+            grain: all.grain,
+            rows,
+            total,
+        });
+    }
     let select = stage.rows_query(None, Some((page.offset, limit)), false)?;
     let rows = reader.query(select).await?;
     let total = count_with(&reader, stage, None).await?;
@@ -117,6 +134,12 @@ pub async fn count_with(
     stage: &Stage,
     restrict: Option<&Restriction>,
 ) -> Result<u64> {
+    if let Some(tail) = stage.tail() {
+        return Ok(evaluate_tail(reader, stage, tail, restrict)
+            .await?
+            .rows
+            .len() as u64);
+    }
     let select = stage.count_query(restrict)?;
     let rows = reader.query(select).await?;
     match rows.first().and_then(|r| r.get_index(0)) {
@@ -143,6 +166,24 @@ pub async fn read_rows(
 
 /// [`read_rows`], through a [`Reader`] the caller already has.
 pub async fn read_rows_with(
+    reader: &Reader,
+    stage: &Stage,
+    restrict: Option<&Restriction>,
+    limit: Option<u64>,
+) -> Result<Rows> {
+    if let Some(tail) = stage.tail() {
+        let mut rows = evaluate_tail(reader, stage, tail, restrict).await?;
+        if let Some(limit) = limit.and_then(|l| usize::try_from(l).ok()) {
+            rows.rows.truncate(limit);
+            rows.keys.truncate(limit);
+        }
+        return Ok(rows);
+    }
+    read_sql_rows(reader, stage, restrict, limit).await
+}
+
+/// [`read_rows_with`] for a stage that is a query.
+pub(crate) async fn read_sql_rows(
     reader: &Reader,
     stage: &Stage,
     restrict: Option<&Restriction>,
@@ -191,6 +232,33 @@ pub async fn column_values(
     column: &str,
     limit: u64,
 ) -> Result<Vec<Value>> {
+    if let Some(tail) = stage.tail() {
+        let rows = evaluate_tail(&Reader::new(catalog, caller)?, stage, tail, None).await?;
+        let at = rows
+            .columns
+            .iter()
+            .position(|c| c.name == column)
+            .ok_or_else(|| {
+                Error::invalid(format!("there is no column `{column}` at this stage"))
+            })?;
+        let mut counts: Vec<(Value, u64)> = Vec::new();
+        for row in rows.rows {
+            let value = row.into_iter().nth(at).unwrap_or(Value::Null);
+            if value.is_null() {
+                continue;
+            }
+            match counts.iter_mut().find(|(v, _)| *v == value) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((value, 1)),
+            }
+        }
+        counts.sort_by_key(|c| std::cmp::Reverse(c.1));
+        return Ok(counts
+            .into_iter()
+            .take(usize::try_from(limit.clamp(1, MAX_PAGE)).unwrap_or(1))
+            .map(|(v, _)| v)
+            .collect());
+    }
     let select = stage.values_query(column, limit.clamp(1, MAX_PAGE))?;
     Ok(Reader::new(catalog, caller)?
         .query(select)
@@ -256,7 +324,7 @@ fn coerce(columns: &[StageColumn], rows: &mut [Vec<Value>]) {
 
 /// Columns whose type the compiler did not know, typed by the first value
 /// that is not missing; then every value coerced to its column's type.
-fn typed(columns: Vec<StageColumn>, rows: &mut [Vec<Value>]) -> Vec<StageColumn> {
+pub(crate) fn typed(columns: Vec<StageColumn>, rows: &mut [Vec<Value>]) -> Vec<StageColumn> {
     let columns = fill_types(columns, rows);
     coerce(&columns, rows);
     columns
