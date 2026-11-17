@@ -20,6 +20,7 @@ mod spec;
 pub(crate) mod validate;
 
 pub use math::{BinParams, CurvePoint, LinearFit, LinearSums};
+pub(crate) use math::{bandwidth_nrd0, kde};
 pub use render::{
     DEFAULT_SAMPLE, DOMAIN_VALUES, Domain, EXACT_DENSITY, LOESS_SAMPLE, LayerData, MAX_BOXES,
     MAX_CURVES, MAX_FACETS, MAX_GROUP_ROWS, MAX_OUTLIERS, MAX_SAMPLE, MAX_TABLE_ROWS, PlotData,

@@ -237,6 +237,61 @@ pub fn prediction_pack(
     }
 }
 
+impl PredictionPack {
+    /// The columns of the rows being predicted that its bindings read, in
+    /// order (analytics TODO A7.4): what a prediction needs in a row.
+    pub fn input_columns(&self) -> Result<Vec<PredictionInput>> {
+        bound_columns(&self.config, NEW_DATASET, |_| false)
+    }
+}
+
+/// A column a prediction reads from a row (analytics TODO A7.4).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PredictionInput {
+    /// The column.
+    pub column: String,
+    /// Whether it is read as a category whatever its type: one-hot encoded,
+    /// or an index into the levels the fit saw (a county's id).
+    pub categorical: bool,
+}
+
+/// The columns of `dataset` that `config`'s bindings read, in order of first
+/// appearance, leaving out the variables `skip` names (a response, say). A
+/// derived column counts as the columns it is computed from. A column an
+/// `index` binding reads, or a combination for one, is categorical.
+pub fn bound_columns(
+    config: &Attrs,
+    dataset: &str,
+    skip: impl Fn(&str) -> bool,
+) -> Result<Vec<PredictionInput>> {
+    let spec = Spec::parse(config)?;
+    let mut out: Vec<PredictionInput> = Vec::new();
+    let mut add = |c: &str, categorical: bool| match out.iter_mut().find(|o| o.column == c) {
+        Some(seen) => seen.categorical |= categorical,
+        None => out.push(PredictionInput {
+            column: c.to_owned(),
+            categorical,
+        }),
+    };
+    for (name, binding) in &spec.bindings {
+        if skip(name) || binding.dataset() != Some(dataset) {
+            continue;
+        }
+        let categorical = matches!(binding, Binding::Index { .. });
+        for column in binding.columns() {
+            match spec.derived.get(column) {
+                Some(derived) => {
+                    for c in derived.reads() {
+                        add(c, categorical);
+                    }
+                }
+                None => add(column, categorical),
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Bind the variables over `new` to `frame`'s rows — the rows being predicted,
 /// read through the main dataset — against the fit's `coordinates`,
 /// answering the data members that change.

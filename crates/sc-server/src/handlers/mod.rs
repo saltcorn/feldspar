@@ -111,6 +111,7 @@ mod models;
 mod modules;
 mod registry;
 mod settings;
+mod simulation;
 mod source_control;
 pub(crate) mod streams;
 mod table_rows;
@@ -201,6 +202,7 @@ pub fn admin_handlers_with(
     code_libraries::register(&mut reg, &state);
     triggers::register(&mut reg, &state);
     models::register(&mut reg, &state);
+    simulation::register(&mut reg, &state);
     streams::register(&mut reg, &state);
     settings::register(&mut reg, &state);
     backup::register(&mut reg, &state);

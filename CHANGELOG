@@ -2,6 +2,71 @@
 
 Changes in reverse chronological order.
 
+## Analytics A7 phase 2: the profiler and scenario comparison
+
+Analytics TODO A7.4–A7.5. A fitted model can be profiled — its prediction at chosen inputs and
+how it changes along each one — and named scenarios are compared by the distribution of their
+predictions. This is the server half of the Simulation workspace, whose screen is A7.6.
+
+Running applications are unaffected: no database change and no migration. Two endpoints and two
+optional provider methods (with defaults) are added. The Simulation workspace kind is still
+disabled, so no stored state changes.
+
+- **The inputs** (`sc_model::prediction_inputs`, new `PredictionInput { column, categorical }`):
+  the columns a prediction reads from a row. These come from the fit's encoding (one-hot columns
+  are categorical), from the bindings over a posterior's `new` rows
+  (`PredictionPack::input_columns`, where an `index` binding makes a column categorical, so a
+  county id is a drop-down and not a slider), or from the new provider method
+  `ModelProvider::inputs(state)`. The formula provider (`bayesian_regression`) uses that method
+  to list its bound columns minus the response's own (the response, its bounds, censoring,
+  weights, standard errors and subset). When nothing knows the inputs, they are every training
+  column but the label. `sc_model::bound_columns` is the shared helper.
+- **`sc_analytics::simulate`.** Each input is described from up to 100 000 rows of the training
+  data as a number, integer, date, category or yes/no. It starts at its typical value: the mean
+  (rounded for an integer), the median date, or the most common level. It also carries its range,
+  or up to 50 levels (the fit's own levels for a one-hot column). Values sent are checked
+  against the input's kind, and an input the model does not read is refused by name.
+  - **`profile`**: the prediction at the values and a curve per input, either 21 points across its
+    range (2–101 by request; integers and whole-day dates are deduplicated) or one point per
+    level. All rows go in **one batched** `predict_rows_at` call, so a Stan posterior runs
+    standalone generated quantities once per request.
+  - **`compare`**: each scenario's prediction and its `Spread`. That is `draws` (thinned to 1 000,
+    with a kernel density) where the model predicts from draws, `interval` for a regression,
+    `classes` (the class probabilities) for a classifier, and `point` otherwise. A regression's
+    interval is drawn as the Student t it was computed from: the degrees of freedom are recovered
+    from the interval's width (`t_degrees_of_freedom`), or the distribution is normal when the
+    interval is no wider than a normal one. Every density is on one shared 128-point grid. When
+    there are draws, one call answers both the summary and the distribution.
+  - `SimulationState { model, fit, level, values, scenarios }`. `check_state` now checks a
+    Simulation workspace's state: at most 20 scenarios, each with a non-empty name of at most 200
+    bytes, no two with the same name, and a level between 0 and 1.
+- **Draws for new rows**: `sc_model::predict_rows_draws`, and the new provider method
+  `ModelProvider::predict_draws(state, frame)` (default `None`). The formula provider answers it
+  with its expected-response draws. A posterior predicting through `new` is answered by
+  `predict_posterior`, which is now shared with `predict_rows_at`.
+- **Endpoints** (declared in `sc-api`'s `analytics.rs`, handled in `sc-server`'s
+  `handlers/simulation.rs`, admin only like the model editor's): `profileModel` (`POST
+  /api/models/{id}/profile` with `{ fit?, values?, level?, points? }`) and `compareScenarios`
+  (`POST /api/models/{id}/scenarios` with `{ fit?, level?, scenarios: [{ name, values? }] }`).
+  Without `fit`, both use the active fit, or else the newest fitted one, and a model that was
+  never fitted is refused. Both answer the fit used and whether its dataset has changed since.
+  Clients regenerated in all four UIs.
+- Deviation: the comparison takes its scenarios in the request rather than reading them from a
+  workspace. The workspace keeps them, and the A7.6 screen and A7.8's static report panel send
+  the ones they show.
+- Tests: `simulate`'s unit tests cover typical values for each kind, categorical integers, the
+  fit's one-hot levels, the rows of a profile, refused values, degrees of freedom recovered from
+  t intervals, the shared grid and densities integrating to one, and state checks.
+  `analytics_done.rs`'s `a_regression_is_profiled_and_its_scenarios_compared` covers a linear
+  regression over the demo houses: the area curve is a straight line whose interval is narrowest
+  near the mean, the profile agrees with `predictRows`, and the scenarios' t degrees of freedom
+  are the fit's residual ones. It also covers a logistic regression's class probabilities and an
+  unfitted model refused. `posterior_api.rs`'s
+  `a_posterior_is_profiled_and_its_scenarios_compared_by_their_draws` covers the stub posterior
+  through `new`: county is a category, floor has a slope of 0.5, the two scenarios' draws peak
+  where they should on the shared grid, and an unknown input, an unseen county and a duplicate
+  name are each refused.
+
 ## Analytics A7 phase 1: prediction with uncertainty, and the Model predictions operation
 
 Analytics TODO A7.1–A7.3. A posterior predicts new rows, every provider that can says how sure a

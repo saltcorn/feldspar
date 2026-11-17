@@ -59,8 +59,8 @@ pub use labels::{
     excluded_variables, keeps_draws, named_axes, recorded_axes,
 };
 pub use new_rows::{
-    NEW_DATASET, PredictionPack, add_new_rows, bind_new_rows, check_prediction, names_new_rows,
-    prediction_pack,
+    NEW_DATASET, PredictionInput, PredictionPack, add_new_rows, bind_new_rows, bound_columns,
+    check_prediction, names_new_rows, prediction_pack,
 };
 pub use resolve::{
     BindReport, BoundData, DEFAULT_MAX_DATA_VALUES, DatasetReport, DropReport, VariableReport,

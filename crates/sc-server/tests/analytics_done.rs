@@ -3696,3 +3696,306 @@ async fn a_dataset_is_scored_by_the_model_predictions_operation() -> sc_error::R
     );
     Ok(())
 }
+
+/// Fit `provider` on `dataset` with `configuration`, through the API, and
+/// answer the model's id.
+async fn fit_on(
+    client: &mut Client,
+    name: &str,
+    provider: &str,
+    dataset: &Value,
+    configuration: Value,
+) -> String {
+    let model = client
+        .ok(
+            "POST",
+            "/api/models",
+            Some(json!({
+                "name": name,
+                "provider": provider,
+                "dataset": { "dataset_id": dataset["dataset"]["id"] },
+                "configuration": configuration,
+                "split": { "train": 1.0, "validation": 0.0, "test": 0.0, "seed": 7 },
+            })),
+        )
+        .await;
+    let id = model["id"].as_str().unwrap().to_owned();
+    let started = client
+        .ok("POST", &format!("/api/models/{id}/fit"), Some(json!({})))
+        .await;
+    let instance = started["id"].as_str().unwrap().to_owned();
+    for _ in 0..600 {
+        let fitted = client
+            .ok("GET", &format!("/api/model-instances/{instance}"), None)
+            .await;
+        if fitted["status"] != json!("fitting") {
+            assert_eq!(fitted["status"], json!("fitted"), "{fitted}");
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    id
+}
+
+/// Analytics TODO A7.4–A7.5 with a linear and a logistic regression over the
+/// demo's houses: the profiler's inputs start at typical values, the area's
+/// curve is a straight line whose interval widens away from the mean, and
+/// scenarios are compared by their t distributions (whose degrees of freedom
+/// are the fit's residual ones) or their class probabilities.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn a_regression_is_profiled_and_its_scenarios_compared() -> sc_error::Result<()> {
+    let (mut client, _db) = setup().await?;
+    let client = &mut client;
+    let houses = client
+        .ok(
+            "POST",
+            "/api/datasets",
+            Some(json!({
+                "name": "Profiled houses",
+                "base": { "kind": "table", "table": "houses" },
+                "operations": [
+                    op("s", "filter", json!({ "formula": "sold === true" })),
+                    op("h", "calculated", json!({ "name": "hood", "formula": "neighbourhoodⱵname" })),
+                    op("k", "select", json!({ "columns": [
+                        { "column": "price" }, { "column": "area" },
+                        { "column": "bedrooms" }, { "column": "hood" }
+                    ]})),
+                ],
+            })),
+        )
+        .await;
+    let model = fit_on(
+        client,
+        "Profiled prices",
+        "linear_regression",
+        &houses,
+        json!({ "label": "price" }),
+    )
+    .await;
+
+    let profile = client
+        .ok(
+            "POST",
+            &format!("/api/models/{model}/profile"),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(profile["outcome"], json!("regression"), "{profile}");
+    assert_eq!(profile["uncertainty"], json!("interval"), "{profile}");
+    assert_eq!(profile["level"], json!(0.9), "{profile}");
+    let input = |name: &str| {
+        profile["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == json!(name))
+            .unwrap_or_else(|| panic!("no input {name}: {profile}"))
+            .clone()
+    };
+    let (area, bedrooms, hood) = (input("area"), input("bedrooms"), input("hood"));
+    assert_eq!(area["kind"], json!("number"));
+    assert_eq!(bedrooms["kind"], json!("integer"));
+    assert_eq!(hood["kind"], json!("category"));
+    let levels = hood["levels"].as_array().unwrap().len();
+    assert!(levels >= 2, "{hood}");
+    assert_eq!(profile["values"]["area"], area["typical"]);
+    let p = &profile["prediction"];
+    let value = p["value"].as_f64().unwrap();
+    assert!(p["lower"].as_f64().unwrap() < value && value < p["upper"].as_f64().unwrap());
+
+    let curve = |name: &str| {
+        profile["curves"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["input"] == json!(name))
+            .unwrap()["points"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    // A straight line over the area's range.
+    let along = curve("area");
+    assert_eq!(along.len(), 21);
+    assert_eq!(along[0]["x"], area["min"]);
+    assert_eq!(along[20]["x"], area["max"]);
+    let ys: Vec<f64> = along
+        .iter()
+        .map(|p| p["prediction"]["value"].as_f64().unwrap())
+        .collect();
+    let step = ys[1] - ys[0];
+    assert!(step > 0.0, "{ys:?}");
+    for w in ys.windows(2) {
+        assert!(
+            (w[1] - w[0] - step).abs() < 1e-6 * step.abs().max(1.0),
+            "{ys:?}"
+        );
+    }
+    // The interval is narrowest near the mean and widest at the ends.
+    let width = |p: &Value| {
+        p["prediction"]["upper"].as_f64().unwrap() - p["prediction"]["lower"].as_f64().unwrap()
+    };
+    let mean = area["typical"].as_f64().unwrap();
+    let middle = along
+        .iter()
+        .min_by(|a, b| {
+            (a["x"].as_f64().unwrap() - mean)
+                .abs()
+                .total_cmp(&(b["x"].as_f64().unwrap() - mean).abs())
+        })
+        .unwrap();
+    assert!(width(&along[0]) > width(middle) && width(&along[20]) > width(middle));
+    // A point per level, and whole numbers of bedrooms.
+    assert_eq!(curve("hood").len(), levels);
+    assert!(curve("bedrooms").iter().all(|p| p["x"].is_i64()));
+
+    // The same prediction as `predictRows` gives for the typical row.
+    let direct = client
+        .ok(
+            "POST",
+            "/api/model-predictions",
+            Some(json!({ "instance": profile["fit"]["id"], "rows": [profile["values"]] })),
+        )
+        .await;
+    let fit = profile["fit"]["id"].clone();
+    let direct = direct["predictions"][0]["value"].as_f64().unwrap();
+    assert!((direct - value).abs() < 1e-6, "{direct} {value}");
+
+    // Two scenarios: t densities on one grid, the larger house to the right.
+    let bigger = area["max"].clone();
+    let compared = client
+        .ok(
+            "POST",
+            &format!("/api/models/{model}/scenarios"),
+            Some(json!({ "fit": fit, "level": 0.8, "scenarios": [
+                { "name": "baseline", "values": {} },
+                { "name": "bigger", "values": { "area": bigger } },
+            ] })),
+        )
+        .await;
+    assert_eq!(compared["level"], json!(0.8), "{compared}");
+    let grid: Vec<f64> = compared["grid"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_f64().unwrap())
+        .collect();
+    assert_eq!(grid.len(), 128);
+    let (_, _, rows) = client
+        .stage(
+            &json!({
+                "base": { "kind": "table", "table": "houses" },
+                "operations": [op("s", "filter", json!({ "formula": "sold === true" }))],
+            }),
+            1,
+        )
+        .await;
+    // The residual degrees of freedom: the rows, less the intercept, the
+    // area, the bedrooms and a column per level beyond the first.
+    #[allow(clippy::cast_precision_loss)]
+    let residual = (rows - 3 - (levels as i64 - 1)) as f64;
+    let mut peaks = Vec::new();
+    for s in compared["scenarios"].as_array().unwrap() {
+        let spread = &s["spread"];
+        assert_eq!(spread["kind"], json!("interval"), "{compared}");
+        let df = spread["df"].as_f64().unwrap();
+        assert!((df - residual).abs() < 1e-3 * residual, "{df} {residual}");
+        let density: Vec<f64> = spread["density"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_f64().unwrap())
+            .collect();
+        let area_under: f64 = density.iter().sum::<f64>() * (grid[1] - grid[0]);
+        assert!((area_under - 1.0).abs() < 0.02, "{area_under}");
+        let top = (0..density.len())
+            .max_by(|a, b| density[*a].total_cmp(&density[*b]))
+            .unwrap();
+        peaks.push(grid[top]);
+        assert_eq!(s["prediction"]["level"], json!(0.8));
+    }
+    assert!(peaks[1] > peaks[0], "{peaks:?}");
+
+    // A classifier's scenarios are its class probabilities.
+    let all = client
+        .ok(
+            "POST",
+            "/api/datasets",
+            Some(json!({
+                "name": "Houses on the market",
+                "base": { "kind": "table", "table": "houses" },
+                "operations": [
+                    op("k", "select", json!({ "columns": [
+                        { "column": "sold" }, { "column": "area" }
+                    ]})),
+                ],
+            })),
+        )
+        .await;
+    let classifier = fit_on(
+        client,
+        "Sold or not",
+        "logistic_regression",
+        &all,
+        json!({ "label": "sold" }),
+    )
+    .await;
+    let compared = client
+        .ok(
+            "POST",
+            &format!("/api/models/{classifier}/scenarios"),
+            Some(json!({ "scenarios": [{ "name": "small", "values": { "area": 40 } }] })),
+        )
+        .await;
+    let spread = &compared["scenarios"][0]["spread"];
+    assert_eq!(spread["kind"], json!("classes"), "{compared}");
+    let total: f64 = spread["probabilities"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|p| p.as_f64().unwrap())
+        .sum();
+    assert!((total - 1.0).abs() < 1e-9, "{compared}");
+    assert_eq!(compared["grid"], json!([]), "{compared}");
+    let profile = client
+        .ok(
+            "POST",
+            &format!("/api/models/{classifier}/profile"),
+            Some(json!({ "points": 5 })),
+        )
+        .await;
+    let points = profile["curves"][0]["points"].as_array().unwrap();
+    assert_eq!(points.len(), 5);
+    assert!(
+        points[0]["prediction"]["probabilities"].is_object(),
+        "{profile}"
+    );
+
+    // A model that has never been fitted has nothing to simulate.
+    let unfitted = client
+        .ok(
+            "POST",
+            "/api/models",
+            Some(json!({
+                "name": "Not yet",
+                "provider": "linear_regression",
+                "dataset": { "dataset_id": houses["dataset"]["id"] },
+                "configuration": { "label": "price" },
+            })),
+        )
+        .await;
+    let (status, refused) = client
+        .send(
+            "POST",
+            &format!("/api/models/{}/profile", unfitted["id"].as_str().unwrap()),
+            Some(json!({})),
+        )
+        .await;
+    assert!(!status.is_success(), "{refused}");
+    assert!(
+        refused.to_string().contains("has not been fitted"),
+        "{refused}"
+    );
+    Ok(())
+}

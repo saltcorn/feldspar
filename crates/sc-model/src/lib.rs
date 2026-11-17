@@ -113,11 +113,11 @@ pub use bind::{
     DerivedColumn, DesignCoordinates, DimensionCoordinates, DimensionKind, DimensionSpec,
     DropReport, EXCLUDE_VARIABLES_KEY, Edges, KEEP_DRAWS_KEY, LABEL_COLUMN, LABELS_KEY, Labeller,
     MAX_DISTANCE_SITES, MAX_GRID_STEPS, MAX_ICAR_NODES, NEW_DATASET, POLICIES_KEY, Points,
-    Policies, Policy, PredictionPack, RecordedAxes, Suggestions, Symmetric, TimeScale,
-    VariablePreview, VariableReport, add_new_rows, bind_data, bind_new_rows, binding_dataset,
-    check_bindings, check_bindings_declared, check_bindings_with, check_prediction, element_label,
-    excluded_variables, keeps_draws, named_axes, names_new_rows, prediction_pack, preview_data,
-    recorded_axes, suggest_bindings,
+    Policies, Policy, PredictionInput, PredictionPack, RecordedAxes, Suggestions, Symmetric,
+    TimeScale, VariablePreview, VariableReport, add_new_rows, bind_data, bind_new_rows,
+    binding_dataset, bound_columns, check_bindings, check_bindings_declared, check_bindings_with,
+    check_prediction, element_label, excluded_variables, keeps_draws, named_axes, names_new_rows,
+    prediction_pack, preview_data, recorded_axes, suggest_bindings,
 };
 pub use dataset::{
     ATTR_DATASETS, Dataset, DatasetColumn, DatasetColumnShape, DatasetOrder, DatasetShape,
@@ -168,7 +168,7 @@ pub use posterior::{
 };
 pub use predict::{
     Predictions, Subject, name_classes, no_per_row_prediction, predict_rows, predict_rows_at,
-    predict_subject, predict_subject_at, prediction_values,
+    predict_rows_draws, predict_subject, predict_subject_at, prediction_inputs, prediction_values,
 };
 pub use provider::{
     CATEGORICAL_COLUMNS_QUERY, COLUMNS_QUERY, DEFAULT_LEVEL, FitResult, HostProvider, LowerInput,

@@ -219,6 +219,30 @@ impl ModelProvider for BayesRegProvider {
         sc_model::Uncertainty::Distribution
     }
 
+    /// Each row's draws of its expected response (analytics TODO A7.5).
+    async fn predict_draws(&self, state: &Json, frame: &Frame) -> Result<Option<Vec<Vec<f64>>>> {
+        crate::predict::predict_draws(state, frame).map(Some)
+    }
+
+    /// The formula's predictors (analytics TODO A7.4): the main dataset's
+    /// columns the fit's bindings read, but for the response's own — the
+    /// response, its bounds, censoring, weights, standard errors and subset.
+    fn inputs(&self, state: &Json) -> Option<Vec<sc_model::PredictionInput>> {
+        let config: Attrs = serde_json::from_value(
+            state
+                .get(crate::predict::PACK_KEY)?
+                .get("config")
+                .cloned()?,
+        )
+        .ok()?;
+        let response_side = |name: &str| {
+            ["Y", "lb_Y", "ub_Y", "weights", "cens", "se", "J_sub"]
+                .iter()
+                .any(|p| name.starts_with(p))
+        };
+        sc_model::bound_columns(&config, sc_model::MAIN_DATASET, response_side).ok()
+    }
+
     /// The posterior of each row's expected response, from the kept draws,
     /// summarised at `level`.
     async fn predict_uncertain(

@@ -285,8 +285,9 @@ fn panel_slots(kind: WorkspaceKind, state: &Json) -> Vec<&Json> {
 }
 
 /// Refuse a state whose panels do not read, naming the first that does not,
-/// a report whose other blocks or page are not ones it has, and a dashboard
-/// whose tiles are not on its grid.
+/// a report whose other blocks or page are not ones it has, a dashboard
+/// whose tiles are not on its grid, and a simulation whose scenarios are not
+/// distinctly named.
 pub fn check_state(kind: WorkspaceKind, state: &Json) -> Result<()> {
     for (i, slot) in panel_slots(kind, state).into_iter().enumerate() {
         Panel::from_json(slot)
@@ -296,6 +297,9 @@ pub fn check_state(kind: WorkspaceKind, state: &Json) -> Result<()> {
         WorkspaceKind::Report => check_report(state)?,
         WorkspaceKind::Dashboard => check_dashboard(state)?,
         WorkspaceKind::Map => crate::map::spec_of_state(state)?.check(true)?,
+        WorkspaceKind::Simulation => {
+            crate::simulate::SimulationState::from_json(state)?;
+        }
         _ => {}
     }
     Ok(())

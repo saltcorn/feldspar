@@ -638,11 +638,14 @@ with the profiler, scenarios and scoring (goals document "Simulation workspace")
 
 ## Phase 2 — Profiler and scenarios
 
-- [ ] A7.4 The profiler endpoint: typical values from the training data; the prediction and
+- [x] A7.4 The profiler endpoint: typical values from the training data; the prediction and
       interval for given inputs; each predictor's profile curve over its range with the
-      others fixed, in one batched prediction call. Tests.
-- [ ] A7.5 Scenarios in the workspace's state, and a comparison endpoint returning each
+      others fixed, in one batched prediction call. Tests. *(`profileModel`, admin only like
+      the model editor; A7.8 decides what an application's dashboard may call.)*
+- [x] A7.5 Scenarios in the workspace's state, and a comparison endpoint returning each
       scenario's predicted distribution (draws where the model has them). Tests.
+      *(`compareScenarios` takes the scenarios in its body; the Simulation kind stays
+      disabled until A7.6 brings its screen, but its state is checked already.)*
 
 ## Phase 3 — The workspace
 

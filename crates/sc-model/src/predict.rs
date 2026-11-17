@@ -213,6 +213,36 @@ async fn predict_new_rows(
     frame: &Frame,
     level: f64,
 ) -> Result<Vec<Prediction>> {
+    let draws = new_row_draws(provider, instance, pack, frame).await?;
+    summarise_draws(&draws, &pack.variable, level)
+}
+
+/// Each of `draws`' rows as a [`Distribution`](Prediction::Distribution) at
+/// `level`, refusing a row with no finite draw of `variable`.
+fn summarise_draws(draws: &[Vec<f64>], variable: &str, level: f64) -> Result<Vec<Prediction>> {
+    draws
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            distribution_of(row, level).ok_or_else(|| {
+                Error::invalid(format!(
+                    "no draw of `{variable}` for row {} of the rows being predicted is a finite \
+                     number",
+                    i + 1
+                ))
+            })
+        })
+        .collect()
+}
+
+/// The provider's draws of a posterior's prediction for each of `frame`'s
+/// rows, bound through its `new` dataset.
+async fn new_row_draws(
+    provider: &dyn crate::ModelProvider,
+    instance: &ModelInstance,
+    pack: &PredictionPack,
+    frame: &Frame,
+) -> Result<Vec<Vec<f64>>> {
     if frame.rows == 0 {
         return Ok(Vec::new());
     }
@@ -235,19 +265,74 @@ async fn predict_new_rows(
             frame.rows
         )));
     }
-    draws
-        .iter()
-        .enumerate()
-        .map(|(i, row)| {
-            distribution_of(row, level).ok_or_else(|| {
-                Error::invalid(format!(
-                    "no draw of `{}` for row {} of the rows being predicted is a finite number",
-                    pack.variable,
-                    i + 1
-                ))
+    Ok(draws)
+}
+
+/// Each of `frame`'s rows' draws of its prediction, where `instance`
+/// predicts from draws (analytics TODO A7.5): a posterior through its `new`
+/// rows, or a provider whose
+/// [`predict_draws`](crate::ModelProvider::predict_draws) answers. `None`
+/// for a fit whose uncertainty is not draws — a regression's interval, a
+/// classifier's probabilities — which [`predict_rows_at`] answers.
+pub async fn predict_rows_draws(
+    registry: &ModelRegistry,
+    provider: &str,
+    instance: &ModelInstance,
+    frame: &Frame,
+) -> Result<Option<Vec<Vec<f64>>>> {
+    if !instance.is_usable() || !instance.outcome()?.is_posterior() {
+        return Ok(None);
+    }
+    let provider = registry.require(provider.trim())?;
+    let draws = match instance.prediction_pack()? {
+        Some(pack) => Some(new_row_draws(provider.as_ref(), instance, &pack, frame).await?),
+        None => provider.predict_draws(&instance.state, frame).await?,
+    };
+    if let Some(draws) = &draws {
+        if draws.len() != frame.rows {
+            return Err(Error::msg(format!(
+                "the model provider `{}` answered draws for {} rows, and {} were asked about",
+                provider.name(),
+                draws.len(),
+                frame.rows
+            )));
+        }
+    }
+    Ok(draws)
+}
+
+/// The columns a prediction with `instance` reads from a row, in order
+/// (analytics TODO A7.4): the columns its encoding was fitted on, the
+/// columns of its `new` rows that a posterior's bindings read, or what its
+/// provider [says](crate::ModelProvider::inputs). `None` when none of them
+/// knows — a module provider's posterior, say.
+pub fn prediction_inputs(
+    registry: &ModelRegistry,
+    provider: &str,
+    instance: &ModelInstance,
+) -> Result<Option<Vec<crate::PredictionInput>>> {
+    if let Some(pack) = instance.prediction_pack()? {
+        return pack.input_columns().map(Some);
+    }
+    if instance.outcome()?.is_posterior() {
+        return Ok(registry
+            .get(provider.trim())
+            .and_then(|p| p.inputs(&instance.state)));
+    }
+    if instance.encoding.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(
+        instance
+            .encoding()?
+            .columns
+            .iter()
+            .map(|c| crate::PredictionInput {
+                column: c.column().to_owned(),
+                categorical: matches!(c, crate::ColumnEncoding::OneHot { .. }),
             })
-        })
-        .collect()
+            .collect(),
+    ))
 }
 
 /// What a prediction is asked **about** (task 5.4, §12).

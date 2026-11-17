@@ -1597,3 +1597,146 @@ async fn a_posterior_predicts_new_rows_through_its_new_dataset() -> Result<()> {
     assert!(detail["sd"].as_f64().unwrap() > 0.05, "{ran}");
     Ok(())
 }
+
+/// Analytics TODO A7.4–A7.5: a posterior that predicts through `new` is
+/// profiled — its inputs are the columns the `new` bindings read, the county
+/// a category because it is an index — and scenarios are compared by their
+/// draws, on one grid. The stub's prediction is `alpha[county] + 0.5 * floor`
+/// with `alpha` near 1, 2 and 3.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn a_posterior_is_profiled_and_its_scenarios_compared_by_their_draws() -> Result<()> {
+    let mut server = setup().await?;
+    let client = &mut server.client;
+    let mut body = radon(
+        "Radon S",
+        predicting_bindings(),
+        json!({ "policies": { "main": { "nulls": "drop" } }, "prediction": "y_new" }),
+    );
+    body["provider"] = json!("predictor");
+    let (id, instance) = fitted(client, body).await;
+    assert_eq!(instance["status"], json!("fitted"), "{instance}");
+
+    // Not active: the newest fitted fit is used.
+    let profile = client
+        .ok(
+            "POST",
+            &format!("/api/models/{id}/profile"),
+            Some(json!({ "values": { "county": 27003 }, "points": 11 })),
+        )
+        .await;
+    assert_eq!(profile["outcome"], json!("posterior"), "{profile}");
+    assert_eq!(profile["fit"]["id"], instance["id"], "{profile}");
+    let inputs = profile["inputs"].as_array().unwrap();
+    let names: Vec<&str> = inputs.iter().map(|i| i["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["county", "floor"], "{profile}");
+    assert_eq!(inputs[0]["kind"], json!("category"), "{profile}");
+    assert_eq!(
+        inputs[0]["levels"],
+        json!([27001, 27003, 27005]),
+        "{profile}"
+    );
+    // The mean of the five known floors.
+    assert_eq!(inputs[1]["kind"], json!("number"), "{profile}");
+    assert!((inputs[1]["typical"].as_f64().unwrap() - 0.4).abs() < 1e-9);
+    assert_eq!(
+        profile["values"],
+        json!({ "county": 27003, "floor": 0.4 }),
+        "{profile}"
+    );
+    let at = |p: &Value| p["value"].as_f64().unwrap();
+    assert!((at(&profile["prediction"]) - 2.2).abs() < 0.02, "{profile}");
+    assert!(
+        profile["prediction"]["lower"].as_f64().unwrap() < at(&profile["prediction"]),
+        "{profile}"
+    );
+    // Along the county, the others fixed; along the floor, a slope of 0.5.
+    let county = &profile["curves"][0];
+    assert_eq!(county["input"], json!("county"));
+    let by_county: Vec<f64> = county["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| at(&p["prediction"]))
+        .collect();
+    for (got, want) in by_county.iter().zip([1.2, 2.2, 3.2]) {
+        assert!((got - want).abs() < 0.02, "{by_county:?}");
+    }
+    let floor = county["points"].as_array().unwrap().len();
+    assert_eq!(floor, 3);
+    let floor = profile["curves"][1]["points"].as_array().unwrap();
+    assert_eq!(floor.len(), 11);
+    assert_eq!(floor[0]["x"], json!(0.0));
+    assert_eq!(floor[10]["x"], json!(1.0));
+    let rise = at(&floor[10]["prediction"]) - at(&floor[0]["prediction"]);
+    assert!((rise - 0.5).abs() < 0.02, "{rise}");
+
+    // Two scenarios, each with its draws and their density on one grid.
+    let compared = client
+        .ok(
+            "POST",
+            &format!("/api/models/{id}/scenarios"),
+            Some(json!({ "scenarios": [
+                { "name": "baseline" },
+                { "name": "Becker, upstairs", "values": { "county": 27005, "floor": 1 } },
+            ] })),
+        )
+        .await;
+    let grid = compared["grid"].as_array().unwrap();
+    assert_eq!(grid.len(), 128, "{compared}");
+    let scenarios = compared["scenarios"].as_array().unwrap();
+    assert_eq!(scenarios[0]["name"], json!("baseline"));
+    assert_eq!(
+        scenarios[0]["values"],
+        json!({ "county": 27001, "floor": 0.4 })
+    );
+    assert!(
+        (at(&scenarios[0]["prediction"]) - 1.2).abs() < 0.02,
+        "{compared}"
+    );
+    assert!(
+        (at(&scenarios[1]["prediction"]) - 3.5).abs() < 0.02,
+        "{compared}"
+    );
+    for s in scenarios {
+        let spread = &s["spread"];
+        assert_eq!(spread["kind"], json!("draws"), "{compared}");
+        let draws = spread["draws"].as_array().unwrap();
+        assert!(!draws.is_empty() && draws.len() <= 1000, "{spread}");
+        assert_eq!(spread["density"].as_array().unwrap().len(), 128);
+    }
+    // The two densities peak at different places on the shared grid.
+    let peak = |s: &Value| {
+        let d = s["spread"]["density"].as_array().unwrap();
+        let i = (0..d.len())
+            .max_by(|a, b| d[*a].as_f64().unwrap().total_cmp(&d[*b].as_f64().unwrap()))
+            .unwrap();
+        grid[i].as_f64().unwrap()
+    };
+    assert!((peak(&scenarios[0]) - 1.2).abs() < 0.2, "{compared}");
+    assert!((peak(&scenarios[1]) - 3.5).abs() < 0.2, "{compared}");
+
+    // An input the model does not read, a county it never saw, and two
+    // scenarios with one name are each refused with a sentence.
+    for (body, says) in [
+        (
+            json!({ "scenarios": [{ "name": "a", "values": { "radon": 1 } }] }),
+            "`radon` is not an input of `Radon S`",
+        ),
+        (
+            json!({ "scenarios": [{ "name": "a", "values": { "county": 27099 } }] }),
+            "`county` is `27099`",
+        ),
+        (
+            json!({ "scenarios": [{ "name": "a" }, { "name": "a" }] }),
+            "two scenarios are called “a”",
+        ),
+    ] {
+        let (status, refused) = client
+            .send("POST", &format!("/api/models/{id}/scenarios"), Some(body))
+            .await;
+        assert!(!status.is_success(), "{refused}");
+        assert!(refused.to_string().contains(says), "{refused}");
+    }
+    Ok(())
+}

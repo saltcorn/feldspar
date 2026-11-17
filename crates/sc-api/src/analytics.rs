@@ -817,6 +817,100 @@ pub(crate) fn register(set: &mut EndpointSet) {
         ])),
     );
 
+    // --- the Simulation workspace ----------------------------------------------
+
+    // The profiler (A7.4): the model's inputs described from its training
+    // data (`{ name, kind: "number" | "integer" | "date" | "category" |
+    // "boolean", typical, min?, max?, levels?, more_levels? }`), the
+    // prediction at `values` (each input not named there at its typical
+    // value) and, for each input, its profile curve — the prediction along
+    // `points` values of its range (every level of a category) with the
+    // others held fixed — all from one batched prediction. A prediction is
+    // `{ value, sd?, lower?, upper?, level?, probability?, probabilities? }`
+    // as the provider gives them, at `level` (0.9 by default). `fit` is the
+    // fit to use; without it the model's active fit, else its newest fitted
+    // one. Admin only, as the model editor is.
+    set.register(
+        Endpoint::new(
+            ids::PROFILE_MODEL,
+            Method::Post,
+            api()
+                .lit("models")
+                .param("id", ValueType::Uuid)
+                .lit("profile"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("fit", TypeSchema::optional(TypeSchema::uuid())),
+            StructField::new("values", TypeSchema::optional(TypeSchema::json())),
+            StructField::new(
+                "level",
+                TypeSchema::optional(TypeSchema::Value(ValueType::Float)),
+            ),
+            StructField::new("points", TypeSchema::optional(TypeSchema::int())),
+        ]))
+        .output(TypeSchema::struct_of([
+            StructField::new("model", TypeSchema::uuid()),
+            StructField::new("fit", TypeSchema::json()),
+            StructField::new("outcome", TypeSchema::text()),
+            StructField::new("uncertainty", TypeSchema::text()),
+            StructField::new("level", TypeSchema::Value(ValueType::Float)),
+            StructField::new("inputs", TypeSchema::array(TypeSchema::json())),
+            StructField::new("values", TypeSchema::json()),
+            StructField::new("prediction", TypeSchema::json()),
+            // `{ input, points: [{ x, prediction }] }`, in the inputs' order.
+            StructField::new("curves", TypeSchema::array(TypeSchema::json())),
+        ])),
+    );
+
+    // Scenarios compared (A7.5): each `{ name, values }` predicted (inputs it
+    // does not name at their typical values), with how its prediction is
+    // distributed — `spread` is `{ kind: "draws", draws, total, density }`
+    // where the model predicts from draws (thinned to 1 000), `{ kind:
+    // "interval", df, density }` for a regression's prediction interval (a
+    // Student t, or normal when `df` is null), `{ kind: "classes",
+    // probabilities }` for a classifier, else `{ kind: "point" }`. Every
+    // density is on the one `grid`, so the scenarios share an axis. The
+    // scenarios a Simulation workspace saved are in its state; the caller
+    // sends the ones to compare.
+    set.register(
+        Endpoint::new(
+            ids::COMPARE_SCENARIOS,
+            Method::Post,
+            api()
+                .lit("models")
+                .param("id", ValueType::Uuid)
+                .lit("scenarios"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("fit", TypeSchema::optional(TypeSchema::uuid())),
+            StructField::new(
+                "level",
+                TypeSchema::optional(TypeSchema::Value(ValueType::Float)),
+            ),
+            StructField::new(
+                "scenarios",
+                TypeSchema::array(TypeSchema::struct_of([
+                    StructField::new("name", TypeSchema::text()),
+                    StructField::new("values", TypeSchema::optional(TypeSchema::json())),
+                ])),
+            ),
+        ]))
+        .output(TypeSchema::struct_of([
+            StructField::new("model", TypeSchema::uuid()),
+            StructField::new("fit", TypeSchema::json()),
+            StructField::new("outcome", TypeSchema::text()),
+            StructField::new("uncertainty", TypeSchema::text()),
+            StructField::new("level", TypeSchema::Value(ValueType::Float)),
+            StructField::new("inputs", TypeSchema::array(TypeSchema::json())),
+            StructField::new(
+                "grid",
+                TypeSchema::array(TypeSchema::Value(ValueType::Float)),
+            ),
+            // `{ name, values, prediction, spread }`, in order.
+            StructField::new("scenarios", TypeSchema::array(TypeSchema::json())),
+        ])),
+    );
+
     // --- the shell -------------------------------------------------------------
 
     // What the Analytics UI's shell is: on the admin host the unrestricted UI

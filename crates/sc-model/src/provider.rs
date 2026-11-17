@@ -1096,6 +1096,27 @@ pub trait ModelProvider: Send + Sync {
         )))
     }
 
+    /// Each row's draws of its prediction, where this provider predicts from
+    /// draws it keeps (analytics TODO A7.5, a scenario's predicted
+    /// distribution): a formula model's expected response. `None` (the
+    /// default) for a provider whose uncertainty is not draws; a posterior
+    /// predicting through its `new` rows is answered by
+    /// [`predict_posterior`](ModelProvider::predict_posterior) instead.
+    async fn predict_draws(&self, state: &Json, frame: &Frame) -> Result<Option<Vec<Vec<f64>>>> {
+        let _ = (state, frame);
+        Ok(None)
+    }
+
+    /// The columns a prediction of a fit with `state` reads from a row, in
+    /// order (analytics TODO A7.4, the profiler's inputs), where only this
+    /// provider knows them: a formula model's predictors. `None` (the
+    /// default) leaves it to the host, which knows them from the fit's
+    /// encoding or the bindings of its `new` rows.
+    fn inputs(&self, state: &Json) -> Option<Vec<crate::PredictionInput>> {
+        let _ = state;
+        None
+    }
+
     /// The configuration the host should bind with, derived from this one
     /// (TODO-bayesian-regression §7): the provider's own keys plus generated
     /// [`bindings`](crate::BINDINGS_KEY), [`dimensions`](crate::DIMENSIONS_KEY),

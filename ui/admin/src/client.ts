@@ -529,6 +529,10 @@ export type RenderPanelRequest = { panel: unknown; filters?: Array<unknown> | nu
 export type RenderPanelResponse = { kind: string; error?: string | null; plot?: unknown | null; table?: unknown | null; tests?: unknown | null; output?: unknown | null; map?: unknown | null; card?: unknown | null; categorical?: Array<string> | null; filters?: Array<unknown> | null };
 export type GetModelOutputsQuery = { fit?: string; include?: string };
 export type GetModelOutputsResponse = { model: string; fit?: unknown | null; outputs: Array<unknown> };
+export type ProfileModelRequest = { fit?: string | null; values?: unknown | null; level?: number | null; points?: number | null };
+export type ProfileModelResponse = { model: string; fit: unknown; outcome: string; uncertainty: string; level: number; inputs: Array<unknown>; values: unknown; prediction: unknown; curves: Array<unknown> };
+export type CompareScenariosRequest = { fit?: string | null; level?: number | null; scenarios: Array<{ name: string; values?: unknown | null }> };
+export type CompareScenariosResponse = { model: string; fit: unknown; outcome: string; uncertainty: string; level: number; inputs: Array<unknown>; grid: Array<number>; scenarios: Array<unknown> };
 export type AnalyticsShellResponse = { application?: unknown | null; roles: Array<{ role: number; name: string }> };
 export type ListWorkspaceKindsResponse = Array<{ kind: string; label: string; available: boolean; arrives_in?: string | null }>;
 export type ListWorkspacesResponse = Array<{ id: string; name: string; kind: string; state: unknown; created_by?: string | null; updated_at: string; share_role?: number | null; application?: string | null; may_change: boolean }>;
@@ -929,6 +933,8 @@ export interface ApiClient {
   renderMap(body: RenderMapRequest): Promise<RenderMapResponse>;
   renderPanel(body: RenderPanelRequest): Promise<RenderPanelResponse>;
   getModelOutputs(id: string, query?: GetModelOutputsQuery): Promise<GetModelOutputsResponse>;
+  profileModel(id: string, body: ProfileModelRequest): Promise<ProfileModelResponse>;
+  compareScenarios(id: string, body: CompareScenariosRequest): Promise<CompareScenariosResponse>;
   analyticsShell(): Promise<AnalyticsShellResponse>;
   listWorkspaceKinds(): Promise<ListWorkspaceKindsResponse>;
   listWorkspaces(): Promise<ListWorkspacesResponse>;
@@ -4013,6 +4019,24 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("getModelOutputs", res);
       return (await res.json()) as GetModelOutputsResponse;
+    },
+    async profileModel(id, body) {
+      const res = await doFetch(`${baseUrl}/api/models/${encodeURIComponent(id)}/profile`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("profileModel", res);
+      return (await res.json()) as ProfileModelResponse;
+    },
+    async compareScenarios(id, body) {
+      const res = await doFetch(`${baseUrl}/api/models/${encodeURIComponent(id)}/scenarios`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("compareScenarios", res);
+      return (await res.json()) as CompareScenariosResponse;
     },
     async analyticsShell() {
       const res = await doFetch(`${baseUrl}/api/analytics/shell`, {
