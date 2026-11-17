@@ -377,3 +377,99 @@ async fn a_setting_an_operation_does_not_use_is_refused_and_nothing_changes() ->
     .await?;
     Ok(())
 }
+
+/// The paragraphs of a result's `notes` that restate a table's access rules.
+fn access_notes(result: &Json) -> Vec<String> {
+    result["notes"]
+        .as_array()
+        .map(|ns| {
+            ns.iter()
+                .filter_map(Json::as_str)
+                .filter(|n| n.starts_with("Access to `"))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn access_rules_are_restated_in_words_on_a_dry_run_and_after_applying() -> Result<()> {
+    let env = Env::new().await?;
+    sc_auth::bootstrap_roles(&env.catalog).await?;
+    sc_auth::save_role(
+        &env.catalog,
+        &sc_auth::RoleDef::new(sc_types::Role::of(80), "User"),
+    )
+    .await?;
+
+    // The mistake the summary is for: "users see only their own notes" as a
+    // floor every user meets plus a formula that therefore changes nothing.
+    let create = json!([{
+        "op": "create_table", "table": "notes",
+        "min_role_read": 80, "min_role_write": 80,
+        "ownership_formula": "owner === user.id",
+        "fields": [
+            {"name": "id", "type": "int", "primary_key": true},
+            {"name": "owner", "type": "int"},
+        ],
+    }]);
+    let dry = env
+        .call_tool(
+            TRAIT,
+            &edit_grants(),
+            "edit_schema",
+            json!({ "operations": create, "dry_run": true }),
+            &RunCaller::system(),
+        )
+        .await?;
+    let said = access_notes(&dry);
+    assert_eq!(said.len(), 1, "{dry}");
+    assert!(
+        said[0].contains("Admin (1) and User (80) can read every row"),
+        "{}",
+        said[0]
+    );
+    assert!(
+        said[0].contains("`owner === user.id` changes nobody's reads or writes"),
+        "{}",
+        said[0]
+    );
+    assert!(
+        env.catalog.get("notes")?.is_none(),
+        "a dry run applies nothing"
+    );
+
+    let applied = edit(&env, &edit_grants(), create).await?;
+    assert_eq!(access_notes(&applied), said, "{applied}");
+
+    // Fixing it: the formula now decides for User and Public.
+    let fixed = edit(
+        &env,
+        &edit_grants(),
+        json!([{"op": "alter_table", "table": "notes", "min_role_read": 1, "min_role_write": 1}]),
+    )
+    .await?;
+    let said = access_notes(&fixed);
+    assert!(
+        said[0].contains(
+            "User (80) and Public (100) can read only the rows where `owner === user.id` holds"
+        ),
+        "{}",
+        said[0]
+    );
+    assert!(!said[0].contains("changes nobody's"), "{}", said[0]);
+
+    // A batch that leaves the access rules alone does not repeat them.
+    let field = edit(
+        &env,
+        &edit_grants(),
+        json!([{"op": "add_field", "table": "notes", "field": "body", "type": "text"}]),
+    )
+    .await?;
+    assert!(access_notes(&field).is_empty(), "{field}");
+
+    // And `describe_schema` says the same of the table as it stands.
+    let notes = describe(&env, "notes").await?;
+    assert_eq!(notes["access_summary"], json!(said[0]), "{notes}");
+    Ok(())
+}
