@@ -456,10 +456,10 @@ function ApproveSystemModal({
       </Modal.Header>
       <Modal.Body>
         <p>
-          <T text="Its action will run at system authority — every row, tables with row-level security included — even when a user's event fires it. Triggers it causes still run as that user." />
+          <T text="Its action will run at system authority (all rows, row-level-secured tables included), even when a user's event fires it. Triggers it causes run as that user." />
         </p>
         <p>
-          <T text="It runs on input the user controls: the row they wrote, a button's arguments. Its code is the only check on that input. Whatever it returns to the caller, or writes where the caller can read it, is disclosed on purpose." />
+          <T text="Runs on user-controlled input (written rows, button arguments), and its code is the only check. Anything it returns, or writes where the caller can read it, is disclosed." />
         </p>
         <p className="text-muted small">
           <T text="The approval is for the code below. Any later change to it, except one you make here, makes the approval lapse." />

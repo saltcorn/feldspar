@@ -10,13 +10,12 @@
 //! 1. **Plans again from scratch** (§6 step 6). If live, the target or the base
 //!    moved since the review, the digest differs and nothing is applied: the
 //!    plan is stale, and the operator reviews the new one.
-//! 2. Refuses a plan with blockers, a tick on an operation that cannot be
-//!    ticked, and a ticked data-destructive operation the instance's
-//!    [`Policy`] forbids (§5).
+//! 2. Refuses a plan with blockers and a tick on an operation that cannot be
+//!    ticked.
 //! 3. Writes the **safety backup** when a data-destructive operation is
 //!    ticked: the structure plus the rows of every table or column about to be
 //!    dropped, with the existing backup writer. A full backup to the backup
-//!    schedules' destinations too, when the policy asks for one.
+//!    schedules' destinations too, when the operator asks for one.
 //! 4. Applies the ticked operations ([`Executor::apply`]).
 //! 5. Reloads everything (`reload_all`), exports live again and **re-diffs it
 //!    against the target** (§6 step 9). A difference the plan did not account
@@ -54,39 +53,35 @@ use crate::plan::{Blocker, OpClass, Plan, plan, plan_instance};
 use crate::tree::StructureTree;
 use crate::validate::validate;
 
-/// Whether data-destructive operations may be ticked (§5).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// How data-losing changes are allowed: ticked one at a time, with a typed
+/// confirmation (§5). The only policy there is; it is reported to API clients.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Destructive {
     /// Ticked one at a time, with a typed confirmation.
     #[default]
     Confirm,
-    /// Never from the UI or the API; only `feldspar sync deploy
-    /// --allow-destructive` on the server.
-    Never,
 }
 
-/// Whether a full backup is taken before every deploy (§5).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// When a full backup is taken before a deploy (§5): when the operator asks
+/// for one on the review screen. The only policy there is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FullBackup {
-    /// No.
-    #[default]
-    Off,
     /// When the operator asks for one on the review screen.
+    #[default]
     Optional,
-    /// Always; a deploy with no backup schedule to send it to is refused.
-    Required,
 }
 
-/// An instance's policy, stored with its link, so instances can differ.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// The deploy policy, as the API reports it with a link and a plan. It is the
+/// same on every instance: a link once stored another (`destructive: never`,
+/// `full_backup: off | required`) and a link body that sends one are read as
+/// this.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct Policy {
-    /// Whether data-destructive operations may be ticked.
-    #[serde(default)]
+    /// How data-destructive operations are ticked.
     pub destructive: Destructive,
-    /// Whether a full backup is taken first.
-    #[serde(default)]
+    /// When a full backup is taken first.
     pub full_backup: FullBackup,
 }
 
@@ -97,11 +92,11 @@ pub struct Confirm {
     pub plan_digest: String,
     /// Every operation to apply, by id. The rest are deferred.
     pub ticked: BTreeSet<String>,
-    /// `--allow-destructive`: data-destructive operations even under
-    /// [`Destructive::Never`]. Honoured only from the CLI.
+    /// `--allow-destructive`: the CLI's leave to apply a plan that loses data
+    /// without asking. A deploy itself goes by `ticked`.
     #[serde(default)]
     pub allow_destructive: bool,
-    /// A full backup first, under [`FullBackup::Optional`].
+    /// A full backup first, through every backup schedule.
     #[serde(default)]
     pub full_backup: bool,
 }
@@ -152,8 +147,6 @@ pub struct Request<'a> {
     pub actor: Option<String>,
     /// From where.
     pub source: Source,
-    /// The instance's policy.
-    pub policy: Policy,
 }
 
 /// What a deploy or discard did: the receipt (§6 step 10).
@@ -208,7 +201,7 @@ impl<'a> Deployer<'a> {
 
     /// The plan the review screen shows: live → `request.target`, classified
     /// and validated, with a blocker for each local change or conflict (D5)
-    /// and for anything the policy forbids outright.
+    /// and for anything that cannot be applied.
     pub async fn plan_deploy(&self, request: &Request<'_>) -> Result<Plan> {
         let live = self.live().await?;
         self.plan_deploy_from(&live, request).await
@@ -369,25 +362,12 @@ impl<'a> Deployer<'a> {
             .filter(|op| op.ticked && op.class == OpClass::DataDestructive)
             .map(|op| op.summary.as_str())
             .collect();
-        let allowed = request.source == Source::Cli && confirm.allow_destructive;
-        if !destructive.is_empty() && request.policy.destructive == Destructive::Never && !allowed {
-            return Err(Error::auth(format!(
-                "this instance's policy does not allow data-destructive operations from here \
-                 ({}); untick {}, or run `feldspar sync deploy --allow-destructive` on the server",
-                destructive.join("; "),
-                if destructive.len() == 1 { "it" } else { "them" },
-            )));
-        }
 
         let mut backups = Vec::new();
         if !destructive.is_empty() {
             backups.push(self.safety_backup(&plan).await?);
         }
-        let full = match request.policy.full_backup {
-            FullBackup::Off => false,
-            FullBackup::Optional => confirm.full_backup,
-            FullBackup::Required => true,
-        };
+        let full = confirm.full_backup;
         if full {
             backups.extend(full_backup(catalog).await?);
         }
@@ -566,8 +546,8 @@ async fn full_backup(catalog: &sc_catalog::Catalog) -> Result<Vec<String>> {
     let schedules = sc_backup::schedule::load_schedules(catalog).await?;
     if schedules.is_empty() {
         return Err(Error::invalid(
-            "this instance's policy asks for a full backup before a deploy, and there is no \
-             backup schedule to send it to; add one under Backups, then deploy again",
+            "a full backup was asked for before this deploy, and there is no backup schedule \
+             to send it to; add one under Backups, or deploy without the full backup",
         ));
     }
     let mut out = Vec::new();

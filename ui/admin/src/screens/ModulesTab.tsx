@@ -32,6 +32,7 @@ import Button from "react-bootstrap/Button";
 import Form from "react-bootstrap/Form";
 
 import { api, errorMessage } from "../api";
+import { ApplyButton } from "../ApplyButton";
 import { AlertBody, StatusBadge } from "../layout";
 import {
   ALL_TOOLCHAINS,
@@ -72,6 +73,7 @@ import {
   type Toolchains,
 } from "../modules";
 import { SettingsFields, buildConfig, initialValues, type FieldSpec } from "../settings";
+import { unsavedNames } from "../settingsSaving";
 import { T, useT } from "../i18n";
 
 export function ModulesTab() {
@@ -245,7 +247,7 @@ export function ModulesTab() {
         <Alert variant="warning">
           <AlertBody>
             <T
-              text="This server’s {npm} is {version}, which cannot install a module: it cannot resolve the local {packages} packages the modules directory depends on, so every install fails with {error} whatever is being installed."
+              text="This server's {npm} is {version}, which can't resolve the local {packages} packages, so every install fails with {error}."
               values={{
                 npm: <code>npm</code>,
                 packages: <code>@saltcorn/*</code>,
@@ -254,7 +256,7 @@ export function ModulesTab() {
               args={{ version: tools.npmTooOld.version }}
             />{" "}
             <T
-              text="npm {minimum} or newer is needed. Debian and Ubuntu package npm 9.2.0, so this is what {apt} gives — install Node.js from NodeSource, or upgrade npm alone with {upgrade}."
+              text="Needs npm {minimum} or newer; Debian/Ubuntu's {apt} gives 9.2.0. Install Node.js from NodeSource, or run {upgrade}."
               values={{
                 apt: <code>apt install npm</code>,
                 upgrade: <code>sudo npm install -g npm@latest</code>,
@@ -285,7 +287,7 @@ export function ModulesTab() {
           <p className="text-secondary">
             <T text="A module is a Javascript npm or Python pypi package that supplies actions, tables, functions and/or frameworks." />{" "}
             <T
-              text="A {python} module is a distribution installed into this server’s Python environment and runs in the server’s own interpreter, with the server’s own privileges: there is no sandbox for one and nothing to grant."
+              text="{python} modules install into the server's Python environment and run with its privileges: no sandbox, nothing to grant."
               values={{
                 python: (
                   <strong>
@@ -355,7 +357,7 @@ export function ModulesTab() {
             <p className="text-secondary">
               <T text="These modules are maintained and bundled within the core Saltcorn instance, but still need to be activated before they can be used." />{" "}
               <T
-                text="What is {not_} shipped is what each one depends on — installing fetches that from {npm} or {pypi}, which is the one part of the click that reaches the network."
+                text="Dependencies are {not_} shipped: installing fetches them from {npm} or {pypi}, the only network access."
                 values={{
                   not_: (
                     <em>
@@ -565,9 +567,26 @@ function ModuleCard({
   const { t } = useT();
   const status = moduleStatus(module);
   const census = unsupportedSentence(module);
+  const spec = module.config_spec as FieldSpec[];
+  const storedConfig = configValues(module);
   const [values, setValues] = useState<Record<string, string>>(() =>
-    initialValues(module.config_spec as FieldSpec[], configValues(module)),
+    initialValues(spec, storedConfig),
   );
+  // When what is stored changes — this card's Apply landed — the form shows
+  // it, as stored. Keyed on the stored text, so reloading the list for another
+  // module's sake leaves an edit here alone.
+  const storedKey = JSON.stringify(storedConfig);
+  useEffect(() => {
+    setValues(initialValues(spec, storedConfig));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storedKey]);
+  // Whether this card's Apply is the save in flight, for its spinner.
+  const [applying, setApplying] = useState(false);
+  useEffect(() => {
+    if (!busy) setApplying(false);
+  }, [busy]);
+  const dirty = unsavedNames(spec, storedConfig, values).length > 0;
+  const formId = `module-${module.id}-settings`;
   const [open, setOpen] = useState(false);
   const [showPermissions, setShowPermissions] = useState(false);
   const permissions = modulePermissions(module);
@@ -582,6 +601,11 @@ function ModuleCard({
           <div className="text-secondary">{moduleSubtitle(module)}</div>
         </div>
         <div className="card-actions btn-list">
+          {/* A module's settings are saved as one: the module reads them
+              together, and each save reloads it. */}
+          {open && isConfigurable(module) && (
+            <ApplyButton dirty={dirty} busy={busy} applying={applying} form={formId} />
+          )}
           {isConfigurable(module) && (
             <Button
               variant="outline-secondary"
@@ -662,7 +686,7 @@ function ModuleCard({
               ))}
             </ul>
             <div className="text-secondary mb-2">
-              <T text="Created by the module, and kept if it is uninstalled. You can add fields, edit rows and set triggers on them; the fields the module declared cannot be deleted while it is installed." />
+              <T text="Created by the module and kept after uninstall. You can add fields, edit rows and add triggers, but not delete the module's fields while it's installed." />
             </div>
           </>
         )}
@@ -806,8 +830,11 @@ function ModuleCard({
         {open && isConfigurable(module) && (
           <form
             className="mt-3"
+            id={formId}
             onSubmit={(e) => {
               e.preventDefault();
+              if (!dirty || busy) return;
+              setApplying(true);
               onConfigure(values);
             }}
           >
@@ -821,9 +848,6 @@ function ModuleCard({
                 setValues((current) => ({ ...current, [name]: value }))
               }
             />
-            <Button type="submit" size="sm" disabled={busy}>
-              <T text="Save settings" />
-            </Button>
           </form>
         )}
       </div>
@@ -873,7 +897,7 @@ function PermissionsForm({
       }}
     >
       <p className="text-secondary">
-        <T text="A module reaches nothing it is not granted here — no host, no file, no environment variable — and it always runs on a worker of its own while its permissions differ from the other modules’." />{" "}
+        <T text="A module can reach only what's granted here: hosts, files, environment variables. With permissions unlike the others', it runs on its own worker." />{" "}
         <T
           text="{installing} a module is not sandboxed: {npm} and the package’s own install scripts run as this server, before any of this applies."
           values={{

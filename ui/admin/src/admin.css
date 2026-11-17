@@ -473,6 +473,19 @@ div.navbar-brand>a:hover {
   border-bottom: var(--tblr-border-width) solid var(--tblr-border-color);
 }
 
+/* The agent's tabs in the chat's bar. A phone has no room for them beside the
+   chat's own buttons; Back reaches the same screens. */
+.agent-tabs-compact {
+  flex-shrink: 0;
+  margin-left: 0.5rem;
+}
+
+@media (max-width: 575.98px) {
+  .agent-tabs-compact {
+    display: none;
+  }
+}
+
 .chat-scroll {
   flex: 1;
   overflow-y: auto;

@@ -46,7 +46,10 @@
 # the next development version, X.Y.(Z+1)-dev, as "Start X.Y.(Z+1)-dev", and
 # pushes the branch and the tag before anything is uploaded. Another
 # architecture's run of the same version is made at that tag
-# (`git checkout vX.Y.Z`) and only publishes.
+# (`git checkout vX.Y.Z`) and only publishes. A run that failed is finished by
+# running it again, from the tag or from the branch: the release is resumed at
+# its tag (scripts/lib/release.sh), reusing the tarball it built when it can.
+# scripts/revoke-release.sh takes a published version back out of the bucket.
 #
 # unpacking to the **install prefix** (`/opt/feldspar` by default):
 #
@@ -93,6 +96,26 @@ source "${REPO_ROOT}/scripts/lib/release.sh"
 
 log() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 
+# The command line, for the message that says how to finish a failed release.
+ORIGINAL_ARGS=("$@")
+
+# Scratch directories, and the checkout of a tag a resumed release is built in
+# (build_at_tag), go when the script does, however it ends.
+STAGE_ROOT=""
+RELEASE_WORK=""
+RELEASE_WORKTREE=""
+cleanup() {
+    [[ -n "${STAGE_ROOT}" ]] && rm -rf "${STAGE_ROOT}"
+    [[ -n "${RELEASE_WORK}" ]] && rm -rf "${RELEASE_WORK}"
+    if [[ -n "${RELEASE_WORKTREE}" ]]; then
+        git -C "${REPO_ROOT}" worktree remove --force "${RELEASE_WORKTREE}" 2>/dev/null ||
+            rm -rf "${RELEASE_WORKTREE}"
+        git -C "${REPO_ROOT}" worktree prune 2>/dev/null || true
+    fi
+    return 0
+}
+trap cleanup EXIT
+
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
@@ -113,13 +136,12 @@ RUST_VERSION="1.97"
 NODE_VERSION="22.14.0"
 RELEASE=0
 RELEASE_VERSION=""
+RELEASE_AT_TAG=0
+RELEASE_IS_LATEST=1
 # The bucket the published artifact lives in (scripts/lib/release.sh).
 R2_BUCKET="${DEFAULT_R2_BUCKET}"
-# The name the first releases were published under, before names carried a
-# platform. Scripts and hosts outside this repository still fetch it, so an
-# x86_64 release is published under it too. It has always been an x86_64
-# tarball, so only an x86_64 build publishes it.
-readonly LEGACY_OBJECT="feldspar.tar.gz"
+# The name the first releases were published under (scripts/lib/release.sh).
+readonly LEGACY_OBJECT="${RELEASE_LEGACY_OBJECT}"
 # The base every build runs on: its glibc (2.36) is the oldest a `linux` binary
 # asks of its host (D2).
 readonly BUILD_SUITE="bookworm"
@@ -185,11 +207,13 @@ Packaging
                         a container of each supported distribution).
 
 Publishing
-      --release X.Y.Z   Publish this build as version X.Y.Z. X.Y.Z must not be
-                        older than the version in Cargo.toml (0.1.2 may be
+      --release X.Y.Z   Publish this build as version X.Y.Z. A new X.Y.Z must not
+                        be older than the version in Cargo.toml (0.1.2 may be
                         released from 0.1.2-dev), the newest vX.Y.Z
-                        tag or the newest in versions.txt, and this
-                        architecture's tarball of it must not be published yet.
+                        tag or the newest in versions.txt. A tagged X.Y.Z
+                        whose tarball for this architecture is not finished
+                        in the bucket (a run that failed) is resumed: run
+                        the same command again, from the tag or the branch.
                         From a clean checkout on a branch level with (or ahead
                         of) its upstream, it sets the version in Cargo.toml and
                         Cargo.lock, commits that and tags it vX.Y.Z before the
@@ -315,9 +339,11 @@ VERSIONED_OBJECT="feldspar-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz"
 if [[ ${RELEASE} -eq 1 ]]; then
     release_preflight
     RELEASE_WORK="$(mktemp -d "${TMPDIR:-/tmp}/feldspar-release.XXXXXX")"
-    trap 'rm -rf "${RELEASE_WORK}"' EXIT
     release_version_preflight "${RELEASE_VERSION}" "${VERSIONED_OBJECT}" "${RELEASE_WORK}"
     release_prepare "${RELEASE_VERSION}"
+    # What to run when an upload still fails after its retries: this, again.
+    RELEASE_RESUME_HINT="  Nothing needs a new version: run the same command again to finish ${RELEASE_VERSION}:
+    scripts/build-static.sh ${ORIGINAL_ARGS[*]}"
 fi
 
 # A container build needs both docker and its buildx plugin; `docker build` alone
@@ -360,16 +386,27 @@ fi
 # Naming
 # ---------------------------------------------------------------------------
 
+# The commit that is built: HEAD, or — resuming a release from the branch that
+# has moved on since (RELEASE_AT_TAG, scripts/lib/release.sh) — its tag.
+BUILD_REV="HEAD"
+[[ ${RELEASE} -eq 1 && ${RELEASE_AT_TAG} -eq 1 ]] && BUILD_REV="v${RELEASE_VERSION}^{commit}"
+
 # The workspace version, read from the one place it is declared.
-VERSION="$(release_workspace_version)"
+if [[ "${BUILD_REV}" == HEAD ]]; then
+    VERSION="$(release_workspace_version)"
+else
+    VERSION="$(git -C "${REPO_ROOT}" show "v${RELEASE_VERSION}:Cargo.toml" | release_cargo_version)"
+fi
 [[ -n "${VERSION}" ]] || { echo "error: could not read the version from Cargo.toml" >&2; exit 1; }
 
 # A dirty tree is worth recording in the artifact's name: an operator holding two
 # tarballs should be able to tell which one came from a checkout with edits in it.
 GIT_DESC=""
 if git -C "${REPO_ROOT}" rev-parse --git-dir >/dev/null 2>&1; then
-    GIT_DESC="$(git -C "${REPO_ROOT}" rev-parse --short HEAD)"
-    git -C "${REPO_ROOT}" diff --quiet HEAD 2>/dev/null || GIT_DESC="${GIT_DESC}-dirty"
+    GIT_DESC="$(git -C "${REPO_ROOT}" rev-parse --short "${BUILD_REV}")"
+    if [[ "${BUILD_REV}" == HEAD ]]; then
+        git -C "${REPO_ROOT}" diff --quiet HEAD 2>/dev/null || GIT_DESC="${GIT_DESC}-dirty"
+    fi
 fi
 
 # The build's identity, compiled into the binary and shown under Settings → System
@@ -380,22 +417,22 @@ fi
 SC_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 SC_BUILD_COMMIT=""
 if [[ -n "${GIT_DESC}" ]]; then
-    SC_BUILD_COMMIT="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
+    SC_BUILD_COMMIT="$(git -C "${REPO_ROOT}" rev-parse "${BUILD_REV}")"
     [[ "${GIT_DESC}" == *-dirty ]] && SC_BUILD_COMMIT="${SC_BUILD_COMMIT}-dirty"
 fi
 export SC_BUILD_TIME SC_BUILD_COMMIT
 
 NAME="feldspar-${VERSION}${GIT_DESC:+-${GIT_DESC}}-${TARGET}"
 STAGE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/feldspar-package.XXXXXX")"
-trap 'rm -rf "${STAGE_ROOT}" ${RELEASE_WORK:+"${RELEASE_WORK}"}' EXIT
 STAGE="${STAGE_ROOT}/tree"
 BINARY="${STAGE}/bin/feldspar"
+# Absolute: a resumed release hands it to a build run in another directory.
+OUTPUT_DIR="$(realpath -m -- "${OUTPUT_DIR}")"
 TARBALL="${OUTPUT_DIR}/${NAME}.tar.gz"
 mkdir -p "${STAGE}"
-# Every name the tarball is published under; the first is the one a new host
-# is pointed at.
-OBJECTS=("feldspar-linux-${TARGET_ARCH}.tar.gz")
-[[ "${TARGET_ARCH}" == x86_64 ]] && OBJECTS+=("${LEGACY_OBJECT}")
+# Every version-less name the tarball is published under; the first is the one
+# a new host is pointed at.
+mapfile -t OBJECTS < <(release_latest_objects "linux-${TARGET_ARCH}")
 OBJECT="${OBJECTS[0]}"
 
 log "feldspar ${VERSION}${GIT_DESC:+ (${GIT_DESC})}, built ${SC_BUILD_TIME}"
@@ -843,10 +880,64 @@ release_checksum "${TARBALL}"
 log "wrote ${TARBALL} ($(du -h "${TARBALL}" | cut -f1))"
 }
 
-build_tree
-[[ ${VERIFY} -eq 1 ]] && verify_tree
-package_tree
-[[ ${VERIFY} -eq 1 ]] && smoke_test_distros
+# What a tarball was built with, beside it: a release that is run again reuses a
+# tarball it already built (named after the commit, so of that commit) only when
+# it was built the same way, and passed the same checks.
+build_options() {
+    printf '%s\n' "target=${TARGET}" "mode=${MODE}" "prefix=${PREFIX}" "ui=${BUILD_UI}" \
+        "strip=${STRIP}" "verify=${VERIFY}" "rust=${RUST_VERSION}" "node=${NODE_VERSION}"
+}
+
+# reusable_tarball: does ${TARBALL} hold a finished build of this commit, made
+# with these options? Only for a release: a run that stopped at an upload is
+# then finished in minutes rather than after another full build.
+reusable_tarball() {
+    [[ ${RELEASE} -eq 1 && "${GIT_DESC}" != *-dirty ]] || return 1
+    [[ -f "${TARBALL}" && -f "${TARBALL}.sha256" && -f "${TARBALL}.options" ]] || return 1
+    [[ "$(cat "${TARBALL}.options")" == "$(build_options)" ]] || return 1
+    (cd "$(dirname -- "${TARBALL}")" && sha256sum -c --status "$(basename -- "${TARBALL}.sha256")")
+}
+
+# build_at_tag: a resumed release (RELEASE_AT_TAG), from a branch that has moved
+# on: build the tagged commit, in a checkout of it of its own, with *its* own
+# build-static.sh — what that version is built with (its pins, its Dockerfile)
+# is what its commit says, not what this one does. That run only builds; this
+# one publishes what it wrote, which carries the same name.
+build_at_tag() {
+    local src="${REPO_ROOT}/target/release-src-v${RELEASE_VERSION}"
+    if [[ -e "${src}" ]]; then
+        git -C "${REPO_ROOT}" worktree remove --force "${src}" 2>/dev/null || rm -rf "${src}"
+        git -C "${REPO_ROOT}" worktree prune
+    fi
+    log "checking out v${RELEASE_VERSION} in ${src}, to build it there"
+    git -C "${REPO_ROOT}" worktree add --quiet --detach "${src}" "v${RELEASE_VERSION}"
+    RELEASE_WORKTREE="${src}"
+    local args=(--target "${TARGET}" "--${MODE}" --rust-version "${RUST_VERSION}"
+        --node-version "${NODE_VERSION}" --prefix "${PREFIX}" --output "${OUTPUT_DIR}")
+    [[ -n "${JOBS}" ]] && args+=(--jobs "${JOBS}")
+    [[ ${BUILD_UI} -eq 0 ]] && args+=(--no-ui)
+    [[ ${STRIP} -eq 0 ]] && args+=(--no-strip)
+    [[ ${VERIFY} -eq 0 ]] && args+=(--no-verify)
+    log "building v${RELEASE_VERSION} with its own scripts/build-static.sh ${args[*]}"
+    bash "${src}/scripts/build-static.sh" "${args[@]}"
+    [[ -f "${TARBALL}" && -f "${TARBALL}.sha256" ]] ||
+        { echo "error: the build of v${RELEASE_VERSION} did not write ${TARBALL}" >&2; exit 1; }
+}
+
+if reusable_tarball; then
+    log "reusing ${TARBALL}: built at this commit, with these options, and checked"
+else
+    rm -f "${TARBALL}.options"
+    if [[ ${RELEASE} -eq 1 && ${RELEASE_AT_TAG} -eq 1 ]]; then
+        build_at_tag
+    else
+        build_tree
+        [[ ${VERIFY} -eq 1 ]] && verify_tree
+        package_tree
+        [[ ${VERIFY} -eq 1 ]] && smoke_test_distros
+    fi
+    build_options > "${TARBALL}.options"
+fi
 
 # ---------------------------------------------------------------------------
 # Publish
@@ -859,9 +950,15 @@ package_tree
 if [[ ${RELEASE} -eq 1 ]]; then
     release_warn_if_dirty "${GIT_DESC}"
     release_push "${RELEASE_VERSION}"
-    release_upload "${TARBALL}" "${STAGE_ROOT}" "${VERSIONED_OBJECT}" "${OBJECTS[@]}"
-    release_record_version "${RELEASE_VERSION}" "${RELEASE_WORK}"
-    if release_is_public; then
+    release_publish "${RELEASE_VERSION}" "${TARBALL}" "${RELEASE_WORK}" \
+        "${VERSIONED_OBJECT}" "${OBJECTS[@]}"
+    if [[ ${RELEASE_IS_LATEST} -eq 0 ]]; then
+        echo
+        echo "Released ${RELEASE_VERSION}, tagged v${RELEASE_VERSION}. A newer release is the latest, so"
+        echo "what a new host downloads is unchanged; this one is downloadable as its version"
+        echo "(install.sh --version ${RELEASE_VERSION})."
+        release_is_public && echo "  ${R2_PUBLIC_BASE}/${VERSIONED_OBJECT}"
+    elif release_is_public; then
         cat <<EOF
 
 Released ${RELEASE_VERSION}, tagged v${RELEASE_VERSION}. It is now what a new host downloads:
@@ -878,7 +975,16 @@ EOF
             echo "It is also what a host that fetches its older name gets: ${R2_PUBLIC_BASE}/${older}"
         done
     fi
-    release_upload_installer
+    if [[ ${RELEASE_IS_LATEST} -eq 1 ]]; then
+        if [[ ${RELEASE_AT_TAG} -eq 1 ]]; then
+            # The release's own installer, not the branch's, which may be ahead.
+            git -C "${REPO_ROOT}" show "v${RELEASE_VERSION}:scripts/install.sh" \
+                > "${RELEASE_WORK}/install.sh"
+            release_upload_installer "${RELEASE_WORK}/install.sh"
+        else
+            release_upload_installer
+        fi
+    fi
 else
     cat <<EOF
 

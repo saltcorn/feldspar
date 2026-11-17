@@ -14,8 +14,7 @@
 //! a one-entity deploy against live, planned, classified and recorded in the
 //! ledger as an `edit`. `put` and `delete` print the plan and apply it only with
 //! `--yes`, which refuses a plan with blockers, and one that loses data unless
-//! `--allow-destructive` says so — which also lifts a `destructive: never`
-//! policy, as it does for `feldspar sync deploy`.
+//! `--allow-destructive` says so, as `feldspar sync deploy` does.
 
 use std::io::Read;
 use std::sync::Arc;
@@ -24,7 +23,7 @@ use sc_cli::{DbConfig, connect_catalog, connect_stored_databases, connect_stored
 use sc_error::{Error, Result};
 use sc_server::{AppMounts, ServerConfig, ServiceManager};
 use sc_sync::registry::{self, Edit, EditBy};
-use sc_sync::{Confirm, Deployer, Executor, OpClass, Plan, Policy, Source};
+use sc_sync::{Confirm, Deployer, Executor, OpClass, Plan, Source};
 
 use super::serve::{Services, install_services, serving_defaults};
 
@@ -196,7 +195,6 @@ async fn save(
         let by = EditBy {
             actor: Some("operator".to_owned()),
             source: Source::Cli,
-            policy: Policy::default(),
         };
         let receipt = deployer.edit(&edit, &confirm, &by).await?;
         for backup in &receipt.receipt.backups {

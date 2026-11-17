@@ -222,7 +222,7 @@ export function ApplicationTranslations({
             <h3 className="card-title"><T text="Locales" /></h3>
             <p className="text-muted">
               <T
-                text="The catalogues are kept in {store}, and served to the running application — a fixed translation is live on the next reload, with no rebuild."
+                text="Catalogues are kept in {store}. Fixes are live on the next reload, with no rebuild."
                 values={{ store: <code>{data.store}</code> }}
               />{" "}
               <T
@@ -348,7 +348,7 @@ export function ApplicationTranslations({
             <div className="card-body">
               <h3 className="card-title"><T text="No longer used" /></h3>
               <p className="text-muted">
-                <T text="These are translated but the source no longer says them. They are kept, never deleted: the source may be mid-edit, and throwing away a translation to tidy a list is not a trade worth making." />
+                <T text="Translated, but no longer in the source. Kept in case the source is mid-edit." />
               </p>
               <ul className="mb-0">
                 {current.orphans.map((key) => (

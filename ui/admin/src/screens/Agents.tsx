@@ -17,7 +17,8 @@ import { noteApplicationsChanged } from "../appActions";
 import type { ListAgentsResponse } from "../client";
 import { navigate } from "../App";
 import { IconPlus } from "../icons";
-import { PageBody, PageHeader, StatusBadge } from "../layout";
+import { PageBody, StatusBadge } from "../layout";
+import { AgentAreaHeader, AgentAreaTabs } from "./AgentHeader";
 import { roleLabel, useRoles } from "../roles";
 import { T, useT } from "../i18n";
 
@@ -84,28 +85,16 @@ export function Agents() {
 
   return (
     <>
-      <PageHeader
-        pretitle={t("Automation")}
-        title={t("Agents")}
-        actions={
-          <>
-            <Button
-              variant="outline-secondary"
-              onClick={() => navigate("/llm-providers")}
-            >
-              <T text="LLM providers" />
-            </Button>
-            <Button variant="outline-secondary" onClick={() => navigate("/mcp-servers")}>
-              <T text="MCP servers" />
-            </Button>
-            <Button onClick={() => navigate("/agents/new")}>
-              <IconPlus className="icon-2" />
-              <T text="New agent" />
-            </Button>
-          </>
+      <AgentAreaHeader
+        action={
+          <Button onClick={() => navigate("/agents/new")}>
+            <IconPlus className="icon-2" />
+            <T text="New agent" />
+          </Button>
         }
       />
       <PageBody>
+        <AgentAreaTabs active="agents" />
         {error && <Alert variant="danger">{error}</Alert>}
 
         <div className="card">
@@ -170,7 +159,7 @@ export function Agents() {
                         variant="outline-secondary"
                         href={`#/agents/${encodeURIComponent(agent.name)}/memory`}
                       >
-                        <T text="Memory" />
+                        <T text="Memories" />
                       </Button>
                       <Button
                         size="sm"

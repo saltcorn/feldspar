@@ -12,11 +12,10 @@ import Button from "react-bootstrap/Button";
 import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
-import { navigate } from "../App";
 import { runUserLabel } from "../agentRuns";
 import type { ListRunsResponse, ListUsersResponse } from "../client";
-import { IconArrowLeft } from "../icons";
-import { PageBody, PageHeader, StatusBadge } from "../layout";
+import { PageBody, StatusBadge } from "../layout";
+import { AgentHeader, AgentTabs } from "./AgentHeader";
 import { runTone, when } from "./WorkflowRuns";
 import { T, useT } from "../i18n";
 
@@ -63,34 +62,17 @@ export function AgentRuns({ agent }: { agent: string }) {
 
   return (
     <>
-      <PageHeader
-        pretitle="Agent"
-        title={`${agent} · ${t("runs")}`}
+      <AgentHeader
+        agent={agent}
+        section="runs"
         actions={
-          <>
-            <Button variant="outline-secondary" onClick={() => navigate("/agents")}>
-              <IconArrowLeft className="icon-2" />
-              <T text="Back" />
-            </Button>
-            <Button
-              variant="outline-secondary"
-              href={`#/agents/${encodeURIComponent(agent)}/chat`}
-            >
-              <T text="Chat" />
-            </Button>
-            <Button
-              variant="outline-secondary"
-              href={`#/agents/${encodeURIComponent(agent)}/memory`}
-            >
-              <T text="Memory" />
-            </Button>
-            <Button variant="outline-secondary" onClick={() => void load()}>
-              <T text="Refresh" />
-            </Button>
-          </>
+          <Button variant="outline-secondary" onClick={() => void load()}>
+            <T text="Refresh" />
+          </Button>
         }
       />
       <PageBody>
+        <AgentTabs agent={agent} active="runs" />
         {error && <Alert variant="danger">{error}</Alert>}
 
         <div className="card">

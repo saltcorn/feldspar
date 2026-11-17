@@ -116,7 +116,7 @@ export function StepInspector({
               onChange={(e) => onChange({ ...step, name: e.target.value })}
             />
             <Form.Text muted>
-              <T text="What a step points at, what the run's cursor holds, and — for an action step — the context key its result is stored under. Renaming one repoints everything that named it." />
+              <T text="What other steps point at and, for an action step, the context key for its result. Renaming updates everything that uses it." />
             </Form.Text>
           </Form.Group>
           <Form.Group className="mb-3" controlId="stepDescription">
@@ -420,7 +420,7 @@ function KindEditor({
           onChange={(e) => set({ ...kind, until: e.target.value })}
         />
         <Form.Text muted>
-          <T text="A formula yielding either a number of milliseconds to wait or an instant to wait until. The run leaves the engine's reach until then and survives any number of restarts." />
+          <T text="Milliseconds to wait, or an instant to wait until. Survives restarts." />
         </Form.Text>
       </Form.Group>
     );
@@ -467,7 +467,7 @@ function KindEditor({
           onChange={(e) => set({ ...kind, timeout: e.target.value === "" ? null : e.target.value })}
         />
         <Form.Text muted>
-          <T text="A formula yielding when to stop waiting. The run then wakes and its error policy decides — which is how an abandoned approval branches instead of waiting forever." />
+          <T text="When to stop waiting. The run then wakes and its error policy decides, so an abandoned approval can branch instead of waiting forever." />
         </Form.Text>
       </Form.Group>
 
@@ -720,7 +720,7 @@ export function NextEditor({
             onChange={(e) => onChange({ type: "formula", formula: e.target.value })}
           />
           <Form.Text muted>
-            <T text="A formula yielding the" /> <strong><T text="name" /></strong> <T text="of the next step. The canvas draws it as a dashed edge to a computed marker, because which step it reaches is the run's answer rather than the editor" />&apos;s.
+            <T text="A formula yielding the" /> <strong><T text="name" /></strong> <T text="of the next step, drawn as a dashed edge to a computed marker, because the run decides it." />
           </Form.Text>
         </Form.Group>
       )}

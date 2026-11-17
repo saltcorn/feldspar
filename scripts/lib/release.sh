@@ -14,16 +14,26 @@
 #   (the caller builds and checks the tarball, then release_checksum)
 #   release_push                commit the next version, X.Y.(Z+1)-dev, on
 #                               the branch; push the branch and the tag
-#   release_upload              the tarball under feldspar-X.Y.Z-<os>-<arch>
-#                               first, then its version-less (latest) names
-#   release_record_version      X.Y.Z into versions.txt, and latest.txt
-#   release_upload_installer    the curl installer, last
+#   release_publish             the tarball under feldspar-X.Y.Z-<os>-<arch>;
+#                               its version-less (latest) names, unless a
+#                               newer version is already listed; X.Y.Z into
+#                               versions.txt and latest.txt; and last the
+#                               versioned name's .sha256, which marks this
+#                               architecture of X.Y.Z as finished
+#   release_upload_installer    the curl installer, when X.Y.Z is the latest
 #
 # Each architecture is built on a machine of its own, so one version is
 # published by several runs. The first commits and tags, and leaves the
 # branch at the next development version; the others run at that tag
-# (`git checkout vX.Y.Z`) and publish only their own architecture. A run that
-# failed half-way is repeated the same way.
+# (`git checkout vX.Y.Z`) and publish only their own architecture.
+#
+# A run that failed half-way — a build, a push or an upload — is finished by
+# running the same command again, from the tag or from the branch that has
+# since moved on to X.Y.(Z+1)-dev: a version that is tagged, and whose
+# versioned .sha256 for this architecture is not in the bucket yet, is
+# *resumed* (release_version_preflight). Every bucket call is retried a few
+# times first (release_retry), as R2 answers the odd 500 that a second try
+# does not get. `scripts/revoke-release.sh` takes a published version back out.
 #
 # Between releases the workspace version is X.Y.Z-dev, a SemVer pre-release
 # of the next patch release: what a build from a checkout calls itself, and
@@ -54,6 +64,41 @@ readonly DEFAULT_R2_BUCKET="feldspar-latest-static"
 # fetch are visibly the same thing. A --bucket somewhere else has no such URL and
 # is not given one.
 readonly R2_PUBLIC_BASE="https://feldspar-latest-static.saltcorn.com"
+# The name the first releases were published under, before names carried a
+# platform. Scripts and hosts outside this repository still fetch it, so an
+# x86_64 release is published under it too. It has always been an x86_64
+# tarball, so only an x86_64 build publishes it.
+readonly RELEASE_LEGACY_OBJECT="feldspar.tar.gz"
+# Every platform a release is published for, as its names spell it: what
+# scripts/revoke-release.sh looks for (the bucket cannot be listed with
+# wrangler). A new platform's build script adds its name here.
+# shellcheck disable=SC2034 # read by scripts/revoke-release.sh
+readonly RELEASE_PLATFORMS=(linux-x86_64 linux-aarch64)
+
+# release_versioned_object VERSION PLATFORM: the name that version's tarball
+# for that platform keeps for good.
+release_versioned_object() {
+    echo "feldspar-$1-$2.tar.gz"
+}
+
+# release_latest_objects PLATFORM: the version-less names the latest release
+# for that platform is published under, one per line; the first is the one a
+# new host is pointed at.
+release_latest_objects() {
+    echo "feldspar-$1.tar.gz"
+    [[ "$1" == linux-x86_64 ]] && echo "${RELEASE_LEGACY_OBJECT}"
+    return 0
+}
+
+# How often a bucket call is tried, and how long to wait before the second try
+# (then twice that, and so on). R2 now and then answers a request with a 500,
+# "We encountered an internal error. Please try again."; 0.1.1's release died
+# on one. Settable from the environment (the tests try once more, at once).
+RELEASE_ATTEMPTS="${RELEASE_ATTEMPTS:-4}"
+RELEASE_RETRY_DELAY="${RELEASE_RETRY_DELAY:-10}"
+# What to tell the operator when the bucket still refuses after the retries:
+# the caller sets it to the command that finishes the release.
+RELEASE_RESUME_HINT="${RELEASE_RESUME_HINT:-}"
 
 # Before the build: an absent npx, or a missing installer to publish, is worth
 # finding out now and not after the compile. An empty --bucket is a usage error.
@@ -72,6 +117,50 @@ release_preflight() {
 # (release_r2_get) that question is never seen and the release waits on it.
 release_wrangler() {
     (cd "${REPO_ROOT}" && npm_config_yes=true npx wrangler "$@")
+}
+
+# release_retry WHAT CMD...: run CMD, and again after a pause while it fails,
+# RELEASE_ATTEMPTS times in all; then end the run, saying how to finish it.
+release_retry() {
+    local what="$1" attempt=1 delay
+    shift
+    until "$@"; do
+        if [[ ${attempt} -ge ${RELEASE_ATTEMPTS} ]]; then
+            echo "error: could not ${what}, after ${attempt} attempts" >&2
+            [[ -n "${RELEASE_RESUME_HINT}" ]] && echo "${RELEASE_RESUME_HINT}" >&2
+            exit 1
+        fi
+        delay=$((RELEASE_RETRY_DELAY * attempt))
+        log "could not ${what} (attempt ${attempt} of ${RELEASE_ATTEMPTS}); trying again in ${delay}s"
+        sleep "${delay}"
+        attempt=$((attempt + 1))
+    done
+}
+
+# release_put KEY FILE [WRANGLER ARGS...]: upload FILE to the bucket as KEY.
+release_put() {
+    local key="$1" file="$2"
+    shift 2
+    release_retry "upload r2://${R2_BUCKET}/${key}" \
+        release_wrangler r2 object put "${R2_BUCKET}/${key}" -f "${file}" "$@" --remote
+}
+
+# release_r2_delete KEY: delete KEY from the bucket; one that is not there is
+# already what was asked for.
+release_r2_delete() {
+    local key="$1"
+    log "deleting r2://${R2_BUCKET}/${key}"
+    release_retry "delete r2://${R2_BUCKET}/${key}" release_r2_delete_once "${key}"
+}
+
+release_r2_delete_once() {
+    local out
+    if out="$(release_wrangler r2 object delete "${R2_BUCKET}/$1" --remote 2>&1)"; then
+        return 0
+    fi
+    [[ "${out}" == *"The specified key does not exist"* ]] && return 0
+    printf '%s\n' "${out}" >&2
+    return 1
 }
 
 # release_wrangler_ready: before anything reads the bucket, make sure wrangler
@@ -112,26 +201,31 @@ release_warn_if_dirty() {
 release_upload() {
     local tarball="$1" workdir="$2"
     shift 2
-    local object published_sha
+    local object
     for object in "$@"; do
-        # The checksum file written next to the tarball names the versioned file
-        # it was computed over, which is not the name it has in the bucket — a
-        # `sha256sum -c` after downloading would look for a file that is not
-        # there. Each published copy therefore names its published object.
-        published_sha="${workdir}/${object}.sha256"
-        printf '%s  %s\n' \
-            "$(cut -d' ' -f1 < "${tarball}.sha256")" "${object}" > "${published_sha}"
-
-        log "uploading $(du -h "${tarball}" | cut -f1) to r2://${R2_BUCKET}/${object}"
-        release_wrangler r2 object put \
-            "${R2_BUCKET}/${object}" -f "${tarball}" --remote
-
-        log "uploading r2://${R2_BUCKET}/${object}.sha256"
-        release_wrangler r2 object put \
-            "${R2_BUCKET}/${object}.sha256" -f "${published_sha}" --remote
-
+        release_upload_tarball "${tarball}" "${object}"
+        release_upload_checksum "${tarball}" "${workdir}" "${object}"
         log "published $(basename -- "${tarball}") as ${R2_BUCKET}/${object}"
     done
+}
+
+# release_upload_tarball TARBALL OBJECT: the tarball alone, as OBJECT.
+release_upload_tarball() {
+    log "uploading $(du -h "$1" | cut -f1) to r2://${R2_BUCKET}/$2"
+    release_put "$2" "$1"
+}
+
+# release_upload_checksum TARBALL WORKDIR OBJECT: OBJECT.sha256. The checksum
+# file written next to the tarball names the versioned file it was computed
+# over, which is not the name it has in the bucket — a `sha256sum -c` after
+# downloading would look for a file that is not there. Each published copy
+# therefore names its published object.
+release_upload_checksum() {
+    local tarball="$1" object="$3" published_sha="$2/$3.sha256"
+    printf '%s  %s\n' \
+        "$(cut -d' ' -f1 < "${tarball}.sha256")" "${object}" > "${published_sha}"
+    log "uploading r2://${R2_BUCKET}/${object}.sha256"
+    release_put "${object}.sha256" "${published_sha}"
 }
 
 # release_is_public: is this the bucket R2_PUBLIC_BASE serves? Only then is
@@ -144,11 +238,12 @@ release_is_public() {
 # tarballs rather than before: it fetches the version-less object, so for the
 # moment between the two uploads a new installer would be fetching an old
 # release, which is the less surprising of the two orders to land half-way.
+# INSTALLER is the file to publish: the release's own (from a checkout of its
+# tag), by default this checkout's.
 release_upload_installer() {
+    local installer="${1:-${REPO_ROOT}/scripts/install.sh}"
     log "uploading r2://${R2_BUCKET}/install.sh"
-    release_wrangler r2 object put \
-        "${R2_BUCKET}/install.sh" -f "${REPO_ROOT}/scripts/install.sh" \
-        --content-type "text/x-shellscript" --remote
+    release_put install.sh "${installer}" --content-type "text/x-shellscript"
     if release_is_public; then
         cat <<EOF
 
@@ -206,8 +301,12 @@ release_newest() {
 # The workspace version: `[workspace.package] version`, which every crate
 # inherits (`version.workspace = true`).
 release_workspace_version() {
-    sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\([^"]*\)".*/\1/p' \
-        "${REPO_ROOT}/Cargo.toml" | head -n 1
+    release_cargo_version < "${1:-${REPO_ROOT}}/Cargo.toml"
+}
+
+# release_cargo_version: the workspace version in the Cargo.toml on stdin.
+release_cargo_version() {
+    sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\([^"]*\)".*/\1/p' | head -n 1
 }
 
 # release_set_workspace_version OLD NEW: in Cargo.toml, and in Cargo.lock for
@@ -244,16 +343,22 @@ release_set_workspace_version() {
 # ends the run: "not there" is what lets a version be published, or the list
 # of versions be started afresh, so it must not be guessed.
 release_r2_get() {
-    local key="$1" file="$2" out
-    rm -f "${file}"
+    local key="$1" file="$2" out attempt=1
     log "reading r2://${R2_BUCKET}/${key}"
-    if out="$(release_wrangler r2 object get \
-            "${R2_BUCKET}/${key}" --file "${file}" --remote 2>&1)"; then
-        return 0
-    fi
-    [[ "${out}" == *"The specified key does not exist"* ]] && return 1
-    printf '%s\n' "${out}" >&2
-    release_die "could not read r2://${R2_BUCKET}/${key}"
+    while :; do
+        rm -f "${file}"
+        if out="$(release_wrangler r2 object get \
+                "${R2_BUCKET}/${key}" --file "${file}" --remote 2>&1)"; then
+            return 0
+        fi
+        [[ "${out}" == *"The specified key does not exist"* ]] && return 1
+        printf '%s\n' "${out}" >&2
+        [[ ${attempt} -lt ${RELEASE_ATTEMPTS} ]] ||
+            release_die "could not read r2://${R2_BUCKET}/${key}, after ${attempt} attempts"
+        log "could not read r2://${R2_BUCKET}/${key} (attempt ${attempt} of ${RELEASE_ATTEMPTS}); trying again in $((RELEASE_RETRY_DELAY * attempt))s"
+        sleep "$((RELEASE_RETRY_DELAY * attempt))"
+        attempt=$((attempt + 1))
+    done
 }
 
 # release_published_versions WORKDIR: the bucket's versions.txt, on stdout
@@ -269,24 +374,34 @@ release_published_versions() {
 # VERSION be published from this checkout, with OBJECT (this architecture's
 # versioned name) as its tarball? Sets
 #   RELEASE_NEEDS_TAG  1: this run commits the version and tags it
-#                      0: HEAD is already tagged vVERSION (another
-#                         architecture's run, or this one's again)
+#                      0: vVERSION is tagged already (another architecture's
+#                         run, or one that did not finish)
 #   RELEASE_ADVANCE    1: this run moves the branch on: the release commit and
 #                         a commit of the next -dev version are pushed to it
 #                         (a new release, or one whose push has not happened)
-#                      0: only the tag is pushed (another architecture)
+#                      0: only the tag is pushed
+#   RELEASE_AT_TAG     0: HEAD is what is built (and tagged, if it is not yet)
+#                      1: HEAD is elsewhere — the branch the release moved on
+#                         to X.Y.(Z+1)-dev — and the release is resumed: the
+#                         caller builds the tagged commit, not HEAD
 #   RELEASE_REMOTE     the git remote the tag is pushed to
 #   RELEASE_BRANCH     the branch pushed to, when RELEASE_ADVANCE is 1
 #
-# VERSION may equal the version in Cargo.toml without its -dev suffix — the
-# release a development version leads to, or another architecture of a
-# release — but not be older than it, than the
-# newest vX.Y.Z tag, or than the newest version in versions.txt. A version
-# whose tarball for this architecture is in the bucket is refused: a published
-# version is never replaced.
+# A new version — not tagged yet — may equal the version in Cargo.toml without
+# its -dev suffix, or be newer, but not be older than it, than the newest
+# vX.Y.Z tag, or than the newest version in versions.txt.
+#
+# A tagged version is what was decided when it was tagged, so none of that is
+# asked again: it is published, or its publishing resumed, at its tag, unless
+# this architecture of it is *finished*: its versioned .sha256 is in the
+# bucket (uploaded last, release_publish) and the version is in versions.txt
+# (which, before release_publish uploaded that checksum last, is what tells a
+# finished release from one that stopped after its versioned tarball). A
+# finished version is never replaced; scripts/revoke-release.sh takes one
+# back out, and after that it may be published again.
 release_version_preflight() {
     local version="$1" object="$2" workdir="$3"
-    local tag="v${version}" current newest
+    local tag="v${version}" current newest tagged_version
     release_version_is_valid "${version}" || {
         echo "error: --release takes the version to publish as X.Y.Z (e.g. 0.1.1), got '${version}'" >&2
         exit 2
@@ -308,33 +423,47 @@ release_version_preflight() {
 
     current="$(release_workspace_version)"
     [[ -n "${current}" ]] || release_die "could not read the version from Cargo.toml"
-    release_version_ge "${version}" "$(release_version_base "${current}")" ||
-        release_die "${version} is older than the version in Cargo.toml, ${current}"
-    newest="$(git -C "${REPO_ROOT}" tag -l 'v*' | sed 's/^v//' | release_newest)"
-    if [[ -n "${newest}" ]] && ! release_version_ge "${version}" "${newest}"; then
-        release_die "${version} is older than the newest release tag, v${newest}"
-    fi
-    newest="$(release_published_versions "${workdir}" | release_newest)"
-    if [[ -n "${newest}" ]] && ! release_version_ge "${version}" "${newest}"; then
-        release_die "${version} is older than the newest published release, ${newest} (r2://${R2_BUCKET}/${RELEASE_VERSIONS_OBJECT})"
-    fi
+    RELEASE_AT_TAG=0
+    RELEASE_ADVANCE=0
 
     if git -C "${REPO_ROOT}" rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
-        [[ "$(git -C "${REPO_ROOT}" rev-parse "${tag}^{commit}")" == "$(git -C "${REPO_ROOT}" rev-parse HEAD)" ]] ||
-            release_die "${tag} is already tagged, on another commit. To publish another architecture of ${version}, build at the tag: git checkout ${tag}"
-        [[ "${current}" == "${version}" ]] ||
-            release_die "HEAD is tagged ${tag}, but Cargo.toml says ${current}"
+        if release_is_finished "${version}" "${object}" "${workdir}"; then
+            release_die "r2://${R2_BUCKET}/${object} is already published, and a published version is never replaced; release a newer one (or take this one back out with scripts/revoke-release.sh ${version})"
+        fi
         RELEASE_NEEDS_TAG=0
-        # On a branch whose upstream does not have the tagged commit yet: this
-        # run's own release, made by a run that stopped before its push. It
-        # moves the branch on as that run would have.
-        RELEASE_ADVANCE=0
-        if [[ -n "${RELEASE_BRANCH}" ]] &&
-            git -C "${REPO_ROOT}" rev-parse -q --verify "@{upstream}" >/dev/null &&
-            ! git -C "${REPO_ROOT}" merge-base --is-ancestor HEAD "@{upstream}"; then
-            RELEASE_ADVANCE=1
+        if [[ "$(git -C "${REPO_ROOT}" rev-parse "${tag}^{commit}")" == "$(git -C "${REPO_ROOT}" rev-parse HEAD)" ]]; then
+            [[ "${current}" == "${version}" ]] ||
+                release_die "HEAD is tagged ${tag}, but Cargo.toml says ${current}"
+            # On a branch whose upstream does not have the tagged commit yet: this
+            # run's own release, made by a run that stopped before its push. It
+            # moves the branch on as that run would have.
+            if [[ -n "${RELEASE_BRANCH}" ]] &&
+                git -C "${REPO_ROOT}" rev-parse -q --verify "@{upstream}" >/dev/null &&
+                ! git -C "${REPO_ROOT}" merge-base --is-ancestor HEAD "@{upstream}"; then
+                RELEASE_ADVANCE=1
+            fi
+        else
+            tagged_version="$(git -C "${REPO_ROOT}" show "${tag}:Cargo.toml" | release_cargo_version)"
+            [[ "${tagged_version}" == "${version}" ]] ||
+                release_die "${tag} is tagged on a commit whose Cargo.toml says ${tagged_version:-no version}, not ${version}"
+            RELEASE_AT_TAG=1
         fi
     else
+        release_version_ge "${version}" "$(release_version_base "${current}")" ||
+            release_die "${version} is older than the version in Cargo.toml, ${current}, and is not tagged ${tag}"
+        newest="$(git -C "${REPO_ROOT}" tag -l 'v*' | sed 's/^v//' | release_newest)"
+        if [[ -n "${newest}" ]] && ! release_version_ge "${version}" "${newest}"; then
+            release_die "${version} is older than the newest release tag, v${newest}"
+        fi
+        newest="$(release_published_versions "${workdir}" | release_newest)"
+        if [[ -n "${newest}" ]] && ! release_version_ge "${version}" "${newest}"; then
+            release_die "${version} is older than the newest published release, ${newest} (r2://${R2_BUCKET}/${RELEASE_VERSIONS_OBJECT})"
+        fi
+        # Untagged but in the bucket: published from somewhere this remote
+        # does not know about. Not ours to replace.
+        if release_r2_get "${object}.sha256" "${workdir}/${object}.published.sha256"; then
+            release_die "r2://${R2_BUCKET}/${object} is already published, and ${tag} is not tagged on ${RELEASE_REMOTE}; release a newer version"
+        fi
         [[ -n "${RELEASE_BRANCH}" ]] ||
             release_die "a new release commits its version and tags it, and HEAD is detached; check out the branch to release from"
         RELEASE_NEEDS_TAG=1
@@ -347,16 +476,26 @@ release_version_preflight() {
             release_die "${RELEASE_BRANCH} is behind $(git -C "${REPO_ROOT}" rev-parse --abbrev-ref "@{upstream}"); pull first, so that the release commit can be pushed"
     fi
 
-    if release_r2_get "${object}.sha256" "${workdir}/${object}.published.sha256"; then
-        release_die "r2://${R2_BUCKET}/${object} is already published, and a published version is never replaced; release a newer one"
-    fi
     if [[ ${RELEASE_NEEDS_TAG} -eq 1 ]]; then
         log "releasing ${version} (Cargo.toml has ${current}): commit and tag ${tag}, build, push, publish"
+    elif [[ ${RELEASE_AT_TAG} -eq 1 ]]; then
+        log "resuming ${version}: ${tag} is tagged and not finished for this architecture; building and publishing ${tag}, leaving ${RELEASE_BRANCH:-HEAD} at ${current}"
     elif [[ ${RELEASE_ADVANCE} -eq 1 ]]; then
         log "${tag} is this commit and not pushed yet: finishing the release of ${version}"
     else
         log "${tag} is this commit: publishing this architecture of ${version}"
     fi
+}
+
+# release_is_finished VERSION OBJECT WORKDIR: is this architecture of VERSION
+# published to the end? Its versioned .sha256 in the bucket, and VERSION in
+# versions.txt.
+release_is_finished() {
+    local version="$1" object="$2" workdir="$3"
+    local listed
+    release_r2_get "${object}.sha256" "${workdir}/${object}.published.sha256" || return 1
+    listed="$(release_published_versions "${workdir}")" || exit 1
+    grep -qxF "${version}" <<< "${listed}"
 }
 
 # release_prepare VERSION: after release_version_preflight, before the build,
@@ -415,8 +554,7 @@ release_push() {
 # release_put_text KEY FILE: upload a small text file.
 release_put_text() {
     log "uploading r2://${R2_BUCKET}/$1"
-    release_wrangler r2 object put \
-        "${R2_BUCKET}/$1" -f "$2" --content-type "text/plain; charset=utf-8" --remote
+    release_put "$1" "$2" --content-type "text/plain; charset=utf-8"
 }
 
 # release_record_version VERSION WORKDIR: add VERSION to versions.txt (read
@@ -435,4 +573,39 @@ release_record_version() {
     release_put_text "${RELEASE_VERSIONS_OBJECT}" "${list}"
     release_put_text "${RELEASE_LATEST_OBJECT}" "${latest}"
     log "r2://${R2_BUCKET}/${RELEASE_VERSIONS_OBJECT} lists $(wc -l < "${list}") version(s), the newest $(cat "${latest}")"
+}
+
+# release_publish VERSION TARBALL WORKDIR VERSIONED LATEST...: after
+# release_push, publish TARBALL (with its release_checksum beside it) as
+# VERSION. The order is what lets a run that stops anywhere be finished by
+# running it again (release_version_preflight):
+#
+#   1. the tarball as VERSIONED
+#   2. as each LATEST name, with its .sha256 — unless versions.txt already has
+#      a newer version, whose those names are (a resumed older release)
+#   3. VERSION into versions.txt, and latest.txt
+#   4. VERSIONED.sha256, last: this architecture of VERSION is finished. Until
+#      it is there install.sh cannot install VERSIONED (it checks the
+#      download against it), and a run again replaces what came before it.
+#
+# Sets RELEASE_IS_LATEST: 1 when VERSION is (now) the newest release, so the
+# latest names and the installer are its; 0 when a newer one is.
+release_publish() {
+    local version="$1" tarball="$2" workdir="$3" versioned="$4"
+    shift 4
+    local newest
+    newest="$(release_published_versions "${workdir}" | release_newest)"
+    RELEASE_IS_LATEST=1
+    if [[ -n "${newest}" ]] && ! release_version_ge "${version}" "${newest}"; then
+        RELEASE_IS_LATEST=0
+    fi
+    release_upload_tarball "${tarball}" "${versioned}"
+    if [[ ${RELEASE_IS_LATEST} -eq 1 ]]; then
+        release_upload "${tarball}" "${workdir}" "$@"
+    else
+        log "${newest} is a newer release: leaving the latest names ($*) as they are"
+    fi
+    release_record_version "${version}" "${workdir}"
+    release_upload_checksum "${tarball}" "${workdir}" "${versioned}"
+    log "published $(basename -- "${tarball}") as ${R2_BUCKET}/${versioned}"
 }

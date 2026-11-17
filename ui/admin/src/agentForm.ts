@@ -1,5 +1,6 @@
-// The agent form's attributes, as data: the model roles, the budgets, and
-// where the `coding` trait's shell settings go.
+// The agent form's attributes, as data: the model roles, how the models answer,
+// a run's limits, the LLM credits, and where the `coding` trait's shell
+// settings go. Each numeric attribute is in exactly one of the form's groups.
 //
 // An agent's attributes are sparse (§9): a key that is absent means the
 // default, and some keys this form does not show are still the agent's — the
@@ -15,12 +16,12 @@ export const ROLES = [
   {
     key: "strong",
     label: "Strong model",
-    help: "Plans, reviews and takes escalations. Blank uses the agent's own model.",
+    help: "Plans, reviews and takes escalations.",
   },
   {
     key: "cheap",
     label: "Cheap model",
-    help: "Summarises, explores and writes commit messages. Blank uses the agent's own model.",
+    help: "Summarises, explores and writes commit messages.",
   },
 ] as const;
 
@@ -29,8 +30,8 @@ export type RoleKey = (typeof ROLES)[number]["key"];
 /** A role's model as the form holds it: an empty provider is "same as the agent". */
 export type RoleChoice = { provider: string; model: string };
 
-/** The numeric attributes, in the order the form shows them. */
-export const NUMBER_ATTRIBUTES = [
+/** How the models answer, shown under them. */
+export const ANSWER_SETTINGS = [
   {
     key: "temperature",
     label: "Temperature",
@@ -41,15 +42,15 @@ export const NUMBER_ATTRIBUTES = [
     label: "Max tokens per answer",
     help: "Blank uses the provider's own default.",
   },
+] as const;
+
+/** A run's limits (`sc_agent::ATTR_MAX_STEPS`, `ATTR_MAX_COST` and the rest). */
+export const LIMITS = [
   {
     key: "max_steps",
     label: "Max steps per run",
     help: "How many times one run may go round the loop. Blank means 250.",
   },
-] as const;
-
-/** A run's budgets (`sc_agent::ATTR_MAX_COST` and the rest). */
-export const BUDGETS = [
   {
     key: "max_cost",
     label: "Cost per run",
@@ -98,7 +99,14 @@ export const CREDITS = [
   },
 ] as const;
 
-const NUMBER_KEYS: string[] = [...NUMBER_ATTRIBUTES, ...BUDGETS, ...CREDITS].map((a) => a.key);
+const NUMBER_KEYS: string[] = [...ANSWER_SETTINGS, ...LIMITS, ...CREDITS].map((a) => a.key);
+
+/** Whether any LLM credit rate or minimum is filled in: the form opens the
+ * credits group for an agent that charges, and keeps it shut for the many
+ * that do not. */
+export function chargesCredits(numbers: Record<string, string>): boolean {
+  return CREDITS.some(({ key }) => (numbers[key] ?? "").trim() !== "");
+}
 
 /** The role choices stored in an agent's attributes. */
 export function readRoles(attributes: unknown): Record<RoleKey, RoleChoice> {
@@ -198,5 +206,85 @@ export function shellWarning(trait: string, values: Record<string, string>): str
     "and the server's configuration, and reach the network. Only admins can use it, but " +
     "what the model does with it is not reviewed. Choose the container sandbox unless this " +
     "server is itself disposable."
+  );
+}
+
+/** The form's tabs, in order. The first is where a new agent starts and where
+ * the required fields are. */
+export const AGENT_TABS = [
+  { id: "general", label: "General" },
+  { id: "instructions", label: "Instructions" },
+  { id: "traits", label: "What it can do" },
+  { id: "limits", label: "Limits" },
+] as const;
+
+export type AgentTab = (typeof AGENT_TABS)[number]["id"];
+
+/** The tab a URL names, or the first for none or one that does not exist. */
+export function agentTab(raw: string | undefined): AgentTab {
+  return AGENT_TABS.find((tab) => tab.id === raw)?.id ?? "general";
+}
+
+/** The URL of `tab` of the agent `agentId`, or of the new agent's form. The
+ * first tab is the form's own URL. */
+export function agentTabHref(agentId: string | undefined, tab: AgentTab): string {
+  const base = agentId ? `#/agents/${encodeURIComponent(agentId)}/edit` : "#/agents/new";
+  return tab === "general" ? base : `${base}/${tab}`;
+}
+
+/** What is missing before the form can be saved, with the tab it is on, or
+ * `null`. The browser cannot point at an empty box on a tab that is not shown,
+ * so the form says so itself. */
+export function missingRequired(
+  name: string,
+  provider: string,
+): { tab: AgentTab; message: string } | null {
+  if (name.trim() === "") return { tab: "general", message: "Give the agent a name." };
+  if (provider.trim() === "") {
+    return { tab: "general", message: "Choose an LLM provider for the main model." };
+  }
+  return null;
+}
+
+/** The tab a save's refusal is about, when it says: the server names a trait
+ * or a tool when one of them is the problem ("its tool `query_books` has the
+ * same name as one from trait 1"). Anything else is shown above every tab. */
+export function refusalTab(message: string): AgentTab | null {
+  return /\btraits?\b|\btools?\b/i.test(message) ? "traits" : null;
+}
+
+/** One line of what a trait is set to, for its card while folded: each value
+ * that is set, by its label less any bracketed explanation ("Table: books ·
+ * Writable"). Secrets and JSON are left out, a ticked box is its label alone,
+ * and long values are cut. */
+export function traitSummary(spec: FieldSpec[], values: Record<string, string>): string {
+  const parts: string[] = [];
+  for (const field of spec) {
+    if (field.secret || field.type === "json") continue;
+    const raw = (values[field.name] ?? "").trim();
+    if (raw === "" || raw === "false") continue;
+    // A label's explanation in brackets is for the form, not the line.
+    const label = field.label.replace(/\s*\([^)]*\)/g, "").trim() || field.label;
+    if (field.type === "bool") {
+      parts.push(label);
+      continue;
+    }
+    const firstLine = raw.split("\n")[0];
+    const shown = firstLine.length > 40 ? `${firstLine.slice(0, 39)}…` : firstLine;
+    parts.push(`${label}: ${shown}${firstLine !== raw && shown === firstLine ? "…" : ""}`);
+  }
+  return parts.join(" · ");
+}
+
+/** Whether a trait's card starts open: when something on it needs the admin —
+ * a required setting with no value, or `coding`'s shell without a sandbox. */
+export function traitNeedsAttention(
+  trait: string,
+  spec: FieldSpec[],
+  values: Record<string, string>,
+): boolean {
+  if (shellWarning(trait, values)) return true;
+  return spec.some(
+    (field) => field.required && field.type !== "bool" && (values[field.name] ?? "").trim() === "",
   );
 }

@@ -6,9 +6,14 @@ import { AgentMemory, memoryUserLabel } from "./AgentMemory";
 describe("AgentMemory", () => {
   const html = renderToStaticMarkup(<AgentMemory agent="help desk" />);
 
-  it("titles the page with the agent and links back to its runs", () => {
-    expect(html).toContain("help desk · memory");
-    expect(html).toContain('href="#/agents/help%20desk/runs"');
+  it("titles the page with the agent", () => {
+    expect(html).toContain('<div class="page-pretitle">Agent</div>');
+    expect(html).toContain('<h2 class="page-title">help desk</h2>');
+  });
+
+  it("shows the agent's tabs, with this screen's open", () => {
+    expect(html).toContain('href="#/agents/help%20desk/chat"');
+    expect(html).toMatch(/class="nav-link active" aria-current="page" href="#\/agents\/help%20desk\/memory"/);
   });
 
   it("can be searched, and lists who each memory is about", () => {

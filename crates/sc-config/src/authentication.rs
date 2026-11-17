@@ -86,9 +86,8 @@ pub fn authentication_section() -> ConfigSection {
                 FormField::new(SHARED_SESSION_COOKIE, BasicType::Bool)
                     .label("Share sign-in between applications")
                     .default_value(false),
-                "Scope the session cookie to the base domain, so sign-in sessions \
-                 are shared between all applications and the admin UI, with passwords or with \
-                 identity providers. Changing this signs everyone out.",
+                "Includes the admin UI and identity-provider sign-ins. Changing this signs \
+                 everyone out.",
             ),
             // Live too: the next session started gets it. A session already
             // started keeps the expiry it was given.
@@ -96,8 +95,7 @@ pub fn authentication_section() -> ConfigSection {
                 FormField::new(SESSION_TTL_HOURS, BasicType::Int)
                     .label("Session lifetime (hours)")
                     .default_value(DEFAULT_SESSION_TTL_HOURS),
-                "How long a sign-in lasts, with a password or with an identity provider, before \
-                 signing in again is needed. Applies to sessions started after saving.",
+                "How long a sign-in lasts. Applies to new sessions.",
             ),
             // Live as well: read at every sign-in. A cookie already in a
             // browser keeps what it was given, so nobody is signed out by it.
@@ -105,9 +103,8 @@ pub fn authentication_section() -> ConfigSection {
                 FormField::new(PERSISTENT_SESSION_COOKIE, BasicType::Bool)
                     .label("Keep people signed in when the browser closes")
                     .default_value(true),
-                "Give the session cookie an expiry of the session lifetime, so a sign-in \
-                 survives closing and reopening the browser. A sign-in form's \"Remember me\", \
-                 left unticked, still ends that sign-in with the browser.",
+                "Keep sign-ins across browser restarts. Unticking \"Remember me\" still ends a \
+                 sign-in with the browser.",
             ),
             ConfigDef::help(
                 FormField::new(SECOND_FACTOR_ISSUER, BasicType::Text)
@@ -396,9 +393,9 @@ pub fn oauth_provider_spec() -> Vec<FormField> {
             )
             .show_if(PROVIDER_PRESET, vec![Json::from(PRESET_MICROSOFT)])
             .sublabel(
-                "Your organisation's directory id or domain. Microsoft does not say whether an \
-                 address is verified, so sign-ins through `common` are refused; with your own \
-                 directory, tick \"Trust unverified addresses\".",
+                "Your directory id or domain. Sign-ins via `common` are refused, as Microsoft \
+                 doesn't report verified addresses. With your own directory, tick \"Trust \
+                 unverified addresses\".",
             ),
         FormField::new(PROVIDER_ENABLED, BasicType::Bool)
             .label("Enabled")
@@ -425,9 +422,9 @@ pub fn oauth_provider_spec() -> Vec<FormField> {
             .label("Trust unverified addresses")
             .default_value(false)
             .sublabel(
-                "Accept an address the provider does not say it verified. A sign-in finds the \
-                 account with that address — administrators' included — so tick this only for \
-                 a provider whose addresses nobody but your organisation can set.",
+                "Accept addresses the provider hasn't verified. Sign-in matches accounts by \
+                 address, administrators' included, so use only for a provider where only your \
+                 organisation sets addresses.",
             ),
     ]
 }

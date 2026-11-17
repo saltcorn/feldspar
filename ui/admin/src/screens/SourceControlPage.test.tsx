@@ -13,7 +13,7 @@ import {
   sourceControlPageKey,
   sourceControlTabs,
 } from "./SourceControlPage";
-import { StatusTab } from "./SyncPanels";
+import { LinkTab, StatusTab } from "./SyncPanels";
 
 describe("SourceControlPage", () => {
   it("puts the tabs in the header of the card that holds the open tab", () => {
@@ -102,7 +102,7 @@ describe("StatusTab", () => {
       url: "git@example.com:acme/structure.git",
       branch: "main",
       credential: { kind: "deploy_key" },
-      policy: { destructive: "ask", full_backup: "ask" },
+      policy: { destructive: "confirm", full_backup: "optional" },
     },
     tip: "0123456789abcdef",
     base_commit: "0123456789abcdef",
@@ -135,5 +135,16 @@ describe("StatusTab", () => {
     expect(html).toMatch(/<div class="card-footer">[^]*data-testid="sync-commit"/);
     // The wrapper above stands in for the tabbed card: Status adds none of its own.
     expect(html.match(/class="card"/g)).toHaveLength(1);
+  });
+});
+
+describe("LinkTab", () => {
+  it("has no policy options: data-losing changes are ticked one by one, and a full backup is offered on the review", () => {
+    const html = renderToStaticMarkup(<LinkTab onLinked={async () => {}} />);
+    expect(html).toContain('id="sync-url"');
+    expect(html).not.toContain("sync-destructive");
+    expect(html).not.toContain("sync-full-backup");
+    expect(html).not.toContain("Changes that lose data");
+    expect(html).not.toContain("Full backup before each deploy");
   });
 });

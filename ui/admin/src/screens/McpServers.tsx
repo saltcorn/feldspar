@@ -16,9 +16,9 @@ import Modal from "react-bootstrap/Modal";
 import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
-import { navigate } from "../App";
 import { IconPlus, IconTrash } from "../icons";
-import { PageBody, PageHeader } from "../layout";
+import { PageBody } from "../layout";
+import { AgentAreaHeader, AgentAreaTabs } from "./AgentHeader";
 import {
   bodyFromForm,
   emptyForm,
@@ -160,22 +160,16 @@ export function McpServers() {
 
   return (
     <>
-      <PageHeader
-        pretitle={t("Automation")}
-        title={t("MCP servers")}
-        actions={
-          <>
-            <Button variant="outline-secondary" onClick={() => navigate("/agents")}>
-              <T text="Agents" />
-            </Button>
-            <Button onClick={() => open(emptyForm())}>
-              <IconPlus className="icon-2" />
-              <T text="New MCP server" />
-            </Button>
-          </>
+      <AgentAreaHeader
+        action={
+          <Button onClick={() => open(emptyForm())}>
+            <IconPlus className="icon-2" />
+            <T text="New MCP server" />
+          </Button>
         }
       />
       <PageBody>
+        <AgentAreaTabs active="mcp-servers" />
         {error && (
           <Alert variant="danger" dismissible onClose={() => setError(null)}>
             {error}
@@ -252,7 +246,7 @@ export function McpServers() {
           </div>
         )}
         <p className="text-muted small mt-3">
-          <T text="Header values, such as an Authorization token, are stored in the Saltcorn database like LLM API keys and are never sent back to this screen. This server makes the MCP calls itself, as the user chatting with the agent." />
+          <T text="Header values (e.g. an Authorization token) are stored like API keys and never shown again. This server makes the MCP calls, as the chatting user." />
         </p>
       </PageBody>
 
@@ -382,7 +376,7 @@ export function McpServers() {
                   onChange={(e) => setEditing({ ...editing, offerToTerminal: e.target.checked })}
                 />
                 <Form.Text muted>
-                  <T text="Claude Code sessions in the IDE can use this server's tools. They reach it through this server, which adds the headers, so the sessions never see them. Streamable HTTP only." />
+                  <T text="IDE Claude Code sessions can use this server's tools through this server, which adds the headers, so sessions never see them. Streamable HTTP only." />
                 </Form.Text>
               </Form.Group>
               {formTest && <TestOutcome result={formTest} onClose={() => setFormTest(null)} />}

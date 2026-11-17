@@ -15,9 +15,7 @@
 //! A KEY is an entity as Status prints it (`table:tickets`,
 //! `view:helpdesk/list`). `deploy` and `discard` print the plan and apply it
 //! only with `--yes`, which refuses a plan with blockers, and one that loses
-//! data unless `--allow-destructive` says so. `--allow-destructive` is also
-//! what lifts a `destructive: never` policy, which only the operator on the
-//! server can do.
+//! data unless `--allow-destructive` says so.
 //!
 //! `deploy --from FILE.zip` deploys a structure zip (`feldspar backup
 //! --structure-only`) instead of the branch tip (§7.4). With a link it takes
@@ -75,12 +73,9 @@ pub(crate) async fn sync_command(args: &[String]) -> Result<()> {
                     .unwrap_or_else(|| "main".to_owned()),
             );
             link.subdirectory = flags[1].first().cloned();
-            // The credential stored here (a key generated in Source control),
-            // and the policy the link has, are kept.
+            // The credential stored here (a key generated in Source control)
+            // is kept.
             link.credential = sc.credential().await?;
-            if let Some(previous) = sc.link().await? {
-                link.policy = previous.policy;
-            }
             let linked = sc.set_link(link).await?;
             eprintln!(
                 "feldspar: linked to {url}, at {}{}",

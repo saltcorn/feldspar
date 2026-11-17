@@ -107,13 +107,6 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                         .and_then(sc_query::Value::as_text)
                         .map(str::to_owned),
                     source: sc_sync::Source::Ui,
-                    // The policy stored with the sync link, so a save that
-                    // drops data is refused under `destructive: never` as a
-                    // deploy is.
-                    policy: sc_sync::load_link(&catalog)
-                        .await?
-                        .map(|l| l.policy)
-                        .unwrap_or_default(),
                 };
                 let receipt = deployer(&catalog, &apps, Some(ctx.who.editor()))?
                     .edit(&edit, &confirm, &by)

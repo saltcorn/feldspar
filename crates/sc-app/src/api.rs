@@ -77,9 +77,8 @@ pub fn registered_api_provider_info() -> Vec<ApiProviderInfo> {
         ApiProviderInfo {
             name: REST_PROVIDER.to_owned(),
             label: "REST".to_owned(),
-            description: "A route per operation over the app's tables and exposed \
-                          triggers, with a typed TypeScript client generated from it. \
-                          The one to take unless you know you want the other."
+            description: "A route per operation over the app's tables and exposed triggers, with \
+                          a generated TypeScript client. The usual choice."
                 .to_owned(),
             default_mount: "/api".to_owned(),
             config_spec: sc_api::rest_config_spec(),
@@ -88,10 +87,8 @@ pub fn registered_api_provider_info() -> Vec<ApiProviderInfo> {
         ApiProviderInfo {
             name: GRAPHQL_PROVIDER.to_owned(),
             label: "GraphQL".to_owned(),
-            description: "One endpoint the caller writes the shape of: nested \
-                          relations and constrained child aggregates in one round \
-                          trip, with the SDL served beside it. Sits alongside REST \
-                          rather than replacing it."
+            description: "One endpoint shaped by the caller: nested relations and child \
+                          aggregates in one round trip. Sits alongside REST."
                 .to_owned(),
             default_mount: sc_api::GRAPHQL_DEFAULT_MOUNT.to_owned(),
             config_spec: sc_api::graphql_config_spec(),

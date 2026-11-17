@@ -731,6 +731,9 @@ async fn settings_json(catalog: &Catalog, locale: &Locale) -> Result<Json> {
                         if let Json::Object(map) = &mut field {
                             let help = sc_i18n::core::translate(locale, def.help, &[]);
                             map.insert("help".to_owned(), Json::from(help));
+                            // Held until the card's Apply button rather than
+                            // saved as it changes (`ConfigDef::applied`).
+                            map.insert("applied".to_owned(), Json::Bool(def.applied));
                         }
                         field
                     })

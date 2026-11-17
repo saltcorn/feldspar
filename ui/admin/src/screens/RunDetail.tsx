@@ -287,7 +287,7 @@ function Timeline({ run }: { run: GetRunResponse }) {
       <Card>
         <Card.Header><T text="What happened" /></Card.Header>
         <Card.Body className="text-muted">
-          <T text="This workflow does not record a trace. Turn one on in the editor — it writes the context after every step, which is what this timeline draws." />
+          <T text="No trace recorded. Turn on tracing in the workflow editor to see this timeline." />
         </Card.Body>
       </Card>
     );

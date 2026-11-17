@@ -310,7 +310,7 @@ function UndoPanel({ changeset }: { changeset: GetChangesetResponse }) {
     <div className="card mb-3">
       <div className="card-body p-3">
         <p className="mb-2">
-          <T text="Undo reverses the changes below in one transaction: created rows are deleted, deleted rows put back and changed fields set back. Triggers run on those writes as on any other." />{" "}
+          <T text="Reverts the changes below in one transaction. Triggers run on those writes as usual." />{" "}
           <strong>
             <T text="Effects outside the database, such as emails a trigger sent, are not undone." />
           </strong>

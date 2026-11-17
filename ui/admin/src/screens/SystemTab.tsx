@@ -253,7 +253,7 @@ function RestartPanel({ info }: { info: GetSystemInfoResponse }) {
         </Modal.Header>
         <Modal.Body>
           <p className="mb-0">
-            <T text="The server process will exit, and every application is unavailable until it is back. If a service manager such as systemd or Docker runs it, it starts again by itself; otherwise it stays stopped until someone starts it on the machine." />
+            <T text="The server will exit, and applications are down until it restarts. A service manager (systemd, Docker) restarts it; otherwise someone must start it." />
           </p>
         </Modal.Body>
         <Modal.Footer>

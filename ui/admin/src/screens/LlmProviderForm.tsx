@@ -164,7 +164,7 @@ export function LlmProviderForm({ providerId }: { providerId?: string }) {
         {error && <Alert variant="danger">{error}</Alert>}
         {fromConfigFile && (
           <Alert variant="info">
-            <T text="This provider is set in the server's configuration file (feldspar.toml), so it cannot be changed here. Agents can use it, and you can make it — or a provider you add — the default." />
+            <T text="Set in feldspar.toml, so it can't be edited here. Agents can use it, and it can be the default." />
           </Alert>
         )}
         <Form onSubmit={submit}>

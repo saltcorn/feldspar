@@ -137,7 +137,7 @@ export function PythonStatusPanel() {
                   <Alert variant="warning" className="mt-3">
                     <AlertBody>
                       {t(
-                        "{count} runs never came back. A Python thread stuck inside a C call cannot be stopped or reclaimed, so this number only goes down when one of them finishes on its own; at {cap} this server refuses new Python runs and the remedy is a restart.",
+                        "{count} runs never returned. A thread stuck in C code can't be stopped, so this only drops when one finishes. At {cap}, new Python runs are refused until a restart.",
                         { count: status.stuck, cap: status.max_stuck },
                       )}
                     </AlertBody>

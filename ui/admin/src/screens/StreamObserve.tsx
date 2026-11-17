@@ -217,7 +217,7 @@ export function StreamObserve({ streamId }: { streamId: string }) {
         {state.lagged > 0 && (
           <Alert variant="warning">
             {t(
-              "This screen fell behind and lost {count} elements. Nothing back-pressures a stream: a consumer that cannot keep up is skipped rather than made to wait, and the elements that were skipped are gone.",
+              "This screen fell behind and missed {count} elements. Streams skip slow consumers, and skipped elements are lost.",
               { count: formatCount(state.lagged) },
             )}
           </Alert>
@@ -249,7 +249,7 @@ export function StreamObserve({ streamId }: { streamId: string }) {
 
         {state.ready && tail.length === 0 && !state.error && (
           <Alert variant="info">
-            <T text="Nothing yet. Elements appear here as they arrive; there is no history beyond what this server has seen since it started, because an element is not stored." />
+            <T text="Nothing yet. Elements appear as they arrive. They aren't stored, so there's no history." />
           </Alert>
         )}
 
