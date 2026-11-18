@@ -561,6 +561,22 @@ describe("the types the code editor loads", () => {
     expect(check(`return (await llm.generate("Hi")).usage;`).join(" ")).toMatch(/usage/);
   });
 
+  it("type `oauth.begin` as a url and `oauth.accessToken` as a token, or one with `detail`", () => {
+    const store = `{ table: "connections", id: 1, fields: { access_token: "a", refresh_token: "r" } }`;
+    expect(
+      check(
+        `const { url } = await oauth.begin({ provider: "google", client_id: "c", scope: "s", store: ${store} });\n` +
+          `const token = (await oauth.accessToken({ provider: "google", client_id: "c", store: ${store} })).length;\n` +
+          `const full = await oauth.accessToken({ token_url: "https://t", client_id: "c", store: ${store}, refused: "x", detail: true });\n` +
+          `return { url: url.length, token, renewed: full.refreshed };`,
+      ),
+    ).toEqual([]);
+    expect(
+      check(`return await oauth.begin({ provider: "yahoo", client_id: "c", scope: "s", store: ${store} });`).join(" "),
+    ).toMatch(/yahoo/);
+    expect(check(`return await oauth.refresh({});`).join(" ")).toMatch(/refresh/);
+  });
+
   it("type a model handle from `models.get`, its posterior methods as optional members", () => {
     expect(
       check(

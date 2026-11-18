@@ -2,6 +2,69 @@
 
 Changes in reverse chronological order.
 
+## OAuth 2.0 tokens for application code: `oauth.begin` and `oauth.accessToken`
+
+A user asked for OAuth support for Gmail (Google is phasing out password IMAP) and other APIs, so
+an application keeps revocable refresh tokens rather than passwords. They suggested a recipe for a
+redirect callback in a public GET code query, the client secret in a secret store, and a
+scheduled trigger that refreshes the token. Checked against the code first:
+
+- Gmail **over IMAP** already works through the Mail module (`mail_oauth_start`, provider
+  `google`), which keeps and renews its own tokens.
+- A public GET custom query could already answer a redirect: `location` is not a server-owned
+  header. Nothing tested it; now `app_oauth::a_public_get_query_answers_a_real_redirect` does.
+- A **Secret** field already worked as the place for a client secret: sealed at rest, redacted on
+  every client surface, readable by code bodies.
+- What was missing: the server's consent flow (PKCE, the binding cookie, tokens written sealed)
+  could be used by **modules only**. A hand-rolled callback would have every application redo
+  `state`, PKCE and the code exchange in an unauthenticated endpoint.
+
+Changes:
+
+- **`oauth.begin(…)` in code bodies** (JavaScript, code libraries, and Python's
+  `saltcorn.oauth.begin`). It takes the same request as a module's `oauth.begin`, with `store`
+  naming a row of an **application** table: never a `_fd_*` table or a module's table. The token
+  fields must be Secret fields, and the row must be readable at the run's authority. It answers
+  `{ url, expires_in }`, and the browser goes through the existing
+  `/_feldspar/oauth/consent/{id}` route, the shared callback
+  (`https://<admin host>/_feldspar/oauth/callback`, nothing new to register) and the completion.
+  A body running as admin (a trigger) has the row written by the server. A body running as its
+  caller (a custom query) has it written as the caller, through the table's ownership rules.
+  `provider: "google"` (with `access_type=offline` and `prompt=consent`) or `"microsoft"` fills
+  in the addresses, and any other provider is named by `authorization_url` and `token_url`.
+- **`oauth.accessToken(…)`** answers a token good for at least 5 more minutes. When the stored
+  one is due, it renews it with the refresh token, writes the new tokens back (a new refresh token
+  too, when the provider rotates them) and answers that. There is one renewal per row at a time.
+  `refused: token` renews after a 401, unless another call already did. A refused refresh token
+  (`invalid_grant`) throws, saying to connect again. So a scheduled trigger just calls it before
+  each request, and no refresh job is needed. `{ detail: true }` answers
+  `{ access_token, expires_at, refreshed }`.
+- **Internal move:** the flow's registry and checks moved from `sc_module::consent` to
+  `sc_auth::consent`, since `sc-api` sits below `sc-module`. `sc_module::consent` re-exports them
+  and keeps its declared-table rule. `ConsentFlow::module` became `asker` (`Asker::Module(name)`
+  or `Asker::Application`), and `TokenStore` gained `writer`. Flows are in memory only, so nothing
+  stored changes. A module's flow and its messages are unchanged.
+- **Docs:** a recipe in `tutorial-triggers.md` Step 5 (register the client, keep its secret in a
+  Secret field, a connect action, a scheduled trigger using the token, and why not to hand-roll
+  the callback); the `oauth` section of the code API reference (`code_api_js.md`); the editor's
+  types (`codeTypes.ts`, `declare const oauth`); and TECHNICAL_DESIGN §10.
+- **Tests:**
+  - `sc-server` `app_oauth`: a code action and a custom query each connect an account end to end
+    against a fake provider, with PKCE and the client secret read from a Secret field. The tokens
+    are sealed at rest and redacted over REST, and another user's browser is refused. A locked
+    row, a non-Secret token field, a system table and a missing row are refused before any
+    browser is involved. Renewal: the stored token is answered while it is good; once due it is
+    renewed and resealed, keeping the refresh token; `refused` with an old token takes the newer
+    one, and with the current one renews; a revoked refresh token says to connect again. The 302
+    redirect.
+  - `sc-auth` `consent` unit tests (moved from `sc-module`, plus `StoreRequest`). `sc-api`
+    `code_host::oauth` unit tests: expiry parsing, the margin, keeping the refresh token, and the
+    form encoding.
+  - `ui/admin` `codeTypes.test.ts`: `oauth.begin` / `accessToken` typed, an unknown provider and
+    method refused.
+  - `sc-python` `python_oauth` (`python-host`): `oauth.begin` and `oauth.access_token` lower to
+    the same requests as the JavaScript ones, with Google's addresses and parameters filled in.
+
 ## Several comparisons on one column: ranges in the filter object and the typed client
 
 A user reported that a list filtered by several states had to fetch more rows and filter them in

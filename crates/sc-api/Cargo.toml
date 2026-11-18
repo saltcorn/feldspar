@@ -57,6 +57,10 @@ sc-files.workspace = true
 # `mcp` produces the one and the transport renames it — rather than defining a
 # third shape here for the two callers to convert between.
 sc-llm.workspace = true
+# `oauth.accessToken` (code_host/oauth.rs) renews a token at the provider's token
+# endpoint, as the server's own OAuth exchange does: `sc-net`'s client builder.
+sc-net.workspace = true
+reqwest.workspace = true
 # A code body's `models` (Stan TODO §17): a fitted posterior's draws and
 # summary, read through the `db` host. `sc-model` is layer 6, below this crate.
 sc-model.workspace = true

@@ -18,6 +18,8 @@ sc-query.workspace = true
 sc-db.workspace = true
 sc-catalog.workspace = true
 sc-types.workspace = true
+# `RedirectTarget`, for a consent flow's `return_to` (`consent`). Layer 0.
+sc-http.workspace = true
 # `value_from_json`, for reading a caller back out of the JSON an event carries
 # it as. The workspace dep defaults `sc-expr`'s features off, so no engine is
 # linked here — the parser and the two value conversions are all that is used.

@@ -131,6 +131,7 @@ mod files;
 mod history;
 mod llm;
 mod models;
+mod oauth;
 mod plan;
 pub mod schema;
 mod triggers;
@@ -1101,6 +1102,11 @@ impl CodeHost for TableHost<'_> {
         // same budget.
         if request.get("op").and_then(Json::as_str) == Some("llm") {
             return llm::answer(self, request).await;
+        }
+        // A user's OAuth tokens for an API (TODO OA1): a consent flow begun,
+        // an access token handed out and renewed when it is due.
+        if request.get("op").and_then(Json::as_str) == Some("oauth") {
+            return oauth::answer(self, request).await;
         }
         // Row history (§14.12): a row's versions read, a deleted row restored,
         // a row put back — through the same reader and reverser as the admin

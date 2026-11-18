@@ -832,6 +832,74 @@ interface ScLlm {
 `;
 }
 
+/** The declarations for `oauth`: a user's OAuth 2.0 tokens for an API, over
+ * the run's own `db` — a transcription of `sc-expr`'s `__scMakeOauth`, on the
+ * same terms as {@link llmDeclarations}. */
+export function oauthDeclarations(): string {
+  return `
+/** Where the tokens are kept: a row of an application table. */
+interface ScOAuthStore {
+  table: string;
+  /** The row's primary key. */
+  id: string | number;
+  fields: {
+    /** A Secret field. */
+    access_token: string;
+    /** A Secret field. */
+    refresh_token?: string;
+    /** A timestamp field: when the access token expires. */
+    expires_at?: string;
+  };
+  /** Other fields of the row, written with the tokens. */
+  set?: Record<string, unknown>;
+}
+
+/** The client, and the provider: a known one, or its addresses. */
+interface ScOAuthClient {
+  provider?: "google" | "microsoft";
+  token_url?: string;
+  client_id: string;
+  client_secret?: string;
+  store: ScOAuthStore;
+}
+
+/** A consent flow to begin. */
+interface ScOAuthBegin extends ScOAuthClient {
+  authorization_url?: string;
+  scope: string;
+  /** Extra authorization parameters (\`login_hint\`, \`prompt\`, …). */
+  params?: Record<string, string>;
+  /** A path on the application's host to come back to. */
+  return_to?: string;
+}
+
+/** An access token to hand out. */
+interface ScOAuthAccess extends ScOAuthClient {
+  /** The token a request was just refused with: renewed, unless another call
+   * already renewed it. */
+  refused?: string;
+  /** Renew it whatever is stored. */
+  force?: boolean;
+}
+
+/** An access token, and whether this call renewed it. */
+interface ScOAuthToken {
+  access_token: string;
+  expires_at: string | null;
+  refreshed: boolean;
+}
+
+/** A user's OAuth 2.0 tokens. */
+interface ScOAuth {
+  /** Begin the consent flow: where to send the caller's browser. */
+  begin(options: ScOAuthBegin): Promise<{ url: string; expires_in: number }>;
+  /** A token good for at least five minutes, renewed when it is due. */
+  accessToken(options: ScOAuthAccess & { detail: true }): Promise<ScOAuthToken>;
+  accessToken(options: ScOAuthAccess & { detail?: false }): Promise<string>;
+}
+`;
+}
+
 /** The TypeScript type one of v1's declared argument types arrives as.
  *
  * v1's own type names, which is the vocabulary `sc_module::spec` already
@@ -1117,6 +1185,18 @@ export function scopeDeclarations(
       `declare const llm: ScLlm;`,
   );
   parts.push(
+    `/** A user's OAuth 2.0 tokens for an API, kept in a row's Secret fields:\n` +
+      ` *\n` +
+      ` * \`\`\`js\n` +
+      ` * const { url } = await oauth.begin({ provider: "google", client_id, client_secret,\n` +
+      ` *   scope, return_to: "/settings", store });\n` +
+      ` * const token = await oauth.accessToken({ provider: "google", client_id, client_secret, store });\n` +
+      ` * \`\`\`\n` +
+      ` *\n` +
+      ` * Each call is a database call of this run, on its budget. */\n` +
+      `declare const oauth: ScOAuth;`,
+  );
+  parts.push(
     `/** Call an HTTP endpoint. The web's \`fetch\`, with the web's rules: a\n` +
       ` * non-2xx status is an answer rather than a throw, and only a transport\n` +
       ` * failure rejects (with a \`TypeError\`).\n` +
@@ -1392,6 +1472,7 @@ export function codeLibrary(
     triggerDeclarations(),
     modelDeclarations(),
     llmDeclarations(),
+    oauthDeclarations(),
     moduleFunctionDeclarations(functions),
     tableDeclarations(tables),
     scopeDeclarations(scope, tables, functions),

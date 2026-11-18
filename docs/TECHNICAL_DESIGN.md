@@ -4162,6 +4162,63 @@ API, and the MCP audit line at Verbose masks credential-named arguments. From a 
 `sc_llm` checks, taking the key from `--api-key-env` or `--api-key-file` and never from the
 command line.
 
+#### `oauth`: a user's OAuth 2.0 tokens in a code body (TODO OA1)
+
+An application calling Gmail, Google Calendar or Microsoft Graph needs a bearer token, and
+Google is phasing out passwords for IMAP (a user report). Hand-rolled, that is a public GET
+endpoint for the redirect, `state` and PKCE kept somewhere, a code exchange with the client
+secret, and a refresh job. The module consent flow already did all of it, for modules only.
+`oauth` gives the same flow to application code:
+
+```js
+const { url } = await oauth.begin({ provider: "google", client_id, client_secret, scope,
+  params, return_to: "/settings",
+  store: { table: "connections", id: row.id,
+           fields: { access_token, refresh_token, expires_at }, set: { status: "connected" } } });
+const token = await oauth.accessToken({ provider: "google", client_id, client_secret, store,
+                                        refused, force, detail });
+```
+
+- **One flow, two askers.** The flow (its registry, the request's checks, `CONSENT_PREFIX`,
+  `ConsentFlow`) moved from `sc_module::consent` to **`sc_auth::consent`**, because `sc-api` is
+  below `sc-module` and both need it. A flow records its `Asker` (`Module(name)` or
+  `Application`) and how the asker decides where tokens go: the module keeps its declared-table
+  rule (`sc_module::consent::token_store`), and the code host has its own
+  (`sc_api::code_host::oauth`). The browser's half (`sc_server::oauth`'s consent route, the
+  shared callback, the completion) is unchanged and serves both.
+- **Not a surface.** Like `llm`, a `const` over the run's `db` (`__scMakeOauth(db)`, in a code
+  library too, and `saltcorn.oauth` in Python), each call one `op: "oauth"` plan (`what:
+  "begin" | "access_token"`) on the run's budget. `provider: "google" | "microsoft"` is prelude
+  sugar for the two providers' addresses, and Google's `access_type=offline` and
+  `prompt=consent`, without which there is no refresh token. Refused on a `viewer_only` host.
+- **Where tokens may go.** An application table: never a `_fd_*` table (refused by name, before
+  the lookup) and never a module's. The token fields must be Secret fields (§9 "Secret fields"),
+  and `expires_at` and the `set` fields must be the table's. The row must be readable **at the
+  run's default authority** when `begin` is called, so a wrong id is an error before the user
+  consents.
+- **Whose write.** `TokenStore::writer` records the authority the row is written at when the
+  browser comes back. It is `None`, the server's, when the body runs as admin (a trigger's
+  default; the author checks the row is the caller's, as a module does). It is the caller's
+  principal when the body runs as its caller (a custom query's default), and then the completion
+  writes through `Scoped`'s ownership rule, so the table's floors and ownership formula decide
+  at completion. On an RLS table the admin authority is its cause's (`as_cause_on`), so the
+  write is the caller's there too.
+- **Renewal on use, not on a schedule.** `access_token` reads the row at the run's authority,
+  secrets revealed. A token good for more than `REFRESH_MARGIN` (5 min) is answered as it is.
+  Otherwise the token is renewed at `token_url` (`grant_type=refresh_token`, `sc_net`'s client
+  builder, 15 s) and the answer is written back through the same scope: the access token, a new
+  refresh token when the provider sent one (Microsoft rotates them, Google keeps its own), and
+  the expiry. Renewals are serialised **per row in this process** (a `tokio` mutex per table and
+  id), and the row is read again under the lock, so concurrent runs renew once. `refused: token`
+  says a request was refused with that token: it is renewed unless the row already holds
+  another. `invalid_grant` is an error saying to connect again with `oauth.begin`. A scheduled
+  trigger can therefore just call `accessToken` before each request; a separate refresh job
+  is not needed. Two server processes may each renew once, which every provider tolerates.
+- **The hand-rolled path still works.** `response({ status: 302, headers: { location } })` from
+  a public GET custom query is a real redirect (`location` is not a server-owned header), and
+  `app_oauth::a_public_get_query_answers_a_real_redirect` keeps it so. The tutorial points away
+  from it, because `state`, PKCE and binding the tokens to the right user are easy to get wrong.
+
 #### `Table` and `Field`: Saltcorn 1's API in a code body
 
 An application that is being moved from Saltcorn 1 arrives with bodies already written, and
@@ -14186,7 +14243,8 @@ shared callback (on the admin UI's host) exchanges the code; the completion, in 
 started, writes the tokens through the row layer (sealed, and heard by the module's service as a
 change that is not its own) and leaves for `return_to`, with `oauth_error=…` on a failure. The
 module never sees the code, and the application never sees a token. Renewing a token is the
-module's own business, with its own `fetch`.
+module's own business, with its own `fetch`. The flow itself lives in `sc_auth::consent`, which application
+code bodies' `oauth.begin` also uses (§10, "`oauth`: a user's OAuth 2.0 tokens in a code body").
 
 **The vocabulary** is four functions, store-relative paths throughout:
 `write(store, path, data, { contentType, filename }) → path`, `read(store, path, { encoding }) →

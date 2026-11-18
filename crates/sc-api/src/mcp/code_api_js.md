@@ -66,7 +66,7 @@ from `payload`, never `row`. `user` is in scope for every event.
   credentials removed). A query saved with `body_type: "bytes"` (JavaScript, POST/PUT/PATCH)
   gets `body` as a `Uint8Array` of the raw request body instead, and its declared params come
   from the query string; its client method takes a `Blob`, `ArrayBuffer` or `Uint8Array`.
-- `db`, `models`, `llm`, `fetch`, `fs`, `trigger`, `modfn`, `console`, `lib` — below.
+- `db`, `models`, `llm`, `oauth`, `fetch`, `fs`, `trigger`, `modfn`, `console`, `lib` — below.
 - `btoa`, `atob`, `TextEncoder`, `TextDecoder`, `crypto`, `httpError`, `response`,
   `ratelimit` — below.
 
@@ -440,6 +440,59 @@ refused before the model is called when there is nobody to charge (an anonymous 
 scheduled trigger), when the balance is at or below zero or under `credits_min_balance`, and when
 only `credits_per_dollar` is given and the model has no prices. The debit is made after the call,
 and stays even if the run's writes are rolled back.
+
+## `oauth`: a user's tokens for an API
+
+For an API that takes an OAuth 2.0 bearer token rather than a password (Gmail, Google Calendar,
+Microsoft Graph). The server runs the consent page and the code exchange (PKCE, the client
+secret) and keeps the tokens in **Secret** fields of a row of an application table. The code
+never sees the authorization code. Do not write the callback yourself.
+
+```js
+// Keep the client id and secret in a table, the secret in a Secret field.
+const [client] = await db.asAdmin().oauth_clients.rows();   // admin-only: asAdmin()
+const store = { table: "connections", id: row.id,          // a row this code may reach
+  fields: { access_token: "access_token", refresh_token: "refresh_token",  // Secret fields
+            expires_at: "expires_at" },                    // a timestamp field (optional)
+  set: { status: "connected" } };                          // other fields written with them
+
+// In a code action or custom query the signed-in user called:
+const { url } = await oauth.begin({ provider: "google",    // or authorization_url + token_url
+  client_id: client.client_id, client_secret: client.client_secret,
+  scope: "https://www.googleapis.com/auth/calendar", params: { login_hint: user.email },
+  return_to: "/settings", store });
+return { url };   // the page sends the browser there: window.location.assign(url)
+
+// Later (any trigger, a scheduled one included): a token good for at least 5 minutes.
+const google = { provider: "google", client_id: client.client_id,
+  client_secret: client.client_secret, store };
+const token = await oauth.accessToken(google);
+const res = await fetch("https://www.googleapis.com/calendar/v3/users/me/calendarList",
+  { headers: { authorization: "Bearer " + token } });
+if (res.status === 401) {   // revoked early: renew it once (unless another call already did)
+  const again = await oauth.accessToken({ ...google, refused: token });
+}
+```
+
+`provider` is `google` (it adds `access_type=offline` and `prompt=consent`, without which Google
+grants no refresh token) or `microsoft`; any other is named with `authorization_url` and
+`token_url`. The provider's redirect address is `https://<admin host>/_feldspar/oauth/callback`.
+The browser comes back to `return_to`, with `?oauth_error=…` when something failed.
+
+- `begin` needs a signed-in caller (not a scheduled trigger), and only that user, in that
+  browser, can finish it. The table must be an application table, the token fields Secret
+  fields, and the row one this code can read now.
+- The row is written at the code's authority: by the server when the code runs as admin (a
+  trigger's default, so check the row is the caller's, for example with
+  `db.asUser().connections`), and as the caller when the code runs as its caller (a custom
+  query's default), through the table's ownership rules.
+- `accessToken` renews the token with the refresh token when it is due, writes the new tokens
+  back (a new refresh token too, when the provider sends one), and answers the access token
+  (`{ detail: true }`: `{ access_token, expires_at, refreshed }`). One renewal at a time per
+  row. A refresh token the provider refuses (`invalid_grant`) throws, saying to connect again
+  with `begin`. `force: true` renews whatever is stored.
+- Both are database calls of this run. `oauth` is not available where code runs at its viewer's
+  authority.
 
 ## The other handles
 

@@ -57,6 +57,9 @@ mod python_modfn;
 #[cfg(feature = "python-host")]
 #[path = "python_llm.rs"]
 mod python_llm;
+#[cfg(feature = "python-host")]
+#[path = "python_oauth.rs"]
+mod python_oauth;
 #[path = "python_models.rs"]
 mod python_models;
 

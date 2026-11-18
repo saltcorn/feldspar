@@ -43,111 +43,20 @@
 //!   `oauth_error=…` when something failed.
 //!
 //! Flows live in this process's memory, as sign-in flows do, for ten minutes.
-
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
-use std::time::{Duration, Instant};
+//! The flow itself — its registry, the checks every asker shares — is
+//! [`sc_auth::consent`], which an application's own code bodies use too
+//! (`oauth.begin`, TODO OA1); what is the module's here is where its tokens may
+//! go.
 
 use sc_catalog::Catalog;
-use sc_error::{Error, Result};
-use serde_json::{Map, Value as Json, json};
+use sc_error::Result;
+use serde_json::Value as Json;
 
 use crate::host::Ask;
 
-/// Where a consent flow's browser half starts: `<prefix>/<id>`, on the host the
-/// application is served on.
-pub const CONSENT_PREFIX: &str = "/_feldspar/oauth/consent";
-
-/// How long a flow may wait for its browser, and then for the provider.
-pub const CONSENT_TTL: Duration = Duration::from_secs(600);
-
-/// The authorization request's own parameters, which `params` may not set.
-const RESERVED_PARAMS: [&str; 7] = [
-    "response_type",
-    "client_id",
-    "redirect_uri",
-    "scope",
-    "state",
-    "code_challenge",
-    "code_challenge_method",
-];
-
-/// Where the granted tokens go: one row of one of the module's tables.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TokenStore {
-    pub table: String,
-    /// The row's primary key, as text.
-    pub id: String,
-    /// The Secret field the access token is written to.
-    pub access_token: String,
-    /// The Secret field the refresh token is written to, when the provider
-    /// grants one.
-    pub refresh_token: Option<String>,
-    /// The field the access token's expiry is written to, as a timestamp.
-    pub expires_at: Option<String>,
-    /// Other fields written with the tokens.
-    pub set: Map<String, Json>,
-}
-
-/// One consent a module asked for.
-#[derive(Debug, Clone)]
-pub struct ConsentFlow {
-    /// The module whose action began it.
-    pub module: String,
-    /// The id of the user whose call began it: the only one who may finish it.
-    pub user: String,
-    pub authorization_url: String,
-    pub token_url: String,
-    pub client_id: String,
-    pub client_secret: sc_error::Secret<String>,
-    pub scope: String,
-    /// Extra authorization parameters (`login_hint`, `prompt`, …).
-    pub params: Vec<(String, String)>,
-    /// A path on the application's host.
-    pub return_to: sc_http::RedirectTarget,
-    pub store: TokenStore,
-    expires: Instant,
-}
-
-/// The flows modules have begun and no browser has taken up yet.
-#[derive(Default)]
-pub struct ConsentFlows {
-    pending: Mutex<HashMap<String, ConsentFlow>>,
-}
-
-static FLOWS: LazyLock<ConsentFlows> = LazyLock::new(ConsentFlows::default);
-
-/// This process's consent flows.
-pub fn flows() -> &'static ConsentFlows {
-    &FLOWS
-}
-
-impl ConsentFlows {
-    /// Keep `flow`, answering the id its browser half starts at.
-    pub fn begin(&self, mut flow: ConsentFlow) -> String {
-        let id = format!(
-            "{}{}",
-            uuid::Uuid::new_v4().simple(),
-            uuid::Uuid::new_v4().simple()
-        );
-        let now = Instant::now();
-        flow.expires = now + CONSENT_TTL;
-        let mut map = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        map.retain(|_, f| f.expires > now);
-        map.insert(id.clone(), flow);
-        id
-    }
-
-    /// The flow `id` names, once, if it has not lapsed.
-    pub fn take(&self, id: &str) -> Option<ConsentFlow> {
-        let flow = self
-            .pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(id)?;
-        (flow.expires > Instant::now()).then_some(flow)
-    }
-}
+pub use sc_auth::consent::{
+    Asker, CONSENT_PREFIX, CONSENT_TTL, ConsentFlow, ConsentFlows, TokenStore, flows,
+};
 
 /// The `oauth` ask surface of one action's call: `oauth.begin(request)`.
 pub struct ConsentAsks<'a> {
@@ -162,10 +71,7 @@ impl Ask for ConsentAsks<'_> {
     async fn ask(&self, plan: Json) -> Result<Json> {
         let flow = consent_flow(self.catalog, self.module, self.user, &plan)?;
         let id = flows().begin(flow);
-        Ok(json!({
-            "url": format!("{CONSENT_PREFIX}/{id}"),
-            "expires_in": CONSENT_TTL.as_secs(),
-        }))
+        Ok(sc_auth::consent::begun(&id))
     }
 }
 
@@ -176,113 +82,22 @@ pub fn consent_flow(
     user: Option<&Json>,
     request: &Json,
 ) -> Result<ConsentFlow> {
-    let refuse = |why: String| Error::invalid(format!("oauth.begin: {why}"));
-    let user = user
-        .and_then(|u| u.get("id"))
-        .and_then(|id| match id {
-            Json::String(s) if !s.is_empty() => Some(s.clone()),
-            Json::Number(n) => Some(n.to_string()),
-            _ => None,
-        })
-        .ok_or_else(|| {
-            refuse("only an action called by a signed-in user can ask for their consent".into())
-        })?;
-    let text = |key: &str| -> Result<String> {
-        match request.get(key) {
-            Some(Json::String(s)) if !s.trim().is_empty() => Ok(s.trim().to_owned()),
-            _ => Err(refuse(format!("`{key}` is required, as text"))),
-        }
-    };
-    let authorization_url = provider_url(&text("authorization_url")?).map_err(refuse)?;
-    let token_url = provider_url(&text("token_url")?).map_err(refuse)?;
-    let client_id = text("client_id")?;
-    let scope = text("scope")?;
-    let client_secret = match request.get("client_secret") {
-        None | Some(Json::Null) => String::new(),
-        Some(Json::String(s)) => s.clone(),
-        Some(_) => return Err(refuse("`client_secret` is text".into())),
-    };
-    let mut params = Vec::new();
-    match request.get("params") {
-        None | Some(Json::Null) => {}
-        Some(Json::Object(map)) => {
-            for (key, value) in map {
-                if RESERVED_PARAMS.contains(&key.as_str()) {
-                    return Err(refuse(format!(
-                        "`params` may not set `{key}`: the server sets it"
-                    )));
-                }
-                match value {
-                    Json::Null => {}
-                    Json::String(s) => params.push((key.clone(), s.clone())),
-                    other => params.push((key.clone(), other.to_string())),
-                }
-            }
-        }
-        Some(_) => return Err(refuse("`params` is an object of text values".into())),
-    }
-    let return_to = return_to_of(request).map_err(refuse)?;
-    let store = token_store(catalog, module, request.get("store")).map_err(refuse)?;
-    Ok(ConsentFlow {
-        module: module.to_owned(),
-        user,
-        authorization_url,
-        token_url,
-        client_id,
-        client_secret: client_secret.into(),
-        scope,
-        params,
-        return_to,
-        store,
-        expires: Instant::now() + CONSENT_TTL,
+    sc_auth::consent::consent_flow(Asker::Module(module.to_owned()), user, request, |store| {
+        token_store(catalog, module, store)
     })
 }
 
-/// A provider's address: `https`, or `http` to this machine (a provider under
-/// test).
-fn provider_url(url: &str) -> std::result::Result<String, String> {
-    let loopback = ["http://127.0.0.1", "http://localhost", "http://[::1]"]
-        .iter()
-        .any(|p| {
-            url.strip_prefix(p)
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '/']))
-        });
-    if url.starts_with("https://") || loopback {
-        Ok(url.to_owned())
-    } else {
-        Err(format!("a provider's address is https://…, not {url}"))
-    }
-}
-
-/// The request's `return_to`: a path on this host (`/x`, never
-/// `//other.example` or `/\other.example`), by the one rule of
-/// [`sc_http::RedirectTarget`]; `/` when it names none.
-fn return_to_of(request: &Json) -> std::result::Result<sc_http::RedirectTarget, String> {
-    match request.get("return_to") {
-        None | Some(Json::Null) => Ok(sc_http::RedirectTarget::root()),
-        Some(Json::String(path)) => sc_http::RedirectTarget::parse(path).ok_or_else(|| {
-            format!(
-                "`return_to` is a path on the application's host, such as \"/settings\", not {path:?}"
-            )
-        }),
-        Some(other) => Err(format!(
-            "`return_to` is a path on the application's host, such as \"/settings\", not {other}"
-        )),
-    }
-}
-
+/// The module's rule for where tokens go: a table the module declared, the
+/// token fields its declared **Secret** fields, `set` its declared fields. The
+/// server writes the row at its own authority; which row is the module's
+/// decision.
 fn token_store(
     catalog: &Catalog,
     module: &str,
     store: Option<&Json>,
 ) -> std::result::Result<TokenStore, String> {
-    let Some(Json::Object(store)) = store else {
-        return Err("`store` is required: { table, id, fields: { access_token, refresh_token, expires_at }, set }".into());
-    };
-    let table = match store.get("table") {
-        Some(Json::String(t)) => t.clone(),
-        _ => return Err("`store.table` is required".into()),
-    };
+    let store = sc_auth::consent::StoreRequest::parse(store)?;
+    let table = store.table.clone();
     let claims = catalog.module_tables();
     if claims.module_of(&table) != Some(module) {
         return Err(format!(
@@ -290,22 +105,7 @@ fn token_store(
         ));
     }
     let declared = catalog.require(&table).map_err(|e| e.to_string())?;
-    let id = match store.get("id") {
-        Some(Json::String(s)) if !s.is_empty() => s.clone(),
-        Some(Json::Number(n)) => n.to_string(),
-        _ => return Err("`store.id` is the row's primary key".into()),
-    };
-    let fields = match store.get("fields") {
-        Some(Json::Object(f)) => f.clone(),
-        _ => return Err("`store.fields` names the fields the tokens go into".into()),
-    };
-    let field = |key: &str, secret: bool| -> std::result::Result<Option<String>, String> {
-        let Some(value) = fields.get(key) else {
-            return Ok(None);
-        };
-        let Json::String(name) = value else {
-            return Err(format!("`store.fields.{key}` is a field name"));
-        };
+    for (name, secret) in store.token_fields() {
         if !claims.declares_field(&table, name) {
             return Err(format!(
                 "`{name}` is not a field {module} declared on `{table}`"
@@ -316,78 +116,13 @@ fn token_store(
                 "`{table}.{name}` is not a Secret field, and a token is kept only in one"
             ));
         }
-        Ok(Some(name.clone()))
-    };
-    let access_token = field("access_token", true)?
-        .ok_or_else(|| "`store.fields.access_token` is required".to_owned())?;
-    let refresh_token = field("refresh_token", true)?;
-    let expires_at = field("expires_at", false)?;
-    let mut set = Map::new();
-    if let Some(values) = store.get("set") {
-        let Json::Object(values) = values else {
-            return Err("`store.set` is an object of field values".into());
-        };
-        for (name, value) in values {
-            let token_field = [
-                Some(&access_token),
-                refresh_token.as_ref(),
-                expires_at.as_ref(),
-            ]
-            .into_iter()
-            .flatten()
-            .any(|f| f == name);
-            if token_field || !claims.declares_field(&table, name) {
-                return Err(format!(
-                    "`store.set` may set the other fields {module} declared on `{table}`, not `{name}`"
-                ));
-            }
-            set.insert(name.clone(), value.clone());
+    }
+    for name in store.set.keys() {
+        if store.set_token_field() == Some(name) || !claims.declares_field(&table, name) {
+            return Err(format!(
+                "`store.set` may set the other fields {module} declared on `{table}`, not `{name}`"
+            ));
         }
     }
-    Ok(TokenStore {
-        table,
-        id,
-        access_token,
-        refresh_token,
-        expires_at,
-        set,
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_provider_is_https_or_this_machine() {
-        assert!(provider_url("https://login.microsoftonline.com/x").is_ok());
-        assert!(provider_url("http://127.0.0.1:4000/token").is_ok());
-        assert!(provider_url("http://localhost/token").is_ok());
-        for bad in [
-            "http://login.example.com",
-            "http://127.0.0.1.evil.example",
-            "ftp://x",
-        ] {
-            assert!(provider_url(bad).is_err(), "{bad}");
-        }
-    }
-
-    #[test]
-    fn return_to_is_a_path_here() {
-        let of = |return_to: Json| {
-            return_to_of(&json!({ "return_to": return_to })).map(|t| t.into_string())
-        };
-        assert_eq!(of(json!("/settings?x=1")).as_deref(), Ok("/settings?x=1"));
-        assert_eq!(of(Json::Null).as_deref(), Ok("/"));
-        for bad in [
-            "//evil.example",
-            "/\\evil.example",
-            "https://evil.example",
-            "javascript:alert(1)",
-            "x",
-        ] {
-            assert!(of(json!(bad)).is_err(), "{bad}");
-        }
-        assert!(of(json!(7)).is_err());
-    }
+    Ok(store.into_store(None))
 }

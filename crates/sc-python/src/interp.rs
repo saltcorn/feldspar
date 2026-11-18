@@ -94,16 +94,17 @@ const PLUGIN_MODULE: &str = "__sc_plugin";
 ///
 /// `models` rides on the `db` surface (Stan TODO §17): it reads a fitted
 /// model's draws as `db` requests, so it is bound exactly where `db` is — and
-/// so does `llm`, whose model calls are `db` requests too.
+/// so does `llm`, whose model calls are `db` requests too, and `oauth`.
 ///
 /// They are objects the package holds, not per-run factories: the run's
 /// authority, its budgets and the names it may reach all live on the **thread**
 /// (see [`crate::bridge`]), so one shared handle is this language's version of
 /// the closure a JavaScript run is handed.
-const SURFACES: [(&str, Surface); 8] = [
+const SURFACES: [(&str, Surface); 9] = [
     ("db", Surface::Db),
     ("models", Surface::Db),
     ("llm", Surface::Db),
+    ("oauth", Surface::Db),
     ("fetch", Surface::Fetch),
     ("fs", Surface::Files),
     ("trigger", Surface::Triggers),
@@ -710,9 +711,9 @@ pub(crate) fn run_body(
         // function under each is what the plan crosses on.
         let package = package(py).map_err(|e| py_error(py, &e))?;
         for (name, surface) in SURFACES {
-            // `models` and `llm` are sugar, not capabilities: a caller that bound the
-            // name keeps it, as a JavaScript body's does.
-            if (name == "models" || name == "llm") && bindings.contains_key(name) {
+            // `models`, `llm` and `oauth` are sugar, not capabilities: a caller that
+            // bound the name keeps it, as a JavaScript body's does.
+            if matches!(name, "models" | "llm" | "oauth") && bindings.contains_key(name) {
                 continue;
             }
             if surfaces.holds(surface) {

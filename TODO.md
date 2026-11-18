@@ -1047,6 +1047,36 @@ out code meant for an action), so everyone wrote throwaway test triggers.
   lines. Tests: `sc-api` unit tests, `run_code_commits_a_migration_and_rolls_back_a_trial_run`
   in `sc-server`'s `mcp_server.rs`.
 
+## OA1 — OAuth 2.0 tokens for application code (user feedback)
+
+Gmail (Google is phasing out password IMAP) and other APIs need OAuth tokens. The report asked
+for a redirect-callback recipe, the client secret in a secret store, and token refresh from a
+scheduled trigger. Checked against the code: Gmail over IMAP was already covered by the Mail
+module, a public GET code query could already answer a 302, and a Secret field already worked as
+the secret store. The server's consent flow (PKCE, the binding cookie, sealed tokens) was
+available to modules only.
+
+- [x] **OA1.1** The consent flow's core moves from `sc_module::consent` to `sc_auth::consent`
+  (`Asker`, `TokenStore::writer`, `StoreRequest`). The module keeps its own rule for where tokens
+  may go. The completion writes as the server, or as the caller when the flow's code ran as its
+  caller. Tests: `sc-auth` unit tests, `sc-module` and `sc-server` `module_consent`.
+- [x] **OA1.2** `oauth.begin(…)` for application code bodies (JavaScript, a code library, and
+  Python's `saltcorn.oauth`), as `op: "oauth"` on the `db` host (`sc_api::code_host::oauth`).
+  Tokens may go into an application table's Secret fields, in a row the run can read now.
+  `provider: "google" | "microsoft"` fills in the addresses. Tests: `sc-server`
+  `app_oauth::a_code_action_and_a_custom_query_connect_an_account_and_keep_its_tokens`,
+  `sc-python` `python_oauth`.
+- [x] **OA1.3** `oauth.accessToken(…)`: the stored token while it is good for 5 more minutes,
+  otherwise renewed at the token endpoint and written back (one renewal per row at a time;
+  `refused` to renew after a 401). `invalid_grant` says to connect again. Tests: `sc-api` unit
+  tests, `app_oauth::an_access_token_is_renewed_when_it_is_due`.
+- [x] **OA1.4** Docs: the recipe in `tutorial-triggers.md` Step 5 (registering the client, the
+  client secret in a Secret field, the connect action, a scheduled trigger), `code_api_js.md`, the
+  editor's types (`codeTypes.ts`), and TECHNICAL_DESIGN §10. Test: `codeTypes.test.ts`.
+- [x] **OA1.5** The hand-rolled path is kept working: a public GET custom query's
+  `response({ status: 302, headers: { location } })` is a real redirect. Test:
+  `app_oauth::a_public_get_query_answers_a_real_redirect`.
+
 ---
 
 ## Open questions

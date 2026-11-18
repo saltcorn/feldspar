@@ -250,6 +250,8 @@ mod app_none_framework;
 mod app_preview;
 #[path = "app_public_endpoints.rs"]
 mod app_public_endpoints;
+#[path = "app_oauth.rs"]
+mod app_oauth;
 #[path = "catalog_teardown.rs"]
 mod catalog_teardown;
 #[path = "oauth_sign_in.rs"]

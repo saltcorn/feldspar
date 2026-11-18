@@ -53,7 +53,7 @@ use sc_auth::User;
 use sc_catalog::{PublicBaseUrl, TrustedHost};
 use sc_config::OAuthProvider;
 use sc_http::RedirectTarget;
-use sc_module::consent::ConsentFlow;
+use sc_auth::consent::ConsentFlow;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -74,7 +74,8 @@ pub const CALLBACK_ROUTE: &str = "/_feldspar/oauth/callback";
 /// Where the browser finishes, on the host it started on.
 pub const COMPLETE_ROUTE: &str = "/_feldspar/oauth/complete";
 /// Where a module's consent flow starts in the browser
-/// ([`sc_module::consent::CONSENT_PREFIX`]`/{id}`).
+/// ([`sc_auth::consent::CONSENT_PREFIX`]`/{id}`), a module's or an
+/// application code body's.
 pub const CONSENT_ROUTE: &str = "/_feldspar/oauth/consent/{id}";
 
 /// The cookie binding a flow to the browser that started it.
@@ -403,7 +404,7 @@ pub(crate) async fn consent(
     headers: axum::http::HeaderMap,
     jar: CookieJar,
 ) -> Response {
-    let Some(flow) = sc_module::consent::flows().take(&id) else {
+    let Some(flow) = sc_auth::consent::flows().take(&id) else {
         return Redirect::to(&with_error(
             &RedirectTarget::root(),
             "connecting the account took too long or was already started; please try again",
@@ -1086,8 +1087,9 @@ fn leave_for(target: &str) -> Response {
 }
 
 /// Write a consent flow's tokens into the row it names, through the row
-/// layer, so the Secret fields are sealed and the module's service hears of
-/// the change. `Err` is a sentence for the application.
+/// layer, so the Secret fields are sealed and the module's service (or the
+/// application's triggers) hears of the change — at the server's authority, or
+/// the caller's when the flow's code body ran as its caller. `Err` is a sentence for the application.
 async fn store_tokens(
     catalog: &sc_catalog::Catalog,
     flow: &ConsentFlow,
@@ -1115,15 +1117,28 @@ async fn store_tokens(
         "the account could not be connected: its row could not be written".to_owned()
     };
     let table = catalog.require(&store.table).map_err(failed)?;
-    sc_access::rows::update_row(
-        catalog,
-        &table,
-        &store.id,
-        &Value::Object(values),
-        sc_catalog::Unchecked::system("OAuth: store the tokens of a consent flow"),
-    )
-    .await
-    .map_err(failed)?;
+    match &store.writer {
+        None => {
+            sc_access::rows::update_row(
+                catalog,
+                &table,
+                &store.id,
+                &Value::Object(values),
+                sc_catalog::Unchecked::system("OAuth: store the tokens of a consent flow"),
+            )
+            .await
+            .map_err(failed)?;
+        }
+        // An application code body that ran as its caller: the row is written
+        // as that caller, so the table's ownership rules decide, now as when
+        // the flow began.
+        Some(principal) => {
+            sc_access::Scoped::new(catalog, sc_catalog::Authority::Caller(principal))
+                .update(&table, &store.id, &Value::Object(values))
+                .await
+                .map_err(failed)?;
+        }
+    }
     Ok(())
 }
 
@@ -1183,7 +1198,7 @@ mod tests {
     fn the_consent_route_is_where_a_module_is_told_to_send_the_browser() {
         assert_eq!(
             CONSENT_ROUTE,
-            format!("{}/{{id}}", sc_module::consent::CONSENT_PREFIX)
+            format!("{}/{{id}}", sc_auth::consent::CONSENT_PREFIX)
         );
     }
 

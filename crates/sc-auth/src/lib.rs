@@ -81,6 +81,7 @@ pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> = sc_catalog::U
 );
 
 mod check_user;
+pub mod consent;
 mod create;
 mod credits;
 mod epoch;

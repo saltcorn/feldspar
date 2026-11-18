@@ -634,6 +634,12 @@ pub(crate) const MODELS: &str = "models";
 #[cfg(feature = "eval")]
 pub(crate) const LLM: &str = "llm";
 
+/// The name a code body reaches a user's OAuth tokens by — `oauth.begin(…)`,
+/// `oauth.accessToken(…)` (TODO OA1) — a `const` over the run's `db` handle,
+/// bound wherever `db` is, as [`LLM`] is.
+#[cfg(feature = "eval")]
+pub(crate) const OAUTH: &str = "oauth";
+
 /// The name the HTTP surface binds under, reserved when a fetch host is present
 /// for the reason [`DB`] is. It is `fetch` because that is what the web calls
 /// it, and a body's author knows the name before they read anything of ours.
@@ -1422,6 +1428,85 @@ Object.defineProperty(globalThis, "__scMakeLlm", {
           charge: o.charge,
         });
         return many ? vectors : vectors[0];
+      },
+    });
+  },
+});
+// `oauth`: a user's OAuth 2.0 tokens for an API (TODO OA1), over a run's own
+// `db` handle as `llm` is. The server runs the consent page and keeps the
+// tokens in the row's Secret fields; the body never sees the code exchange.
+//
+//   const { url } = await oauth.begin({ provider: "google", client_id, client_secret,
+//     scope: "https://www.googleapis.com/auth/gmail.readonly", return_to: "/settings",
+//     store: { table: "connections", id: row.id,
+//              fields: { access_token: "access_token", refresh_token: "refresh_token",
+//                        expires_at: "expires_at" } } });
+//   const token = await oauth.accessToken({ provider: "google", client_id, client_secret,
+//     store: { table: "connections", id: row.id, fields: { … } } });
+//
+// `provider` fills in a known provider's addresses (and Google's offline
+// access); `authorization_url` and `token_url` name any other.
+Object.defineProperty(globalThis, "__scMakeOauth", {
+  writable: false, configurable: false, enumerable: false,
+  value: (db) => {
+    const providers = Object.freeze({
+      google: Object.freeze({
+        authorization_url: "https://accounts.google.com/o/oauth2/v2/auth",
+        token_url: "https://oauth2.googleapis.com/token",
+        // A refresh token only comes with `access_type=offline`, and again
+        // only with `prompt=consent`.
+        params: Object.freeze({ access_type: "offline", prompt: "consent" }),
+      }),
+      microsoft: Object.freeze({
+        authorization_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        token_url: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        params: Object.freeze({}),
+      }),
+    });
+    const options = (what, o, allowed) => {
+      if (o === null || typeof o !== "object" || Array.isArray(o)) {
+        throw new TypeError("oauth." + what + "() takes one options object");
+      }
+      for (const key of Object.keys(o)) {
+        if (!allowed.includes(key)) {
+          throw new TypeError(
+            "`" + key + "` is not an option of oauth." + what + "(); the options are: " +
+            allowed.join(", ")
+          );
+        }
+      }
+      if (o.provider === undefined || o.provider === null) return Object.assign({}, o);
+      const known = providers[o.provider];
+      if (!known) {
+        throw new TypeError(
+          "oauth." + what + "() knows the providers " + Object.keys(providers).join(", ") +
+          ", not `" + o.provider + "`; name any other with authorization_url and token_url"
+        );
+      }
+      const out = Object.assign({}, o);
+      delete out.provider;
+      if (out.authorization_url === undefined) out.authorization_url = known.authorization_url;
+      if (out.token_url === undefined) out.token_url = known.token_url;
+      out.params = Object.assign({}, known.params, o.params || {});
+      return out;
+    };
+    const common = ["provider", "token_url", "client_id", "client_secret", "store"];
+    return Object.freeze({
+      providers: providers,
+      begin: async (o) => {
+        const plan = options("begin", o, common.concat(
+          ["authorization_url", "scope", "params", "return_to"]
+        ));
+        return await db.__scSend(Object.assign(plan, { op: "oauth", what: "begin" }));
+      },
+      accessToken: async (o) => {
+        const plan = options("accessToken", o, common.concat(["refused", "force", "detail"]));
+        const detail = plan.detail;
+        delete plan.detail;
+        delete plan.authorization_url;
+        delete plan.params;
+        const answer = await db.__scSend(Object.assign(plan, { op: "oauth", what: "access_token" }));
+        return detail ? answer : answer.access_token;
       },
     });
   },
@@ -6749,6 +6834,9 @@ fn build_run_scripts(call: &CodeRun) -> Result<RunScripts> {
     }
     if wants_db && !call.bindings.contains_key(LLM) {
         consts.push_str(&format!("const {LLM} = __scMakeLlm({DB});\n"));
+    }
+    if wants_db && !call.bindings.contains_key(OAUTH) {
+        consts.push_str(&format!("const {OAUTH} = __scMakeOauth({DB});\n"));
     }
     let args = serde_json::to_string(&Json::Object(bindings))
         .map_err(|e| Error::msg(format!("encode bindings: {e}")))?;

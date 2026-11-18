@@ -139,6 +139,7 @@ __all__ = [
     "model_provider",
     "models",
     "not_",
+    "oauth",
     "on_load",
     "or_",
     "settings",
@@ -2078,6 +2079,81 @@ class Llm:
         return "<saltcorn llm>"
 
 
+class OAuth:
+    """A user's OAuth 2.0 tokens for an API, kept in a row's Secret fields::
+
+        store = {"table": "connections", "id": row["id"],
+                 "fields": {"access_token": "access_token",
+                            "refresh_token": "refresh_token",
+                            "expires_at": "expires_at"}}
+        url = oauth.begin(provider="google", client_id=cid, client_secret=secret,
+                          scope="https://www.googleapis.com/auth/gmail.readonly",
+                          return_to="/settings", store=store)["url"]
+        token = oauth.access_token(provider="google", client_id=cid,
+                                   client_secret=secret, store=store)
+
+    ``provider`` fills in a known provider's addresses (``google``,
+    ``microsoft``); ``authorization_url`` and ``token_url`` name any other.
+    """
+
+    __slots__ = ()
+
+    PROVIDERS = {
+        "google": {
+            "authorization_url": "https://accounts.google.com/o/oauth2/v2/auth",
+            "token_url": "https://oauth2.googleapis.com/token",
+            # A refresh token only comes with offline access, and again only
+            # with consent asked for.
+            "params": {"access_type": "offline", "prompt": "consent"},
+        },
+        "microsoft": {
+            "authorization_url":
+                "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+            "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            "params": {},
+        },
+    }
+
+    def _plan(self, what, provider, given):
+        plan = {k: v for k, v in given.items() if v is not None}
+        if provider is not None:
+            known = self.PROVIDERS.get(provider)
+            if known is None:
+                raise TypeError(
+                    "oauth knows the providers " + ", ".join(self.PROVIDERS)
+                    + ", not " + repr(provider)
+                    + "; name any other with authorization_url and token_url"
+                )
+            plan.setdefault("token_url", known["token_url"])
+            if what == "begin":
+                plan.setdefault("authorization_url", known["authorization_url"])
+                plan["params"] = {**known["params"], **(plan.get("params") or {})}
+        plan["op"] = "oauth"
+        plan["what"] = what
+        return plan
+
+    def begin(self, *, store, client_id, scope, provider=None, authorization_url=None,
+              token_url=None, client_secret=None, params=None, return_to=None):
+        """Begin the consent flow: ``{url, expires_in}``, where to send the browser."""
+        return _call_db(self._plan("begin", provider, {
+            "store": store, "client_id": client_id, "scope": scope,
+            "authorization_url": authorization_url, "token_url": token_url,
+            "client_secret": client_secret, "params": params, "return_to": return_to,
+        }))
+
+    def access_token(self, *, store, client_id, provider=None, token_url=None,
+                     client_secret=None, refused=None, force=False, detail=False):
+        """An access token good for a while, renewed at the provider when due."""
+        answer = _call_db(self._plan("access_token", provider, {
+            "store": store, "client_id": client_id, "token_url": token_url,
+            "client_secret": client_secret, "refused": refused, "force": force or None,
+        }))
+        return answer if detail else answer["access_token"]
+
+    def __repr__(self):
+        return "<saltcorn oauth>"
+
+
 # ---------------------------------------------------------------------------
 # The handles a code body is given
 # ---------------------------------------------------------------------------
@@ -2105,3 +2181,5 @@ live = Live()
 #: The models, over `db`: ``models.get(name)``.
 models = Models()
 llm = Llm()
+#: A user's OAuth tokens, over `db`: ``oauth.begin(…)``, ``oauth.access_token(…)``.
+oauth = OAuth()
