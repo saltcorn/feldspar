@@ -2025,14 +2025,17 @@ class Llm:
         full = llm.generate("Hi", detail=True)   # {text, provider, model, usage, cost}
         vec = llm.embed("a text")                 # one vector
         vecs = llm.embed(["a", "b"])              # one vector per text
+        text = llm.generate("Hi", charge={"credits_per_dollar": 100})
 
     A provider left out is the default provider; a model left out its default.
+    ``charge`` charges the call to the run's caller, at an agent's rates.
     """
 
     __slots__ = ()
 
     def generate(self, prompt=None, *, messages=None, system=None, model=None,
-                 provider=None, temperature=None, max_tokens=None, detail=False):
+                 provider=None, temperature=None, max_tokens=None, detail=False,
+                 charge=None):
         """A chat model's answer: its text, or with ``detail`` everything."""
         turns = []
         for m in messages or []:
@@ -2047,13 +2050,14 @@ class Llm:
             turns.append({"role": "user", "content": prompt})
         plan = {"op": "llm", "what": "generate", "messages": turns}
         for key, value in (("system", system), ("model", model), ("provider", provider),
-                           ("temperature", temperature), ("max_tokens", max_tokens)):
+                           ("temperature", temperature), ("max_tokens", max_tokens),
+                           ("charge", charge)):
             if value is not None:
                 plan[key] = value
         answer = _call_db(plan)
         return answer if detail else answer["text"]
 
-    def embed(self, input, *, model=None, provider=None):
+    def embed(self, input, *, model=None, provider=None, charge=None):
         """One vector for a text, or one per text for a list of them."""
         many = isinstance(input, (list, tuple))
         texts = list(input) if many else [input]
@@ -2065,6 +2069,8 @@ class Llm:
             plan["model"] = model
         if provider is not None:
             plan["provider"] = provider
+        if charge is not None:
+            plan["charge"] = charge
         vectors = _call_db(plan)
         return vectors if many else vectors[0]
 

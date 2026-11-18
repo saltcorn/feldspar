@@ -1338,6 +1338,8 @@ Object.defineProperty(globalThis, "__scMakeModels", {
 //   await llm.embed(["a", "b"], { model })      // one vector per text
 //
 // A blank provider is the default provider; a blank model its default model.
+// `charge: { credits_per_dollar, … }` charges the call to the run's caller, at
+// an agent's rates (the host checks and debits; see `sc_api::code_host::llm`).
 Object.defineProperty(globalThis, "__scMakeLlm", {
   writable: false, configurable: false, enumerable: false,
   value: (db) => {
@@ -1366,7 +1368,7 @@ Object.defineProperty(globalThis, "__scMakeLlm", {
     };
     const generateKeys = [
       "prompt", "system", "messages", "model", "provider", "temperature", "max_tokens",
-      "detail",
+      "detail", "charge",
     ];
     return Object.freeze({
       generate: async (first, more) => {
@@ -1407,15 +1409,17 @@ Object.defineProperty(globalThis, "__scMakeLlm", {
           op: "llm", what: "generate",
           provider: o.provider, model: o.model, system: o.system,
           messages: messages, temperature: o.temperature, max_tokens: o.max_tokens,
+          charge: o.charge,
         });
         return o.detail ? answer : answer.text;
       },
       embed: async (input, more) => {
-        const o = options("embed", more, ["model", "provider"]);
+        const o = options("embed", more, ["model", "provider", "charge"]);
         const many = Array.isArray(input);
         const texts = many ? input.map((t) => text("embed", t)) : [text("embed", input)];
         const vectors = await db.__scSend({
           op: "llm", what: "embed", provider: o.provider, model: o.model, input: texts,
+          charge: o.charge,
         });
         return many ? vectors : vectors[0];
       },

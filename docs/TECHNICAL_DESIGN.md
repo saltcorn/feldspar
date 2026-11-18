@@ -2258,9 +2258,10 @@ the grants in force (started, not ended, not revoked). A grant never lowers a ro
 
 ### 7.4b LLM credits (`sc_auth::credits`, TODO-payments P6, design C3)
 
-A user's **LLM credits** are what a metered agent's model calls are charged to (§11.2). The
-ledger has one spender — an agent run's model calls — and is deliberately not a general
-metering facility: an application that charges for something else keeps its own tables.
+A user's **LLM credits** are what a metered agent's model calls are charged to (§11.2), and a
+code body's `llm` calls that ask to be (`charge`, §10.1). The ledger has one kind of spender —
+model calls — and is deliberately not a general metering facility: an application that charges
+for something else keeps its own tables.
 
 - **Three ordinary tables.** **`credit_buckets`** — one per grant: `(user_id → users, amount,
   remaining, kind, source, key, expires_at, note, created_at)`, `(source, key)` unique.
@@ -2287,10 +2288,13 @@ metering facility: an application that charges for something else keeps its own 
   `rollover` records what that did to the balance. An expired earlier bucket still carries what it
   held when it expired: nothing spends an expired bucket, and a renewal usually arrives just
   after the period, and its allowance, has ended. A replayed grant carries nothing again.
-- **`debit_credits`** is called by the agent loop and nothing else: no code body, workflow,
-  action or module can spend credits. It takes from the soonest-expiring bucket first (never
-  expiring last), and what the buckets do not cover becomes debt: the call has already happened,
-  so a debit is never refused. A debit whose key (`<run>:<step>`) exists does nothing.
+- **`debit_credits`** is called for model calls and nothing else: by the agent loop, and by the
+  code host for an `llm` call with a `charge` (`sc_api::code_host::llm`, keyed `code:<uuid>`,
+  noted with the trigger it ran for). No code body, workflow, action or module can debit an
+  arbitrary amount: a charged `llm` call is priced by the meter from the call's own usage. It
+  takes from the soonest-expiring bucket first (never expiring last), and what the buckets do not
+  cover becomes debt: the call has already happened, so a debit is never refused. A debit whose
+  key (`<run>:<step>`) exists does nothing.
 - **One writer per user.** Every operation is one transaction that first locks the user's
   `users` row `FOR UPDATE`; concurrent debits for one user take turns and never overdraw.
 - **The low-balance notice.** A debit that takes the balance from at or above the user's
@@ -4128,10 +4132,20 @@ const vector = await llm.embed(row.title);                // one vector; an arra
   or its default embedding model (`resolve_model`). A chat model must be a row, and an embedding
   model may be any name the provider serves, as for `embed_from`. A `system` message is folded
   into the request's system prompt, after `system`, since `LlmRequest` has one system prompt.
-- **Whose call.** A code body is admin-authored configuration, so its model calls are the
-  installation's: they go through the call log (`LoggedProvider`, the embed endpoint's log) and are
-  not charged to anybody's LLM credits (§7.4b), as an `embed_from` field's are not. For the same
-  reason it is **refused on a `viewer_only` host**: an agent's sandbox runs code the model wrote,
+- **Whose call.** A code body is admin-authored configuration, so by default its model calls are
+  the installation's: they go through the call log (`LoggedProvider`, the embed endpoint's log) and
+  are not charged to anybody's LLM credits (§7.4b), as an `embed_from` field's are not.
+- **Charged calls.** `charge: { credits_per_dollar, credits_per_1k_input, credits_per_1k_output,
+  credits_min_balance }` charges a call to the **run's caller** (the host's principal: the user
+  whose request or write the body answers), at a metered agent's rates under the same names.
+  `sc_llm::Meter` prices it, and lives in `sc-llm` rather than `sc-agent` so both use one rule
+  (`sc_agent::meter` re-exports it). The agent's terms hold, so a code body is no way round the
+  meter: an admin caller is not charged (`credits` is `null`); a call with nobody to charge, a
+  balance at or below zero or under the minimum, and a rate per dollar on an unpriced model are
+  refused **before** the model is called; the debit is made after, whatever the balance, in its
+  own transaction, so a rolled-back step or `run_code` still leaves it. `generate`'s detailed
+  answer carries `credits: { charged, balance }` as decimal strings.
+- **Viewer-only hosts.** `llm` is **refused on a `viewer_only` host**, charged or not: an agent's sandbox runs code the model wrote,
   and a provider reached from there would be a model call outside the agent's budget and its
   user's credits. A view pattern's code and a module route are viewer-only too, and do not get it.
 - **Time.** A call holds the run until the model answers, inside the trigger's `timeout_ms`

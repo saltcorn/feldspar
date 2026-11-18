@@ -9665,6 +9665,7 @@ dependencies = [
  "futures",
  "reqwest",
  "rig-core",
+ "rust_decimal",
  "sc-catalog",
  "sc-config",
  "sc-db",

@@ -422,9 +422,24 @@ A provider left out is the default provider, and a model left out is that provid
 chat model (for `generate`) or default embedding model (for `embed`). A chat model has to be one
 of the provider's models. An embedding model can be any name the provider serves. Each call is
 one database call and waits for the model, so give the trigger a `timeout_ms` that leaves time
-for it (the default is 5 s, the maximum 60 s). The calls are written to the call log and are
-not charged to any user's LLM credits. `llm` is not available where code runs at its viewer's
-authority (an agent's sandbox), and it throws saying so.
+for it (the default is 5 s, the maximum 60 s). `llm` is not available where code runs at its
+viewer's authority (an agent's sandbox), and it throws saying so.
+
+A call is charged to nobody unless it says so. `charge` charges it to the **run's caller** (the
+user whose request or write the code is answering) in LLM credits, at a metered agent's rates:
+
+```js
+const reply = await llm.generate({ messages, charge: { credits_per_dollar: 100 }, detail: true });
+reply.credits;   // { charged: "0.42", balance: "17.58" }, or null when not charged
+await llm.embed(row.body, { charge: { credits_per_1k_input: 0.01 } });
+```
+
+The rates are `credits_per_dollar` (of the model's priced cost), `credits_per_1k_input`,
+`credits_per_1k_output` and `credits_min_balance`. An admin caller is not charged. The call is
+refused before the model is called when there is nobody to charge (an anonymous request, a
+scheduled trigger), when the balance is at or below zero or under `credits_min_balance`, and when
+only `credits_per_dollar` is given and the model has no prices. The debit is made after the call,
+and stays even if the run's writes are rolled back.
 
 ## The other handles
 

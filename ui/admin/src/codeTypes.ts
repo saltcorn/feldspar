@@ -771,12 +771,28 @@ interface ScLlmMessage {
   content: string;
 }
 
+/** What a charged call costs the run's caller: an agent's metering rates. */
+interface ScLlmCharge {
+  /** Credits per unit of the model's priced cost (usually dollars). */
+  credits_per_dollar?: number;
+  /** Credits per thousand input tokens, for a model without prices. */
+  credits_per_1k_input?: number;
+  /** Credits per thousand output tokens. */
+  credits_per_1k_output?: number;
+  /** The balance the caller needs for the call to be made. */
+  credits_min_balance?: number;
+}
+
 /** Which provider and model to call; either left out is the default. */
 interface ScLlmChoice {
   /** A provider's name, as the LLM providers screen shows it. */
   provider?: string;
   /** One of the provider's models, by name. */
   model?: string;
+  /** Charge the call to the run's caller in LLM credits, at these rates. An
+   * admin caller is not charged; a call with nobody to charge, or a balance at
+   * or below zero, is refused before the model is called. */
+  charge?: ScLlmCharge;
 }
 
 /** What to generate from. */
@@ -797,6 +813,8 @@ interface ScLlmAnswer {
   usage: { input_tokens: number; output_tokens: number };
   /** In dollars; null when the model has no price. */
   cost: number | null;
+  /** What a charged call took, as decimal strings; null when not charged. */
+  credits: { charged: string; balance: string } | null;
 }
 
 /** The configured LLM providers. */

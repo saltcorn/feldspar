@@ -234,7 +234,7 @@ async fn llm_generate_and_embed_are_llm_requests_on_the_db_host() {
                  chat: await llm.generate({
                    system: "Be brief.", model: "m", temperature: 0,
                    messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }],
-                   prompt: "c",
+                   prompt: "c", charge: { credits_per_dollar: 5 },
                  }),
                  detail: (await llm.generate("Hi", { detail: true })).provider,
                  vector: await llm.embed("four"),
@@ -270,6 +270,9 @@ async fn llm_generate_and_embed_are_llm_requests_on_the_db_host() {
         json!({ "op": "llm", "what": "embed", "input": ["four"] })
     );
     assert_eq!(plans[4]["provider"], json!("stub"));
+    // `charge` travels as given; the host checks and debits.
+    assert_eq!(plans[1]["charge"], json!({ "credits_per_dollar": 5 }));
+    assert!(plans[0].get("charge").is_none(), "{}", plans[0]);
 
     // A mistake is a sentence at the call, before anything is sent.
     let host = FakeHost::rows(json!(null));

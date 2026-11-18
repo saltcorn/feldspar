@@ -72,6 +72,7 @@ pub mod image;
 pub mod listing;
 pub mod logging;
 pub mod message;
+pub mod meter;
 pub mod model;
 pub mod openai;
 pub mod openai_chat;
@@ -108,6 +109,10 @@ pub use message::{
     AssistantMessage, Attachment, CachePlan, ImagePart, LlmDelta, LlmMessage, LlmRequest,
     MAX_ATTACHMENTS, MAX_IMAGE_ATTACHMENT_BYTES, MAX_TEXT_ATTACHMENT_BYTES, ProviderItem,
     StopReason, ToolCall, ToolSpec, Usage, check_attachments,
+};
+pub use meter::{
+    ATTR_CREDITS_MIN_BALANCE, ATTR_CREDITS_PER_1K_INPUT, ATTR_CREDITS_PER_1K_OUTPUT,
+    ATTR_CREDITS_PER_DOLLAR, Meter,
 };
 pub use model::{
     ConnectedModel, LlmModelDef, LlmModelDefId, ModelKind, model_config_spec,

@@ -52,7 +52,8 @@ try:
     refused = None
 except TypeError as e:
     refused = str(e)
-return [one, full["provider"], llm.embed("four"), llm.embed(["a", "bb"], provider="stub"),
+return [one, full["provider"], llm.embed("four", charge={"credits_per_1k_input": 1}),
+        llm.embed(["a", "bb"], provider="stub"),
         refused]
 "#
             .to_owned(),
@@ -84,6 +85,11 @@ return [one, full["provider"], llm.embed("four"), llm.embed(["a", "bb"], provide
                 "temperature": 0,
                 "messages": [{ "role": "user", "content": "a" },
                              { "role": "user", "content": "c" }] })
+    );
+    assert_eq!(
+        requests[2],
+        json!({ "op": "llm", "what": "embed", "input": ["four"],
+                "charge": { "credits_per_1k_input": 1 } })
     );
     assert_eq!(
         requests[3],

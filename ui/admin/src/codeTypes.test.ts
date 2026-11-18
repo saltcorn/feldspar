@@ -545,13 +545,18 @@ describe("the types the code editor loads", () => {
           `const n = full.usage.output_tokens + 1;\n` +
           `const one = (await llm.embed("x")).map((v) => v * 2);\n` +
           `const many = (await llm.embed(["a", "b"], { model: "m" }))[0].length;\n` +
-          `return { text, n, one, many, t: full.text.length };`,
+          `const paid = await llm.generate("Hi", { charge: { credits_per_dollar: 100 }, detail: true });\n` +
+          `const left = paid.credits && paid.credits.balance;\n` +
+          `return { text, n, one, many, t: full.text.length, left };`,
       ),
     ).toEqual([]);
     expect(
       check(`return await llm.generate({ messages: [{ role: "tool", content: "x" }] });`).join(" "),
     ).toMatch(/tool/);
     expect(check(`return await llm.chat("x");`).join(" ")).toMatch(/chat/);
+    expect(
+      check(`return await llm.embed("x", { charge: { credits_per_doller: 1 } });`).join(" "),
+    ).toMatch(/credits_per_doller/);
     // Without `detail` the answer is text, which has no `usage`.
     expect(check(`return (await llm.generate("Hi")).usage;`).join(" ")).toMatch(/usage/);
   });

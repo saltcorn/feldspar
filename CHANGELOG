@@ -2,6 +2,37 @@
 
 Changes in reverse chronological order.
 
+## `llm` calls in code bodies can charge the caller's LLM credits
+
+A follow-up to the `llm` work below: a code body can now charge a model call to the user it is
+running for, as a metered agent charges its runs.
+
+- **`charge`** is a new option of `llm.generate` and `llm.embed` (Python: `charge=`):
+  `{ credits_per_dollar, credits_per_1k_input, credits_per_1k_output, credits_min_balance }`.
+  These are an agent's metering settings under the same names and with the same meaning.
+  Without `charge`, a call is charged to nobody, as before.
+- **Who pays**: the run's caller, meaning the user whose request or write the code is
+  answering. The agent's rules hold, so a code body is no way round the meter:
+  - an admin caller is not charged;
+  - a call with nobody to charge (an anonymous request, a scheduled trigger) is refused before
+    the model is called;
+  - so is a call when the balance is at or below zero or under `credits_min_balance`;
+  - so is a call that only gives `credits_per_dollar` when the model has no prices.
+- **When**: the debit is made after the call, whatever the balance by then, and in its own
+  transaction, so a rolled-back workflow step or `run_code` still leaves it charged. It is a
+  ledger entry with the model, tokens and cost, and a note naming the trigger.
+- **What the body sees**: `llm.generate(…, { detail: true })` now also answers
+  `credits: { charged, balance }` (decimal strings), or `null` when nothing was charged. The
+  editor's types and the code API document cover the option.
+- **Underneath**: `Meter` moved from `sc-agent` to `sc-llm` (`sc_llm::meter`), so the agent loop
+  and the code host price a call with one rule. `sc_agent::meter` re-exports it, and agents are
+  charged exactly as before. A test keeps the meter's rounding equal to the ledger's. The design's
+  rule that only the agent loop debits credits now reads "only model calls" (§7.4b).
+- Tests: `sc-api` `code_host_llm` charges a user against Postgres through the stub (4 credits
+  for a chat call, 2 for an embedding). It checks that an admin is not charged, and checks each
+  refusal before any call reaches the provider. Also the JS and Python pass-through, and the
+  editor types.
+
 ## `llm` in code bodies, and LLM providers set up over MCP and the CLI
 
 A user reported that code bodies called provider APIs with `fetch` and keys of their own, even
