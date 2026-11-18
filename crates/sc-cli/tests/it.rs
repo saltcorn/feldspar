@@ -49,6 +49,8 @@ mod i18n;
 mod install_script;
 #[path = "install_tree.rs"]
 mod install_tree;
+#[path = "llm.rs"]
+mod llm;
 #[path = "mcp_token.rs"]
 mod mcp_token;
 #[path = "registry.rs"]

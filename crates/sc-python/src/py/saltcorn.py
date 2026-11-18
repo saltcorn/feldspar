@@ -111,6 +111,7 @@ __all__ = [
     "Headers",
     "Live",
     "LiveError",
+    "Llm",
     "ModFns",
     "Models",
     "ModuleError",
@@ -133,6 +134,7 @@ __all__ = [
     "fs",
     "function",
     "live",
+    "llm",
     "modfn",
     "model_provider",
     "models",
@@ -2014,6 +2016,62 @@ class Models:
         return "<saltcorn models>"
 
 
+class Llm:
+    """The installation's configured LLM providers::
+
+        text = llm.generate("Summarise: " + row["body"])
+        text = llm.generate(messages=[{"role": "user", "content": "Hi"}],
+                            system="Answer briefly.", model="gpt-5-mini")
+        full = llm.generate("Hi", detail=True)   # {text, provider, model, usage, cost}
+        vec = llm.embed("a text")                 # one vector
+        vecs = llm.embed(["a", "b"])              # one vector per text
+
+    A provider left out is the default provider; a model left out its default.
+    """
+
+    __slots__ = ()
+
+    def generate(self, prompt=None, *, messages=None, system=None, model=None,
+                 provider=None, temperature=None, max_tokens=None, detail=False):
+        """A chat model's answer: its text, or with ``detail`` everything."""
+        turns = []
+        for m in messages or []:
+            if not isinstance(m, dict) or not isinstance(m.get("content"), str):
+                raise TypeError(
+                    "each of llm.generate()'s messages is {role, content}, its content text"
+                )
+            turns.append({"role": m.get("role"), "content": m["content"]})
+        if prompt is not None:
+            if not isinstance(prompt, str):
+                raise TypeError("llm.generate() takes text, not " + type(prompt).__name__)
+            turns.append({"role": "user", "content": prompt})
+        plan = {"op": "llm", "what": "generate", "messages": turns}
+        for key, value in (("system", system), ("model", model), ("provider", provider),
+                           ("temperature", temperature), ("max_tokens", max_tokens)):
+            if value is not None:
+                plan[key] = value
+        answer = _call_db(plan)
+        return answer if detail else answer["text"]
+
+    def embed(self, input, *, model=None, provider=None):
+        """One vector for a text, or one per text for a list of them."""
+        many = isinstance(input, (list, tuple))
+        texts = list(input) if many else [input]
+        for t in texts:
+            if not isinstance(t, str):
+                raise TypeError("llm.embed() takes text, not " + type(t).__name__)
+        plan = {"op": "llm", "what": "embed", "input": texts}
+        if model is not None:
+            plan["model"] = model
+        if provider is not None:
+            plan["provider"] = provider
+        vectors = _call_db(plan)
+        return vectors if many else vectors[0]
+
+    def __repr__(self):
+        return "<saltcorn llm>"
+
+
 # ---------------------------------------------------------------------------
 # The handles a code body is given
 # ---------------------------------------------------------------------------
@@ -2040,3 +2098,4 @@ modfn = ModFns()
 live = Live()
 #: The models, over `db`: ``models.get(name)``.
 models = Models()
+llm = Llm()

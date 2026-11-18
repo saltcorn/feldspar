@@ -205,6 +205,108 @@ async fn a_model_handle_predicts_a_row_or_an_array_naming_the_fit_it_was_built_o
     assert_eq!(host.plans()[0]["fit"], json!("f-old"));
 }
 
+/// `llm` rides on `db`: `generate` sends one `op: "llm"` plan and answers the
+/// text (or everything, with `detail`), and `embed` one vector per text.
+#[tokio::test]
+async fn llm_generate_and_embed_are_llm_requests_on_the_db_host() {
+    let rt = CodeRuntime::new();
+    let host = FakeHost::new(|plan| {
+        assert_eq!(plan["op"], json!("llm"), "{plan}");
+        Ok(match plan["what"].as_str().unwrap_or_default() {
+            "generate" => json!({
+                "text": format!("answered {}", plan["messages"].as_array().unwrap().len()),
+                "provider": "stub", "model": "m", "usage": {}, "cost": null,
+            }),
+            _ => Json::Array(
+                plan["input"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|t| json!([t.as_str().unwrap().len()]))
+                    .collect(),
+            ),
+        })
+    });
+    let out = rt
+        .run(with_host(
+            r#"return {
+                 one: await llm.generate("Hi"),
+                 chat: await llm.generate({
+                   system: "Be brief.", model: "m", temperature: 0,
+                   messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }],
+                   prompt: "c",
+                 }),
+                 detail: (await llm.generate("Hi", { detail: true })).provider,
+                 vector: await llm.embed("four"),
+                 vectors: await llm.embed(["a", "bb"], { provider: "stub" }),
+               };"#,
+            &*host,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(out["one"], json!("answered 1"));
+    // The prompt is the last user turn, after the messages.
+    assert_eq!(out["chat"], json!("answered 3"));
+    assert_eq!(out["detail"], json!("stub"));
+    assert_eq!(out["vector"], json!([4]));
+    assert_eq!(out["vectors"], json!([[1], [2]]));
+    let plans = host.plans();
+    assert_eq!(plans.len(), 5, "{plans:?}");
+    assert_eq!(
+        plans[0],
+        json!({ "op": "llm", "what": "generate",
+                "messages": [{ "role": "user", "content": "Hi" }] })
+    );
+    assert_eq!(plans[1]["system"], json!("Be brief."));
+    assert_eq!(plans[1]["model"], json!("m"));
+    assert_eq!(plans[1]["temperature"], json!(0));
+    assert_eq!(
+        plans[1]["messages"][2],
+        json!({ "role": "user", "content": "c" })
+    );
+    assert!(plans[2].get("detail").is_none(), "{}", plans[2]);
+    assert_eq!(
+        plans[3],
+        json!({ "op": "llm", "what": "embed", "input": ["four"] })
+    );
+    assert_eq!(plans[4]["provider"], json!("stub"));
+
+    // A mistake is a sentence at the call, before anything is sent.
+    let host = FakeHost::rows(json!(null));
+    let out = rt
+        .run(with_host(
+            r#"const said = [];
+               for (const f of [() => llm.generate(3), () => llm.generate("x", { modle: "m" }),
+                                () => llm.embed(7)]) {
+                 try { await f(); } catch (e) { said.push(e.message); }
+               }
+               return said;"#,
+            &*host,
+        ))
+        .await
+        .unwrap();
+    assert!(
+        out[0]
+            .as_str()
+            .unwrap()
+            .contains("takes a prompt or an options object"),
+        "{out}"
+    );
+    assert!(
+        out[1]
+            .as_str()
+            .unwrap()
+            .starts_with("`modle` is not an option of llm.generate()"),
+        "{out}"
+    );
+    assert_eq!(out[2], json!("llm.embed() takes text, not number"));
+    assert!(host.plans().is_empty());
+
+    // And a body with no `db` has no `llm`.
+    let err = rt.run(call("return llm;")).await.unwrap_err().to_string();
+    assert!(err.contains("llm"), "{err}");
+}
+
 #[tokio::test]
 async fn a_posterior_only_method_on_another_model_throws_a_sentence_saying_what_it_is() {
     let rt = CodeRuntime::new();

@@ -628,6 +628,12 @@ pub(crate) const DB: &str = "db";
 #[cfg(feature = "eval")]
 pub(crate) const MODELS: &str = "models";
 
+/// The name a code body reaches the configured LLM providers by —
+/// `llm.generate(…)`, `llm.embed(…)` — a `const` over the run's `db` handle,
+/// bound wherever `db` is, as [`MODELS`] is.
+#[cfg(feature = "eval")]
+pub(crate) const LLM: &str = "llm";
+
 /// The name the HTTP surface binds under, reserved when a fetch host is present
 /// for the reason [`DB`] is. It is `fetch` because that is what the web calls
 /// it, and a body's author knows the name before they read anything of ours.
@@ -1316,6 +1322,102 @@ Object.defineProperty(globalThis, "__scMakeModels", {
         }
         const got = await db.__scSend({ op: "models", what: "get", model: model, fit: fit });
         return makeHandle(got, "default");
+      },
+    });
+  },
+});
+// `llm`: the installation's configured LLM providers, over a run's own `db`
+// handle as `models` is — so every call is a request this run sends, on this
+// run's call budget, and a body with no `db` has no `llm`.
+//
+//   await llm.generate("Summarise: " + row.body)                  // the text
+//   await llm.generate({ system, messages, model, provider,
+//                        temperature, max_tokens })                // the text
+//   await llm.generate("…", { detail: true })   // { text, provider, model, usage, cost }
+//   await llm.embed("a text")                   // one vector
+//   await llm.embed(["a", "b"], { model })      // one vector per text
+//
+// A blank provider is the default provider; a blank model its default model.
+Object.defineProperty(globalThis, "__scMakeLlm", {
+  writable: false, configurable: false, enumerable: false,
+  value: (db) => {
+    const options = (what, o, allowed) => {
+      if (o === undefined || o === null) return {};
+      if (typeof o !== "object" || Array.isArray(o)) {
+        throw new TypeError("llm." + what + "()'s options are an object");
+      }
+      for (const key of Object.keys(o)) {
+        if (!allowed.includes(key)) {
+          throw new TypeError(
+            "`" + key + "` is not an option of llm." + what + "(); the options are: " +
+            allowed.join(", ")
+          );
+        }
+      }
+      return o;
+    };
+    const text = (what, v) => {
+      if (typeof v !== "string") {
+        throw new TypeError(
+          "llm." + what + "() takes text, not " + (v === null ? "null" : typeof v)
+        );
+      }
+      return v;
+    };
+    const generateKeys = [
+      "prompt", "system", "messages", "model", "provider", "temperature", "max_tokens",
+      "detail",
+    ];
+    return Object.freeze({
+      generate: async (first, more) => {
+        let o;
+        if (typeof first === "string") {
+          o = Object.assign({}, options("generate", more, generateKeys), { prompt: first });
+        } else if (first !== null && typeof first === "object" && !Array.isArray(first)) {
+          if (more !== undefined) {
+            throw new TypeError(
+              "llm.generate() takes a prompt and options, or one options object"
+            );
+          }
+          o = options("generate", first, generateKeys);
+        } else {
+          throw new TypeError(
+            'llm.generate() takes a prompt or an options object, as in ' +
+            'llm.generate("Summarise: " + row.body) or llm.generate({ messages })'
+          );
+        }
+        let messages = [];
+        if (o.messages !== undefined && o.messages !== null) {
+          if (!Array.isArray(o.messages)) {
+            throw new TypeError("llm.generate()'s `messages` is a list of { role, content }");
+          }
+          messages = o.messages.map((m) => {
+            if (m === null || typeof m !== "object" || typeof m.content !== "string") {
+              throw new TypeError(
+                "each of llm.generate()'s messages is { role, content }, its content text"
+              );
+            }
+            return { role: m.role, content: m.content };
+          });
+        }
+        if (o.prompt !== undefined && o.prompt !== null) {
+          messages.push({ role: "user", content: text("generate", o.prompt) });
+        }
+        const answer = await db.__scSend({
+          op: "llm", what: "generate",
+          provider: o.provider, model: o.model, system: o.system,
+          messages: messages, temperature: o.temperature, max_tokens: o.max_tokens,
+        });
+        return o.detail ? answer : answer.text;
+      },
+      embed: async (input, more) => {
+        const o = options("embed", more, ["model", "provider"]);
+        const many = Array.isArray(input);
+        const texts = many ? input.map((t) => text("embed", t)) : [text("embed", input)];
+        const vectors = await db.__scSend({
+          op: "llm", what: "embed", provider: o.provider, model: o.model, input: texts,
+        });
+        return many ? vectors : vectors[0];
       },
     });
   },
@@ -6640,6 +6742,9 @@ fn build_run_scripts(call: &CodeRun) -> Result<RunScripts> {
     // the name itself keeps it.
     if wants_db && !call.bindings.contains_key(MODELS) {
         consts.push_str(&format!("const {MODELS} = __scMakeModels({DB});\n"));
+    }
+    if wants_db && !call.bindings.contains_key(LLM) {
+        consts.push_str(&format!("const {LLM} = __scMakeLlm({DB});\n"));
     }
     let args = serde_json::to_string(&Json::Object(bindings))
         .map_err(|e| Error::msg(format!("encode bindings: {e}")))?;

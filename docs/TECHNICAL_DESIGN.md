@@ -3511,7 +3511,8 @@ means something for one provider is a cost paid by everybody.
   and `Field` (below), which are not a seventh surface but v1's vocabulary over the first and the
   fourth, and `models`, whose
   `models.get("…")` answers a model handle (§14.2) and which is also not a surface: its
-  requests are `op: "models"` on the `db` host, on the run's call budget. It runs on its
+  requests are `op: "models"` on the `db` host, on the run's call budget. `llm` is the same
+  kind of thing (below): the configured LLM providers, as `op: "llm"` requests on `db`. It runs on its
   **own pool of isolates**, not the single pure isolate every ownership formula shares, which
   is what lets it suspend on a host call and carry a configurable `timeout_ms` (default 5s,
   max 60s) without either becoming a property of every authorization decision in the process.
@@ -4103,6 +4104,48 @@ set and the authority is re-checked, since what the guest sends is what a body c
 **Deliberately not in it**: firing an *event* by kind and channel (a body that wants a table's
 triggers writes the row); fire-and-forget, which needs §18's queue and is otherwise a run nobody
 waits for or reports; and a transaction spanning parent and child.
+
+#### `llm`: the configured LLM providers in a code body
+
+A body that wanted a model's answer used to call the vendor's API with `fetch` and a key of its
+own, beside providers the instance already had configured (a user report). `llm` reaches those
+providers:
+
+```js
+const summary = await llm.generate("Summarise: " + row.body);          // the text
+const reply = await llm.generate({ system, messages, model, provider,  // messages: { role, content }
+                                   temperature, max_tokens });
+const full = await llm.generate("Hi", { detail: true });  // { text, provider, model, usage, cost }
+const vector = await llm.embed(row.title);                // one vector; an array gives one each
+```
+
+- **Not a surface.** Like `models`, it is a `const` over the run's own `db` handle
+  (`__scMakeLlm(db)`, in a code library too), and each call is one `op: "llm"` plan on the `db`
+  host (`sc_api::code_host::llm`), on the run's call budget. Python's `saltcorn.llm` is the same
+  plan from the other prelude. A body with no `db` has no `llm`.
+- **Resolution is the agents'.** A blank provider is the default provider (`sc_llm::
+  default_llm_provider`). A blank model is that provider's default chat model (`require_llm_model`)
+  or its default embedding model (`resolve_model`). A chat model must be a row, and an embedding
+  model may be any name the provider serves, as for `embed_from`. A `system` message is folded
+  into the request's system prompt, after `system`, since `LlmRequest` has one system prompt.
+- **Whose call.** A code body is admin-authored configuration, so its model calls are the
+  installation's: they go through the call log (`LoggedProvider`, the embed endpoint's log) and are
+  not charged to anybody's LLM credits (§7.4b), as an `embed_from` field's are not. For the same
+  reason it is **refused on a `viewer_only` host**: an agent's sandbox runs code the model wrote,
+  and a provider reached from there would be a model call outside the agent's budget and its
+  user's credits. A view pattern's code and a module route are viewer-only too, and do not get it.
+- **Time.** A call holds the run until the model answers, inside the trigger's `timeout_ms`
+  (default 5 s, at most 60 s), which a body that calls a model should raise.
+
+Providers can be set up without the admin UI as well. The provider and model endpoints are
+tagged for MCP (§13.6): `createLlmProvider`, `updateLlmProvider`, `deleteLlmProvider`,
+`setDefaultLlmProvider`, `listLlmProviderBackends`, `createLlmModel`, `updateLlmModel`,
+`deleteLlmModel`, `listLlmModelSettings`, `fetchLlmModels` and `testLlmModel`, with the create,
+edit and drop grants on the writes. The key goes in and reads back masked, as over the admin
+API, and the MCP audit line at Verbose masks credential-named arguments. From a terminal,
+`feldspar llm list | set-provider | set-model | set-default | test` saves through the same
+`sc_llm` checks, taking the key from `--api-key-env` or `--api-key-file` and never from the
+command line.
 
 #### `Table` and `Field`: Saltcorn 1's API in a code body
 

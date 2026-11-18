@@ -32,8 +32,9 @@ pub(super) fn register(set: &mut EndpointSet) {
         .mcp(
             "List the LLM providers: each one's name and id (what an agent's \
                  `provider` names), backend and settings, with API keys masked. \
-                 Read the models of one with `listLlmModels`. Providers are set up \
-                 by an admin in the admin UI, not over this API.",
+                 Read the models of one with `listLlmModels`. Set one up with \
+                 `listLlmProviderBackends`, `createLlmProvider`, `createLlmModel` \
+                 and `testLlmModel`; code bodies reach them as `llm`.",
         ),
     );
 
@@ -44,7 +45,20 @@ pub(super) fn register(set: &mut EndpointSet) {
             api().lit("llm-providers"),
         )
         .input(llm_provider_input_schema())
-        .output(llm_provider_schema()),
+        .output(llm_provider_schema())
+        .mcp(
+            McpTag::new(
+                "Add an LLM provider: a `name` (what an agent's `provider` and a code \
+                 body's `llm.generate({ provider })` name), a `backend` from \
+                 `listLlmProviderBackends` (`openai_responses`, `anthropic`, or \
+                 `openai_chat` for any OpenAI-compatible host such as Ollama or \
+                 OpenRouter) and its `config` per that backend's settings, e.g. \
+                 `{ \"api_key\": \"…\", \"base_url\": \"…\" }`. The key is never \
+                 shown again: every read masks it. A provider serves nothing until it \
+                 has models: add them with `createLlmModel`.",
+            )
+            .needs(Grant::Create),
+        ),
     );
 
     set.register(
@@ -54,7 +68,16 @@ pub(super) fn register(set: &mut EndpointSet) {
             api().lit("llm-providers").param("id", ValueType::Uuid),
         )
         .input(llm_provider_input_schema())
-        .output(llm_provider_schema()),
+        .output(llm_provider_schema())
+        .mcp(
+            McpTag::new(
+                "Change an LLM provider, by id: the whole definition, as \
+                 `createLlmProvider` takes it. A masked key, as `listLlmProviders` \
+                 shows it, keeps the stored key; send a new one to replace it. The \
+                 provider the configuration file supplies cannot be changed.",
+            )
+            .needs(Grant::Edit),
+        ),
     );
 
     set.register(
@@ -66,7 +89,14 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )])),
+        )]))
+        .mcp(
+            McpTag::new(
+                "Delete an LLM provider and its models, by id. Refused while an agent \
+                 uses it, naming the agents.",
+            )
+            .needs(Grant::Drop),
+        ),
     );
 
     // Make a provider the installation's default: the one used where nothing
@@ -82,7 +112,15 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .param("id", ValueType::Uuid)
                 .lit("default"),
         )
-        .output(llm_provider_schema()),
+        .output(llm_provider_schema())
+        .mcp(
+            McpTag::new(
+                "Make an LLM provider the installation's default, by id: the one used \
+                 wherever nothing names a provider — a code body's `llm.generate()`, a \
+                 new builder agent, a translation.",
+            )
+            .needs(Grant::Edit),
+        ),
     );
 
     // The registered backends with their settings spec, so the create/edit form
@@ -94,7 +132,12 @@ pub(super) fn register(set: &mut EndpointSet) {
             Method::Get,
             api().lit("llm-provider-backends"),
         )
-        .output(TypeSchema::array(llm_backend_info_schema())),
+        .output(TypeSchema::array(llm_backend_info_schema()))
+        .mcp(
+            "List the LLM provider backends and the settings each takes in a \
+             provider's `config` — which are required, and which (the API key) are \
+             secret.",
+        ),
     );
 
     // One row per model a provider serves (TODO §3a): the name sent on the wire,
@@ -131,7 +174,20 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("models"),
         )
         .input(llm_model_input_schema())
-        .output(llm_model_schema()),
+        .output(llm_model_schema())
+        .mcp(
+            McpTag::new(
+                "Add a model to an LLM provider, by the provider's id: `name` is the \
+                 vendor's model id as sent on the wire (`gpt-5-mini`, \
+                 `claude-sonnet-5`, `text-embedding-3-small`), `kind` is chat (the \
+                 default), embedding, image or speech, and `is_default` makes it the \
+                 provider's default of its kind — what an agent or `llm.generate()` / \
+                 `llm.embed()` uses when no model is named. `config` holds optional \
+                 settings per `listLlmModelSettings` (prices, context window); `{}` \
+                 is the built-in defaults.",
+            )
+            .needs(Grant::Create),
+        ),
     );
 
     set.register(
@@ -141,7 +197,14 @@ pub(super) fn register(set: &mut EndpointSet) {
             api().lit("llm-models").param("id", ValueType::Uuid),
         )
         .input(llm_model_input_schema())
-        .output(llm_model_schema()),
+        .output(llm_model_schema())
+        .mcp(
+            McpTag::new(
+                "Change a model row, by its id: the whole row, as `createLlmModel` \
+                 takes it. Its kind is fixed once saved.",
+            )
+            .needs(Grant::Edit),
+        ),
     );
 
     // Refused while an agent calls the model — by name, or as its provider's
@@ -155,7 +218,14 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )])),
+        )]))
+        .mcp(
+            McpTag::new(
+                "Delete a model row, by its id. Refused while an agent calls it, \
+                 naming the agents.",
+            )
+            .needs(Grant::Drop),
+        ),
     );
 
     // The model settings a backend declares for a kind of model (chat when
@@ -171,7 +241,11 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("model-settings"),
         )
         .query([QueryParam::new("kind", ValueType::Text)])
-        .output(TypeSchema::array(form_field_schema())),
+        .output(TypeSchema::array(form_field_schema()))
+        .mcp(
+            "List the settings a backend takes in a model's `config`, for a `kind` of \
+             model (chat when left out).",
+        ),
     );
 
     // **Fetch models.** Asks the provider's host which models it serves and
@@ -191,7 +265,17 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("ok", TypeSchema::bool()),
             StructField::new("message", TypeSchema::text()),
             StructField::new("names", TypeSchema::array(TypeSchema::text())),
-        ])),
+        ]))
+        // A question rather than a change, but part of setting a provider up,
+        // and a tagged POST declares a grant.
+        .mcp(
+            McpTag::new(
+                "Ask an LLM provider's host which models it serves, by the provider's \
+                 id: the names that have no model row yet. `ok: false` with a message \
+                 when the host has no listing.",
+            )
+            .needs(Grant::Create),
+        ),
     );
 
     // **Test.** Sends one trivial prompt to one model through one key, and
@@ -227,7 +311,18 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("model", TypeSchema::text()),
             StructField::new("capabilities", TypeSchema::json()),
             StructField::new("prices", TypeSchema::json()),
-        ])),
+        ]))
+        // Sends one short prompt, so it is part of setting up rather than a
+        // free read; a tagged POST declares a grant.
+        .mcp(
+            McpTag::new(
+                "Test a model before or after saving it: sends one trivial request \
+                 and answers `ok` with the model's reply or the provider's own error. \
+                 Pass `provider_id` with a provider's masked `config` (from \
+                 `listLlmProviders`) to test with its stored key.",
+            )
+            .needs(Grant::Create),
+        ),
     );
 }
 

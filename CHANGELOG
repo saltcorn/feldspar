@@ -2,6 +2,66 @@
 
 Changes in reverse chronological order.
 
+## `llm` in code bodies, and LLM providers set up over MCP and the CLI
+
+A user reported that code bodies called provider APIs with `fetch` and keys of their own, even
+though the instance had LLM providers configured. They asked for `llm.generate({ messages, model })`
+and `llm.embed(text)` over the configured providers, and for a way to set providers up over MCP or
+the CLI, which until now only the admin UI could do.
+
+- **`llm` in JavaScript and Python code bodies** (triggers, workflow steps, custom queries, code
+  libraries, `run_code`):
+  - `llm.generate(prompt)` or `llm.generate({ prompt, system, messages, model, provider,
+    temperature, max_tokens })` answers the text. With `detail: true` it answers
+    `{ text, provider, model, usage, cost }`.
+  - `llm.embed(text)` answers one vector, and `llm.embed([texts])` one per text, at most 2048.
+  - Messages are `{ role: system | user | assistant, content }`. A left-out provider is the
+    default provider, and a left-out model is that provider's default chat or embedding model,
+    the rule agents and `embed_from` already follow.
+  - Python has `llm.generate(prompt, messages=…, detail=…)` and `llm.embed(…)`.
+  - Mistakes throw a sentence at the call before anything is sent: an unknown option, a
+    non-text prompt, a `tool` role, a model the provider does not have.
+- **How it works**: like `models`, `llm` is not a new surface. Each call is an `op: "llm"`
+  request on the run's `db` host (`sc_api::code_host::llm`), on the run's call budget. A body with
+  no `db` has no `llm`, and a body that declares its own `llm` keeps it.
+- **Whose call**: the calls are the installation's. They are logged like every model call and are
+  not charged to anyone's LLM credits, the same as `embed_from` fields.
+- **Refused on viewer-only hosts**: `llm` is refused where code runs at its viewer's authority,
+  with a sentence saying so. That covers an agent's sandbox, whose code the model wrote, so it
+  cannot spend outside the agent's budget. View-pattern code and module routes are viewer-only
+  too and do not get it.
+- **Timeouts**: a model call counts against the body's `timeout_ms`, whose default is 5 s. A body
+  that calls `llm` should raise it, up to the 60 s maximum.
+- **Code editor and docs**: the editor's types declare `llm`, with `generate` typed as text, or as
+  an answer when `detail` is set. The code API document that MCP clients read (`describe_code_api`)
+  has an `llm` section that says not to call provider APIs with `fetch`.
+- **MCP**: eleven more provider and model endpoints are now MCP tools, beside `listLlmProviders`
+  and `listLlmModels`: `createLlmProvider`, `updateLlmProvider`, `deleteLlmProvider`,
+  `setDefaultLlmProvider`, `listLlmProviderBackends`, `createLlmModel`, `updateLlmModel`,
+  `deleteLlmModel`, `listLlmModelSettings`, `fetchLlmModels` and `testLlmModel`.
+  - The writes need `allow_create`, `allow_edit` or `allow_drop`. `fetchLlmModels` and
+    `testLlmModel` are POSTs that call the provider, so they need `allow_create`.
+  - The key goes in and reads back masked, as over the admin API. An update that sends the
+    masked key keeps the stored one.
+  - The MCP audit line at Verbose used to print tool arguments as given. It now masks every
+    argument whose name is a credential (`api_key`, `password`, `*secret*`, `token`, `*_token`).
+- **CLI**: `feldspar llm list [--json]`, `set-provider NAME --backend B [--api-key-env VAR |
+  --api-key-file PATH] [--base-url URL] [--set KEY=VALUE]… [--default]`, `set-model PROVIDER MODEL
+  [--kind …] [--default]`, `set-default PROVIDER` and `test PROVIDER [MODEL]`.
+  - These save through the same `sc_llm` checks as the admin UI.
+  - An update starts from the stored row, so a key that is left out is kept.
+  - A key given on the command line with `--api-key` is refused, and a backend or a model kind
+    cannot change once saved. Deleting stays with the admin UI and MCP, which check which agents
+    still use the provider.
+- Tests:
+  - `sc-expr`: the plans the JS prelude sends, and its refusals.
+  - `sc-api` `code_host_llm`: a JS body against an OpenAI-compatible stub, through `/chat/completions`
+    and `/embeddings`, plus the refusals and the viewer-only refusal.
+  - `sc-api` admin census and grants.
+  - `sc-server` MCP audit masking.
+  - `sc-cli` `llm`: the real binary against Postgres, with the key never printed.
+  - `ui/admin` `codeTypes`.
+
 ## MCP: `run_code` runs a snippet once, committed or rolled back
 
 A user reported that there was no safe way to run a snippet once on the server, for example to

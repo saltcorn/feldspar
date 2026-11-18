@@ -760,6 +760,60 @@ interface ScModels {
 `;
 }
 
+/** The declarations for `llm`: the configured LLM providers, over the run's own
+ * `db` — a transcription of `sc-expr`'s `__scMakeLlm`, on the same terms as
+ * {@link modelDeclarations}. A provider or model left out is the default. */
+export function llmDeclarations(): string {
+  return `
+/** One turn of a conversation. */
+interface ScLlmMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+/** Which provider and model to call; either left out is the default. */
+interface ScLlmChoice {
+  /** A provider's name, as the LLM providers screen shows it. */
+  provider?: string;
+  /** One of the provider's models, by name. */
+  model?: string;
+}
+
+/** What to generate from. */
+interface ScLlmGenerate extends ScLlmChoice {
+  /** The last user turn, after \`messages\`. */
+  prompt?: string;
+  system?: string;
+  messages?: ScLlmMessage[];
+  temperature?: number;
+  max_tokens?: number;
+}
+
+/** A generated answer, with what it took. */
+interface ScLlmAnswer {
+  text: string;
+  provider: string;
+  model: string;
+  usage: { input_tokens: number; output_tokens: number };
+  /** In dollars; null when the model has no price. */
+  cost: number | null;
+}
+
+/** The configured LLM providers. */
+interface ScLlm {
+  /** A chat model's answer: its text, or with \`detail\` everything. */
+  generate(prompt: string, options: ScLlmGenerate & { detail: true }): Promise<ScLlmAnswer>;
+  generate(prompt: string, options?: ScLlmGenerate & { detail?: false }): Promise<string>;
+  generate(options: ScLlmGenerate & { detail: true }): Promise<ScLlmAnswer>;
+  generate(options: ScLlmGenerate & { detail?: false }): Promise<string>;
+  /** One vector for a text. */
+  embed(text: string, options?: ScLlmChoice): Promise<number[]>;
+  /** One vector per text, in order. */
+  embed(texts: string[], options?: ScLlmChoice): Promise<number[][]>;
+}
+`;
+}
+
 /** The TypeScript type one of v1's declared argument types arrives as.
  *
  * v1's own type names, which is the vocabulary `sc_module::spec` already
@@ -1029,6 +1083,20 @@ export function scopeDeclarations(
       ` * Each call is a database call of this run, on its budget; a draws answer\n` +
       ` * is at most 500 000 numbers — \`thin\` and \`chains\` keep it under. */\n` +
       `declare const models: ScModels;`,
+  );
+  parts.push(
+    `/** The LLM providers configured on this server. A provider or model left\n` +
+      ` * out is the default one:\n` +
+      ` *\n` +
+      ` * \`\`\`js\n` +
+      ` * const summary = await llm.generate("Summarise: " + row.body);\n` +
+      ` * const reply = await llm.generate({ system: "Be brief.", messages, model: "gpt-5-mini" });\n` +
+      ` * const vector = await llm.embed(row.title);\n` +
+      ` * \`\`\`\n` +
+      ` *\n` +
+      ` * Each call is a database call of this run, on its budget, and waits for\n` +
+      ` * the model: give the body a \`timeout_ms\` that leaves it time. */\n` +
+      `declare const llm: ScLlm;`,
   );
   parts.push(
     `/** Call an HTTP endpoint. The web's \`fetch\`, with the web's rules: a\n` +
@@ -1305,6 +1373,7 @@ export function codeLibrary(
     fileDeclarations(),
     triggerDeclarations(),
     modelDeclarations(),
+    llmDeclarations(),
     moduleFunctionDeclarations(functions),
     tableDeclarations(tables),
     scopeDeclarations(scope, tables, functions),

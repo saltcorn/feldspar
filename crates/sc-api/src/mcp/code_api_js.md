@@ -66,7 +66,7 @@ from `payload`, never `row`. `user` is in scope for every event.
   credentials removed). A query saved with `body_type: "bytes"` (JavaScript, POST/PUT/PATCH)
   gets `body` as a `Uint8Array` of the raw request body instead, and its declared params come
   from the query string; its client method takes a `Blob`, `ArrayBuffer` or `Uint8Array`.
-- `db`, `models`, `fetch`, `fs`, `trigger`, `modfn`, `console`, `lib` — below.
+- `db`, `models`, `llm`, `fetch`, `fs`, `trigger`, `modfn`, `console`, `lib` — below.
 - `btoa`, `atob`, `TextEncoder`, `TextDecoder`, `crypto`, `httpError`, `response`,
   `ratelimit` — below.
 
@@ -397,6 +397,34 @@ triggers fire.
 `{ counties: ["Aitkin"], week: [...] }` per axis, or index arrays `[[1, 2]]`. Each call is one
 database call. One `draws` answer is at most 500 000 numbers, so thin or select for more. A
 variable the fit did not draw, or whose draws it did not keep, throws naming why.
+
+## `llm`: the configured LLM providers
+
+`llm` calls the LLM providers configured on this server (the LLM providers screen, the
+`llm_providers` MCP tool, or `feldspar llm`), with their keys. Do not call a provider's API
+with `fetch` and a key of your own.
+
+```js
+const summary = await llm.generate("Summarise in one line: " + row.body);   // the text
+const reply = await llm.generate({
+  system: "You answer support tickets briefly.",
+  messages: [{ role: "user", content: row.question }],   // system | user | assistant
+  model: "gpt-5-mini", provider: "OpenAI",               // either left out is the default
+  temperature: 0.2, max_tokens: 400,
+});
+const full = await llm.generate("Hi", { detail: true });
+// { text, provider, model, usage: { input_tokens, output_tokens }, cost }
+const vector = await llm.embed(row.title);               // one vector
+const vectors = await llm.embed(["a", "b"]);             // one per text, in order
+```
+
+A provider left out is the default provider, and a model left out is that provider's default
+chat model (for `generate`) or default embedding model (for `embed`). A chat model has to be one
+of the provider's models. An embedding model can be any name the provider serves. Each call is
+one database call and waits for the model, so give the trigger a `timeout_ms` that leaves time
+for it (the default is 5 s, the maximum 60 s). The calls are written to the call log and are
+not charged to any user's LLM credits. `llm` is not available where code runs at its viewer's
+authority (an agent's sandbox), and it throws saying so.
 
 ## The other handles
 

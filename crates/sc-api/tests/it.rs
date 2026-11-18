@@ -19,6 +19,8 @@ mod calc_after_read;
 mod calc_fields;
 #[path = "code_host_as_user.rs"]
 mod code_host_as_user;
+#[path = "code_host_llm.rs"]
+mod code_host_llm;
 #[path = "code_host_reads.rs"]
 mod code_host_reads;
 #[path = "code_host_rls_boundary.rs"]

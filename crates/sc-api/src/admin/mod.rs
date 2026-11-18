@@ -538,10 +538,24 @@ mod tests {
                 "undoChangeset",
                 // The LLM providers and their models, read-only (the Paddi
                 // field report): an agent creating an agent needs the names
-                // `createAgent` takes. Setting one up stays an admin's, since
-                // it is where the secrets are.
+                // `createAgent` takes. And setting one up (a user report: the
+                // admin UI was the only way, so code bodies called provider
+                // APIs with keys of their own): the key goes in and is never
+                // read back, as over the admin API, and each write needs its
+                // grant.
                 "listLlmProviders",
+                "createLlmProvider",
+                "updateLlmProvider",
+                "deleteLlmProvider",
+                "setDefaultLlmProvider",
+                "listLlmProviderBackends",
                 "listLlmModels",
+                "createLlmModel",
+                "updateLlmModel",
+                "deleteLlmModel",
+                "listLlmModelSettings",
+                "fetchLlmModels",
+                "testLlmModel",
                 // Modules, behind their own area that is off unless granted: an
                 // agent writing Python needs a library installed to import it,
                 // and asking a human to click Install is the gap this closes.
@@ -724,6 +738,16 @@ mod tests {
         for name in ["createRole", "setUserDisabled", "deleteRole", "deleteUser"] {
             assert_eq!(also_of(name), None, "{name}");
         }
+        // LLM providers and their models can be set up over MCP, as over the
+        // admin API.
+        assert_eq!(grant_of("createLlmProvider"), Some(Grant::Create));
+        assert_eq!(grant_of("updateLlmProvider"), Some(Grant::Edit));
+        assert_eq!(grant_of("setDefaultLlmProvider"), Some(Grant::Edit));
+        assert_eq!(grant_of("deleteLlmProvider"), Some(Grant::Drop));
+        assert_eq!(grant_of("createLlmModel"), Some(Grant::Create));
+        assert_eq!(grant_of("updateLlmModel"), Some(Grant::Edit));
+        assert_eq!(grant_of("deleteLlmModel"), Some(Grant::Drop));
+        assert_eq!(grant_of("testLlmModel"), Some(Grant::Create));
 
         for read_only in [
             "listAgents",
@@ -739,6 +763,10 @@ mod tests {
             "listWorkflowRuns",
             "listRoles",
             "listUsers",
+            "listLlmProviders",
+            "listLlmProviderBackends",
+            "listLlmModels",
+            "listLlmModelSettings",
         ] {
             assert_eq!(grant_of(read_only), None, "`{read_only}` only reads");
         }

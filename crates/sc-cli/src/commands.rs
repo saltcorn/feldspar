@@ -11,6 +11,7 @@ pub(crate) mod cmdstan;
 pub(crate) mod config;
 pub(crate) mod demo;
 pub(crate) mod i18n;
+pub(crate) mod llm;
 pub(crate) mod mcp_token;
 pub(crate) mod migrate;
 pub(crate) mod module;
