@@ -688,7 +688,7 @@ fn tool_set(state: &AppState, caller: &ApiCaller) -> ToolSet {
     let flags = sc_api::mcp::token_flags(&caller.token.grants);
     let grants = grants_from_attrs(&flags);
     let areas = areas_from_attrs(&flags);
-    sc_app::mcp::tool_set(grants, areas).with(state.mcp_endpoint_tools.iter().cloned())
+    sc_app::mcp::mcp_tool_set(grants, areas).with(state.mcp_endpoint_tools.iter().cloned())
 }
 
 /// Build the tier-2 tools of an endpoint set, once, at router assembly.

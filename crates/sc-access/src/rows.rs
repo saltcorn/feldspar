@@ -466,6 +466,28 @@ pub async fn aggregate_grouped(
     query: &RowQuery,
     context: Unchecked<'_>,
 ) -> Result<Vec<std::collections::BTreeMap<String, Value>>> {
+    aggregate_grouped_in(
+        catalog,
+        table,
+        projections,
+        query,
+        context,
+        &Executor::Pooled,
+    )
+    .await
+}
+
+/// [`aggregate_grouped`] on a caller's executor, so an aggregate inside a
+/// transaction counts the rows that transaction has already written, as a row
+/// read there does ([`list_row_values_in`]).
+pub async fn aggregate_grouped_in(
+    catalog: &Catalog,
+    table: &Table,
+    projections: Vec<Projection>,
+    query: &RowQuery,
+    context: Unchecked<'_>,
+    executor: &Executor,
+) -> Result<Vec<std::collections::BTreeMap<String, Value>>> {
     // A count or a sum over a filter the row read would refuse is refused the
     // same way, so a grid's count and its rows cannot disagree about why.
     CalcPlan::of(catalog, table)?.refuse_query(table, query.filter.as_ref(), &query.order)?;
@@ -476,7 +498,15 @@ pub async fn aggregate_grouped(
     select.order = query.order.clone();
     select.limit = query.limit;
     select.offset = query.offset;
-    let rows = run_read(catalog, table, &select, context, query.in_caller_context).await?;
+    let rows = run_read_in(
+        catalog,
+        table,
+        &select,
+        context,
+        query.in_caller_context,
+        executor,
+    )
+    .await?;
     Ok(rows.iter().map(row_values).collect())
 }
 

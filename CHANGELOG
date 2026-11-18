@@ -2,6 +2,42 @@
 
 Changes in reverse chronological order.
 
+## MCP: `run_code` runs a snippet once, committed or rolled back
+
+A user reported that there was no safe way to run a snippet once on the server, for example to
+try out a library, so everyone wrote throwaway test triggers. The two uses: a one-off data
+migration, which must persist, and code to be used later in an action, tried out first. TODO
+RC1.1.
+
+- A new MCP tool, **`run_code`**: `code` (required), `rollback` (default false), `language`
+  (`javascript`, the default, or `python`), `payload` and `timeout_ms` (at most 60 s). The body is
+  a `run_js_code` / `run_python_code` body with the same scope (`db`, `fetch`, `fs`, `trigger`,
+  `lib()`), bounds and admin authority a trigger's body has. It is not saved anywhere and fires no
+  trigger of its own. Its answer is `{ result, committed, console }`.
+- **One transaction on the primary database**, which whatever its writes cascade into joins. A body
+  that throws is rolled back, so a migration that stops half way changes nothing, and the error
+  carries the console lines it printed. A body that succeeds is committed, or, with
+  `rollback: true`, rolled back too: its writes are made and its own reads see them, then they are
+  undone. What a transaction cannot take back is not taken back, and the tool's description says
+  so: a `fetch`, a file written through `fs`, an email sent by a trigger a write fired, and rows of
+  a table on another database or provided by a module.
+- **Admin only**: only an administrator's token reaches it, like every MCP tool. It is in the
+  triggers area (`allow_triggers`), since saving and running a code trigger already did the same
+  thing. A committing run also needs `allow_edit`. A rolled-back run needs no further grant.
+- **Logged**: every run writes a line to the server log at info level, whatever the verbosity,
+  with the token's label, whether it commits, and the code itself. The usual MCP audit line with
+  the outcome follows.
+- **MCP only**: the in-app `admin_copilot` agent is not offered it, and its tool list is unchanged.
+  `sc_app::mcp::mcp_tool_set` is the MCP server's set (the shared set plus
+  `sc_api::mcp::mcp_only_tools()`), and the generated `SKILL.md` lists `run_code` under the
+  trigger tools.
+- Underneath: `TriggerDispatcher::run_snippet` (sc-action) runs a code action's configuration
+  once, inside the transaction, with the console collected, as a `TestRun`.
+- **Fix:** an aggregate a code body ran at admin authority (`.count()`, `.sum()`,
+  `.groupBy().aggregate()`) did not join the transaction it ran in, so in a workflow step it
+  missed the rows the step had just written. It now runs where the body's row reads already ran
+  (`sc_access::rows::aggregate_grouped_in`).
+
 ## Identity providers: claims fill in the account, groups set the role, `login` sees both
 
 A user reported that a Keycloak (OIDC) provider sends `name`, `given_name`, `family_name` and

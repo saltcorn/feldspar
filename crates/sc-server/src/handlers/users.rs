@@ -532,12 +532,14 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     .and_then(sc_query::Value::as_text)
                     .map(str::to_owned)
                     .ok_or_else(|| Error::invalid("this user has no email address to send to"))?;
-                let settings = sc_config::EmailSettings::load(&catalog).await?.ok_or_else(|| {
-                    Error::invalid(
-                        "no SMTP server is configured: set an SMTP host in Settings → Email \
+                let settings = sc_config::EmailSettings::load(&catalog).await?.ok_or_else(
+                    || {
+                        Error::invalid(
+                            "no SMTP server is configured: set an SMTP host in Settings → Email \
                          before sending a password by email",
-                    )
-                })?;
+                        )
+                    },
+                )?;
                 let mailer = sc_email::SmtpMailer::new(&settings)?;
                 let mut email = sc_email::Email::new(settings.from.clone());
                 email.to = sc_email::parse_recipients(&to)?;

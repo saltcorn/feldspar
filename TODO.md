@@ -1033,6 +1033,20 @@ Every `@feldspar/imap` action that names its caller answered 422 there.
   floors 1/1 and an ownership formula is refused for a caller served below the floor, where
   reading rows may be granted by the formula. Waiting on the reporter's repro.
 
+## RC1 — `run_code` over MCP (user feedback)
+
+There was no safe way to run a snippet once on the server (a one-off data migration, or trying
+out code meant for an action), so everyone wrote throwaway test triggers.
+
+- [x] **RC1.1** An MCP-only `run_code` tool (not offered to `admin_copilot`), in the triggers
+  area: a `run_js_code` (or `run_python_code`) body run once, at the admin's authority, with
+  `payload` and `timeout_ms`, through `TriggerDispatcher::run_snippet`. One transaction on the
+  primary database: committed on success, rolled back on failure, and rolled back on success too
+  with `rollback: true`. Committing needs `allow_edit`. Every run is logged with its code at
+  info level. The answer carries the result and the console, and a failure carries the console
+  lines. Tests: `sc-api` unit tests, `run_code_commits_a_migration_and_rolls_back_a_trial_run`
+  in `sc-server`'s `mcp_server.rs`.
+
 ---
 
 ## Open questions

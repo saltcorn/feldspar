@@ -372,8 +372,7 @@ pub const FORCE_LOGOUT_USER: HandlerId<AdminOnly> = HandlerId::new("forceLogoutU
 pub const BECOME_USER: HandlerId<AdminOnly> = HandlerId::new("becomeUser");
 pub const RESET_USER_SECOND_FACTOR: HandlerId<AdminOnly> = HandlerId::new("resetUserSecondFactor");
 pub const SET_RANDOM_PASSWORD: HandlerId<AdminOnly> = HandlerId::new("setRandomPassword");
-pub const SEND_CREDENTIALS_EMAIL: HandlerId<AdminOnly> =
-    HandlerId::new("sendCredentialsEmail");
+pub const SEND_CREDENTIALS_EMAIL: HandlerId<AdminOnly> = HandlerId::new("sendCredentialsEmail");
 pub const LIST_USER_ROLE_GRANTS: HandlerId<AdminOnly> = HandlerId::new("listUserRoleGrants");
 pub const GRANT_USER_ROLE: HandlerId<AdminOnly> = HandlerId::new("grantUserRole");
 pub const REVOKE_USER_ROLE_GRANT: HandlerId<AdminOnly> = HandlerId::new("revokeUserRoleGrant");

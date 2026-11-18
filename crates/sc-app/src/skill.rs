@@ -77,7 +77,7 @@ impl ToolLine {
 /// order.
 fn tool_lines(catalog: &Catalog) -> (Vec<ToolLine>, Vec<ToolLine>, Vec<ToolLine>) {
     let grants = Grants::all();
-    let set = crate::mcp::tool_set(grants, Areas::all());
+    let set = crate::mcp::mcp_tool_set(grants, Areas::all());
     let mut always = Vec::new();
     let mut triggers = Vec::new();
     let mut applications = Vec::new();
