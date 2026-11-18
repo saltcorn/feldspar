@@ -3625,6 +3625,7 @@ formula string, which is what the `update_rows` and `delete_rows` actions take:
 
 ```js
 .where({ status: "draft", pages: { gte: 100 }, id: { in: [1, 2, 3] } })
+.where({ due: { gte: "2026-01-01", lt: "2026-02-01" } })   // several operators: all hold
 .where({ or: [ { status: "draft" }, { and: [ { status: "sent" }, { paid: false } ] } ] })
 .where('status === "draft" && ordersↃcustomer.length > 3')
 ```
@@ -5323,8 +5324,9 @@ with the run's caller.
   could not reach one would have to choose between failing and skipping the check, and
   `TraitContext::require_evaluator` makes the first choice explicit.
 - **`query_table`'s `where` is a JSON object, not a formula.** Each entry is a field against a
-  value to match exactly or an object with one operator key (`eq`, `ne`, `gt`, `gte`, `lt`,
-  `lte`, `like`, `ilike`, `in`, `is_null`), all ANDed. A model writes JSON reliably and
+  value to match exactly or an object of operator keys (`eq`, `ne`, `gt`, `gte`, `lt`,
+  `lte`, `like`, `ilike`, `in`, `is_null`), all ANDed — `{ gte: a, lt: b }` on one field is a
+  range. An object with any key that is not an operator is a literal (a `Json` column's value). A model writes JSON reliably and
   JavaScript unreliably, and the object form is the one whose vocabulary the schema can
   enumerate. `max_rows` is a **ceiling** the `limit` argument is clamped to, and the result
   carries `more_rows_available` so a truncated answer is not stated as a complete one.

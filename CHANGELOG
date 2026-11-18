@@ -2,6 +2,49 @@
 
 Changes in reverse chronological order.
 
+## Several comparisons on one column: ranges in the filter object and the typed client
+
+A user reported that a list filtered by several states had to fetch more rows and filter them in
+the browser, that a column could carry only one operator (no `gte` + `lte` date range), and that
+the `db` chain had the same limit, needing two chained `.where()` calls. Checked against the
+code: `in` was already supported everywhere (`?status=in.(open,pending)`,
+`{ status: { in: [ … ] } }`), and `or` is supported in every filter object. Two gaps were real.
+
+- **The filter object** (`sc_access::filter::condition_on`), which a code body's `.where()`, the
+  agent tools' `where` and live subscriptions all use, read an object as an operator only when it
+  had exactly one key. `{ due: { gte: "2026-01-01", lt: "2026-02-01" } }` was refused on a typed
+  column ("is not a valid date"). On a Text column it became an equality against the object's JSON
+  text and matched nothing, with no error. Now a non-empty object whose keys are **all** operators
+  is those comparisons, ANDed. An object with any other key is still a literal value, so `Json`
+  columns stay filterable by value. One behaviour changes: a `Json` column filtered by an object
+  whose keys are all operator names (`{ "gt": 1, "lt": 5 }`) is now a range rather than an exact
+  match. A one-key object (`{ "eq": … }`) was already read that way.
+- **The generated TS client.** The server has always read a repeated key
+  (`?published=gte.…&published=lt.…`) as a range, but `Filters<Row>` held one string per column,
+  so the client could not send one. A column's filter may now be a list of comparisons that must
+  all hold: `filter: { published: ["gte.2020-01-01", "lt.2021-01-01"] }` sends the key once per
+  element. A single string sends one pair as before. An unset (`undefined`) entry is now skipped;
+  before, it was sent as the text `undefined`. The admin API's `listRows`/`countRows` filter maps
+  take lists too. `whereObject` lowers a list for a live subscription to one object of
+  comparisons (a repeated operator goes in an `and`), so a read and its subscription still
+  describe the same rows. Regenerated `client.ts` and `helper.ts` in `ui/admin`, `ui/ide`,
+  `ui/builder` and `ui/analytics`.
+- **REST `or=`** stays refused, as designed. Its error now points at `in.(a,b)`, at the repeated
+  key for a range, and at GraphQL's `where` or a code query's `.where()` for an `or` across
+  columns.
+- Docs: the agent tools' `WHERE_HELP` ("an object of operator keys … several on one field must
+  all hold"), the `.where()` examples and the `query_table` note in the design document, and
+  `tutorial-rest-queries.md` (`in.(…)` instead of `or`, and a list filter in the client). The
+  Saltcorn 1 compatibility layer's comment on splitting `{ gt, lt }` was brought up to date; its
+  behaviour is unchanged.
+- Tests: `sc-access` (a date range, the Text case that used to match nothing, mixed `in` + `ne`,
+  per-operator refusals, the `Json` literal rule); `sc-api` code-host `.where()` range; a new
+  `client_filters` test that runs the generated client under Node and checks the repeated key
+  and the skipped `undefined`; `typescript_typecheck` (a list filter on a read and on a
+  subscription, and a bad comparison inside a list refused); the `or=` error naming its
+  alternatives; ranges added to `sc-live`'s SQLite/Postgres parity matrix; and `whereObject`
+  in `ui/admin`'s vitest suite.
+
 ## `llm` calls in code bodies can charge the caller's LLM credits
 
 A follow-up to the `llm` work below: a code body can now charge a model call to the user it is

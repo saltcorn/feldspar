@@ -169,7 +169,10 @@ pub fn filter_expr(table: &Table, key: &str, spec: &str) -> Result<Expr> {
         if matches!(key, "or" | "and" | "not") {
             return Err(Error::invalid(format!(
                 "`{key}=` is a PostgREST boolean-logic parameter, which this API does not \
-                 take: filters given here are ANDed together"
+                 take: filters given here are ANDed together. Several values of one column \
+                 are `column=in.(a,b)`, a range is the column twice \
+                 (`column=gte.a&column=lt.b`), and an `or` across columns is GraphQL's \
+                 `where` or a code query's `.where()`"
             )));
         }
         return Err(Error::invalid(format!(
@@ -506,6 +509,8 @@ mod tests {
         // ask for, so each of these says what it is rather than 400-ing vaguely.
         let or = error_of(&[("or", "(pages.gt.100,title.eq.x)")]);
         assert!(or.contains("boolean-logic parameter"), "{or}");
+        // …and points at the spellings that are taken.
+        assert!(or.contains("in.(a,b)") && or.contains(".where()"), "{or}");
         let not = error_of(&[("pages", "not.eq.1")]);
         assert!(not.contains("`pages=not.…` is not taken"), "{not}");
         let embedded = error_of(&[("author.name", "eq.Rowling")]);

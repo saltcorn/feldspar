@@ -269,6 +269,25 @@ async fn every_comparison_and_the_combinators_lower_through_the_shared_vocabular
         "expected a bound date, got {binds:?}"
     );
 
+    // Several operators on one column all hold: a range in one `.where()`,
+    // where it once took two chained calls.
+    let (sql, binds) = where_of(json!({
+        "published": { "gte": "2020-01-01", "lt": "2026-01-01" },
+        "pages": { "in": [100, 200] },
+    }))
+    .await
+    .expect("ok");
+    assert!(
+        sql.contains("(\"published\" >= $") && sql.contains("(\"published\" < $"),
+        "{sql}"
+    );
+    assert!(sql.contains("\"pages\" IN ("), "{sql}");
+    assert_eq!(
+        binds.iter().filter(|b| matches!(b, Value::Date(_))).count(),
+        2,
+        "{binds:?}"
+    );
+
     // The combinators, which this milestone added to the shared walk — so an
     // agent's `where` gained them at the same moment.
     let (sql, _) = where_of(json!({
