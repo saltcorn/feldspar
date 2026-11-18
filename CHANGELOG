@@ -2,6 +2,42 @@
 
 Changes in reverse chronological order.
 
+## Who may read a finished upload: `read_role` on upload slots
+
+A user on a second instance reported that the files of an upload slot were readable by every
+signed-in user unless the slot's hook returned `{ min_role }`: a signature uploaded by one user
+was served to another. Confirmed: a finished upload was given its uploader as owner but no floor
+of its own, so it inherited the store's and folders' floors, and the owner rule only ever adds a
+reader. Another user noted that their uploads were not reachable at all without a static_dirs
+mount; that holds for code and React apps, but a Saltcorn UI application's `/files/serve` serves
+every store it declares too.
+
+- **`read_role` on an upload slot** is written onto each finished file as its `min_role`: `1`
+  is only the uploader and admins, a larger role shares the slot's files with that role, `null`
+  leaves them to the folder's floors (the old behaviour). A hook's `min_role` is combined by
+  taking the stricter, so it narrows and never widens.
+- **Defaults that do not break running applications.** A slot stored or backed up without the
+  key keeps inheriting. A slot *added* through the admin API, the application form or
+  `update_application` without it is private (`1`), and one sent back without it keeps the
+  stored setting, so an older client changes nothing (`sc_app::fill_read_roles`).
+- **`update_application` warns** about a slot with `read_role` `null` that a static directory or
+  `/files/serve` serves, when it changes uploads or static directories.
+- **The application form** has a **Readers** column (uploader and admins, uploader and a role,
+  or the folder's readers). Its help text said files were "readable only by them and admins",
+  which was not true; it now says what the setting does. All five locales are updated.
+- Docs: §2.3 of the technical design, `code_api_js.md` (the hook paragraph), and a "trips
+  people up" entry in `docs/tutorial-file-fields.md`. `client.ts` is regenerated in all four UIs.
+- Tests: `sc-server` `app_uploads::a_slots_read_role_decides_who_reads_a_finished_file` (through
+  a static directory over a members' folder: the uploader, an admin, another member and a
+  stranger, for the default, an inheriting slot, a shared role and a hook that tries to tighten
+  and to loosen), `admin_applications_api::an_upload_slot_sent_without_read_role_is_private_when_new_and_kept_when_not`,
+  `sc-agent-builtins` `admin_copilot_apps::a_new_upload_slots_files_are_its_uploaders_unless_it_says_otherwise`,
+  `sc-app` unit tests for the JSON, `fill_read_roles` and the routes a warning names (including
+  `/files/serve`), and `uploadSlots.test.ts`.
+
+Not changed: files uploaded before this keep their meta. To make them private, set their
+`min_role` to 1 (the file manager's **Minimum role**, or `setMeta` as admin).
+
 ## Secret fields from `edit_schema`
 
 A user asked for encrypted credential fields (IMAP or CalDAV passwords, API keys, refresh

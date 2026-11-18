@@ -39,6 +39,7 @@ describe("upload rows", () => {
       store: "files",
       folder: "drops",
       min_role: 80,
+      read_role: 80,
       max_bytes: 1024 ** 3,
       mime_allow: ["video/mp4", "video/webm"],
       hook: "beforeDrop",
@@ -57,11 +58,30 @@ describe("upload rows", () => {
         store: "files",
         folder: "a",
         min_role: 1,
+        read_role: 1,
         max_bytes: 0,
         mime_allow: [],
         hook: null,
       },
     ]);
+  });
+
+  it("keeps a slot whose files have the folder's readers as null (UP1)", () => {
+    const slot = {
+      name: "old",
+      store: "files",
+      folder: "",
+      min_role: 80,
+      read_role: null,
+      max_bytes: 0,
+      mime_allow: [],
+      hook: null,
+    };
+    const rows = uploadRowsFromApp([slot]);
+    expect(rows[0].read_role).toBe("");
+    expect(uploadRowsToRequest(rows)).toEqual([slot]);
+    const bad = { ...rows[0], read_role: "everyone" };
+    expect(() => uploadRowsToRequest([bad])).toThrow(/old/);
   });
 
   it("names the slot whose size does not parse", () => {

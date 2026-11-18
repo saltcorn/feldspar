@@ -173,12 +173,19 @@ An upload slot's **hook** is a code query too (a POST is best). It runs before a
 accepted, with `body = { filename, size, mime, slot }` and `user` the uploader; throw
 `httpError(403, …)` (or 413, …) to refuse, or return `{ path, meta, min_role }` — all optional —
 to choose the file's path inside the slot's folder, extra string attributes, and a stricter role
-floor:
+floor than the slot's `read_role`:
 
 ```js
 if (body.size > 100e6 && user.role > 40) throw httpError(413, "100 MB at most");
 return { path: `${user.id}/${body.filename}`, meta: { project: "apollo" } };
 ```
+
+Who reads a finished upload is the slot's `read_role`, not the hook's job: `1` (a new slot's
+default) is only the uploader and admins, a larger role shares the files with that role, and
+`null` leaves them to the store's and folder's floors — every signed-in user, in a folder at the
+user role. A file is fetched by URL only where a static dir covers its folder, or through
+`/files/serve` in a Saltcorn UI app; otherwise only the app's own queries hand it out, and a query
+reading with `fs(store)` (admin) must check who is asking itself.
 
 **A share link to a live document (or a row's topic).** A query saved with `response_type:
 "stream"` is not fetched: the generated client opens it over the app's live socket, and the

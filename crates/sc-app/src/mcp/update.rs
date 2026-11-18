@@ -172,18 +172,24 @@ fn update_description(grants: &Grants) -> String {
          - `{ARG_UPLOADS}` — **upload slots**, where the app's client uploads a \
          large file in resumable chunks: a tus 1.0 endpoint at \
          `<api mount>/_upload/<name>`, with no request-size cap but the slot's. \
-         Prefer one over a code query that takes base64. `{ARG_ADD}` lists `{{ name, store, folder, min_role, max_bytes, \
-         mime_allow, hook }}` (a name in use is replaced; a store the app was not \
+         Prefer one over a code query that takes base64. `{ARG_ADD}` lists `{{ name, store, folder, min_role, read_role, max_bytes, \
+         mime_allow, hook }}` (a name in use is replaced, keeping its `read_role` \
+         unless given; a store the app was not \
          connected to is connected); `{ARG_REMOVE}` lists names. `min_role` is who \
-         may upload (1 admin … 100 public; default 1), `max_bytes` 0 is the \
+         may upload (1 admin … 100 public; default 1). `read_role` is who besides \
+         the uploader may read a finished file: 1 (the default for a new slot) is \
+         only the uploader and admins, a larger role lets that role read them all \
+         (a gallery), and `null` gives the file no floor of its own, so everyone \
+         the store's and folder's floors let in reads it, wherever a static dir or \
+         `/files/serve` serves the folder. `max_bytes` 0 is the \
          server's limit (`--max-upload-bytes`), which also caps a larger value — \
          the result's `effective_max_bytes` says what applies, `mime_allow` is matched on the file name's type, and \
          `hook` names one of the app's JavaScript or Python queries, called with \
          `body = {{ filename, size, mime, slot }}` before an upload is accepted: \
-         it may `throw httpError(403, …)` to refuse, or return `{{ path, meta }}` \
-         to choose the file's path within the folder and extra attributes. A \
-         finished file is owned by its uploader, so a folder with min_role 1 \
-         keeps each user's files to themselves.\n\
+         it may `throw httpError(403, …)` to refuse, or return `{{ path, meta, \
+         min_role }}` to choose the file's path within the folder, extra \
+         attributes and a stricter `read_role` for this file. A finished file is \
+         owned by its uploader.\n\
          - `{ARG_CSP}` — maps a directive to its whole new source list, or to \
          `null` to remove it; directives not named are kept. The usual reasons: \
          `frame-ancestors` naming another app's origin (`'self' \
@@ -326,6 +332,10 @@ fn update_parameters() -> Json {
                                 "min_role": {
                                     "type": "integer",
                                     "description": "Who may upload: 1 (admin, the default) to 100 (public).",
+                                },
+                                "read_role": {
+                                    "type": ["integer", "null"],
+                                    "description": "Who besides the uploader may read a finished file: 1 (only the uploader and admins, the default for a new slot) to 100; null inherits the store's and folder's floors.",
                                 },
                                 "max_bytes": {
                                     "type": "integer",
@@ -675,15 +685,21 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
     if static_dirs.is_some() {
         out[ARG_STATIC_DIRS] = static_dirs_json(&saved.static_dirs);
     }
+    let mut warnings = Vec::new();
     if uploads.is_some() {
         let ceiling = crate::upload_ceiling(ctx.catalog);
         out[ARG_UPLOADS] = crate::upload_slots_report(&saved.uploads, ceiling);
         // Saved as asked, but a limit over the server's is not in effect:
         // said, so the change does not look like it worked when it did not.
-        let warnings = crate::upload_ceiling_warnings(&saved.uploads, ceiling);
-        if !warnings.is_empty() {
-            out["warnings"] = json!(warnings);
-        }
+        warnings.extend(crate::upload_ceiling_warnings(&saved.uploads, ceiling));
+    }
+    // A slot whose files inherit their readers, now served by a route: said
+    // whichever of the two changed (UP1).
+    if uploads.is_some() || static_dirs.is_some() {
+        warnings.extend(crate::upload_exposure_warnings(&saved));
+    }
+    if !warnings.is_empty() {
+        out["warnings"] = json!(warnings);
     }
     if csp.is_some() {
         out[ARG_CSP] = csp_json(&saved.csp);
@@ -1037,7 +1053,7 @@ fn change_uploads(
     }
     app.uploads.retain(|s| !remove.contains(&s.name));
 
-    let added = match section.get(ARG_ADD) {
+    let mut added = match section.get(ARG_ADD) {
         None | Some(Json::Null) => Vec::new(),
         Some(Json::Array(items)) => items
             .iter()
@@ -1052,6 +1068,11 @@ fn change_uploads(
             )));
         }
     };
+    // A slot not naming its readers keeps the ones it had, or — new — is its
+    // uploader's (UP1).
+    if let Some(Json::Array(items)) = section.get(ARG_ADD) {
+        crate::fill_read_roles(&mut added, items, &app.uploads);
+    }
     let mut connected = Vec::new();
     for slot in added {
         if !catalog.has_file_store(&slot.store)? {

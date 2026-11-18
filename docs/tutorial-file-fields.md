@@ -193,6 +193,13 @@ same file, admitted by one rule and refused by the other: whichever is stricter 
   `PUT`/`POST` works for a file the caller uploaded (through this endpoint or an upload slot), and
   for an admin with any file. Sending back the path a row already holds is always fine, so a
   whole-row save by somebody other than the uploader still works.
+- **An upload slot's files are read by its `read_role`, not by the field's table.** A file that
+  comes in through an upload slot (`api.uploads.<slot>`) belongs to its uploader, and the slot's
+  **Readers** setting decides who else may read it: *Uploader and admins* (a new slot's default),
+  a role, or *The folder's readers* — everyone the store's and folder's rules admit, which in a
+  folder open to Members is every Member. It matters wherever the folder can be fetched by URL: a
+  static directory that serves it, or `/files/serve` in a Saltcorn UI application. Slots made
+  before the setting existed keep *The folder's readers* until you change them.
 - **Metadata operations never delete bytes.** Forgetting a field, deleting a row, dropping the
   table: the files stay in the store. Delete them in the file manager when you mean it.
 - **A store with a `File` field pointing at it refuses to be deleted**, naming the field. Forget

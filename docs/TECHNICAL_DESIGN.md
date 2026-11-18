@@ -7296,7 +7296,8 @@ one is rewritten. The admin file manager's `/upload` and the backup upload are b
 section, as a number or with a `K`/`M`/`G` suffix, with a flag on the command line winning). A
 large file from an application's client does not go
 through either: it goes to an **upload slot**, `Application::uploads` (`sc_app::UploadSlot`:
-`name`, `store`, `folder`, `min_role` (default admin), `max_bytes` (0 = the server's limit, which
+`name`, `store`, `folder`, `min_role` (default admin), `read_role` (the finished file's own
+floor; see below), `max_bytes` (0 = the server's limit, which
 also caps a larger value), `mime_allow` (matched on the name's type, as a `File` field's is) and
 an optional `hook`). `save_application` validates slots beside the static directories
 (`validate_upload_slots`: an identifier name, unique; a store in the subset; a folder inside the
@@ -7321,12 +7322,33 @@ folder, stopping at the declared length (a body that runs past it is a `413`, no
 bound written), and keeps what arrived when the connection drops; `HEAD` answers the offset,
 which is the temporary file's size rather than the row's. When the offset reaches the length the
 file is renamed into place (a destination that exists is a `409`, also checked at creation) and
-given its owner (the uploader), `attributes.filename` and the hook's attributes; the response
+given its owner (the uploader), `attributes.filename`, the hook's attributes and its own
+`min_role`; the response
 carries `Feldspar-File-Path` and, when a static directory or `/files/serve` covers it,
 `Feldspar-File-Url`. `DELETE` abandons it. The upload's state is a row of `_fd_uploads`, so a
 resume survives a restart; only its uploader (`user:<id>`, or a hash of an anonymous browser's
 cookie) may continue, inspect or abandon it, and anybody else gets the 404 an unknown id gets.
 A sweep every ten minutes removes uploads begun over 24 hours ago, with their bytes.
+
+**Who reads a finished upload** (UP1, from a user report: one user's uploaded signature was
+served to another). The owner rule (§2.1) only ever *adds* a reader, so a file with no floor of
+its own is read by everyone the store's and folders' floors let in — every signed-in user, in a
+folder at the user role. The slot's `read_role` is therefore written onto the file as its
+`min_role`: `1` means only the uploader (through the owner rule) and admins, a larger role shares
+the slot's files with that role (a gallery), and `null` gives the file no floor of its own, which
+is how slots behaved before the setting. The hook's `min_role` is combined with it by taking the
+stricter, so a hook narrows a file's readers and never widens them; and neither can loosen the
+folder's floor, which `check_access` applies regardless. Defaults keep running applications as
+they were: `UploadSlot::from_json` reads an absent `read_role` as `null`, so a stored or
+backed-up slot keeps its readers, while a slot *added* through the admin API, the application
+form or `update_application` without the key gets `1` (`sc_app::fill_read_roles`), and one sent
+back without it keeps what is stored, so a client older than the setting changes nothing.
+A file is reachable by URL only where a route serves its folder: a static directory over it (or
+over a folder inside it), and `/files/serve/<store>/…` in a Saltcorn UI application, which
+serves every store the application declares. Elsewhere, only the application's own code hands it
+out (a code query, a row's `File` field). `update_application` warns, when it changes uploads or
+static directories, about each slot with `read_role` `null` that such a route serves
+(`sc_app::upload_exposure_warnings`).
 
 **The client side (TODO F2.11).** The generated client has `api.uploads.<slot>(file, { onProgress,
 signal, retries, chunkSize, filename })` for each slot (`sc_api::generate_app_client` with the

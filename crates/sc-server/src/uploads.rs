@@ -381,7 +381,13 @@ async fn create(
     }
     let mut meta = Map::new();
     meta.insert("attributes".to_owned(), Json::Object(decided.attributes));
-    if let Some(min_role) = decided.min_role {
+    // The file's own floor: the slot's `read_role`, or the hook's when that is
+    // stricter — a hook narrows who reads a file, never widens it (UP1).
+    let file_min_role = match (slot.read_role, decided.min_role) {
+        (Some(slot_role), Some(hook_role)) => Some(slot_role.most_privileged(hook_role)),
+        (one, other) => one.or(other),
+    };
+    if let Some(min_role) = file_min_role {
         meta.insert("min_role".to_owned(), json!(min_role));
     }
     let record = UploadRecord {

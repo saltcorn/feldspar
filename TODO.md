@@ -1096,6 +1096,23 @@ secrets are not part of this.
 
 ---
 
+## UP1 — Who may read a finished upload (user feedback)
+
+A user reported that the files of an upload slot were readable by every signed-in user unless the
+slot's hook returned `{ min_role }`: a signature one user uploaded was served to another. A
+finished upload had its uploader as owner but no `min_role` of its own, so it inherited the
+store's and folders' floors, and the owner rule only ever adds a reader. It is reachable by URL
+through a static_dirs mount covering its folder, or `/files/serve` in a Saltcorn UI application.
+
+- [x] **UP1.1** `read_role` on `UploadSlot`: the finished file's own `min_role` (`1` = only the
+  uploader and admins; absent = inherit, as before). New slots (form, MCP, scaffold,
+  `UploadSlot::new`) default to `1`; a stored slot without the key keeps inheriting. A hook's
+  `min_role` can tighten it, not loosen it. `save_application` warns when an inheriting slot's
+  folder is served by a route at a floor looser than admin. Docs: `code_api_js.md`,
+  `tutorial-file-fields.md`, §2.3. Tests in `app_uploads.rs` and `sc-app` unit tests.
+
+---
+
 ## Open questions
 
 - F9: should a refused but signed-in caller of a Saltcorn UI application be shown "your account
