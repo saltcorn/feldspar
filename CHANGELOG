@@ -2,6 +2,30 @@
 
 Changes in reverse chronological order.
 
+## Secret fields from `edit_schema`
+
+A user asked for encrypted credential fields (IMAP or CalDAV passwords, API keys, refresh
+tokens) in application tables, starting with "`secret: true` as a field option in
+`edit_schema`". Secret fields already existed: sealed with AES-256-GCM under the instance key,
+shown as a placeholder on every client surface and readable by server-side code. The admin field
+editor could make one, but MCP `edit_schema` could not, though `describe_schema` already
+reported `secret: true`.
+
+- **`secret: true` on `add_field` and on the fields of `create_table`** makes a Secret field,
+  with no `type`. Given together with `references`, `expression` or `file_store`, it is refused.
+  The tool's description and parameter schema say what a secret is for and what it cannot be.
+- **On `alter_field`**, `secret: true` on a field that is already a secret is accepted, so a
+  described field can be sent back. Making an existing field a secret, or `secret: false` on a
+  secret, is refused with the reason (its stored values are in plain text, or sealed). Before,
+  `secret` was refused as an unknown setting.
+- The schema editor's existing rules still apply: no key, unique, default or `users` field.
+- Tests: `sc-api` `mcp::schema::tests::a_secret_field_is_secret_true_and_not_also_another_kind`,
+  `sc-agent-builtins` `admin_copilot_schema_rules::a_secret_field_is_made_described_and_stored_sealed`
+  (made by both operations, described, sent back, a value stored sealed, and the four refusals).
+
+Not part of this (from the same report): a key outside the data directory (env var or KMS),
+key versions and `rekey`, leaving the key out of backups, and app-wide named secrets.
+
 ## OAuth 2.0 tokens for application code: `oauth.begin` and `oauth.accessToken`
 
 A user asked for OAuth support for Gmail (Google is phasing out password IMAP) and other APIs, so

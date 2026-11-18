@@ -9883,6 +9883,13 @@ sentence saying what to write instead, and so is a store that does not exist. Be
 agent that read `listFieldTypes` (where `file` is a *kind*) tried `type: "file"`, was refused,
 and kept images in a `bytes` column.
 
+**`edit_schema` makes Secret fields** (TODO SF1). `secret: true` on `add_field` or a field of
+`create_table` makes a `DataFieldKind::Secret`, with no `type`; with `references`, `expression`
+or `file_store` beside it, it is refused. `describe_schema` reports `secret: true`, and
+`alter_field` accepts it back on a field that is already a secret. Making a field a secret,
+or `secret: false` on one, is refused, since the column's values are stored in plain text or
+sealed. Every other rule (no key, unique, default or `users` field) is the schema editor's.
+
 **The creates run the server's own handlers.** Creating an application is a sequence — store,
 record, scaffold, builder agent, first build — two of whose steps need the agent registry and
 the mount registry, which only `sc-server` holds. Rather than a second implementation for the

@@ -1077,6 +1077,23 @@ available to modules only.
   `response({ status: 302, headers: { location } })` is a real redirect. Test:
   `app_oauth::a_public_get_query_answers_a_real_redirect`.
 
+## SF1 — Secret fields from `edit_schema` (user feedback)
+
+A user asked for encrypted credential fields in application tables (IMAP passwords, API keys,
+refresh tokens), with "`secret: true` as a field option in `edit_schema`" as the simplest first
+step. Checked against the code: Secret fields already existed (`DataFieldKind::Secret`, sealed
+with the instance key, redacted on every client surface, readable by code bodies) and the admin
+field editor could make one. MCP `edit_schema` could not, though `describe_schema` already
+reported `secret: true`. Key rotation, a key outside the data directory and named app-wide
+secrets are not part of this.
+
+- [x] **SF1.1** `secret: true` on `add_field` and the fields of `create_table` in `edit_schema`;
+  refused together with `references`, `expression` or `file_store`. On `alter_field`, `true` on a
+  field that is already a secret is accepted (a described field sent back), while making a
+  field a secret, or `secret: false` on one, is refused with the schema editor's reason. Tests:
+  `sc-api` `mcp::schema` unit test, `sc-agent-builtins`
+  `admin_copilot_schema_rules::a_secret_field_is_made_described_and_stored_sealed`.
+
 ---
 
 ## Open questions
