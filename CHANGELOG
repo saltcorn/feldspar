@@ -2,6 +2,21 @@
 
 Changes in reverse chronological order.
 
+## Plan & build: the construction agent asks before it draws
+
+The Specification step now has two ways on: "Continue to research", or "Plan phases" straight
+away. Research is a new step that holds questions and mockups, in that order. "Ask questions"
+has the construction agent ask what the description leaves open and would change what gets
+built: who uses the application, what is recorded, what is calculated. Each question has a
+box for the answer; answer what you can and skip the rest. The answers go with the
+specification to the mockups, the phase plan and every task. The mockups come second because
+they are drawn from the answers: asking again keeps the answered questions, replaces the open
+ones, and discards the mockups (after a confirmation), since they were drawn without the new
+answers. Both are optional, but skipping them is asked about: proposing mockups before any
+question, or planning the first phases with neither, opens a confirmation that offers the
+skipped step instead. Before, a gap in the specification showed up only in the mockups
+or the phases, and was fixed by rewriting the description.
+
 ## Plan & build: mockups to choose from before the build
 
 After writing the specification, "Propose mockups" has the construction agent draw two mockups

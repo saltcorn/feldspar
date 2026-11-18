@@ -11,7 +11,11 @@ import {
   latestMockups,
   mockupDocument,
   mockupPages,
-  mockupsEditable,
+  researchEditable,
+  changedAnswers,
+  askingDiscards,
+  mockupsWithoutQuestions,
+  planningUnresearched,
   revisionFeedback,
   type ConstructionMockup,
   addPhase,
@@ -94,6 +98,8 @@ function construction(status: string, extra: Partial<Construction> = {}): Constr
     until_phase: null,
     plan_only: false,
     designing: false,
+    asking: false,
+    questions: [],
     mockups: [],
     updated_at: null,
     phases: [],
@@ -347,6 +353,8 @@ describe("what the buttons call", () => {
       planPhaseTasks: answer("planPhaseTasks"),
       proposeMockups: answer("proposeMockups"),
       chooseMockup: answer("chooseMockup"),
+      askConstructionQuestions: answer("askConstructionQuestions"),
+      answerConstructionQuestions: answer("answerConstructionQuestions"),
       getMockupScreens: vi.fn(async (...args: unknown[]) => {
         calls.push(["getMockupScreens", ...args]);
         return [];
@@ -584,11 +592,13 @@ describe("the mockups", () => {
     };
   }
 
-  it("open their own step once proposed or being proposed, before the phases", () => {
-    expect(currentStep(construction("draft", { designing: true }))).toBe("mockups");
-    expect(currentStep(construction("draft", { mockups: [mockup("m1", 1)] }))).toBe("mockups");
-    expect(tabOpen(construction("draft"), "mockups")).toBe(false);
-    expect(tabOpen(construction("draft", { designing: true }), "mockups")).toBe(true);
+  it("open the research step once proposed or being proposed, before the phases", () => {
+    expect(currentStep(construction("draft", { designing: true }))).toBe("research");
+    expect(currentStep(construction("draft", { mockups: [mockup("m1", 1)] }))).toBe("research");
+    // Open once there is a specification to research.
+    expect(tabOpen(construction("draft", { specification: " " }), "research")).toBe(false);
+    expect(tabOpen(construction("draft"), "research")).toBe(true);
+    expect(tabOpen(construction("draft", { designing: true }), "research")).toBe(true);
     // Planning the phases moves on, with or without a chosen mockup.
     const planning = construction("draft", { planning: true, mockups: [mockup("m1", 1)] });
     expect(currentStep(planning)).toBe("phases");
@@ -614,10 +624,11 @@ describe("the mockups", () => {
   });
 
   it("are not touched while the agent works or the construction runs", () => {
-    expect(mockupsEditable(construction("draft"))).toBe(true);
-    expect(mockupsEditable(construction("draft", { designing: true }))).toBe(false);
-    expect(mockupsEditable(construction("draft", { planning: true }))).toBe(false);
-    expect(mockupsEditable(construction("running"))).toBe(false);
+    expect(researchEditable(construction("draft"))).toBe(true);
+    expect(researchEditable(construction("draft", { designing: true }))).toBe(false);
+    expect(researchEditable(construction("draft", { asking: true }))).toBe(false);
+    expect(researchEditable(construction("draft", { planning: true }))).toBe(false);
+    expect(researchEditable(construction("running"))).toBe(false);
   });
 
   it("keep a page's doctype first when links are sent nowhere", () => {
@@ -650,6 +661,8 @@ describe("the mockups", () => {
       planPhaseTasks: answer("planPhaseTasks"),
       proposeMockups: answer("proposeMockups"),
       chooseMockup: answer("chooseMockup"),
+      askConstructionQuestions: answer("askConstructionQuestions"),
+      answerConstructionQuestions: answer("answerConstructionQuestions"),
       getMockupScreens: vi.fn(async (...args: unknown[]) => {
         calls.push(["getMockupScreens", ...args]);
         return [];
@@ -682,5 +695,93 @@ describe("the mockups", () => {
     await expect(mockupPages(failing, "cached-2")).rejects.toThrow("offline");
     expect(await mockupPages(failing, "cached-2")).toEqual(["<p>back</p>"]);
     expect(failing).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("the clarifying questions", () => {
+  const question = (id: string, answer: string | null = null) => ({
+    id,
+    text: `Question ${id}?`,
+    answer,
+  });
+
+  it("open the research step once asked or being asked, and keep the screen polling", () => {
+    expect(currentStep(construction("draft", { asking: true }))).toBe("research");
+    expect(currentStep(construction("draft", { questions: [question("q1")] }))).toBe("research");
+    expect(tabOpen(construction("draft", { asking: true }), "research")).toBe(true);
+    expect(tabOpen(construction("draft", { questions: [question("q1")] }), "research")).toBe(true);
+    expect(shouldPoll(construction("draft", { asking: true }))).toBe(true);
+    expect(planError(construction("draft", { asking: true, error: "x" }))).toBeNull();
+  });
+
+  it("send only the answers changed on the screen, a cleared one as blank", () => {
+    const c = construction("draft", {
+      questions: [question("q1", "Sales"), question("q2"), question("q3", "Euro")],
+    });
+    expect(changedAnswers(c, {})).toEqual([]);
+    expect(
+      changedAnswers(c, { q1: " Sales ", q2: " Everyone ", q3: "", gone: "x" }),
+    ).toEqual([
+      { question: "q2", text: "Everyone" },
+      { question: "q3", text: "" },
+    ]);
+  });
+
+  it("ask to confirm a step that skips what the next one is drawn from", () => {
+    const m = {
+      id: "m1",
+      round: 1,
+      title: "Table",
+      rationale: "",
+      screens: [],
+      status: "proposed",
+      feedback: null,
+    };
+    // Planning with nothing researched, but only the first time.
+    expect(planningUnresearched(construction("draft"))).toBe(true);
+    expect(planningUnresearched(construction("draft", { questions: [question("q1")] }))).toBe(false);
+    expect(planningUnresearched(construction("draft", { mockups: [m] }))).toBe(false);
+    expect(planningUnresearched(construction("planned", { phases: [phase("p1")] }))).toBe(false);
+    // Mockups before any question.
+    expect(mockupsWithoutQuestions(construction("draft"))).toBe(true);
+    expect(mockupsWithoutQuestions(construction("draft", { questions: [question("q1")] }))).toBe(
+      false,
+    );
+    // Asking with mockups there discards them.
+    expect(askingDiscards(construction("draft"))).toBe(0);
+    expect(askingDiscards(construction("draft", { mockups: [m, { ...m, id: "m2" }] }))).toBe(2);
+  });
+
+  it("save the specification before asking, and save the answers", async () => {
+    const calls: unknown[][] = [];
+    const answer = (name: string) =>
+      vi.fn(async (...args: unknown[]) => {
+        calls.push([name, ...args]);
+        return construction("draft");
+      });
+    const client = {
+      createConstruction: answer("createConstruction"),
+      saveConstructionSpecification: answer("saveConstructionSpecification"),
+      planConstruction: answer("planConstruction"),
+      savePhases: answer("savePhases"),
+      runConstruction: answer("runConstruction"),
+      stopConstruction: answer("stopConstruction"),
+      retryTask: answer("retryTask"),
+      skipTask: answer("skipTask"),
+      planPhaseTasks: answer("planPhaseTasks"),
+      proposeMockups: answer("proposeMockups"),
+      chooseMockup: answer("chooseMockup"),
+      askConstructionQuestions: answer("askConstructionQuestions"),
+      answerConstructionQuestions: answer("answerConstructionQuestions"),
+      getMockupScreens: vi.fn(async () => []),
+    };
+    const buttons = constructionCalls(client, "a1");
+    await buttons.askQuestions("A shop.");
+    await buttons.answerQuestions([{ question: "q1", text: "Sales" }]);
+    expect(calls).toEqual([
+      ["saveConstructionSpecification", "a1", { specification: "A shop." }],
+      ["askConstructionQuestions", "a1"],
+      ["answerConstructionQuestions", "a1", { answers: [{ question: "q1", text: "Sales" }] }],
+    ]);
   });
 });

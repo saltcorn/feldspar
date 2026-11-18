@@ -11,6 +11,7 @@ import {
   PhasesCard,
   ProgressCard,
   MockupsCard,
+  QuestionsCard,
   SpecificationCard,
   StepTabs,
 } from "./Construct";
@@ -29,6 +30,8 @@ function construction(status: string, taskStatus: string): Construction {
     until_phase: null,
     plan_only: false,
     designing: false,
+    asking: false,
+    questions: [],
     mockups: [],
     updated_at: null,
     phases: [
@@ -182,7 +185,7 @@ describe("the specification", () => {
         construction={failed}
         busy={false}
         onPlan={noop}
-        onPropose={noop}
+        onResearch={noop}
         onSave={noop}
       />,
     );
@@ -199,8 +202,13 @@ describe("the tabs", () => {
       <StepTabs construction={draft} tab="specification" onPick={noop} />,
     );
     expect(html).toMatch(/bg-primary[^"]*">1<\/span>Specification/);
-    expect(html).toMatch(/bg-secondary-lt">2<\/span>Mockups/);
-    expect(html).toMatch(/disabled[^>]*>.*2<\/span>Mockups/);
+    expect(html).toMatch(/bg-secondary-lt">2<\/span>Research/);
+    // The research opens once there is a specification to research.
+    expect(html).not.toMatch(/disabled[^>]*>(?:(?!<\/a>).)*2<\/span>Research/);
+    const empty = renderToStaticMarkup(
+      <StepTabs construction={{ ...draft, specification: "" }} tab="specification" onPick={noop} />,
+    );
+    expect(empty).toMatch(/disabled[^>]*>.*2<\/span>Research/);
     expect(html).toMatch(/bg-secondary-lt">3<\/span>Phases/);
     expect(html).toMatch(/disabled[^>]*>.*3<\/span>Phases/);
     expect(html).toMatch(/disabled[^>]*>.*4<\/span>Progress/);
@@ -319,7 +327,7 @@ describe("the mockups", () => {
 
   it("shows the last round's screens in frames that run nothing", () => {
     const html = renderToStaticMarkup(
-      <MockupsCard construction={withMockups} busy={false} onRevise={noop} onChoose={noop} onPlan={noop} loadScreens={loadScreens} />,
+      <MockupsCard construction={withMockups} busy={false} onRevise={noop} onChoose={noop} onPlan={noop} onPropose={noop} loadScreens={loadScreens} />,
     );
     expect(html).toContain("Cards");
     expect(html).toContain("Split view");
@@ -349,7 +357,7 @@ describe("the mockups", () => {
       mockups: withMockups.mockups.map((m) => ({ ...m, status: "proposed" })),
     };
     const html = renderToStaticMarkup(
-      <MockupsCard construction={none} busy={false} onRevise={noop} onChoose={noop} onPlan={noop} loadScreens={loadScreens} />,
+      <MockupsCard construction={none} busy={false} onRevise={noop} onChoose={noop} onPlan={noop} onPropose={noop} loadScreens={loadScreens} />,
     );
     expect(html).toContain("Plan phases without a mockup");
     expect(html).toContain("Choose mockup 1");
@@ -363,7 +371,7 @@ describe("the mockups", () => {
       phases: construction("planned", "todo").phases,
     };
     const html = renderToStaticMarkup(
-      <MockupsCard construction={planned} busy={false} onRevise={noop} onChoose={noop} onPlan={noop} loadScreens={loadScreens} />,
+      <MockupsCard construction={planned} busy={false} onRevise={noop} onChoose={noop} onPlan={noop} onPropose={noop} loadScreens={loadScreens} />,
     );
     expect(html).toContain("Plan phases again from the chosen mockup");
     // Choosing another stays possible.
@@ -372,13 +380,81 @@ describe("the mockups", () => {
     expect(button).not.toContain("disabled");
   });
 
-  it("offers mockups first on the specification, and planning straight away", () => {
+  it("offers only the research or planning on the specification", () => {
     const draft = { ...construction("draft", "todo"), phases: [] };
     const html = renderToStaticMarkup(
-      <SpecificationCard construction={draft} busy={false} onPlan={noop} onPropose={noop} onSave={noop} />,
+      <SpecificationCard construction={draft} busy={false} onPlan={noop} onResearch={noop} onSave={noop} />,
     );
-    expect(html).toMatch(/btn-primary[^>]*>.*Propose mockups/);
+    expect(html).toMatch(/btn-primary[^>]*>(?:(?!<\/button>).)*Continue to research/);
     expect(html).toContain("Plan phases");
-    expect(html).toContain("Mockups are optional");
+    expect(html).not.toContain("Ask questions");
+    expect(html).not.toContain("Propose mockups");
+    expect(html).toContain("Research is optional");
+    // Once there are phases, planning them again is the suggested step.
+    const planned = { ...construction("planned", "todo") };
+    const again = renderToStaticMarkup(
+      <SpecificationCard construction={planned} busy={false} onPlan={noop} onResearch={noop} onSave={noop} />,
+    );
+    expect(again).toMatch(/btn-primary[^>]*>(?:(?!<\/button>).)*Plan phases again/);
+  });
+
+  it("offers a first round when there are none yet", () => {
+    const none = { ...withMockups, mockups: [] };
+    const html = renderToStaticMarkup(
+      <MockupsCard construction={none} busy={false} onRevise={noop} onChoose={noop} onPlan={noop} onPropose={noop} loadScreens={loadScreens} />,
+    );
+    expect(html).toContain("Propose mockups");
+    expect(html).not.toContain("alternatives");
+    // The second part of the research, after the questions.
+    expect(html).toMatch(/mockup-number-sm">2<\/span>Mockups/);
+    expect(html).toContain("Ask the questions first");
+  });
+});
+
+describe("the questions", () => {
+  const draft = { ...construction("draft", "todo"), phases: [] };
+
+  it("offers to ask when none are asked yet", () => {
+    const html = renderToStaticMarkup(
+      <QuestionsCard construction={draft} busy={false} onAsk={noop} onAnswer={noop} />,
+    );
+    expect(html).toMatch(/btn-primary[^>]*>(?:(?!<\/button>).)*Ask questions/);
+    expect(html).toContain("leaves open");
+    expect(html).toMatch(/mockup-number-sm">1<\/span>Questions/);
+  });
+
+  it("numbers the questions, shows the saved answers and how many are answered", () => {
+    const asked = {
+      ...draft,
+      questions: [
+        { id: "q1", text: "Who takes the orders?", answer: "The sales team" },
+        { id: "q2", text: "Which currency?", answer: null },
+      ],
+    };
+    const html = renderToStaticMarkup(
+      <QuestionsCard construction={asked} busy={false} onAsk={noop} onAnswer={noop} />,
+    );
+    expect(html).toMatch(/class="mockup-number mockup-number-sm"[^>]*>2</);
+    expect(html).toContain("Who takes the orders?");
+    expect(html).toContain("The sales team</textarea>");
+    expect(html).toContain('id="question-q2"');
+    expect(html).toContain("1 of 2 answered");
+    expect(html).toContain("Ask again");
+    // Nothing changed yet: nothing to save.
+    const save = html.match(/<button[^>]*>(?:(?!<\/button>).)*Save answers<\/button>/)?.[0];
+    expect(save).toContain("disabled");
+  });
+
+  it("says the agent is writing them, and locks them meanwhile", () => {
+    const asking = {
+      ...draft,
+      asking: true,
+      questions: [{ id: "q1", text: "Who?", answer: null }],
+    };
+    const html = renderToStaticMarkup(
+      <QuestionsCard construction={asking} busy={false} onAsk={noop} onAnswer={noop} />,
+    );
+    expect(html).toContain("writing its questions");
+    expect(html).toMatch(/<textarea[^>]*disabled/);
   });
 });

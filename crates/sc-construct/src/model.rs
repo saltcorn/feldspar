@@ -204,6 +204,27 @@ pub struct MockupFeedback {
     pub text: String,
 }
 
+/// A question the construction agent asked about the specification, before
+/// the mockups are drawn and the phases planned (TODO-app-constructor AC8),
+/// with the admin's answer once given.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Question {
+    pub id: Uuid,
+    pub construction: Uuid,
+    pub position: f64,
+    pub text: String,
+    /// `None` until answered; a question may be left open.
+    pub answer: Option<String>,
+}
+
+/// The admin's answer to one question. Blank text clears it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuestionAnswer {
+    pub question: Uuid,
+    pub text: String,
+}
+
 /// A phase's status, from its tasks: none is unplanned, any running is
 /// running, any failed is failed, all done or skipped is done, and anything
 /// else (some still to do) is planned.

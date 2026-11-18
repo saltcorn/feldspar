@@ -2798,6 +2798,44 @@ textarea.form-control.phase-description {
 .mockup-earlier {
   margin-top: 1.5rem;
 }
+
+/* The research step's questions (AC8) and the empty mockups card. */
+.research-questions {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 1rem;
+}
+.research-question {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-weight: 600;
+}
+.research-question .mockup-number {
+  margin-top: 0.1rem;
+}
+.research-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+.research-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+@media (max-width: 575.98px) {
+  .research-footer,
+  .research-empty {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
 .mockup-earlier summary {
   cursor: pointer;
   color: var(--tblr-secondary);

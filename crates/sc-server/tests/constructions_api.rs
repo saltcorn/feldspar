@@ -491,11 +491,12 @@ async fn the_construction_agent_is_offered_only_the_tools_a_construction_needs()
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     assert_eq!(planned(&mut admin, &path).await["status"], json!("planned"));
 
-    // The data-model tools and its own three, nothing else, and none of the
+    // The data-model tools and its own four, nothing else, and none of the
     // copilot's playbook for delegating code.
     let mut expected: Vec<String> = sc_agent_builtins::DATA_MODEL_TOOLS
         .iter()
         .chain(&[
+            sc_agent_builtins::TOOL_ASK_QUESTIONS,
             sc_agent_builtins::TOOL_SAVE_MOCKUPS,
             sc_agent_builtins::TOOL_SAVE_PHASES,
             sc_agent_builtins::TOOL_SAVE_TASKS,
@@ -758,6 +759,171 @@ async fn the_construction_agent_plans_phases_and_the_admin_edits_them() -> sc_er
         format!("{:?}", model.last_request().unwrap())
             .contains("Kept, because they have tasks: `Data model`")
     );
+    assert_eq!(model.remaining(), 0);
+    Ok(())
+}
+
+// --- clarifying questions (AC8) -----------------------------------------------
+
+/// Poll the construction until its questions run is no longer driven.
+async fn asked_questions(admin: &mut Client, path: &str) -> Value {
+    for _ in 0..200 {
+        let (status, read) = admin.send("GET", path, None).await;
+        assert_eq!(status, StatusCode::OK, "{read}");
+        if read["asking"] == json!(false) {
+            return read;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("the questions run did not finish");
+}
+
+fn question_texts(construction: &Value) -> Vec<String> {
+    construction["questions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|q| q["text"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn questions_are_asked_answered_and_the_answers_reach_the_mockups_and_the_plan()
+-> sc_error::Result<()> {
+    let tmp = TempDir::new("questions");
+    let model = Arc::new(FakeProvider::new([
+        Reply::calls(
+            "ask_questions",
+            json!({ "questions": ["Who takes the orders?", "Do orders need approval?"] }),
+        ),
+        Reply::says("Two questions."),
+        Reply::calls("ask_questions", json!({ "questions": ["Which currency?"] })),
+        Reply::says("One more."),
+        Reply::says("Nothing to ask."),
+        Reply::calls(
+            "save_mockups",
+            json!({ "mockups": [mockup("Table", "Customer")] }),
+        ),
+        Reply::says("One mockup."),
+        Reply::calls("save_phases", json!({ "phases": [phase("Data model")] })),
+        Reply::says("One phase."),
+        Reply::calls("ask_questions", json!({ "questions": ["Any discounts?"] })),
+        Reply::says("One more."),
+    ]));
+    let (mut admin, _anonymous, _catalog, _db) = setup_with(&tmp, model.clone()).await?;
+    let id = create_app(&mut admin, "orders", react("orders")).await;
+    let path = format!("/api/applications/{id}/construction");
+    let (status, created) = admin.send("POST", &path, Some(json!({}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["questions"], json!([]));
+    assert_eq!(created["asking"], json!(false));
+
+    // No specification, no questions.
+    let questions_path = format!("{path}/questions");
+    let (status, body) = admin.send("POST", &questions_path, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("no specification"), "{body}");
+    let (status, _) = admin
+        .send(
+            "PUT",
+            &format!("{path}/specification"),
+            Some(json!({ "specification": "A shop's order book." })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, started) = admin.send("POST", &questions_path, None).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    let read = asked_questions(&mut admin, &path).await;
+    assert_eq!(read["error"], Value::Null, "{read}");
+    assert_eq!(
+        question_texts(&read),
+        ["Who takes the orders?", "Do orders need approval?"]
+    );
+    let asked = format!("{:?}", model.requests()[0]);
+    assert!(asked.contains("A shop's order book."), "{asked}");
+    assert!(asked.contains("ask_questions"), "{asked}");
+
+    // The first answered, the second left open; a question of another
+    // construction is refused.
+    let first = read["questions"][0]["id"].clone();
+    let second = read["questions"][1]["id"].clone();
+    let (status, body) = admin
+        .send(
+            "PUT",
+            &questions_path,
+            Some(json!({ "answers": [{ "question": Uuid::new_v4(), "text": "x" }] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, read) = admin
+        .send(
+            "PUT",
+            &questions_path,
+            Some(json!({ "answers": [
+                { "question": first, "text": " The sales team " },
+                { "question": second, "text": "  " },
+            ] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{read}");
+    assert_eq!(read["questions"][0]["answer"], json!("The sales team"));
+    assert_eq!(read["questions"][1]["answer"], Value::Null);
+
+    // Asking again keeps the answered question, replaces the open one, and
+    // tells the run what was answered.
+    let (status, _) = admin.send("POST", &questions_path, None).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let read = asked_questions(&mut admin, &path).await;
+    assert_eq!(
+        question_texts(&read),
+        ["Who takes the orders?", "Which currency?"]
+    );
+    assert_eq!(read["questions"][0]["id"], first);
+    let asked = format!("{:?}", model.requests()[2]);
+    assert!(asked.contains("Answer: The sales team"), "{asked}");
+    assert!(asked.contains("Do not ask these again"), "{asked}");
+
+    // A run that asks nothing says so on the construction.
+    let (status, _) = admin.send("POST", &questions_path, None).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let read = asked_questions(&mut admin, &path).await;
+    assert!(
+        read["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("without asking any questions"),
+        "{read}"
+    );
+    assert_eq!(question_texts(&read).len(), 2);
+
+    // The mockup run and the phase plan are told the answers with the
+    // specification.
+    let (status, _) = admin
+        .send("POST", &format!("{path}/mockups"), Some(json!({})))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let read = designed(&mut admin, &path).await;
+    assert_eq!(read["error"], Value::Null, "{read}");
+    let asked = format!("{:?}", model.requests()[5]);
+    assert!(
+        asked.contains("Question: Who takes the orders?\\nAnswer: The sales team"),
+        "{asked}"
+    );
+    assert!(!asked.contains("Which currency?"), "{asked}");
+    let (status, _) = admin.send("POST", &format!("{path}/plan"), None).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    planned(&mut admin, &path).await;
+    let asked = format!("{:?}", model.requests()[7]);
+    assert!(asked.contains("Answer: The sales team"), "{asked}");
+
+    // Asking again discards the mockups: they were drawn without the new
+    // answers.
+    assert_eq!(read["mockups"].as_array().unwrap().len(), 1, "{read}");
+    let (status, _) = admin.send("POST", &questions_path, None).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let read = asked_questions(&mut admin, &path).await;
+    assert_eq!(read["mockups"], json!([]), "{read}");
     assert_eq!(model.remaining(), 0);
     Ok(())
 }

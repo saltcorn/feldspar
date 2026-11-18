@@ -1,4 +1,4 @@
-# Saltcorn v2 — The App Constructor (milestones AC1–AC5, AC7)
+# Saltcorn v2 — The App Constructor (milestones AC1–AC5, AC7, AC8)
 
 An admin describes an application in a few paragraphs. Saltcorn breaks the description into
 phases, plans each phase's tasks when it is reached, and runs one agent per task until the
@@ -191,13 +191,36 @@ The chosen mockup shapes the phases, the data model and the feature tasks.
 - [x] AC7.6 Tests: the store and the tool's validation; a scripted proposal arrives as a round;
   choosing writes the files; the plan message carries the chosen mockup; the screen's steps.
 
+## AC8 — Clarifying questions before the mockups
+
+v1's research step, without the web searches: the construction agent asks what the
+specification leaves open, and the answers go with it to every run. Optional.
+
+- [x] AC8.1 `_fd_construction_questions` (bootstrap, additive): construction, position,
+  question, answer. Deleted with the construction.
+- [x] AC8.2 `ask_questions` (`app_constructor`): one to ten questions. Replaces the open ones;
+  the answered ones stay. Discards the mockups, which are drawn from the answers.
+- [x] AC8.3 `askConstructionQuestions` (`POST …/construction/questions`, 202): a run of the
+  construction agent told the specification and the answered questions, reading `asking: true`
+  while driven; one run of the agent at a time. `answerConstructionQuestions` (`PUT`) saves
+  answers by question, blank leaving one open.
+- [x] AC8.4 The answers reach the build: the mockup run and the phase plan are told them with
+  the specification, and the session header carries them to every later run.
+- [x] AC8.5 Plan & build: the Mockups tab becomes **Research**, open once there is a
+  specification: 1 Questions, 2 Mockups. The Specification tab offers only "Continue to
+  research" and "Plan phases". Confirmations: asking again with mockups there (they are
+  discarded), proposing mockups before any question, and planning the first phases with
+  neither questions nor mockups; the last two offer the skipped step instead.
+- [x] AC8.6 Tests: the tool's validation and the store (asking again keeps the answers); a
+  scripted run asks, the answers are saved, and the mockup run and the plan are told them; the
+  screen's step and cards.
+
 ---
 
 ## Later (not planned yet)
 
 From v1, once AC1–AC5 work:
-- clarifying questions before planning (the `ask_user` trait);
-- web research for the specification;
+- web research for the specification (the questions are AC8);
 - a feedback tab whose items become requirements and then tasks;
 - self-healing: a failed checklist or runtime error becomes a fix task;
 - checklists generated from requirements, as the acceptance test of each phase;

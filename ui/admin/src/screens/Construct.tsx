@@ -1,12 +1,15 @@
 // Plan & build (TODO-app-constructor AC4, AC7): an application built from a
 // description. Four steps, each a numbered tab:
 //
-// 1. **Specification**: what the application should do; "Propose mockups",
-//    or straight to "Plan phases", which has the construction agent turn it
-//    into phases.
-// 2. **Mockups** (optional): a few looks of the application's main screens,
-//    to choose one of or to comment on and have revised. The chosen one
-//    shapes the phases, the data model and the code.
+// 1. **Specification**: what the application should do; "Continue to
+//    research", or straight to "Plan phases", which has the construction
+//    agent turn it into phases.
+// 2. **Research** (optional), in order: the agent's questions about what the
+//    specification leaves open, whose answers go with it to every run; then a
+//    few looks of the application's main screens, drawn from the answers, to
+//    choose one of or to comment on and have revised. Asking again discards
+//    the mockups. The chosen one shapes the phases, the data model and the
+//    code.
 // 3. **Phases**: the plan, edited before anything runs, then "Run all" or
 //    a phase's own "Run", which runs the phases before it first.
 // 4. **Progress**: each phase's tasks as the runner works through them, with
@@ -38,8 +41,12 @@ import {
   latestMockups,
   mockupDocument,
   mockupPages,
-  mockupsEditable,
+  researchEditable,
   revisionFeedback,
+  changedAnswers,
+  askingDiscards,
+  mockupsWithoutQuestions,
+  planningUnresearched,
   type ConstructionMockup,
   type MockupWidth,
   type MockupScreensLoader,
@@ -92,6 +99,7 @@ import {
   IconCode,
   IconDeviceDesktop,
   IconDeviceMobile,
+  IconHelpCircle,
   IconLayoutDashboard,
   IconListCheck,
   IconPlayerPlay,
@@ -165,10 +173,22 @@ function Status({ status }: { status: string }) {
 
 /** A step's card header: its number, its title, and whether it is the one
  * that matters now. */
-function StepHeader({ title, children }: { title: string; children?: ReactNode }) {
+function StepHeader({
+  title,
+  number,
+  children,
+}: {
+  title: string;
+  /** Its place in the step, when the step has parts to take in order. */
+  number?: number;
+  children?: ReactNode;
+}) {
   return (
     <Card.Header>
-      <Card.Title className="mb-0">{title}</Card.Title>
+      <Card.Title className="mb-0">
+        {number !== undefined && <span className="mockup-number mockup-number-sm">{number}</span>}
+        {title}
+      </Card.Title>
       {children && <div className="card-actions btn-list">{children}</div>}
     </Card.Header>
   );
@@ -188,7 +208,7 @@ export function StepTabs({
   const { t } = useT();
   const titles: Record<Tab, string> = {
     specification: t("Specification"),
-    mockups: t("Mockups"),
+    research: t("Research"),
     phases: t("Phases"),
     progress: t("Progress"),
   };
@@ -269,14 +289,17 @@ export function Construct({
     [construction],
   );
 
-  /** Call the server, show its answer, or show why it refused. */
-  const act = async (call: () => Promise<Construction>, failure: string) => {
+  /** Call the server, show its answer, or show why it refused. Answers
+   * whether the call succeeded. */
+  const act = async (call: () => Promise<Construction>, failure: string): Promise<boolean> => {
     setBusy(true);
     setError(null);
     try {
       setConstruction(await call());
+      return true;
     } catch (err) {
       setError(errorMessage(err, failure));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -326,6 +349,75 @@ export function Construct({
   // A hook, so called on every render, before the branch for a phase's page
   // that uses it.
   const confirmedRun = useConfirmedRun(construction ?? null, runUntil);
+  const confirmation = useConfirmation();
+
+  // The research's and the planning's actions, each confirmed first where it
+  // skips a step the next one is drawn from.
+  const research = (specification: string) =>
+    void act(async () => {
+      await started();
+      return calls.saveSpecification(specification);
+    }, t("Could not save the specification.")).then((saved) => saved && setPicked("research"));
+  const ask = () => {
+    if (!construction) return;
+    void act(
+      () => calls.askQuestions(construction.specification),
+      t("Could not ask the questions."),
+    );
+  };
+  const askChecked = () => {
+    const discards = construction ? askingDiscards(construction) : 0;
+    if (discards === 0) return ask();
+    confirmation.confirm({
+      title: t("Ask again and discard the mockups?"),
+      body: t(
+        "The {n} mockups were drawn without the answers to the new questions, so they are discarded, the chosen one too. Propose new ones once you have answered.",
+        { n: discards },
+      ),
+      confirm: t("Ask and discard the mockups"),
+      danger: true,
+      onConfirm: ask,
+    });
+  };
+  const propose = () => {
+    if (!construction) return;
+    void act(
+      () => calls.proposeMockups(construction.specification, DEFAULT_MOCKUPS),
+      t("Could not propose mockups."),
+    );
+  };
+  const proposeChecked = () => {
+    if (!construction || !mockupsWithoutQuestions(construction)) return propose();
+    confirmation.confirm({
+      title: t("Propose mockups without questions?"),
+      body: t(
+        "The construction agent has not asked anything yet, so the mockups are drawn from the specification alone. Asking questions afterwards discards them.",
+      ),
+      confirm: t("Propose mockups anyway"),
+      onConfirm: propose,
+      alternative: { label: t("Ask questions"), onClick: ask },
+    });
+  };
+  const plan = (specification: string) =>
+    void act(async () => {
+      await started();
+      return calls.plan(specification);
+    }, t("Could not plan the phases."));
+  /** "Plan phases", confirmed when nothing is researched; `instead` is the
+   * research step offered in its place. */
+  const planChecked = (specification: string, instead: { label: string; onClick: () => void }) => {
+    const current = construction ?? blank;
+    if (!current || !planningUnresearched(current)) return plan(specification);
+    confirmation.confirm({
+      title: t("Plan the phases without research?"),
+      body: t(
+        "No questions were asked and no mockups drawn, so the phases are planned from the specification alone. You can still do the research later and plan the phases again.",
+      ),
+      confirm: t("Plan phases anyway"),
+      onConfirm: () => plan(specification),
+      alternative: instead,
+    });
+  };
 
   if (phaseId !== null) {
     const index = construction ? construction.phases.findIndex((p) => p.id === phaseId) : -1;
@@ -427,6 +519,7 @@ export function Construct({
           </Alert>
         )}
         {construction === undefined && !error && <Spinner animation="border" size="sm" />}
+        {confirmation.modal}
         {construction === null && app && !constructible(app) && (
           <Alert variant="secondary">
             <T text="Plan & build builds React applications. This application uses another framework." />
@@ -440,17 +533,12 @@ export function Construct({
                 construction={shown}
                 busy={busy}
                 onPlan={(specification) =>
-                  void act(async () => {
-                    await started();
-                    return calls.plan(specification);
-                  }, t("Could not plan the phases."))
+                  planChecked(specification, {
+                    label: t("Continue to research"),
+                    onClick: () => research(specification),
+                  })
                 }
-                onPropose={(specification) =>
-                  void act(async () => {
-                    await started();
-                    return calls.proposeMockups(specification, DEFAULT_MOCKUPS);
-                  }, t("Could not propose mockups."))
-                }
+                onResearch={research}
                 onSave={(specification) =>
                   void act(async () => {
                     await started();
@@ -459,10 +547,31 @@ export function Construct({
                 }
               />
             )}
-            {construction && tab === "mockups" && (
+            {construction && tab === "research" && (
+              <p className="text-secondary">
+                <T text="Questions first: the mockups are drawn from the specification and your answers, so asking questions again discards the mockups. Both are optional." />
+              </p>
+            )}
+            {construction && tab === "research" && planError(construction) && (
+              <Alert variant="danger">
+                <T text="The construction agent's last run failed:" /> {planError(construction)}
+              </Alert>
+            )}
+            {construction && tab === "research" && (
+              <QuestionsCard
+                construction={construction}
+                busy={busy}
+                onAsk={askChecked}
+                onAnswer={(answers) =>
+                  void act(() => calls.answerQuestions(answers), t("Could not save the answers."))
+                }
+              />
+            )}
+            {construction && tab === "research" && (
               <MockupsCard
                 construction={construction}
                 busy={busy}
+                onPropose={proposeChecked}
                 onRevise={(feedback, note) =>
                   void act(
                     () => calls.reviseMockups(feedback, note),
@@ -474,10 +583,10 @@ export function Construct({
                 }
                 loadScreens={calls.mockupScreens}
                 onPlan={() =>
-                  void act(
-                    () => calls.plan(construction.specification),
-                    t("Could not plan the phases."),
-                  )
+                  planChecked(construction.specification, {
+                    label: t("Ask questions"),
+                    onClick: ask,
+                  })
                 }
               />
             )}
@@ -516,14 +625,15 @@ export function SpecificationCard({
   construction,
   busy,
   onPlan,
-  onPropose,
+  onResearch,
   onSave,
 }: {
   construction: Construction;
   busy: boolean;
   onPlan: (specification: string) => void;
-  /** Have mockups proposed first: optional, so "Plan phases" stays. */
-  onPropose: (specification: string) => void;
+  /** Save the specification and go on to the questions and mockups:
+   * optional, so "Plan phases" stays. */
+  onResearch: (specification: string) => void;
   onSave: (specification: string) => void;
 }) {
   const { t } = useT();
@@ -537,12 +647,8 @@ export function SpecificationCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [construction.specification]);
 
-  const locked =
-    construction.status === "running" || construction.planning || construction.designing;
+  const locked = !researchEditable(construction);
   const replan = construction.phases.length > 0;
-  // Before any phases, mockups are the suggested next step; once there are
-  // phases, planning again is.
-  const suggestMockups = !replan;
   const failure = planError(construction);
   const dirty = text !== saved;
   const words = text.trim() === "" ? 0 : text.trim().split(/\s+/).length;
@@ -581,21 +687,24 @@ export function SpecificationCard({
                     <T text="Save" />
                   </Button>
                 )}
+                {/* The research is the suggested next step; once there are
+                    phases, planning them again is. */}
                 <Button
                   disabled={busy || locked || !text.trim()}
-                  variant={suggestMockups ? "primary" : "outline-secondary"}
-                  onClick={() => onPropose(text)}
+                  variant={replan ? "outline-secondary" : "primary"}
+                  onClick={() => onResearch(text)}
                 >
-                  {construction.designing ? (
+                  {construction.asking || construction.designing ? (
                     <Spinner animation="border" size="sm" className="me-2" />
                   ) : (
-                    <IconLayoutDashboard className="icon-2" />
+                    <IconHelpCircle className="icon-2" />
                   )}
-                  {construction.mockups.length > 0 ? t("Propose new mockups") : t("Propose mockups")}
+                  <T text="Continue to research" />
+                  <IconChevronRight className="icon-2 ms-1 me-0" />
                 </Button>
                 <Button
                   disabled={busy || locked || !text.trim()}
-                  variant={suggestMockups ? "outline-primary" : replan ? "outline-primary" : "primary"}
+                  variant={replan ? "primary" : "outline-primary"}
                   onClick={() => onPlan(text)}
                 >
                   {construction.planning ? (
@@ -613,7 +722,7 @@ export function SpecificationCard({
               </div>
             ) : (
               <div className="spec-note">
-                <T text="Mockups are optional: see the main screens first and choose a look, or plan the phases now." />
+                <T text="Research is optional: answer the agent's questions and choose a mockup first, or plan the phases now." />
               </div>
             )}
             {failure && (
@@ -652,19 +761,135 @@ export function SpecificationCard({
   );
 }
 
-/** The Mockups step (AC7): the last round's mockups, each a few screens in a
- * sandboxed frame, to choose one of or to comment on and have revised. Earlier
- * rounds are listed below, and the chosen one may be among them. */
+/** The research step's questions (AC8): what the construction agent asked
+ * about the specification, each with the admin's answer, saved together.
+ * Asking again keeps the answered questions and replaces the open ones. */
+export function QuestionsCard({
+  construction,
+  busy,
+  onAsk,
+  onAnswer,
+}: {
+  construction: Construction;
+  busy: boolean;
+  onAsk: () => void;
+  onAnswer: (answers: { question: string; text: string }[]) => void;
+}) {
+  const { t } = useT();
+  // What the admin typed, by question, until it is saved: a poll does not
+  // overwrite it, and a saved answer drops out once the server has it.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  useEffect(() => {
+    setDrafts((d) => {
+      const kept: Record<string, string> = {};
+      for (const q of construction.questions) {
+        if (q.id in d && d[q.id].trim() !== (q.answer ?? "")) kept[q.id] = d[q.id];
+      }
+      return kept;
+    });
+  }, [construction.questions]);
+  const editable = researchEditable(construction);
+  const questions = construction.questions;
+  const changed = changedAnswers(construction, drafts);
+  const answered = questions.filter((q) => (q.answer ?? "") !== "").length;
+  return (
+    <Card className="mb-3">
+      <StepHeader title={t("Questions")} number={1}>
+        <Button
+          size="sm"
+          variant={questions.length === 0 ? "primary" : "outline-secondary"}
+          disabled={busy || !editable}
+          onClick={onAsk}
+        >
+          {construction.asking ? (
+            <Spinner animation="border" size="sm" className="me-2" />
+          ) : (
+            <IconHelpCircle className="icon-2" />
+          )}
+          {questions.length > 0 ? t("Ask again") : t("Ask questions")}
+        </Button>
+      </StepHeader>
+      <Card.Body>
+        {construction.asking && (
+          <Alert variant="info" className="d-flex align-items-center gap-2">
+            <Spinner animation="border" size="sm" />
+            <T text="The construction agent is reading the specification and writing its questions." />
+          </Alert>
+        )}
+        {questions.length === 0 && !construction.asking && (
+          <div className="text-secondary">
+            <T text="The construction agent asks what the specification leaves open, so the mockups and the phases follow your answers." />
+          </div>
+        )}
+        {questions.length > 0 && (
+          <>
+            <p className="text-secondary">
+              <T text="Answer what you can and skip the rest. The answers go with the specification to the mockups, the phases and every task. Asking again keeps the answered questions." />
+            </p>
+            <ol className="research-questions">
+              {questions.map((q, i) => {
+                const value = drafts[q.id] ?? q.answer ?? "";
+                return (
+                  <li key={q.id}>
+                    <Form.Label htmlFor={`question-${q.id}`} className="research-question">
+                      <span className="mockup-number mockup-number-sm">{i + 1}</span>
+                      <span>{q.text}</span>
+                    </Form.Label>
+                    <Form.Control
+                      id={`question-${q.id}`}
+                      as="textarea"
+                      rows={2}
+                      value={value}
+                      disabled={!editable}
+                      placeholder={t("Your answer (optional)")}
+                      onChange={(e) => setDrafts((d) => ({ ...d, [q.id]: e.target.value }))}
+                    />
+                  </li>
+                );
+              })}
+            </ol>
+            <div className="research-footer">
+              <span className="text-secondary small">
+                {t("{n} of {total} answered", { n: answered, total: questions.length })}
+                {changed.length > 0 && (
+                  <span className="spec-dirty">
+                    <T text="Unsaved answers" />
+                  </span>
+                )}
+              </span>
+              <Button
+                variant={changed.length > 0 ? "primary" : "outline-secondary"}
+                disabled={busy || !editable || changed.length === 0}
+                onClick={() => onAnswer(changed)}
+              >
+                <IconCheck className="icon-2" />
+                <T text="Save answers" />
+              </Button>
+            </div>
+          </>
+        )}
+      </Card.Body>
+    </Card>
+  );
+}
+
+/** The research step's mockups (AC7): the last round's mockups, each a few
+ * screens in a sandboxed frame, to choose one of or to comment on and have
+ * revised. Earlier rounds are listed below, and the chosen one may be among
+ * them. */
 export function MockupsCard({
   construction,
   busy,
   onRevise,
   onChoose,
   onPlan,
+  onPropose,
   loadScreens,
 }: {
   construction: Construction;
   busy: boolean;
+  /** The first round, from the specification. */
+  onPropose: () => void;
   onRevise: (feedback: { mockup: string; text: string }[], note: string | null) => void;
   onChoose: (mockup: string) => void;
   onPlan: () => void;
@@ -679,9 +904,8 @@ export function MockupsCard({
   const [note, setNote] = useState("");
   const latest = latestMockups(construction);
   const chosen = chosenMockup(construction);
-  const editable = mockupsEditable(construction);
+  const editable = researchEditable(construction);
   const feedback = revisionFeedback(construction, notes);
-  const failure = planError(construction);
   const earlier = construction.mockups.filter((m) => !latest.includes(m));
   const hasPhases = construction.phases.length > 0;
   // Set when the admin picks a different mockup after the phases were
@@ -704,7 +928,7 @@ export function MockupsCard({
 
   return (
     <Card className="mb-3">
-      <StepHeader title={t("Mockups")}>
+      <StepHeader title={t("Mockups")} number={2}>
         <div className="btn-group" role="group" aria-label={t("Width")}>
           {(["desktop", "phone"] as const).map((w) => (
             <Button
@@ -746,10 +970,20 @@ export function MockupsCard({
             <T text="The construction agent is drawing the mockups. This takes a minute or two." />
           </Alert>
         )}
-        {failure && (
-          <Alert variant="danger">
-            <T text="Proposing the mockups failed:" /> {failure}
-          </Alert>
+        {latest.length === 0 && !construction.designing && (
+          <div className="research-empty">
+            <div className="text-secondary">
+              {construction.questions.length === 0 ? (
+                <T text="A few different looks of the main screens, drawn from the specification. Ask the questions first to have your answers in them." />
+              ) : (
+                <T text="A few different looks of the main screens, drawn from the specification and your answers, for you to choose one or say what should change." />
+              )}
+            </div>
+            <Button variant="outline-primary" disabled={busy || !editable} onClick={onPropose}>
+              <IconLayoutDashboard className="icon-2" />
+              <T text="Propose mockups" />
+            </Button>
+          </div>
         )}
         {rechosen && hasPhases && chosen && (
           <Alert variant="warning" className="d-flex align-items-center gap-3">
@@ -1082,6 +1316,59 @@ function useMockupPages(
 
 /** A phase's Run: it runs the phases before it first, so when any of those is
  * not done the admin is asked, with them named, before anything starts. */
+/** A question put to the admin before an action: what happens, the action,
+ * and optionally another step to take instead. */
+type Confirmation = {
+  title: string;
+  body: string;
+  confirm: string;
+  /** The action discards something. */
+  danger?: boolean;
+  onConfirm: () => void;
+  alternative?: { label: string; onClick: () => void };
+};
+
+/** One confirmation dialog for the screen: `confirm` opens it, and `modal` is
+ * rendered once. */
+function useConfirmation() {
+  const [pending, setPending] = useState<Confirmation | null>(null);
+  const close = () => setPending(null);
+  const modal = pending && (
+    <Modal show onHide={close} centered>
+      <Modal.Header closeButton>
+        <Modal.Title>{pending.title}</Modal.Title>
+      </Modal.Header>
+      <Modal.Body>{pending.body}</Modal.Body>
+      <Modal.Footer>
+        <Button variant="outline-secondary" onClick={close}>
+          <T text="Cancel" />
+        </Button>
+        {pending.alternative && (
+          <Button
+            variant="outline-primary"
+            onClick={() => {
+              close();
+              pending.alternative?.onClick();
+            }}
+          >
+            {pending.alternative.label}
+          </Button>
+        )}
+        <Button
+          variant={pending.danger ? "danger" : "primary"}
+          onClick={() => {
+            close();
+            pending.onConfirm();
+          }}
+        >
+          {pending.confirm}
+        </Button>
+      </Modal.Footer>
+    </Modal>
+  );
+  return { confirm: setPending, modal };
+}
+
 function useConfirmedRun(construction: Construction | null, run: (until: string) => void) {
   const { t } = useT();
   const [asking, setAsking] = useState<ConstructionPhase | null>(null);

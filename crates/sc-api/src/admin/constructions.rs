@@ -1,5 +1,5 @@
 //! The admin API's endpoints: the App Constructor (TODO-app-constructor AC1.3,
-//! AC2.2, AC2.3, AC3.4, AC7).
+//! AC2.2, AC2.3, AC3.4, AC7, AC8).
 //!
 //! An application has one construction at most, so a construction is
 //! addressed by its application's id. Their handlers are registered by
@@ -65,6 +65,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         )
         .output(construction_schema()),
     );
+    register_questions(set);
     register_mockups(set);
     // Replaces the phases, in order; the validation the agent's `save_phases`
     // goes through. A phase named by `id` is updated in place, and one with
@@ -162,6 +163,41 @@ pub(super) fn register(set: &mut EndpointSet) {
     );
 }
 
+/// The clarifying questions' endpoints (AC8).
+fn register_questions(set: &mut EndpointSet) {
+    // Starts the run that asks the admin what the specification leaves open,
+    // answering at once (202) with `asking` true. The open questions are
+    // replaced by what it asks; the answered ones stay, and the run is told
+    // them. The questions come before the mockups: once they are asked, the
+    // mockups there were are discarded, the chosen one too. Poll
+    // `getConstruction` until `asking` is false.
+    set.register(
+        Endpoint::new(
+            ids::ASK_CONSTRUCTION_QUESTIONS,
+            Method::Post,
+            construction_path().lit("questions"),
+        )
+        .output(construction_schema()),
+    );
+    // Saves the admin's answers, by question; blank text leaves one open. The
+    // answers go with the specification to every run from then on.
+    set.register(
+        Endpoint::new(
+            ids::ANSWER_CONSTRUCTION_QUESTIONS,
+            Method::Put,
+            construction_path().lit("questions"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "answers",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("question", TypeSchema::uuid()),
+                StructField::new("text", TypeSchema::text()),
+            ])),
+        )]))
+        .output(construction_schema()),
+    );
+}
+
 /// The mockups' endpoints (AC7).
 fn register_mockups(set: &mut EndpointSet) {
     // Starts the run that proposes mockups (AC7), answering at once (202) with
@@ -255,6 +291,17 @@ fn construction_schema() -> TypeSchema {
         StructField::new("plan_only", TypeSchema::bool()),
         // Whether a run proposing mockups is being driven now.
         StructField::new("designing", TypeSchema::bool()),
+        // Whether a run asking clarifying questions is being driven now.
+        StructField::new("asking", TypeSchema::bool()),
+        // The clarifying questions, in order; `answer` absent while open.
+        StructField::new(
+            "questions",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("id", TypeSchema::uuid()),
+                StructField::new("text", TypeSchema::text()),
+                StructField::new("answer", TypeSchema::optional(TypeSchema::text())),
+            ])),
+        ),
         // Every round's mockups, oldest first.
         StructField::new("mockups", TypeSchema::array(mockup_schema())),
         StructField::new("updated_at", TypeSchema::optional(TypeSchema::timestamp())),

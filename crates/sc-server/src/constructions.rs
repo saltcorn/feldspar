@@ -9,10 +9,13 @@
 //! server that stopped is not being driven, so it reads `false` and the admin
 //! can plan again.
 //!
-//! Mockups (`proposeMockups`, AC7) are a run of the same agent, driven the
-//! same way, reading `designing: true` meanwhile; `chooseMockup` picks one and
-//! writes its screens into the application's source tree, and the phases are
-//! then planned to build it. Optional: the phases can be planned without.
+//! Clarifying questions (`askConstructionQuestions`, AC8) and mockups
+//! (`proposeMockups`, AC7) are runs of the same agent, driven the same way,
+//! reading `asking: true` or `designing: true` meanwhile. The admin's answers
+//! (`answerConstructionQuestions`) go with the specification to every run
+//! after. `chooseMockup` picks a mockup and writes its screens into the
+//! application's source tree, and the phases are then planned to build it.
+//! Optional, both: the phases can be planned without.
 //!
 //! Running (`runConstruction`) starts the construction's runner
 //! ([`crate::construction_runner`]), a server task that plans each phase's
@@ -27,15 +30,15 @@
 //! builder at all, and wait for view and page tools (TODO.md O1.3).
 
 use crate::construction_runner::console_caller;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use sc_agent::{Conclusion, ModelRole, RunCaller, Runner};
 use sc_app::{AppId, Application, builder_agent_name, load_application};
 use sc_catalog::Catalog;
 use sc_construct::{
-    Construction, ConstructionStatus, MockupFeedback, PhaseStatus, PhaseWithTasks, Task,
-    TaskStatus, store,
+    Construction, ConstructionStatus, MockupFeedback, PhaseStatus, PhaseWithTasks, QuestionAnswer,
+    Task, TaskStatus, store,
 };
 use sc_error::{Error, Result};
 use sc_llm::list_llm_models;
@@ -49,65 +52,77 @@ use crate::handler::HandlerResponse;
 /// building the data model.
 const CONSTRUCTOR_TRAIT: &str = "app_constructor";
 
-/// The constructions whose plan run this process is driving, by id.
-static PLANNING: Mutex<BTreeSet<uuid::Uuid>> = Mutex::new(BTreeSet::new());
-
-/// The constructions whose mockup run (AC7) this process is driving, by id.
-static DESIGNING: Mutex<BTreeSet<uuid::Uuid>> = Mutex::new(BTreeSet::new());
-
-fn held(set: &Mutex<BTreeSet<uuid::Uuid>>, construction: uuid::Uuid) -> bool {
-    set.lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .contains(&construction)
+/// What the construction agent is doing for a construction, in a run this
+/// process drives from the Plan & build screen. One at a time: the phases are
+/// not edited under a plan run, and a mockup run reads the answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Activity {
+    /// Planning the phases.
+    Planning,
+    /// Proposing mockups (AC7).
+    Designing,
+    /// Asking clarifying questions (AC8).
+    Asking,
 }
 
-fn planning(construction: uuid::Uuid) -> bool {
-    held(&PLANNING, construction)
-}
-
-fn designing(construction: uuid::Uuid) -> bool {
-    held(&DESIGNING, construction)
-}
-
-/// Refuse while the construction agent plans the phases or proposes
-/// mockups: one run of it at a time, and the phases are not edited under it.
-fn require_agent_free(construction: uuid::Uuid) -> Result<()> {
-    if planning(construction) {
-        Err(Error::invalid(
-            "the construction agent is planning the phases; wait for it to finish",
-        ))
-    } else if designing(construction) {
-        Err(Error::invalid(
-            "the construction agent is proposing mockups; wait for it to finish",
-        ))
-    } else {
-        Ok(())
+impl Activity {
+    /// Why another run, or an edit, has to wait.
+    fn busy(self) -> String {
+        let what = match self {
+            Activity::Planning => "planning the phases",
+            Activity::Designing => "proposing mockups",
+            Activity::Asking => "asking its questions",
+        };
+        format!("the construction agent is {what}; wait for it to finish")
     }
 }
 
-/// Marks a construction as being planned, or designed, for as long as it is
-/// held.
-struct RunGuard(&'static Mutex<BTreeSet<uuid::Uuid>>, uuid::Uuid);
+/// The constructions the construction agent is busy with, by id. A run left
+/// `running` by a server that stopped is not here, so the admin can start
+/// another.
+static BUSY: Mutex<BTreeMap<uuid::Uuid, Activity>> = Mutex::new(BTreeMap::new());
+
+fn activity(construction: uuid::Uuid) -> Option<Activity> {
+    BUSY.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&construction)
+        .copied()
+}
+
+fn planning(construction: uuid::Uuid) -> bool {
+    activity(construction) == Some(Activity::Planning)
+}
+
+/// Refuse while the construction agent plans the phases, proposes mockups or
+/// asks its questions.
+fn require_agent_free(construction: uuid::Uuid) -> Result<()> {
+    match activity(construction) {
+        Some(busy) => Err(Error::invalid(busy.busy())),
+        None => Ok(()),
+    }
+}
+
+/// Marks a construction as busy with an activity for as long as it is held.
+struct RunGuard(uuid::Uuid);
 
 impl RunGuard {
-    /// `None` when the construction is in `set` already.
-    fn claim(
-        set: &'static Mutex<BTreeSet<uuid::Uuid>>,
-        construction: uuid::Uuid,
-    ) -> Option<RunGuard> {
-        set.lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(construction)
-            .then_some(RunGuard(set, construction))
+    /// Refused while the agent is busy with the construction already, with
+    /// this activity or another: checked and marked under one lock.
+    fn claim(construction: uuid::Uuid, activity: Activity) -> Result<RunGuard> {
+        let mut busy = BUSY.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(current) = busy.get(&construction) {
+            return Err(Error::invalid(current.busy()));
+        }
+        busy.insert(construction, activity);
+        Ok(RunGuard(construction))
     }
 }
 
 impl Drop for RunGuard {
     fn drop(&mut self) {
-        self.0
-            .lock()
+        BUSY.lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.1);
+            .remove(&self.0);
     }
 }
 
@@ -224,6 +239,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         }
     });
 
+    register_questions(reg, &catalog, &apps);
     register_mockups(reg, &catalog, &apps);
 
     reg.handle(sc_api::handler_ids::SAVE_PHASES, {
@@ -266,6 +282,55 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
 }
 
 /// The mockups' endpoints (AC7): propose or revise them, and choose one.
+fn register_questions(reg: &mut HandlerRegistry, catalog: &Arc<Catalog>, apps: &Arc<AppMounts>) {
+    reg.handle(sc_api::handler_ids::ASK_CONSTRUCTION_QUESTIONS, {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let app = require_app(&catalog, ctx.path_param("id")?).await?;
+                let user = ctx
+                    .user()
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("asking questions needs a signed-in admin"))?;
+                let construction =
+                    start_asking(catalog.clone(), apps, &app, console_caller(user)).await?;
+                Ok(
+                    HandlerResponse::ok(construction_json(&catalog, &construction).await?)
+                        .with_status(202),
+                )
+            }
+        }
+    });
+
+    reg.handle(sc_api::handler_ids::ANSWER_CONSTRUCTION_QUESTIONS, {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let app = require_app(&catalog, ctx.path_param("id")?).await?;
+                let construction = store::require_construction(&catalog, app.id.0).await?;
+                // The run replaces the open questions: an answer to one of
+                // them could land on a question that is gone.
+                if activity(construction.id) == Some(Activity::Asking) {
+                    return Err(Error::invalid(Activity::Asking.busy()));
+                }
+                let answers: Vec<QuestionAnswer> =
+                    serde_json::from_value(ctx.body.get("answers").cloned().unwrap_or_default())
+                        .map_err(|_| {
+                            Error::invalid("`answers` must be a list of `{question, text}`")
+                        })?;
+                sc_construct::answer_questions(&catalog, app.id.0, &answers).await?;
+                Ok(HandlerResponse::ok(
+                    construction_json(&catalog, &construction).await?,
+                ))
+            }
+        }
+    });
+}
+
 fn register_mockups(reg: &mut HandlerRegistry, catalog: &Arc<Catalog>, apps: &Arc<AppMounts>) {
     reg.handle(sc_api::handler_ids::PROPOSE_MOCKUPS, {
         let catalog = catalog.clone();
@@ -694,6 +759,9 @@ enum Purpose {
     /// Propose mockups: it must save a round after `round`, the last one there
     /// was when it started.
     Mockups { round: i64 },
+    /// Ask clarifying questions: it must ask one that is not among `known`,
+    /// the questions there were when it started.
+    Questions { known: HashSet<uuid::Uuid> },
 }
 
 /// Start the run that plans `app`'s phases from its specification, answering
@@ -706,18 +774,18 @@ async fn start_planning(
     caller: RunCaller,
 ) -> Result<Construction> {
     let construction = require_plannable(&catalog, app).await?;
-    if designing(construction.id) {
-        return Err(Error::invalid(
-            "the construction agent is proposing mockups; wait for it to finish",
-        ));
-    }
-    let guard = RunGuard::claim(&PLANNING, construction.id)
-        .ok_or_else(|| Error::invalid("the construction agent is planning the phases already"))?;
+    let guard = RunGuard::claim(construction.id, Activity::Planning)?;
     let chosen = sc_construct::chosen_mockup(&catalog, construction.id).await?;
     let replan = !store::phases_of(&catalog, construction.id)
         .await?
         .is_empty();
-    let message = plan_message(app, &construction.specification, chosen.as_ref(), replan);
+    let answers = answers_of(&catalog, construction.id).await?;
+    let message = plan_message(
+        app,
+        &specification_with(&construction.specification, answers.as_deref()),
+        chosen.as_ref(),
+        replan,
+    );
     let run = launch(
         catalog.clone(),
         apps,
@@ -747,17 +815,18 @@ async fn start_designing(
     note: Option<&str>,
 ) -> Result<Construction> {
     let construction = require_plannable(&catalog, app).await?;
-    if planning(construction.id) {
-        return Err(Error::invalid(
-            "the construction agent is planning the phases; wait for it to finish",
-        ));
-    }
-    let guard = RunGuard::claim(&DESIGNING, construction.id)
-        .ok_or_else(|| Error::invalid("the construction agent is proposing mockups already"))?;
+    let guard = RunGuard::claim(construction.id, Activity::Designing)?;
     sc_construct::set_mockup_feedback(&catalog, app.id.0, feedback).await?;
     let mockups = sc_construct::mockups_of(&catalog, construction.id).await?;
     let round = mockups.iter().map(|m| m.round).max().unwrap_or(0);
-    let message = mockup_message(app, &construction.specification, count, &mockups, note);
+    let answers = answers_of(&catalog, construction.id).await?;
+    let message = mockup_message(
+        app,
+        &specification_with(&construction.specification, answers.as_deref()),
+        count,
+        &mockups,
+        note,
+    );
     let description = if message.revision {
         format!("Revise the mockups of {}", app.name)
     } else {
@@ -777,6 +846,52 @@ async fn start_designing(
     .await?;
     // The last run's failure is not this one's.
     store::set_construction_status(&catalog, app.id.0, construction.status, None).await
+}
+
+/// Start the run that asks the admin clarifying questions about `app`'s
+/// specification (AC8). The questions answered already are told, so they are
+/// not asked again; the open ones are replaced by what the run asks.
+async fn start_asking(
+    catalog: Arc<Catalog>,
+    apps: Arc<AppMounts>,
+    app: &Application,
+    caller: RunCaller,
+) -> Result<Construction> {
+    let construction = require_plannable(&catalog, app).await?;
+    let guard = RunGuard::claim(construction.id, Activity::Asking)?;
+    let questions = sc_construct::questions_of(&catalog, construction.id).await?;
+    let known = questions.iter().map(|q| q.id).collect();
+    let message = questions_message(app, &construction.specification, &questions);
+    launch(
+        catalog.clone(),
+        apps,
+        app,
+        &construction,
+        caller,
+        message,
+        format!("Ask about the specification of {}", app.name),
+        guard,
+        Purpose::Questions { known },
+    )
+    .await?;
+    // The last run's failure is not this one's.
+    store::set_construction_status(&catalog, app.id.0, construction.status, None).await
+}
+
+/// The answered questions of a construction, as the agent is told them.
+async fn answers_of(catalog: &Catalog, construction: uuid::Uuid) -> Result<Option<String>> {
+    Ok(sc_construct::answers_text(
+        &sc_construct::questions_of(catalog, construction).await?,
+    ))
+}
+
+/// The specification as a run is told it: with the admin's answers to the
+/// clarifying questions after it, which belong to it.
+fn specification_with(specification: &str, answers: Option<&str>) -> String {
+    match answers {
+        Some(answers) => format!("{}\n\n{answers}", specification.trim()),
+        None => specification.trim().to_owned(),
+    }
 }
 
 /// The construction of `app`, refused unless the agent can plan it now: not
@@ -866,6 +981,7 @@ async fn launch(
         let what = match purpose {
             Purpose::Phases => "the phases",
             Purpose::Mockups { .. } => "the mockups",
+            Purpose::Questions { .. } => "its questions",
         };
         let failure = match runner.drive(&mut run).await {
             Ok(Conclusion::Answered { .. }) => match purpose {
@@ -880,6 +996,16 @@ async fn launch(
                     match sc_construct::mockups_of(&catalog, construction_id).await {
                         Ok(mockups) if mockups.iter().all(|m| m.round <= round) => Some(
                             "the construction agent finished without saving any mockups; see \
+                             its run"
+                                .to_owned(),
+                        ),
+                        _ => None,
+                    }
+                }
+                Purpose::Questions { ref known } => {
+                    match sc_construct::questions_of(&catalog, construction_id).await {
+                        Ok(questions) if questions.iter().all(|q| known.contains(&q.id)) => Some(
+                            "the construction agent finished without asking any questions; see \
                              its run"
                                 .to_owned(),
                         ),
@@ -1020,6 +1146,33 @@ fn mockup_message(
         text: format!("{intro}{ask}"),
         revision,
     }
+}
+
+/// What the questions run is asked: the specification, the questions the
+/// admin has answered (so they are not asked again), and to ask what is still
+/// open with `ask_questions`.
+fn questions_message(
+    app: &Application,
+    specification: &str,
+    questions: &[sc_construct::Question],
+) -> String {
+    let answered = sc_construct::answers_text(questions).map_or_else(String::new, |text| {
+        format!(
+            "\n\n{text}\n\nDo not ask these again, nor what their answers settle. The questions \
+             still open are replaced by what you ask now."
+        )
+    });
+    format!(
+        "Before mockups of the `{}` application (subdomain `{}`) are drawn and its construction \
+         is planned, ask the admin what its specification leaves open.\n\nThe specification:\n\
+         {}{answered}\n\nAsk your questions with `{}`, in one call: only those whose answer \
+         would change what gets built. Only ask in this conversation: nothing is drawn or built \
+         yet.",
+        app.name,
+        app.subdomain.trim(),
+        specification.trim(),
+        sc_agent_builtins::TOOL_ASK_QUESTIONS,
+    )
 }
 
 /// The name the construction agent of `app` is created under: next to
@@ -1255,7 +1408,15 @@ async fn construction_json(catalog: &Catalog, construction: &Construction) -> Re
     out["error"] = json!(construction.error);
     out["until_phase"] = json!(construction.until_phase);
     out["plan_only"] = json!(construction.plan_only);
-    out["designing"] = json!(designing(construction.id));
+    let busy = activity(construction.id);
+    out["designing"] = json!(busy == Some(Activity::Designing));
+    out["asking"] = json!(busy == Some(Activity::Asking));
+    let questions: Vec<Json> = sc_construct::questions_of(catalog, construction.id)
+        .await?
+        .into_iter()
+        .map(|q| json!({ "id": q.id, "text": q.text, "answer": q.answer }))
+        .collect();
+    out["questions"] = Json::Array(questions);
     let mockups: Vec<Json> = sc_construct::mockups_of(catalog, construction.id)
         .await?
         .into_iter()

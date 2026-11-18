@@ -10,6 +10,8 @@
 //!   ([`sc_construct::save_phases`], the validation the admin's edits go
 //!   through too). Its result ends with the phase list, as `save_plan`'s ends
 //!   with the plan, so the freshest copy is the last thing the model read.
+//! - `ask_questions` asks the admin what the specification leaves open, before
+//!   the mockups are drawn (AC8); the answers go with the specification.
 //! - `save_mockups` saves a round of mockups for the admin to choose from
 //!   before the phases are planned (AC7); the chosen one shapes them.
 //! - `save_tasks` plans the tasks of one phase ([`sc_construct::save_tasks`],
@@ -46,10 +48,14 @@ pub const TOOL_SAVE_TASKS: &str = "save_tasks";
 /// Saves a round of mockups for the admin to choose from (AC7).
 pub const TOOL_SAVE_MOCKUPS: &str = "save_mockups";
 
+/// Asks the admin clarifying questions about the specification (AC8).
+pub const TOOL_ASK_QUESTIONS: &str = "ask_questions";
+
 const ARG_PHASES: &str = "phases";
 const ARG_PHASE: &str = "phase";
 const ARG_TASKS: &str = "tasks";
 const ARG_MOCKUPS: &str = "mockups";
+const ARG_QUESTIONS: &str = "questions";
 
 /// The planning tools of one application's construction.
 pub struct AppConstructor;
@@ -77,6 +83,13 @@ const PROMPT: &str = "You plan the construction of an application in phases. A p
      does not build. A task's brief is all its agent reads, so say what to make and name \
      the tables and queries it uses. Never plan what exists already. `depends_on` lists \
      earlier tasks of the same list by number.\n\n\
+     Before anything is drawn or planned, you may be asked to ask the admin clarifying \
+     questions with `ask_questions`. Ask only what the specification leaves open and the \
+     answer would change what gets built: who uses the application and with which rights, \
+     what is recorded, what is calculated, what must be seen together. Fewer is better; ten \
+     is a limit, not a target. One idea per question, short and direct, in plain language \
+     with no abbreviation left unexplained. Do not ask what the specification or an answer \
+     already says. The answers count as part of the specification.\n\n\
      Before the phases, you may be asked to propose mockups with `save_mockups`: a few \
      different looks of the application, for the admin to choose from. Each mockup is the \
      handful of screens that decide the application's shape (its main list, a form, a \
@@ -196,56 +209,6 @@ impl AgentTrait for AppConstructor {
                 }),
             ),
             ToolSpec::new(
-                TOOL_SAVE_MOCKUPS,
-                "Save a round of mockups for the admin to choose from: each a title, a \
-             one-sentence rationale, and its screens as self-contained HTML pages. A new \
-             round leaves the earlier ones as they are.",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        ARG_MOCKUPS: {
-                            "type": "array",
-                            "minItems": 1,
-                            "maxItems": sc_construct::MAX_MOCKUPS,
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "title": { "type": "string" },
-                                    "rationale": {
-                                        "type": "string",
-                                        "description": "What sets this mockup apart"
-                                    },
-                                    "screens": {
-                                        "type": "array",
-                                        "minItems": 1,
-                                        "maxItems": sc_construct::mockups::MAX_SCREENS,
-                                        "items": {
-                                            "type": "object",
-                                            "properties": {
-                                                "name": {
-                                                    "type": "string",
-                                                    "description": "What the screen is, e.g. `Orders list`"
-                                                },
-                                                "html": {
-                                                    "type": "string",
-                                                    "description": "A complete HTML page, CSS in a `<style>` element, no scripts or external resources"
-                                                },
-                                            },
-                                            "required": ["name", "html"],
-                                            "additionalProperties": false,
-                                        },
-                                    },
-                                },
-                                "required": ["title", "rationale", "screens"],
-                                "additionalProperties": false,
-                            },
-                        },
-                    },
-                    "required": [ARG_MOCKUPS],
-                    "additionalProperties": false,
-                }),
-            ),
-            ToolSpec::new(
                 TOOL_SAVE_TASKS,
                 "Save the tasks of one phase, in order, replacing the tasks it has. Only for a \
              phase whose tasks have not started. Returns the tasks as saved.",
@@ -281,6 +244,7 @@ impl AgentTrait for AppConstructor {
             ),
         ]
         .into_iter()
+        .chain(research_tools())
         .chain(data_model)
         .collect()
     }
@@ -308,6 +272,9 @@ impl AgentTrait for AppConstructor {
         }
         if tool == TOOL_SAVE_MOCKUPS {
             return save_mockups(ctx.catalog, &app, args).await;
+        }
+        if tool == TOOL_ASK_QUESTIONS {
+            return ask_questions(ctx.catalog, &app, args).await;
         }
         let phases = sc_construct::parse_phases(args.get(ARG_PHASES).unwrap_or(&Json::Null))?;
         let saved = sc_construct::save_phases(ctx.catalog, app.id.0, &phases).await?;
@@ -356,12 +323,93 @@ impl AgentTrait for AppConstructor {
             None if mockups.is_empty() => String::new(),
             None => "\n\nMockups proposed; none chosen yet.".to_owned(),
         };
+        // The answers belong to the specification: every run is told them.
+        let questions = sc_construct::questions_of(cx.catalog, construction.id).await?;
+        let answers = sc_construct::answers_text(&questions)
+            .map_or_else(String::new, |text| format!("\n\n{text}"));
         Ok(Some(format!(
-            "## The construction of `{}`\n\nSpecification:\n{specification}{mockups}\n\nPhases:\n{}",
+            "## The construction of `{}`\n\nSpecification:\n{specification}{answers}{mockups}\n\nPhases:\n{}",
             app.name,
             sc_construct::phase_list(&phases)
         )))
     }
+}
+
+/// The tools that come before the phases (AC7, AC8): asking the admin
+/// clarifying questions, and proposing mockups.
+fn research_tools() -> Vec<ToolSpec> {
+    vec![
+        ToolSpec::new(
+            TOOL_ASK_QUESTIONS,
+            "Ask the admin clarifying questions about the specification, for them to \
+     answer before the mockups are drawn. Replaces the questions still open; the \
+     answered ones stay. Discards the mockups there are.",
+            json!({
+                "type": "object",
+                "properties": {
+                    ARG_QUESTIONS: {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": sc_construct::MAX_QUESTIONS,
+                        "description": "The questions, one idea each; fewer is better",
+                        "items": { "type": "string" },
+                    },
+                },
+                "required": [ARG_QUESTIONS],
+                "additionalProperties": false,
+            }),
+        ),
+        ToolSpec::new(
+            TOOL_SAVE_MOCKUPS,
+            "Save a round of mockups for the admin to choose from: each a title, a \
+     one-sentence rationale, and its screens as self-contained HTML pages. A new \
+     round leaves the earlier ones as they are.",
+            json!({
+                "type": "object",
+                "properties": {
+                    ARG_MOCKUPS: {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": sc_construct::MAX_MOCKUPS,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": { "type": "string" },
+                                "rationale": {
+                                    "type": "string",
+                                    "description": "What sets this mockup apart"
+                                },
+                                "screens": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "maxItems": sc_construct::mockups::MAX_SCREENS,
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "name": {
+                                                "type": "string",
+                                                "description": "What the screen is, e.g. `Orders list`"
+                                            },
+                                            "html": {
+                                                "type": "string",
+                                                "description": "A complete HTML page, CSS in a `<style>` element, no scripts or external resources"
+                                            },
+                                        },
+                                        "required": ["name", "html"],
+                                        "additionalProperties": false,
+                                    },
+                                },
+                            },
+                            "required": ["title", "rationale", "screens"],
+                            "additionalProperties": false,
+                        },
+                    },
+                },
+                "required": [ARG_MOCKUPS],
+                "additionalProperties": false,
+            }),
+        ),
+    ]
 }
 
 /// `save_mockups`: save a round of mockups and say what was saved. The HTML is
@@ -382,6 +430,32 @@ async fn save_mockups(catalog: &Catalog, app: &Application, args: &Json) -> Resu
         saved.first().map_or(1, |m| m.round),
         list.join("\n")
     )))
+}
+
+/// `ask_questions`: save the questions and say what the admin now has to
+/// answer.
+async fn ask_questions(catalog: &Catalog, app: &Application, args: &Json) -> Result<Json> {
+    let questions = sc_construct::parse_questions(args.get(ARG_QUESTIONS).unwrap_or(&Json::Null))?;
+    let saved = sc_construct::save_questions(catalog, app.id.0, &questions).await?;
+    let answered = saved
+        .questions
+        .iter()
+        .filter(|q| q.answer.is_some())
+        .count();
+    let mut text = format!(
+        "Asked {} question(s) for the admin to answer.",
+        questions.len()
+    );
+    if answered > 0 {
+        text.push_str(&format!(" {answered} answered earlier stay as they are."));
+    }
+    if saved.discarded_mockups > 0 {
+        text.push_str(&format!(
+            " The {} mockup(s) drawn before were discarded: new ones are drawn from the answers.",
+            saved.discarded_mockups
+        ));
+    }
+    Ok(Json::String(text))
 }
 
 /// `save_tasks`: plan one phase's tasks and answer them as saved.

@@ -2,8 +2,8 @@
 // functions so they are tested without a browser.
 //
 // The screen shows one application's construction in four numbered tabs:
-// the specification, the mockups (optional, AC7), the phases, and the
-// progress of their tasks. Which one
+// the specification, the research (optional: clarifying questions, AC8, and
+// mockups, AC7), the phases, and the progress of their tasks. Which one
 // opens follows from the construction's status. The phases are edited as a
 // draft on the screen and saved whole, as the server's `savePhases` takes
 // them.
@@ -14,6 +14,7 @@ export type Construction = GetConstructionResponse;
 export type ConstructionPhase = Construction["phases"][number];
 export type ConstructionTask = ConstructionPhase["tasks"][number];
 export type ConstructionMockup = Construction["mockups"][number];
+export type ConstructionQuestion = Construction["questions"][number];
 
 /** A phase as the admin edits it before saving. */
 export type PhaseDraft = SavePhasesRequest["phases"][number];
@@ -62,23 +63,24 @@ export function constructible(app: { framework: { name: string } }): boolean {
 }
 
 /** The step the screen opens on. */
-export type Step = "start" | "specification" | "mockups" | "phases" | "progress";
+export type Step = "start" | "specification" | "research" | "phases" | "progress";
 
 /** Which step is open for `construction` (`null`: the application has none).
  *
  * - None yet: start one.
- * - A draft has no phases: write the specification, or, once mockups are
- *   proposed or being proposed, choose one.
+ * - A draft has no phases: write the specification, or, once questions are
+ *   asked or mockups proposed (or being), the research: answer them, choose
+ *   a mockup.
  * - Planned: edit the phases, until a task has run. From then on the progress
  *   is what the admin comes back to see.
  * - Running, stopped, failed or done: the progress. */
 export function currentStep(construction: Construction | null): Step {
   if (!construction) return "start";
   if (construction.planning) return "phases";
-  if (construction.designing) return "mockups";
+  if (construction.designing || construction.asking) return "research";
   switch (construction.status) {
     case "draft":
-      return construction.mockups.length > 0 ? "mockups" : "specification";
+      return researched(construction) ? "research" : "specification";
     case "planned":
       return started(construction) ? "progress" : "phases";
     default:
@@ -97,13 +99,15 @@ export function blankConstruction(appId: string): Construction {
     planning: false,
     plan_only: false,
     designing: false,
+    asking: false,
+    questions: [],
     mockups: [],
     phases: [],
   };
 }
 
 /** The screen's tabs, in order; each is one step. */
-export const TABS = ["specification", "mockups", "phases", "progress"] as const;
+export const TABS = ["specification", "research", "phases", "progress"] as const;
 export type Tab = (typeof TABS)[number];
 
 /** The tab the screen opens on: the current step's, except that a build under
@@ -113,20 +117,30 @@ export function landingTab(step: Exclude<Step, "start">): Tab {
   return step === "progress" ? "phases" : step;
 }
 
-/** Whether `tab` can be opened yet: the specification always, the mockups once
- * some are proposed or being proposed, the phases once they are planned or
+/** Whether `tab` can be opened yet: the specification always, the research
+ * once there is a specification to research, the phases once they are planned or
  * being planned, the progress once the step is reached. */
 export function tabOpen(construction: Construction, tab: Tab): boolean {
   switch (tab) {
     case "specification":
       return true;
-    case "mockups":
-      return construction.designing || construction.mockups.length > 0;
+    case "research":
+      return (
+        construction.specification.trim() !== "" ||
+        construction.designing ||
+        construction.asking ||
+        researched(construction)
+      );
     case "phases":
       return construction.planning || construction.phases.length > 0;
     case "progress":
       return currentStep(construction) === "progress";
   }
+}
+
+/** Whether the agent has asked questions or proposed mockups. */
+function researched(construction: Construction): boolean {
+  return construction.questions.length > 0 || construction.mockups.length > 0;
 }
 
 /** Whether any task of the construction has run or been skipped. */
@@ -135,11 +149,14 @@ export function started(construction: Construction): boolean {
 }
 
 /** Whether the screen should keep reloading: while the construction runs, or
- * its phases are being planned or its mockups proposed. */
+ * its phases are being planned, its mockups proposed or its questions asked. */
 export function shouldPoll(construction: Construction | null): boolean {
   return (
     !!construction &&
-    (construction.status === "running" || construction.planning || construction.designing)
+    (construction.status === "running" ||
+      construction.planning ||
+      construction.designing ||
+      construction.asking)
   );
 }
 
@@ -185,7 +202,7 @@ export function pollConstruction(
  * construction's error while it is not being planned or run. Once tasks have
  * run, the error is the progress's to show. */
 export function planError(construction: Construction): string | null {
-  if (construction.planning || construction.designing) return null;
+  if (construction.planning || construction.designing || construction.asking) return null;
   if (currentStep(construction) === "progress") return null;
   return construction.error ?? null;
 }
@@ -343,12 +360,52 @@ export function revisionFeedback(
     .filter((f) => f.text !== "");
 }
 
-/** Whether mockups can be proposed, revised or chosen now: not while the
- * agent plans or proposes, or the construction runs. */
-export function mockupsEditable(construction: Construction): boolean {
+/** Whether questions can be asked or answered, and mockups proposed, revised
+ * or chosen, now: not while the agent plans, proposes or asks (one run of it
+ * at a time), or the construction runs. */
+export function researchEditable(construction: Construction): boolean {
   return (
-    !construction.planning && !construction.designing && construction.status !== "running"
+    !construction.planning &&
+    !construction.designing &&
+    !construction.asking &&
+    construction.status !== "running"
   );
+}
+
+/** Whether "Plan phases" is asked to confirm: the first plan with nothing
+ * researched, no questions asked and no mockups drawn. Once there are phases
+ * the admin has decided that already. */
+export function planningUnresearched(construction: Construction): boolean {
+  return (
+    construction.phases.length === 0 &&
+    construction.questions.length === 0 &&
+    construction.mockups.length === 0
+  );
+}
+
+/** Whether "Propose mockups" is asked to confirm: no questions asked yet, so
+ * the mockups would be drawn from the specification alone, and asking later
+ * discards them. */
+export function mockupsWithoutQuestions(construction: Construction): boolean {
+  return construction.questions.length === 0;
+}
+
+/** How many mockups asking questions discards: all of them, as they were drawn
+ * without the answers. Asked to confirm when there are any. */
+export function askingDiscards(construction: Construction): number {
+  return construction.mockups.length;
+}
+
+/** The answers to send: those the admin changed on the screen (`drafts`, by
+ * question), blank ones included, since saving a blank answer opens the
+ * question again. */
+export function changedAnswers(
+  construction: Construction,
+  drafts: Record<string, string>,
+): { question: string; text: string }[] {
+  return construction.questions
+    .filter((q) => q.id in drafts && drafts[q.id].trim() !== (q.answer ?? ""))
+    .map((q) => ({ question: q.id, text: drafts[q.id].trim() }));
 }
 
 /** A screen's HTML as the frame shows it. The page runs no script and loads
@@ -401,6 +458,8 @@ export type ConstructionClient = Pick<
   | "proposeMockups"
   | "chooseMockup"
   | "getMockupScreens"
+  | "askConstructionQuestions"
+  | "answerConstructionQuestions"
 >;
 
 /** What the screen's buttons do, each answering the construction as the
@@ -416,6 +475,14 @@ export function constructionCalls(client: ConstructionClient, appId: string) {
       await client.saveConstructionSpecification(appId, { specification });
       return client.planConstruction(appId);
     },
+    /** Save the specification as it is on the screen, then have the agent
+     * ask what it leaves open. */
+    askQuestions: async (specification: string) => {
+      await client.saveConstructionSpecification(appId, { specification });
+      return client.askConstructionQuestions(appId);
+    },
+    answerQuestions: (answers: { question: string; text: string }[]) =>
+      client.answerConstructionQuestions(appId, { answers }),
     /** Save the specification as it is on the screen, then have `count`
      * mockups proposed from it. */
     proposeMockups: async (specification: string, count: number) => {

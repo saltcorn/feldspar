@@ -11,6 +11,8 @@
 //!   the runner does next.
 //! - [`mockups`] — screens proposed before the phases are planned, one of
 //!   which the admin may choose.
+//! - [`questions`] — what the agent asks about the specification first, and
+//!   the admin's answers.
 
 /// This crate's own tables' access to the primary database
 /// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
@@ -22,6 +24,7 @@ pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
 pub mod mockups;
 pub mod model;
 pub mod plan;
+pub mod questions;
 pub mod store;
 pub mod tasks;
 
@@ -32,9 +35,14 @@ pub use mockups::{
 };
 pub use model::{
     Construction, ConstructionStatus, Mockup, MockupFeedback, MockupScreen, MockupStatus, Phase,
-    PhaseStatus, PhaseWithTasks, Priority, Requirement, Task, TaskKind, TaskStatus, phase_status,
+    PhaseStatus, PhaseWithTasks, Priority, Question, QuestionAnswer, Requirement, Task, TaskKind,
+    TaskStatus, phase_status,
 };
 pub use plan::{MAX_PHASES, PhaseInput, SavedPhases, parse_phases, phase_list, save_phases};
+pub use questions::{
+    MAX_QUESTIONS, QUESTIONS_TABLE, SavedQuestions, answer_questions, answers_text,
+    parse_questions, questions_of, save_questions,
+};
 pub use store::{
     CONSTRUCTIONS_TABLE, PHASES_TABLE, TASKS_TABLE, bootstrap_constructions, create_construction,
     delete_construction, delete_phase, insert_phase, insert_task, list_constructions,

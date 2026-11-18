@@ -6219,6 +6219,27 @@ the admin chooses one, or comments on them and has them revised, before the phas
   run is driven as a plan run is, flagged in the process's memory (`designing`), and one run of
   the construction agent is allowed at a time.
 
+**Clarifying questions first, when the admin wants them** (AC8). Before the mockups, the
+construction agent can ask what the specification leaves open (`ask_questions`, at most ten,
+only what would change what gets built), and the admin answers what they can. This is v1's
+research step without the web searches, which may follow.
+- **Stored per question** in `_fd_construction_questions` (construction, position, question,
+  answer). Asking again replaces the open questions and keeps the answered ones, and the run is
+  told the answered ones so it does not ask them again.
+- **Questions before mockups:** the mockups are drawn from the answers, so saving questions
+  discards the construction's mockups, every round and the chosen one, in the same
+  transaction. The screen confirms it first. Their files under `mockups/` stay in the source
+  tree but reach no task: a feature task is only pointed at them while a mockup is chosen.
+- **The answers belong to the specification:** the mockup run and the phase plan are told them
+  after it, and the session header carries them, so every later run (a phase's task plan, a
+  task) has them too.
+- **Driven like a mockup run** (`asking`). The process tracks one activity per construction
+  (planning, designing or asking) under one lock, so a second run of the construction agent is
+  refused rather than raced. A run that asks nothing says so on the construction.
+- **On the screen** the questions and the mockups share one optional step, Research, between
+  the specification and the phases, numbered in that order. The specification offers only
+  "Continue to research" and "Plan phases".
+
 **Two kinds of task, two agents.**
 - A `data_model` task runs the construction's own agent, which has the copilot's tools.
 - A `feature` task is delegated to the application's builder agent. Its own check decides

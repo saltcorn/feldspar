@@ -105,6 +105,12 @@ pub async fn bootstrap_constructions(catalog: &Catalog) -> Result<()> {
             &crate::mockups::mockup_fields(),
         )
         .await?;
+    catalog
+        .bootstrap_table(
+            crate::questions::QUESTIONS_TABLE,
+            &crate::questions::question_fields(),
+        )
+        .await?;
     Ok(())
 }
 
@@ -367,8 +373,8 @@ pub async fn running_constructions(catalog: &Catalog) -> Result<Vec<Construction
         .collect())
 }
 
-/// Delete the construction of `application` with its phases, tasks and mockups,
-/// answering what it was. `None` when it had none.
+/// Delete the construction of `application` with its phases, tasks, mockups and
+/// questions, answering what it was. `None` when it had none.
 ///
 /// All in one transaction: a failure deletes nothing. The phases are locked
 /// first, so a task being added to one of them is either deleted with it or
@@ -409,6 +415,7 @@ pub async fn delete_construction(
                 }
                 for (table, column) in [
                     (crate::mockups::MOCKUPS_TABLE, "construction"),
+                    (crate::questions::QUESTIONS_TABLE, "construction"),
                     (PHASES_TABLE, "construction"),
                     (CONSTRUCTIONS_TABLE, "id"),
                 ] {

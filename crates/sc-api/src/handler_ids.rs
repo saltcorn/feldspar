@@ -167,6 +167,10 @@ pub const PLAN_CONSTRUCTION: HandlerId<AdminOnly> = HandlerId::new("planConstruc
 pub const PROPOSE_MOCKUPS: HandlerId<AdminOnly> = HandlerId::new("proposeMockups");
 pub const CHOOSE_MOCKUP: HandlerId<AdminOnly> = HandlerId::new("chooseMockup");
 pub const GET_MOCKUP_SCREENS: HandlerId<AdminOnly> = HandlerId::new("getMockupScreens");
+pub const ASK_CONSTRUCTION_QUESTIONS: HandlerId<AdminOnly> =
+    HandlerId::new("askConstructionQuestions");
+pub const ANSWER_CONSTRUCTION_QUESTIONS: HandlerId<AdminOnly> =
+    HandlerId::new("answerConstructionQuestions");
 pub const SAVE_PHASES: HandlerId<AdminOnly> = HandlerId::new("savePhases");
 pub const RUN_CONSTRUCTION: HandlerId<AdminOnly> = HandlerId::new("runConstruction");
 pub const PLAN_PHASE_TASKS: HandlerId<AdminOnly> = HandlerId::new("planPhaseTasks");
