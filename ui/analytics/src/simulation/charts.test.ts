@@ -44,6 +44,19 @@ describe("a profile curve", () => {
     expect((line.markLine as { data: unknown[] }).data).toEqual([{ xAxis: 170 }]);
   });
 
+  it("leaves room under the plot for the x axis's name, which containLabel does not count", () => {
+    const o = curveOption(areaCurve, area, {}, look);
+    const x = o.xAxis as { name: string; nameGap: number };
+    const grid = o.grid as { bottom: number };
+    expect(x.name).toBe("area");
+    // The name sits nameGap below the axis line; the grid's bottom margin
+    // (past the tick labels) must hold the part of it below the labels.
+    expect(grid.bottom).toBeGreaterThanOrEqual(x.nameGap);
+    // A chart with no x axis name keeps the tight margin.
+    const plain = comparisonOption({ grid: [], scenarios: [] } as unknown as Comparison, look);
+    expect((plain.grid as { bottom: number }).bottom).toBeLessThan(grid.bottom);
+  });
+
   it("marks the typical value when the input has not been moved, and has no band without an interval", () => {
     const bare: Curve = { input: "area", points: areaCurve.points.map((p) => ({ x: p.x, prediction: { value: p.prediction.value } })) };
     const o = curveOption(bare, area, {}, look);

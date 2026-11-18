@@ -2,6 +2,16 @@
 
 Changes in reverse chronological order.
 
+## A simulation chart's x axis name is no longer clipped
+
+On the Simulation workspace's profile charts the x axis name (the input being varied) showed
+only its top third. The grid's bottom margin was 8px with `containLabel`, but ECharts'
+`containLabel` makes room for the tick labels only, not the axis name, which sat 24px below the
+axis line and ran off the bottom. `curveOption` now adds 24px to the grid's bottom margin
+(`roomForXName`) and sets the name 30px below the axis so it clears the tick labels. The
+comparison chart, which names no x axis, keeps the tight margin. Test in
+`ui/analytics/src/simulation/charts.test.ts`.
+
 ## A model chooses its features, and a fit with no complete row says which columns are null
 
 A random forest on the Titanic dataset ("Get datasets") with the label `survived` failed with

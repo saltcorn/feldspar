@@ -25,6 +25,19 @@ export type ChartLook = {
   densityLabel: string;
 };
 
+/** How far an x axis's name sits below the axis line, past its tick labels. */
+const X_NAME_GAP = 30;
+/** The room under the plot for an x axis's name. ECharts' `containLabel`
+ * makes room for the tick labels only, not the axis name, so a chart naming
+ * its x axis needs this much more at the bottom or the name is clipped. */
+const X_NAME_ROOM = 24;
+
+/** Makes room under the plot for the x axis's name. */
+function roomForXName(option: Option): void {
+  const grid = option.grid as Option;
+  option.grid = { ...grid, bottom: (grid.bottom as number) + X_NAME_ROOM };
+}
+
 function base(look: ChartLook): Option {
   const p = look.palette;
   return {
@@ -91,6 +104,7 @@ export function curveOption(curve: Curve, input: Input, values: Record<string, u
   const here = currentValue(input, values);
   const classes = curveClasses(curve);
   const option = base(look);
+  roomForXName(option);
   const mark = (x: unknown) => ({
     silent: true,
     symbol: "none",
@@ -105,7 +119,7 @@ export function curveOption(curve: Curve, input: Input, values: Record<string, u
       scale: true,
       name: input.name,
       nameLocation: "middle",
-      nameGap: 24,
+      nameGap: X_NAME_GAP,
       ...(input.kind === "date" ? {} : { axisLabel: { color: p.muted, hideOverlap: true, formatter: (v: number) => formatNumber(v) } }),
     });
     const xs = curve.points.map((pt) => xNumber(input, pt.x));
@@ -185,7 +199,7 @@ export function curveOption(curve: Curve, input: Input, values: Record<string, u
     data: levels,
     name: input.name,
     nameLocation: "middle",
-    nameGap: 24,
+    nameGap: X_NAME_GAP,
     splitLine: { show: false },
   });
   if (classes.length > 0) {
