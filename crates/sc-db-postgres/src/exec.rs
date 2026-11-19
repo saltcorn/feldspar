@@ -32,7 +32,8 @@ use crate::value::{PgParam, decode, decodes};
 ///
 /// The format is stable because upper layers read it back
 /// (`sc_access::rows::constraint_message`): `<message> [<sqlstate>]` with, when
-/// there is one, ` (constraint "<name>")`.
+/// there is one, ` (constraint "<name>")`, and then, when the server names one
+/// (a `NOT NULL` violation does), ` (column "<name>")`.
 pub(crate) fn db_error(e: &tokio_postgres::Error) -> String {
     match e.as_db_error() {
         Some(db) => {
@@ -40,7 +41,15 @@ pub(crate) fn db_error(e: &tokio_postgres::Error) -> String {
                 .constraint()
                 .map(|c| format!(" (constraint \"{c}\")"))
                 .unwrap_or_default();
-            format!("{} [{}]{constraint}", db.message(), db.code().code())
+            let column = db
+                .column()
+                .map(|c| format!(" (column \"{c}\")"))
+                .unwrap_or_default();
+            format!(
+                "{} [{}]{constraint}{column}",
+                db.message(),
+                db.code().code()
+            )
         }
         // A connection or protocol failure has no SQLSTATE; the chain is all
         // there is, and it is what this always printed.

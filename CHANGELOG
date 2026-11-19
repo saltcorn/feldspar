@@ -2,6 +2,37 @@
 
 Changes in reverse chronological order.
 
+## Integrity violations are a 400 naming the field, not a 500 with the database's text
+
+A user reported that inserting a row through the row API with a foreign key to a missing row
+returned HTTP 500 with Postgres's error text, in the server's locale (German in their case) and
+naming the table and the constraint. Confirmed: the write funnel
+(`sc_access::rows::constraint_message`) only mapped violations of a catalog constraint (an
+admin's unique key or row constraint). A foreign key, a primary key, a `CHECK` or a `NOT NULL`
+fell through as a database error. A unique constraint without an admin message was already a
+400, but it carried the database's sentence.
+
+- **Integrity violations with no admin message** (SQLSTATE 23502, 23503, 23505, 23514) are now
+  `invalid` (400) with a short English sentence: `account: the referenced row does not exist`,
+  `email: a row with this value already exists`, `salary: the value breaks a rule of this table`,
+  `title: a value is required`, and `other rows still refer to this row` for a delete another
+  table's key forbids. They are classified by SQLSTATE and constraint name, never by the
+  message, so the server's locale does not matter. The field is found through Postgres's default
+  constraint names (`<table>_<field>_fkey`, `_key`, `_check`, `<table>_pkey`), which are the
+  names Saltcorn's DDL produces. A constraint named any other way, or on SQLite, gets the same
+  sentence without the field.
+- **Unchanged:** an admin's message still wins. A `23514` a trigger raised (Saltcorn's row
+  constraints, or a hand-written `RAISE`) keeps its own sentence. Every other database error is
+  still a 500.
+- `sc-db-postgres` appends ` (column "<name>")` to an error when the server names a column, after
+  the existing ` (constraint "…")`. Existing readers of the format are unaffected.
+- The sync push refusals use the same sentences.
+- Tests: `sc-access` `rows::tests::an_integrity_violation_is_refused_in_our_words_naming_the_field`
+  (including the report's German text) and `any_other_database_error_passes_through`. `sc-api`
+  `constraints::an_unexplained_integrity_violation_is_the_callers_fault_naming_the_field` (real
+  Postgres: foreign key, primary key, field `UNIQUE`, `CHECK`). `sync_push`'s assertions follow
+  the new wording.
+
 ## Who may read a finished upload: `read_role` on upload slots
 
 A user on a second instance reported that the files of an upload slot were readable by every

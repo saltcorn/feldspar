@@ -1111,6 +1111,18 @@ through a static_dirs mount covering its folder, or `/files/serve` in a Saltcorn
   folder is served by a route at a floor looser than admin. Docs: `code_api_js.md`,
   `tutorial-file-fields.md`, §2.3. Tests in `app_uploads.rs` and `sc-app` unit tests.
 
+## IV1 — Integrity violations are the caller's fault (bug report)
+
+A row write with a foreign key to a missing row returned 500 with Postgres's own text, in the
+server's locale and naming the table and constraint. Only a violation of a catalog constraint
+(an admin's unique key or row constraint) was mapped to a 400.
+
+- [x] **IV1.1** `sc_access::rows::constraint_message` maps SQLSTATE 23502/23503/23505/23514 with
+  no catalog constraint to a 400 with a short English sentence naming the field (found by
+  Postgres's default constraint names, or the column the server reports for `NOT NULL`). A unique
+  constraint with no admin message gets the same sentence instead of the database's. Tests:
+  `sc-access` unit tests, `sc-api` `constraints::an_unexplained_integrity_violation_…`.
+
 ---
 
 ## Open questions

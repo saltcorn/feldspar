@@ -1874,7 +1874,8 @@ async fn run_write_in(
             },
         },
     };
-    outcome.map_err(|e| constraint_message(table, e))
+    let deleting = matches!(statement, Statement::Delete(_));
+    outcome.map_err(|e| constraint_message(table, deleting, e))
 }
 
 /// A constraint violation, said in the admin's own words.
@@ -1893,24 +1894,128 @@ async fn run_write_in(
 /// wording: a rule the *caller* broke is a 400 naming it, not the 500 an
 /// unexplained database error deserves.
 ///
-/// An error naming no constraint of this table passes through untouched, because
-/// inventing a friendly message for a fault nobody anticipated is how a real one
-/// gets hidden.
-fn constraint_message(table: &Table, error: Error) -> Error {
+/// The integrity violations no admin wrote a message for — a foreign key, a
+/// primary key, a field's own `UNIQUE`, a `CHECK`, a `NOT NULL` — are the
+/// caller's fault just as surely, so they are a 400 too, in a sentence of ours
+/// (see [`integrity_message`]): Postgres's says it in the *server's* locale and
+/// names the table and the constraint.
+///
+/// Any other error passes through untouched, because inventing a friendly
+/// message for a fault nobody anticipated is how a real one gets hidden.
+fn constraint_message(table: &Table, deleting: bool, error: Error) -> Error {
     let chain = sc_error::format_chain(&error);
     match sc_catalog::violated_constraint(&table.constraints, &chain) {
-        Some(constraint) => Error::invalid(
-            constraint
-                .error_message
-                .clone()
-                // No message of the admin's: the database's own sentence, which
-                // for a row constraint is the generated one naming the rule and
-                // for a unique violation is Postgres's. Better than the whole
-                // chain, which carries the statement and its bind count.
-                .unwrap_or_else(|| database_message(&chain)),
-        ),
-        None => error,
+        Some(constraint) => Error::invalid(match (&constraint.error_message, &constraint.kind) {
+            (Some(message), _) => message.clone(),
+            (None, sc_catalog::ConstraintKind::Unique { fields }) => unique_message(fields),
+            // A row constraint's own sentence, raised by the trigger we
+            // generated and naming the rule. Better than the whole chain, which
+            // carries the statement and its bind count.
+            (None, _) => database_message(&chain),
+        }),
+        None => integrity_message(table, deleting, &chain).map_or(error, Error::invalid),
     }
+}
+
+/// A sentence for an integrity violation (SQLSTATE `23502`, `23503`, `23505`,
+/// `23514`) that names no constraint of the table's, or `None` for any other
+/// error.
+///
+/// Read from the SQLSTATE and the constraint name `sc-db-postgres` appends,
+/// never from the message, which is in whatever locale the server runs in. The
+/// field is found by Postgres's default constraint names (`<table>_<field>_fkey`,
+/// `_key`, `_check`, and `<table>_pkey`), which are the names Saltcorn's own
+/// DDL gets because it names none of these. A constraint named any other way
+/// (by hand, by an import, or on SQLite, which reports no name) still gets the
+/// sentence, without the field. A foreign key that refuses a *delete* is
+/// another table's, pointing at this row, and says so.
+///
+/// One `23514` keeps its own sentence: one a trigger *raised*, which is a
+/// sentence somebody wrote for this moment rather than the server's. That is a
+/// `23514` naming no constraint, or naming a Saltcorn row constraint
+/// (`sc_ck_…`) of another table, reached by a cascading write.
+fn integrity_message(table: &Table, deleting: bool, chain: &str) -> Option<String> {
+    let constraint = violated_constraint_name(chain);
+    let fields = constraint.map_or_else(Vec::new, |name| violated_fields(table, name));
+    let named = |sentence: &str| match fields.is_empty() {
+        true => sentence.to_owned(),
+        false => format!("{}: {sentence}", fields.join(", ")),
+    };
+    match sqlstate(chain)? {
+        "23502" => Some(match violated_column(chain) {
+            Some(column) => format!("{column}: a value is required"),
+            None => "a required field has no value".to_owned(),
+        }),
+        "23503" if deleting => Some("other rows still refer to this row".to_owned()),
+        "23503" => Some(named("the referenced row does not exist")),
+        "23505" => Some(unique_message(&fields)),
+        "23514" => match constraint {
+            None => Some(database_message(chain)),
+            Some(name) if name.starts_with("sc_ck_") => Some(database_message(chain)),
+            Some(_) => Some(named("the value breaks a rule of this table")),
+        },
+        _ => None,
+    }
+}
+
+/// The constraint name `sc-db-postgres` appends to an error, when it has one.
+fn violated_constraint_name(chain: &str) -> Option<&str> {
+    appended(chain, "constraint")
+}
+
+/// The column name `sc-db-postgres` appends to an error, when the server named
+/// one.
+fn violated_column(chain: &str) -> Option<&str> {
+    appended(chain, "column")
+}
+
+/// The name in ` (<what> "<name>")`.
+fn appended<'a>(chain: &'a str, what: &str) -> Option<&'a str> {
+    chain
+        .split_once(&format!(" ({what} \""))
+        .and_then(|(_, rest)| rest.split_once("\")"))
+        .map(|(name, _)| name)
+}
+
+/// The refusal of a duplicate, naming the fields that must be unique.
+fn unique_message(fields: &[String]) -> String {
+    match fields {
+        [] => "a row with this value already exists".to_owned(),
+        [field] => format!("{field}: a row with this value already exists"),
+        _ => format!(
+            "{}: a row with these values already exists",
+            fields.join(", ")
+        ),
+    }
+}
+
+/// The fields the constraint `name` is over, by its default Postgres name.
+fn violated_fields(table: &Table, name: &str) -> Vec<String> {
+    if name == format!("{}_pkey", table.name) {
+        return table.primary_key.clone();
+    }
+    table
+        .fields
+        .iter()
+        .map(|f| f.base.name.as_str())
+        .find(|field| {
+            ["fkey", "key", "check"]
+                .iter()
+                .any(|suffix| name == format!("{}_{field}_{suffix}", table.name))
+        })
+        .map(|field| vec![field.to_owned()])
+        .unwrap_or_default()
+}
+
+/// The SQLSTATE in a driver error chain: the five characters `sc-db-postgres`
+/// (and `sc-db-sqlite`, for the codes it maps) put in brackets after the
+/// server's message.
+fn sqlstate(chain: &str) -> Option<&str> {
+    chain.match_indices(" [").find_map(|(i, _)| {
+        let code = chain.get(i + 2..i + 7)?;
+        let closed = chain.get(i + 7..i + 8) == Some("]");
+        (closed && code.bytes().all(|b| b.is_ascii_alphanumeric())).then_some(code)
+    })
 }
 
 /// The server's own sentence out of a driver error chain.
@@ -1989,5 +2094,102 @@ mod tests {
         // Still fail-closed on the other half: no context is no transaction,
         // whatever the statement reaches.
         assert!(in_context(&table(false), None, true).is_none());
+    }
+
+    /// `mail_account_prefs`, with an `account` key to another table.
+    fn prefs() -> Table {
+        let column = |name: &str| sc_db::Column {
+            name: name.into(),
+            sql_type: "text".into(),
+            nullable: true,
+            generated: None,
+        };
+        Table::from_physical(
+            DbId::primary(),
+            &PhysicalTable {
+                name: "mail_account_prefs".into(),
+                schema: None,
+                columns: vec![column("id"), column("account"), column("signature")],
+                primary_key: vec!["id".into()],
+                foreign_keys: Vec::new(),
+                constraints: Vec::new(),
+            },
+        )
+    }
+
+    /// An integrity violation no admin wrote a message for is a 400 in our
+    /// sentence, naming the field and never the table or the constraint, and
+    /// whatever locale the database server answers in.
+    #[test]
+    fn an_integrity_violation_is_refused_in_our_words_naming_the_field() {
+        let message = |chain: &str| {
+            let error = constraint_message(&prefs(), false, Error::database(chain.to_owned()));
+            assert!(matches!(error.repr(), Repr::Invalid(_)), "{error}");
+            error.to_string()
+        };
+        // The report's own text, from a server running in German.
+        let german = "query failed: Einfügen oder Aktualisieren in Tabelle »mail_account_prefs« \
+                      verletzt Fremdschlüssel-Constraint »mail_account_prefs_account_fkey« \
+                      [23503] (constraint \"mail_account_prefs_account_fkey\"): INSERT …";
+        let said = message(german);
+        assert_eq!(said, "invalid: account: the referenced row does not exist");
+        assert!(
+            !said.contains("fkey") && !said.contains("Tabelle"),
+            "{said}"
+        );
+
+        assert_eq!(
+            message("duplicate key value [23505] (constraint \"mail_account_prefs_pkey\")"),
+            "invalid: id: a row with this value already exists"
+        );
+        assert_eq!(
+            message("dup [23505] (constraint \"mail_account_prefs_signature_key\")"),
+            "invalid: signature: a row with this value already exists"
+        );
+        assert_eq!(
+            message("verletzt Check-Constraint [23514] (constraint \"short_signature\")"),
+            "invalid: the value breaks a rule of this table"
+        );
+        assert_eq!(
+            message("Null-Wert in Spalte »signature« [23502] (column \"signature\")"),
+            "invalid: signature: a value is required"
+        );
+        assert_eq!(
+            message("NOT NULL constraint failed [23502]"),
+            "invalid: a required field has no value"
+        );
+        // A delete another table's key forbids is about *this* row.
+        let error = constraint_message(
+            &prefs(),
+            true,
+            Error::database("verletzt [23503] (constraint \"mail_rules_prefs_fkey\")"),
+        );
+        assert_eq!(
+            error.to_string(),
+            "invalid: other rows still refer to this row"
+        );
+        // SQLite names no constraint: the sentence, without the field.
+        assert_eq!(
+            message("FOREIGN KEY constraint failed [23503]"),
+            "invalid: the referenced row does not exist"
+        );
+        // A sentence a trigger raised was written for this moment, and stays.
+        let raised = message("query failed: salaries are paid [23514]\n  sql: UPDATE …");
+        assert!(raised.contains("salaries are paid"), "{raised}");
+        assert!(!raised.contains("UPDATE"), "{raised}");
+    }
+
+    /// Anything that is not an integrity violation is left as it was: a fault
+    /// of the server's is not the caller's to be told about politely.
+    #[test]
+    fn any_other_database_error_passes_through() {
+        for chain in [
+            "connection refused",
+            "relation does not exist [42P01]",
+            "permission denied [42501] (constraint \"x\")",
+        ] {
+            let error = constraint_message(&prefs(), false, Error::database(chain.to_owned()));
+            assert!(matches!(error.repr(), Repr::Database(_)), "{error}");
+        }
     }
 }
