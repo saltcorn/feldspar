@@ -2,6 +2,33 @@
 
 Changes in reverse chronological order.
 
+## An automated backup can email an administrator when it fails
+
+A user asked to be told when a backup fails. Each automated backup schedule now has **Email on
+failure** (Settings → Backup → Automated backups → Add/Edit), with the choices None, All
+administrators, or one administrator's address. The dropdown appears only when Settings → Email
+has an SMTP host whose settings read.
+
+- **Stored** as `failure_email` on the schedule in `backup_schedules`: `null` for nobody, `"all"`,
+  or an address. A schedule saved before this has no field, which reads as nobody, so upgrading
+  changes nothing. No migration.
+- **Administrators** are users whose base role is admin (`role = 1`, grants not counted) who are
+  not disabled and not check users (`sc_backup::failure_email::admin_addresses`, over the new
+  `sc_auth::users_with_base_role`). Saving an address that is not an administrator's is refused.
+  At send time the address is looked up again, so an administrator demoted or deleted since is
+  not emailed, and "all" means the administrators there are on the day it fails.
+- **Once per run of failures.** The email goes out on the first failure after a success (or on
+  the first run), not on each hourly retry. It says so in the message. Sending is best effort: a
+  failure email that cannot be sent is logged and does not change the schedule's status.
+- **API:** `failure_email` on the schedule endpoints, and a new `GET
+  /api/backup/failure-recipients` (`getBackupFailureRecipients`) returning `email_configured` and
+  `admins`. `client.ts` is regenerated in all four UIs.
+- `BackupScheduler` sends through the installation's `SettingsMailer`. `with_mailer` swaps it
+  out for tests.
+- Tests: `sc-backup` `failure_email::tests::*`; `sc-server`
+  `backup_api::a_failed_automated_backup_emails_the_chosen_administrator`; `ui/admin`
+  `backupSchedules.test.ts` "names who is emailed when a backup fails".
+
 ## Integrity violations are a 400 naming the field, not a 500 with the database's text
 
 A user reported that inserting a row through the row API with a foreign key to a missing row

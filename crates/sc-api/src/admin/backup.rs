@@ -130,6 +130,21 @@ pub(super) fn register(set: &mut EndpointSet) {
         )])),
     );
 
+    // Who a schedule's `failure_email` can name: whether this installation
+    // sends mail at all (an SMTP host in Settings → Email; the dialog offers
+    // the choice only then) and the administrators' addresses.
+    set.register(
+        Endpoint::new(
+            ids::GET_BACKUP_FAILURE_RECIPIENTS,
+            Method::Get,
+            api().lit("backup").lit("failure-recipients"),
+        )
+        .output(TypeSchema::struct_of([
+            StructField::new("email_configured", TypeSchema::bool()),
+            StructField::new("admins", TypeSchema::array(TypeSchema::text())),
+        ])),
+    );
+
     // **Clear all**: back to an empty installation (Settings → Backup).
     //
     // Two calls because the dialog asks a question first: every file store and
@@ -194,6 +209,10 @@ fn backup_schedule_input_fields() -> Vec<StructField> {
         // 7-Zip opens); null or empty for none. Sent as the mask when one is
         // stored, and handing the mask back on an update keeps it.
         StructField::new("password", TypeSchema::optional(TypeSchema::text())),
+        // Who is emailed when a backup fails: null for nobody, "all" for every
+        // administrator, or one administrator's email address. Emailed once,
+        // on the first failure after a success, through Settings → Email.
+        StructField::new("failure_email", TypeSchema::optional(TypeSchema::text())),
     ]
 }
 

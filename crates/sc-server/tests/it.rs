@@ -246,12 +246,12 @@ pub(crate) fn logging_switches() -> &'static tokio::sync::Mutex<()> {
 
 #[path = "app_none_framework.rs"]
 mod app_none_framework;
+#[path = "app_oauth.rs"]
+mod app_oauth;
 #[path = "app_preview.rs"]
 mod app_preview;
 #[path = "app_public_endpoints.rs"]
 mod app_public_endpoints;
-#[path = "app_oauth.rs"]
-mod app_oauth;
 #[path = "catalog_teardown.rs"]
 mod catalog_teardown;
 #[path = "oauth_sign_in.rs"]

@@ -107,6 +107,7 @@
 mod archive;
 pub mod codec;
 pub mod destination;
+pub mod failure_email;
 mod restore;
 pub mod s3;
 pub mod schedule;

@@ -670,7 +670,10 @@ async fn a_rollover_carries_what_an_expired_bucket_held() -> Result<()> {
     assert_eq!(credit_balance(&f.catalog, user.id()).await?.balance, d(60));
     expire_bucket(&f, user.id(), "period:1").await?;
     let balance = credit_balance(&f.catalog, user.id()).await?.balance;
-    assert!(balance.is_zero(), "an expired bucket counts for nothing, got {balance}");
+    assert!(
+        balance.is_zero(),
+        "an expired bucket counts for nothing, got {balance}"
+    );
 
     let renewed = grant_credits(
         &f.catalog,

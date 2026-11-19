@@ -50,10 +50,10 @@ use axum_extra::extract::cookie::{Cookie, SameSite};
 use base64::Engine;
 use sc_api::SessionAction;
 use sc_auth::User;
+use sc_auth::consent::ConsentFlow;
 use sc_catalog::{PublicBaseUrl, TrustedHost};
 use sc_config::OAuthProvider;
 use sc_http::RedirectTarget;
-use sc_auth::consent::ConsentFlow;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 

@@ -9,8 +9,11 @@ import { NO_CONTENTS, everything, type BackupSelection } from "./backup";
 import {
   FREQUENCIES,
   INCLUDE_ALL,
+  FAILURE_EMAIL_ALL,
   INCLUDE_LISTED,
   destinationKindLabel,
+  failureEmailNote,
+  failureEmailOptions,
   editScheduleForm,
   frequencyLabel,
   includeAllNote,
@@ -212,6 +215,7 @@ describe("the schedule form", () => {
       include: all,
       include_all: INCLUDE_ALL,
       password: null,
+      failure_email: null,
     });
     expect(
       scheduleBody({ ...sftp, port: "", password: " pass word ", remoteDirectory: " b/ " })
@@ -298,5 +302,32 @@ describe("a schedule's status line", () => {
       text: "Failed 2026-10-02: disk full",
       failed: true,
     });
+  });
+
+  it("names who is emailed when a backup fails", () => {
+    // A schedule from before the choice existed: nobody.
+    expect(editScheduleForm(schedule).failureEmail).toBe("");
+    expect(scheduleBody(local).failure_email).toBeNull();
+    const edit = editScheduleForm({ ...schedule, failure_email: "ada@example.com" });
+    expect(edit.failureEmail).toBe("ada@example.com");
+    expect(scheduleBody(edit).failure_email).toBe("ada@example.com");
+    expect(scheduleBody({ ...local, failureEmail: FAILURE_EMAIL_ALL }).failure_email).toBe("all");
+
+    const admins = ["ada@example.com", "bob@example.com"];
+    expect(failureEmailOptions(admins, "").map((o) => o.value)).toEqual([
+      "",
+      "all",
+      "ada@example.com",
+      "bob@example.com",
+    ]);
+    // An address no longer an administrator's stays a choice rather than vanishing.
+    expect(failureEmailOptions(admins, "eve@example.com").map((o) => o.value)).toContain(
+      "eve@example.com",
+    );
+    expect(failureEmailOptions(admins, "Ada@Example.com")).toHaveLength(4);
+
+    expect(failureEmailNote(null)).toBeNull();
+    expect(failureEmailNote("all")).toBe("Failures emailed to all administrators");
+    expect(failureEmailNote("ada@example.com")).toBe("Failures emailed to ada@example.com");
   });
 });

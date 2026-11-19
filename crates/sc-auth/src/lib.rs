@@ -131,7 +131,9 @@ pub use guest::{
     end_guest_session, guest_session, start_guest_session,
 };
 pub use login::{authenticate, authenticate_admin};
-pub use lookup::{first_user_with_role, load_base_user, load_user, load_user_by_email};
+pub use lookup::{
+    first_user_with_role, load_base_user, load_user, load_user_by_email, users_with_base_role,
+};
 pub use manage::{
     UserChanged, UserUpdate, claim_unproven_account, delete_user, set_user_disabled,
     set_user_password, update_user,
