@@ -37,8 +37,11 @@
 //! after it are not reached. The definition is never refused for it: marking an
 //! operation is the editor's job, and the admin repairs it there.
 
+mod memory;
+
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use chrono::{Datelike, Duration, Months, NaiveDate};
 use sc_error::{Error, Result};
@@ -63,6 +66,9 @@ use crate::infer::{Known, infer};
 use crate::shape::{ColType, ForeignKey, Grain, Schema, StageColumn, StageShape};
 use crate::walk;
 
+pub(crate) use memory::evaluate as evaluate_tail;
+pub use memory::{DEFAULT_LEVEL, MAX_IN_MEMORY_ROWS, ModelInfo, Tail};
+
 /// The hidden column holding the base table's primary key while rows are rows
 /// of it.
 pub const ROW_KEY: &str = "_fd_key";
@@ -83,6 +89,9 @@ pub const MAX_RANGE_VALUES: usize = 10_000;
 #[derive(Debug, Clone, Default)]
 pub struct Library {
     defs: BTreeMap<DatasetId, DatasetDef>,
+    /// What each model a Model predictions operation names is, or why it
+    /// cannot be used (analytics TODO A7.3).
+    models: BTreeMap<String, std::result::Result<ModelInfo, String>>,
 }
 
 impl Library {
@@ -90,6 +99,45 @@ impl Library {
     pub fn new(defs: impl IntoIterator<Item = DatasetDef>) -> Library {
         Library {
             defs: defs.into_iter().map(|d| (d.id, d)).collect(),
+            models: BTreeMap::new(),
+        }
+    }
+
+    /// Record what the model called `name` is, or the sentence saying why it
+    /// cannot predict — what a Model predictions operation naming it compiles
+    /// against.
+    pub fn set_model(
+        &mut self,
+        name: impl Into<String>,
+        info: std::result::Result<ModelInfo, String>,
+    ) {
+        self.models.insert(name.into(), info);
+    }
+
+    /// Every model a Model predictions operation of these datasets names.
+    pub fn models_named(&self) -> BTreeSet<String> {
+        self.defs
+            .values()
+            .flat_map(|d| d.operations.iter())
+            .filter_map(|o| match &o.op {
+                Op::Predict(p) => Some(p.model.trim().to_owned()),
+                _ => None,
+            })
+            .filter(|m| !m.is_empty())
+            .collect()
+    }
+
+    /// Whether the library knows what the model called `name` is.
+    pub fn knows_model(&self, name: &str) -> bool {
+        self.models.contains_key(name)
+    }
+
+    /// The model called `name`, or the sentence saying why not.
+    fn model(&self, name: &str) -> Result<&ModelInfo> {
+        match self.models.get(name) {
+            Some(Ok(info)) => Ok(info),
+            Some(Err(why)) => Err(Error::invalid(why.clone())),
+            None => Err(Error::invalid(format!("there is no model called `{name}`"))),
         }
     }
 
@@ -294,6 +342,9 @@ pub struct Stage {
     /// The database has no date, time or UUID types, so casts to them are
     /// casts to text (see `Schema::native_temporal_types`).
     text_casts: bool,
+    /// After a Model predictions operation, how the rows are computed in
+    /// memory (analytics TODO A7.3); `None` for a stage that is a query.
+    tail: Option<Arc<Tail>>,
 }
 
 /// What a stage's rows are restricted to when read: the rows of the base table
@@ -310,6 +361,20 @@ pub struct Restriction {
 }
 
 impl Stage {
+    /// How the rows are computed in memory, after a Model predictions
+    /// operation (analytics TODO A7.3); `None` for a stage that is a query.
+    pub fn tail(&self) -> Option<&Tail> {
+        self.tail.as_deref()
+    }
+
+    /// Refuse a SQL read of a stage computed in memory.
+    fn sql_only(&self) -> Result<()> {
+        match self.tail {
+            Some(_) => Err(Error::invalid(memory::NOT_SQL)),
+            None => Ok(()),
+        }
+    }
+
     /// The stage's columns and grain.
     pub fn shape(&self) -> StageShape {
         StageShape {
@@ -341,6 +406,7 @@ impl Stage {
         page: Option<(u64, u64)>,
         with_key: bool,
     ) -> Result<Select> {
+        self.sql_only()?;
         let (sealed, alias) = self.sealed_for_read();
         let mut select = Select::from(sealed.from.clone());
         let mut columns: Vec<Projection> = self
@@ -377,6 +443,7 @@ impl Stage {
     /// a subquery. Leaving the order out spares the database a sort that a
     /// histogram of a million rows would only throw away.
     pub fn unordered_query(&self) -> Result<Select> {
+        self.sql_only()?;
         let (sealed, alias) = self.sealed_for_read();
         let columns: Vec<Projection> = self
             .cols
@@ -395,6 +462,7 @@ impl Stage {
     /// features are drawn from, a feature identified by
     /// its row's key.
     pub fn features_query(&self) -> Result<Select> {
+        self.sql_only()?;
         let (sealed, alias) = self.sealed_for_read();
         let mut columns: Vec<Projection> = self
             .cols
@@ -424,6 +492,7 @@ impl Stage {
 
     /// The query counting this stage's rows, restricted.
     pub fn count_query(&self, restrict: Option<&Restriction>) -> Result<Select> {
+        self.sql_only()?;
         let (sealed, alias) = self.sealed_for_read();
         let mut select = Select::from(sealed.from.clone())
             .columns(vec![Projection::expr_as(agg("count", Vec::new()), "n")]);
@@ -434,6 +503,7 @@ impl Stage {
     /// The distinct values of `column` at this stage, most frequent first, at
     /// most `limit` of them — what a Split's columns are pre-filled from.
     pub fn values_query(&self, column: &str, limit: u64) -> Result<Select> {
+        self.sql_only()?;
         if self.col(column).is_none_or(|c| c.hidden) {
             return Err(Error::invalid(format!(
                 "there is no column `{column}` at this stage"
@@ -854,13 +924,20 @@ impl Compiler<'_> {
             grain,
             closed: false,
             text_casts: !self.schema.native_temporal_types,
+            tail: None,
         })
     }
 
     fn apply(&self, stage: Stage, op: &Op, stack: &[DatasetId]) -> Result<Stage> {
+        if matches!(op, Op::Filter(_) | Op::Limit(_)) && self.options.skip_filters {
+            return Ok(stage);
+        }
+        if stage.tail.is_some() || matches!(op, Op::Predict(_)) {
+            return self.in_memory(stage, op);
+        }
         match op {
             Op::Calculated(c) => self.calculated(stage, c),
-            Op::Filter(_) | Op::Limit(_) if self.options.skip_filters => Ok(stage),
+            Op::Predict(_) => unreachable!("computed in memory above"),
             Op::Filter(f) => self.filter(stage, f),
             Op::Select(s) => select(stage, s),
             Op::Sort(s) => self.sort(stage, s),
@@ -929,7 +1006,7 @@ impl Compiler<'_> {
         if !analysis.model_calls.is_empty() {
             return Err(Error::invalid(
                 "a dataset formula cannot call `predict`: a model's predictions are added by \
-                 a Model predictions operation (milestone A7)",
+                 a Model predictions operation",
             ));
         }
         let user = UserEnv::Inline(None);
@@ -1757,6 +1834,7 @@ impl Compiler<'_> {
             grain: Grain::Derived,
             closed: false,
             text_casts: stage.text_casts,
+            tail: None,
         })
     }
 
@@ -2096,6 +2174,7 @@ impl Compiler<'_> {
             grain,
             closed: false,
             text_casts: stage.text_casts,
+            tail: None,
         })
     }
 
@@ -2288,6 +2367,7 @@ impl Compiler<'_> {
             limit_order: Vec::new(),
             cols,
             text_casts: stage.text_casts,
+            tail: None,
             order: stage.order,
             grain,
             closed: false,
@@ -2418,6 +2498,7 @@ impl Compiler<'_> {
             grain: Grain::Derived,
             closed: false,
             text_casts: stage.text_casts,
+            tail: None,
         })
     }
     // --- the spatial join ---------------------------------------------
@@ -2661,6 +2742,7 @@ impl Compiler<'_> {
             limit_order: Vec::new(),
             cols,
             text_casts: stage.text_casts,
+            tail: None,
             order: stage.order,
             grain,
             closed: false,

@@ -72,7 +72,7 @@ use crate::bind::{
 use crate::dataset::DatasetShape;
 use crate::diagnose;
 use crate::draws::{check_planned_draws, declared_elements, human_bytes, plan_draws, stored_bytes};
-use crate::encode::{Encoded, Encoding, apply_encoding_dropping, fit_encoding};
+use crate::encode::{Encoded, Encoding, apply_encoding_dropping, fit_encoding_of, null_counts};
 use crate::frame::ColumnType;
 use crate::frame::Frame;
 use crate::instance::{InstanceId, ModelInstance};
@@ -86,7 +86,7 @@ use crate::outputs::{
     draws_output, rows_output, tidy_outputs,
 };
 use crate::posterior::{DrawSeries, FitContext, FitStage, PosteriorInput, Progress};
-use crate::provider::{ModelProvider, Outcome, ParameterBlock};
+use crate::provider::{LowerInput, ModelProvider, Outcome, ParameterBlock};
 use crate::registry::ModelRegistry;
 use crate::source::DatasetSource;
 use crate::split::{Part, SplitCounts};
@@ -127,6 +127,14 @@ pub const ATTR_COORDINATES: &str = "coordinates";
 /// what the policies dropped, and a line per bound variable (Stan TODO §10).
 pub const ATTR_BINDING: &str = "binding";
 
+/// The attribute holding the configuration a posterior was bound and sampled
+/// with, when its provider [lowers](crate::ModelProvider::lower) the model's
+/// configuration (TODO-bayesian-regression §2.3): the generated bindings,
+/// dimensions and labels as they were at fit time, so the instance means what
+/// it meant when it was fitted after the generator changes. Absent for a
+/// provider that binds with the configuration as written.
+pub const ATTR_LOWERED: &str = "lowered_configuration";
+
 /// The attribute holding a fit's warnings, as sentences that say what to do:
 /// a posterior's diagnostics (Stan TODO §15) and whatever any provider
 /// reported in [`FitResult::warnings`](crate::provider::FitResult). A fit
@@ -140,6 +148,11 @@ pub const ATTR_WARNINGS: &str = "warnings";
 /// instance's own coordinates, so editing the model's labels afterwards changes
 /// the model and never an existing instance (Stan TODO §§8, 16).
 pub const ATTR_AXES: &str = "axes";
+
+/// The attribute holding what a posterior that predicts new rows through a
+/// `new` dataset needs to bind them (Stan TODO §19, analytics TODO A7.1): a
+/// [`PredictionPack`](crate::PredictionPack).
+pub const ATTR_PREDICTION: &str = "prediction";
 
 /// One point of the hyperparameter grid and what it scored on the validation
 /// rows (§11).
@@ -206,6 +219,9 @@ pub struct Fit {
     /// A posterior's output variables: their shapes and what labels each
     /// axis. Written to [`ATTR_AXES`].
     pub axes: BTreeMap<String, RecordedAxes>,
+    /// The configuration the provider lowered the model's to, when it lowers
+    /// one. Written to [`ATTR_LOWERED`].
+    pub lowered: Option<Attrs>,
     /// What the fit shows (analytics TODO A3.1): written to
     /// [`ATTR_OUTPUTS`](crate::ATTR_OUTPUTS).
     pub outputs: Vec<OutputDecl>,
@@ -213,6 +229,9 @@ pub struct Fit {
     /// [`apply`](Fit::apply): they go to `_fd_model_outputs`, in the
     /// transaction that saves the instance.
     pub output_data: BTreeMap<String, OutputData>,
+    /// What a posterior that predicts new rows binds them with. Written to
+    /// [`ATTR_PREDICTION`].
+    pub prediction: Option<crate::PredictionPack>,
 }
 
 impl Fit {
@@ -253,6 +272,12 @@ impl Fit {
                 serde_json::to_value(&self.axes).map_err(|e| Error::msg(format!("axes: {e}")))?,
             );
         }
+        if let Some(lowered) = &self.lowered {
+            instance.attributes.insert(
+                ATTR_LOWERED.to_owned(),
+                Json::Object(lowered.clone().into_iter().collect()),
+            );
+        }
         if !self.warnings.is_empty() {
             instance
                 .attributes
@@ -263,6 +288,13 @@ impl Fit {
                 ATTR_SEARCH.to_owned(),
                 serde_json::to_value(&self.search)
                     .map_err(|e| Error::msg(format!("search: {e}")))?,
+            );
+        }
+        if let Some(pack) = &self.prediction {
+            instance.attributes.insert(
+                ATTR_PREDICTION.to_owned(),
+                serde_json::to_value(pack)
+                    .map_err(|e| Error::msg(format!("prediction pack: {e}")))?,
             );
         }
         if !self.outputs.is_empty() {
@@ -367,6 +399,42 @@ pub async fn fit_model_with(
     Ok(finished)
 }
 
+/// Why a fit has no training rows left once the encoding dropped the ones it
+/// cannot represent: which columns have nulls, and how many.
+///
+/// The bare fact ("every row has a null somewhere") leaves the admin to find
+/// the columns themselves. Naming them says what to change: the Titanic
+/// passengers' `body` is null for everyone who survived, and `boat` for nearly
+/// everyone who did not, so with both as features no row is complete.
+fn all_rows_dropped(encoding: &Encoding, train: &Frame, every_column: bool) -> String {
+    let rows = train.rows;
+    let counts = null_counts(encoding, train);
+    let mut sentence = format!(
+        "every one of the {rows} training rows was dropped, because each has a null in a \
+         feature or in the label"
+    );
+    if !counts.is_empty() {
+        const SHOWN: usize = 6;
+        let mut listed: Vec<String> = counts
+            .iter()
+            .take(SHOWN)
+            .map(|(name, nulls)| format!("`{name}` in {nulls}"))
+            .collect();
+        if counts.len() > SHOWN {
+            listed.push(format!("{} more", counts.len() - SHOWN));
+        }
+        sentence.push_str(&format!(". Nulls by column: {}", listed.join(", ")));
+    }
+    sentence.push_str(if every_column {
+        ". Every column but the label is a feature until features are chosen: choose them, \
+         leaving out the columns with the most nulls, or filter those rows out of the dataset"
+    } else {
+        ". Leave the columns with the most nulls out of the features, or filter those rows \
+         out of the dataset"
+    });
+    sentence
+}
+
 /// Run a fit and answer what it produced, touching no store.
 ///
 /// The half worth testing, and the half a caller with its own instance handling
@@ -399,6 +467,7 @@ pub async fn run_fit_with(
     }
     let shape = DatasetShape::of_frame(model.table(), &frame);
     provider.validate(&shape, &model.configuration)?;
+    crate::validate::check_features(provider.as_ref(), model, Some(&shape))?;
     let outcome = provider.outcome(&shape, &model.configuration)?;
     let points = grid(&model.hyperparameters)?;
 
@@ -424,13 +493,18 @@ pub async fn run_fit_with(
     }
 
     let splits = frame.split(&model.split)?;
-    let encoding = fit_encoding(&splits.train, &outcome, provider.standardise())?;
+    let encoding = fit_encoding_of(
+        &splits.train,
+        &outcome,
+        provider.standardise(),
+        model.features.as_deref(),
+    )?;
     let train = apply_encoding_dropping(&encoding, &splits.train)?;
     if train.is_empty() {
-        return Err(Error::invalid(format!(
-            "every one of the {} training rows was dropped by the encoding: they have a null in \
-             a feature or in the label",
-            splits.counts.train
+        return Err(Error::invalid(all_rows_dropped(
+            &encoding,
+            &splits.train,
+            model.features.is_none(),
         )));
     }
     let validation = apply_encoding_dropping(&encoding, &splits.validation)?;
@@ -531,8 +605,10 @@ pub async fn run_fit_with(
         binding: None,
         warnings: result.warnings,
         axes: BTreeMap::new(),
+        lowered: None,
         outputs,
         output_data,
+        prediction: None,
     })
 }
 
@@ -592,8 +668,10 @@ async fn fit_test(
         binding: None,
         warnings: result.warnings,
         axes: BTreeMap::new(),
+        lowered: None,
         outputs,
         output_data: result.outputs,
+        prediction: None,
     })
 }
 
@@ -604,6 +682,7 @@ async fn fit_test(
 /// been read (the outcome needed its shape); the related ones are read here,
 /// each under the same row cap, each named in the sentence when it fails.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 async fn fit_posterior(
     provider: &dyn ModelProvider,
     source: &dyn DatasetSource,
@@ -633,7 +712,16 @@ async fn fit_posterior(
         datasets.push((related.name.clone(), frame));
     }
 
-    let config = &model.configuration;
+    // A provider whose configuration is a formula answers the bindings it
+    // implies; everything below reads the lowered configuration.
+    let lowered = provider.lower(
+        &model.configuration,
+        LowerInput::Frames {
+            model,
+            datasets: &datasets,
+        },
+    )?;
+    let config = lowered.as_ref().unwrap_or(&model.configuration);
     let limits = ctx.limits();
     let interface = provider.interface(config).await?;
     let bound = match &interface {
@@ -683,6 +771,20 @@ async fn fit_posterior(
             }
         }
     }
+    // A posterior that predicts through the rows being predicted keeps what
+    // binding them needs (§19).
+    let prediction = match (&outcome, &interface) {
+        (
+            Outcome::Posterior {
+                prediction: Some(variable),
+            },
+            Some(interface),
+        ) if crate::names_new_rows(config) => {
+            crate::check_prediction(interface, config, variable)?;
+            Some(crate::prediction_pack(variable, interface, config, &data))
+        }
+        _ => None,
+    };
     let input = PosteriorInput {
         model: model.name.clone(),
         instance: ctx.instance(),
@@ -778,8 +880,10 @@ async fn fit_posterior(
         binding: bound.map(|b| (b.coordinates, b.report)),
         warnings,
         axes,
+        lowered,
         outputs,
         output_data,
+        prediction,
     })
 }
 
@@ -1054,6 +1158,7 @@ mod tests {
 
     use super::*;
     use crate::dataset::Dataset;
+    use crate::encode::{ColumnEncoding, fit_encoding};
     use crate::frame::Column;
     use crate::provider::{FitResult, OutcomeSpec, Prediction};
     use crate::split::Split;
@@ -1206,6 +1311,104 @@ mod tests {
         let encoding = fit.encoding.expect("encoding");
         assert_eq!(encoding.feature_names(), vec!["x"]);
         assert_eq!(encoding.target.expect("target").column, "y".to_owned());
+    }
+
+    /// [`rows`] with two columns whose nulls are complementary, as the Titanic
+    /// passengers' `boat` and `body` are: `boat` is null on the odd rows and
+    /// `body` on the even ones, so no row has both.
+    fn rows_with_gaps(n: usize) -> Frame {
+        let mut frame = rows(n);
+        frame.columns.push((
+            "boat".to_owned(),
+            Column::Str(
+                (0..n)
+                    .map(|i| (i % 2 == 0).then(|| "A".to_owned()))
+                    .collect(),
+            ),
+        ));
+        frame.columns.push((
+            "body".to_owned(),
+            Column::Float((0..n).map(|i| (i % 2 == 1).then_some(i as f64)).collect()),
+        ));
+        frame
+    }
+
+    #[tokio::test]
+    async fn a_fit_that_drops_every_row_names_the_columns_with_nulls() {
+        let fits = Arc::new(AtomicUsize::new(0));
+        let err = run_fit(
+            &registry(&fits),
+            &Fixed(rows_with_gaps(100)),
+            &model(),
+            1000,
+        )
+        .await
+        .expect_err("no complete row");
+        let msg = err.to_string();
+        assert!(msg.contains("training rows was dropped"), "{msg}");
+        // Each gap column is named with its count, and `x`, which has no
+        // nulls, is not.
+        assert!(
+            msg.contains("`boat` in ") && msg.contains("`body` in "),
+            "{msg}"
+        );
+        assert!(!msg.contains("`x` in"), "{msg}");
+        // With no features chosen, it says that every column is one.
+        assert!(msg.contains("until features are chosen"), "{msg}");
+        assert_eq!(fits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_fit_encodes_only_the_chosen_features_in_their_order() {
+        let fits = Arc::new(AtomicUsize::new(0));
+        // `boat` and `x`, in that order, and `body` left out: every row with
+        // a boat is complete.
+        let fit = run_fit(
+            &registry(&fits),
+            &Fixed(rows_with_gaps(200)),
+            &model().features(["boat", "x"]),
+            1000,
+        )
+        .await
+        .expect("fit");
+        let encoding = fit.encoding.expect("encoding");
+        let columns: Vec<&str> = encoding
+            .columns
+            .iter()
+            .map(ColumnEncoding::column)
+            .collect();
+        assert_eq!(columns, vec!["boat", "x"]);
+        // Half the rows have no boat, and those are the ones dropped.
+        assert_eq!(fit.rows.dropped, 100);
+
+        // The label is not a feature, and a column the dataset lacks is named.
+        let err = run_fit(
+            &registry(&fits),
+            &Fixed(rows_with_gaps(50)),
+            &model().features(["x", "y"]),
+            1000,
+        )
+        .await
+        .expect_err("label as a feature");
+        assert!(err.to_string().contains("`y` is the label"), "{err}");
+        let err = run_fit(
+            &registry(&fits),
+            &Fixed(rows_with_gaps(50)),
+            &model().features(["x", "cabin"]),
+            1000,
+        )
+        .await
+        .expect_err("no such column");
+        assert!(err.to_string().contains("`cabin` is not a column"), "{err}");
+        let err = run_fit(
+            &registry(&fits),
+            &Fixed(rows_with_gaps(50)),
+            &model().features(Vec::<String>::new()),
+            1000,
+        )
+        .await
+        .expect_err("empty list");
+        assert!(err.to_string().contains("no features are chosen"), "{err}");
     }
 
     #[tokio::test]
@@ -1429,6 +1632,9 @@ mod tests {
     struct Sampler {
         interface: Option<Interface>,
         plan: Option<crate::posterior::DrawPlan>,
+        /// Lower a configuration holding `formula` into `bound_radon`'s
+        /// bindings, as a formula provider would.
+        lowers: bool,
     }
 
     #[async_trait]
@@ -1459,6 +1665,19 @@ mod tests {
         }
         async fn interface(&self, _config: &Attrs) -> Result<Option<Interface>> {
             Ok(self.interface.clone())
+        }
+        fn lower(&self, config: &Attrs, input: LowerInput<'_>) -> Result<Option<Attrs>> {
+            if !self.lowers || !config.contains_key("formula") {
+                return Ok(None);
+            }
+            let rows = input
+                .main_frame()
+                .ok_or_else(|| Error::msg("a fit lowers with the frames".to_owned()))?
+                .rows;
+            let mut lowered = bound_radon().configuration;
+            lowered.insert("formula".to_owned(), config["formula"].clone());
+            lowered.insert("rows_seen".to_owned(), Json::from(rows));
+            Ok(Some(lowered))
         }
         fn draw_plan(&self, _config: &Attrs) -> Result<Option<crate::posterior::DrawPlan>> {
             Ok(self.plan)
@@ -1547,6 +1766,7 @@ mod tests {
             .register(Arc::new(Sampler {
                 interface,
                 plan: None,
+                lowers: false,
             }))
             .expect("register");
         registry
@@ -1715,6 +1935,45 @@ mod tests {
         );
     }
 
+    /// TODO-bayesian-regression R1.4: a provider that lowers its
+    /// configuration is bound with what it answers, and the instance keeps it;
+    /// one that does not (every `stan` model) is bound as before and keeps
+    /// nothing extra.
+    #[tokio::test]
+    async fn a_lowered_configuration_is_what_is_bound_and_the_instance_keeps_it() {
+        let mut registry = ModelRegistry::new();
+        registry
+            .register(Arc::new(Sampler {
+                interface: Some(grouped_program()),
+                plan: None,
+                lowers: true,
+            }))
+            .expect("register");
+        // No bindings written: the provider derives them from `formula`.
+        let model = radon().config("formula", serde_json::json!("y ~ x"));
+        let fit = run_fit(&registry, &ByTable, &model, 1000)
+            .await
+            .expect("fit");
+        assert_eq!(
+            fit.state["data"],
+            serde_json::json!({ "N": 50, "J": 3, "u": [0.1, 0.2, 0.3] })
+        );
+        let instance = fit.apply(ModelInstance::starting(model.id)).expect("apply");
+        let lowered = &instance.attributes[ATTR_LOWERED];
+        assert_eq!(lowered["formula"], "y ~ x");
+        assert_eq!(lowered["rows_seen"], 50);
+        assert_eq!(lowered["bindings"]["N"]["kind"], "count");
+
+        // Not lowering: the written bindings, and no attribute.
+        let model = bound_radon();
+        let fit = run_fit(&registry, &ByTable, &model, 1000)
+            .await
+            .expect("fit");
+        assert!(fit.lowered.is_none());
+        let instance = fit.apply(ModelInstance::starting(model.id)).expect("apply");
+        assert!(!instance.attributes.contains_key(ATTR_LOWERED));
+    }
+
     #[tokio::test]
     async fn the_host_summarises_the_draws_by_label_and_scores_them() {
         let model = bound_radon();
@@ -1811,6 +2070,7 @@ mod tests {
                     draws_per_chain: 1000,
                     sampler_variables: 7,
                 }),
+                lowers: false,
             }))
             .expect("register");
         let limited = |bytes| PosteriorLimits {
@@ -1899,6 +2159,7 @@ mod tests {
         let sampler = Sampler {
             interface: None,
             plan: None,
+            lowers: false,
         };
         assert!(sampler.kind().binds_data);
         assert_eq!(sampler.outcome_spec(), Spec::Posterior { prediction: None });

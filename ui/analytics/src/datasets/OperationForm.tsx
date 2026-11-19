@@ -172,6 +172,8 @@ export function OperationForm({
         return <UnionFields params={params} set={set} others={others} />;
       case "spatial_join":
         return <SpatialJoinFields params={params} set={set} columns={columns} others={others} />;
+      case "model_predictions":
+        return <PredictionFields params={params} set={set} />;
     }
   })();
 
@@ -1027,4 +1029,62 @@ function SpatialJoinFields({
 /** Set several parameters at once. */
 function setMany(set: Setter, values: Params) {
   for (const [key, value] of Object.entries(values)) set(key, value);
+}
+
+/** A Model predictions operation (analytics TODO A7.3): the model, the
+ * prediction column's name, and whether its interval (or a class's
+ * probability) comes too, at which level. */
+function PredictionFields({ params, set }: { params: Params; set: (key: string, value: unknown) => void }) {
+  const { t } = useT();
+  const [models, setModels] = useState<string[]>([]);
+  useEffect(() => {
+    let live = true;
+    api
+      .listModels()
+      .then((all) => live && setModels(all.map((m) => m.name)))
+      .catch(() => live && setModels([]));
+    return () => {
+      live = false;
+    };
+  }, []);
+  const model = s(params.model);
+  const choices = model && !models.includes(model) ? [model, ...models] : models;
+  return (
+    <>
+      <Field label={t("Model")} id="op-model">
+        <Form.Select id="op-model" value={model} onChange={(e) => set("model", e.target.value)}>
+          <option value="">{t("Choose a model")}</option>
+          {choices.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </Form.Select>
+      </Field>
+      <Field label={t("Prediction column")} id="op-name">
+        <Form.Control id="op-name" value={s(params.name)} onChange={(e) => set("name", e.target.value)} />
+      </Field>
+      <Form.Check
+        type="checkbox"
+        id="op-interval"
+        className="mb-3"
+        label={t("Add its interval, or a class's probability")}
+        checked={params.interval !== false}
+        onChange={(e) => set("interval", e.target.checked)}
+      />
+      {params.interval !== false && (
+        <Field label={t("Interval level")} id="op-level">
+          <Form.Control
+            id="op-level"
+            type="number"
+            min={0.5}
+            max={0.99}
+            step={0.01}
+            value={n(params.level, 0.9)}
+            onChange={(e) => set("level", Number(e.target.value))}
+          />
+        </Field>
+      )}
+    </>
+  );
 }

@@ -619,40 +619,54 @@ with the profiler, scenarios and scoring (goals document "Simulation workspace")
 
 ## Phase 1 — Prediction with uncertainty
 
-- [ ] A7.1 Prediction for new rows from a posterior, carried from TODO-post-mvp-30 Phase 9
+- [x] A7.1 Prediction for new rows from a posterior, carried from TODO-post-mvp-30 Phase 9
       (its §19 design): the `new` pseudo-dataset, standalone generated quantities,
       `Prediction::Distribution`, and `predict()`, `m.predict` and `predictRows` accepting a
       posterior, with an unknown group refused by name. Tests with the stub posterior
-      provider; real CmdStan behind `#[ignore]`.
-- [ ] A7.2 Providers declare and return uncertainty: prediction intervals for linear
+      provider; real CmdStan behind `#[ignore]`. *(`Distribution` is `{ mean, sd, lower,
+      upper, level }` rather than §19's `q5`/`q95`, so a regression's interval has the same
+      shape; the default level is 0.9.)*
+- [x] A7.2 Providers declare and return uncertainty: prediction intervals for linear
       regression, class probabilities for classifiers, distributions for posteriors. Tests.
-- [ ] A7.3 The Model predictions operation: inputs matched to columns by name, prediction and
+      *(`ModelProvider::uncertainty` and `predict_uncertain`; the random forest declares none,
+      since smartcore gives no vote shares.)*
+- [x] A7.3 The Model predictions operation: inputs matched to columns by name, prediction and
       interval columns added. It runs after the SQL, so the operations after it are evaluated
       in memory over the frame (Calculated column through the reified evaluator, Filter,
-      Select columns, Sort, Aggregate, Limit). Tests.
+      Select columns, Sort, Aggregate, Limit). Tests. *(At most 100 000 rows are read into
+      memory. A plot of such a dataset is still refused with a sentence; A7.7 needs it.)*
 
 ## Phase 2 — Profiler and scenarios
 
-- [ ] A7.4 The profiler endpoint: typical values from the training data; the prediction and
+- [x] A7.4 The profiler endpoint: typical values from the training data; the prediction and
       interval for given inputs; each predictor's profile curve over its range with the
-      others fixed, in one batched prediction call. Tests.
-- [ ] A7.5 Scenarios in the workspace's state, and a comparison endpoint returning each
+      others fixed, in one batched prediction call. Tests. *(`profileModel`, admin only like
+      the model editor; A7.8 decides what an application's dashboard may call.)*
+- [x] A7.5 Scenarios in the workspace's state, and a comparison endpoint returning each
       scenario's predicted distribution (draws where the model has them). Tests.
+      *(`compareScenarios` takes the scenarios in its body; the Simulation kind stays
+      disabled until A7.6 brings its screen, but its state is checked already.)*
 
 ## Phase 3 — The workspace
 
-- [ ] A7.6 The Simulation workspace: model picker, input controls by column type, the
-      prediction, the profile curves, saving and comparing scenarios. Tests.
-- [ ] A7.7 Scoring: choose a dataset; a new dataset based on it with a Model predictions
+- [x] A7.6 The Simulation workspace: model picker, input controls by column type, the
+      prediction, the profile curves, saving and comparing scenarios. Tests. *(Not offered
+      to an Analytics application: models are the admin's.)*
+- [x] A7.7 Scoring: choose a dataset; a new dataset based on it with a Model predictions
       operation is created and can be opened in the Dataset editor or the explorer. Tests.
-- [ ] A7.8 The profiler and scenario comparison as panel kinds: interactive in dashboards,
-      static at the saved scenarios in reports. Tests.
+      *(A stage after a Model predictions is computed in memory, and `plot_rows_in` reads a
+      dataset as SQL: load the evaluated rows into an in-memory SQLite as a fit's output data
+      is, so the explorer can plot them. Done for plots, tables, tests and stat cards.)*
+- [x] A7.8 The profiler and scenario comparison as panel kinds: interactive in dashboards,
+      static at the saved scenarios in reports. Tests. *(`profiler` and `scenarios`, drawn
+      by the browser from `profileModel` and `compareScenarios`; outside the unrestricted
+      UI they say a simulation is the admin's.)*
 
 ## Phase 4 — Documentation, definition of done
 
-- [ ] A7.9 `TECHNICAL_DESIGN.md` §14.2 (uncertainty, the operation, the workspace);
+- [x] A7.9 `TECHNICAL_DESIGN.md` §14.2 (uncertainty, the operation, the workspace);
       `tutorial-analytics.md` part 7; `tutorial-stan.md` (prediction from a posterior).
-- [ ] A7.10 Definition of done: an `sc-server` test that profiles, compares two scenarios and
+- [x] A7.10 Definition of done: an `sc-server` test that profiles, compares two scenarios and
       scores a dataset for the linear regression and the stub posterior provider. Walk the
       Try it by hand.
 

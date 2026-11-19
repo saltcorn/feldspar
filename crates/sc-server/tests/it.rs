@@ -134,6 +134,8 @@ mod file_operations_api;
 mod file_store_admin_api;
 #[path = "fit_model_action.rs"]
 mod fit_model_action;
+#[path = "formula_models.rs"]
+mod formula_models;
 #[path = "generated_client_refresh.rs"]
 mod generated_client_refresh;
 #[path = "geo_import.rs"]

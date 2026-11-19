@@ -158,6 +158,14 @@ feldspar/
 │  │                              #    Stan-specific (the binder, the draws, the posterior
 │  │                              #    summary) is sc-model's. No Cargo feature: nothing is
 │  │                              #    linked, availability is a runtime fact
+│  ├─ sc-bayesreg/                # 6. Bayesian regression from a formula, above sc-stan
+│  │                              #    (§14.2, "Bayesian regression from a formula"): lme4/brms
+│  │                              #    formula text parsed (spans on every error), resolved
+│  │                              #    against the dataset (families, links, addition terms,
+│  │                              #    group-level blocks), and the prior menu and its
+│  │                              #    resolution; lowered through `ModelProvider::lower` to the
+│  │                              #    binder's `terms` bindings. Pure Rust, no I/O. Clean-room:
+│  │                              #    follows brms's documentation, never its source
 │  ├─ sc-stream/                  # 6. Streams: dataflows as an entity (§14.3). The
 │  │                              #    StreamProvider seam and its registry, the element
 │  │                              #    type and the envelope, `_fd_streams`, the supervisor
@@ -276,6 +284,10 @@ graph TD
   cli --> stan["sc-stan"]
   server --> stan
   stan --> model
+  bayesreg["sc-bayesreg"] --> stan
+  bayesreg --> model
+  cli --> bayesreg
+  server --> bayesreg
   coreact --> model
   server --> stream["sc-stream"]
   server --> live["sc-live"]
@@ -369,6 +381,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-analytics` | `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-db-sqlite` `sc-error` `sc-model` `sc-query` `sc-types` |
 | `sc-stream` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
 | `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-net` `sc-proc` `sc-types` |
+| `sc-bayesreg` | `sc-error` `sc-model` `sc-stan` `sc-types` |
 | `sc-agent` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-workflow` | `sc-action` `sc-agent` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
 | `sc-api` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-net` `sc-query` `sc-ratelimit` `sc-types` |
@@ -382,8 +395,8 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-agent-builtins` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-proc` `sc-query` `sc-repomap` `sc-types` |
 | `sc-backup` | `sc-access` `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-net` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
 | `sc-sync` | `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-mcp` `sc-model` `sc-module` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-http` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-sync` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-sync` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-bayesreg` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-http` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-sync` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-bayesreg` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-sync` `sc-types` `sc-viewpattern` `sc-workflow` |
 
 Four things the graph is worth reading for:
 
@@ -2834,6 +2847,7 @@ erDiagram
     json configuration
     json hyperparameters "per key a value, or a list to search over"
     json split "train/validation/test fractions + the hash seed"
+    json features "nullable: the chosen feature columns; NULL = every column but the label"
     json attributes
     json view_state "A3.4: the model editor's, never read by a fit"
   }
@@ -10164,6 +10178,18 @@ and reported on the instance) and an **error at predict time** — at fit time d
 defensible sample restriction we report, at predict time it would mean answering a question about
 a row we cannot represent.
 
+**Which columns are features** is the model's, not the provider's: `Model::features` (the
+nullable `_fd_models.features`) lists them, in the order they are encoded, and NULL — every model
+saved before the list existed — is every column of the dataset but the label. It sits beside the
+split rather than in the configuration because the host does the encoding for every provider
+whose outcome is per row, so one list serves them all and no provider's own setting can collide
+with it. A hypothesis test and a posterior take none (`OutcomeSpec::takes_features`, sent to the
+form as the provider's `takes_features`): they name the columns they read in their own settings.
+Saving refuses an empty list, a column named twice, a column the dataset does not have and the
+label. Choosing is how a mostly-null column is kept out of a fit: a fit whose every training row
+was dropped names the columns with nulls and how many, rather than saying only that each row has
+one somewhere.
+
 Whether the numeric features are standardised is the *provider's declaration*
 (`ModelProviderKind::standardise`) rather than something the provider does privately, because the
 constants have to be stored on the instance and applied identically at predict time. A k-means or
@@ -10551,14 +10577,152 @@ is every row of two tables. A non-stored field is computed when it is read, batc
 (§6.2). An `update_rows` trigger that stores the value puts the recomputation where somebody
 chose it.
 
+#### Uncertainty, and simulation (analytics milestone A7)
+
+A prediction that says only "312 000" invites more trust than the model has earned. Milestone A7
+makes every provider that can say how sure it is say so, lets a dataset carry a model's
+predictions as columns, and builds the Simulation workspace on those two.
+
+**What a provider declares** (A7.2). `ModelProvider::uncertainty()` is one of `none`,
+`interval`, `probabilities` or `distribution`, and `ModelSummary` carries it, so a screen knows
+what to draw before it asks. `predict_uncertain(state, frame, level)` returns predictions with
+it, and defaults to the point prediction, so a provider that declares nothing keeps working. The
+host's `predict_rows_at` and `predict_subject_at` take the level; `predict_rows` and
+`predict_subject` are unchanged and answer the point prediction as before.
+
+| provider | uncertainty | what it is |
+|---|---|---|
+| linear regression | `interval` | the prediction interval ŷ ± t·s·√(1 + x₀ᵀ(XᵀX)⁻¹x₀); the fit stores (XᵀX)⁻¹, σ² and the residual degrees of freedom (a fit from before A7 predicts without one) |
+| logistic regression | `probabilities` | every class's probability, by class name (`Prediction::Class::probabilities`) |
+| `bayesian_regression` | `distribution` | the posterior of each row's expected response, from the draws the fit kept |
+| `stan` with a `prediction` | `distribution` | the posterior predictive draws of the named generated quantity (below) |
+| random forest, k-means | `none` | smartcore gives no vote shares |
+
+A draw-based prediction is summarised as **`Prediction::Distribution { mean, sd, lower, upper,
+level }`**, whose value in a row is its mean. An explicit `level` (0.9 by default, the 5 % and
+95 % quantiles) rather than fixed `q5`/`q95` fields gives a regression's interval and a
+posterior's the same shape. `predictRows`, `m.predict(…, { detail: true })` and the `ModelHost`
+detail objects carry `sd`, `lower`, `upper` and `level`, or `probabilities`.
+
+**Prediction for new rows from a posterior** (A7.1, the design carried from TODO-post-mvp-30 §19).
+A Stan program predicts by declaring data for the rows being predicted and a generated quantity
+over them. Its bindings may name the pseudo-dataset **`new`**: the main dataset's columns, the
+rows being predicted. A fit binds `new` with no rows. Over `new` a binding is a `count`, a
+`column`, `columns` or an `index` into a dimension the fit made; nothing may index into `new` and
+no dimension is declared over it. The configuration key `prediction` names the generated quantity,
+which the save check requires to have one axis sized by the count of `new` (and a `runs_store`, so
+the run can be read back).
+
+A fit of such a model keeps a `PredictionPack` on the instance (`ATTR_PREDICTION`): the generated
+quantity, the interface and binding keys as fitted, and the bound scalars. At predict time only the
+`new` variables are bound again (`sc_model::bind_new_rows`), against the instance's stored
+coordinates, so a county the fit never saw, or a null, is refused by name. The provider's
+`predict_posterior` then answers each row's draws: for `stan`, CmdStan's **standalone generated
+quantities**, reading the published run back (data.json and each chain's CSV), merging in the new
+rows' data, compiling from the fit's program snapshot (a cache hit, as a rule), and running one
+process per chain. `predict()` in a formula, `m.predict` and `predictRows` accept such a posterior;
+`describe_model` says a Stan model predicts only when its `prediction` is set, so a `predict("…")`
+over one that names none is still refused on save. `sc_model::predict_rows_draws` (and
+`ModelProvider::predict_draws`, default `None`) gives the draws themselves, which the scenario
+comparison uses.
+
+**The Model predictions operation** (A7.3, §14.4's table). `kind: "model_predictions"`,
+`PredictOp { model, fit, name, interval, level }`: the model by name, the fit by id (the active fit
+when absent), the column's name, and whether to add the interval. It adds `name` and, as the
+provider gives them, `name_lower` and `name_upper` or `name_probability`. The inputs are the row's
+columns, matched to the model's by name (`ModelHost::predict_inputs`), in one batched call per
+operation, and the new columns' types come from the model's description, which
+`sc_dataset::load_models` loads into the `Library`.
+
+A prediction is not SQL, so the operation **ends the query**. The stage before the first Model
+predictions is read (at most `MAX_IN_MEMORY_ROWS`, 100 000) and the operations from there on are a
+`Stage::tail()` run in memory: Calculated column and Filter in the reified formula evaluator; Select
+columns, Sort, Aggregate (every summary but geometry union) and Limit in Rust; and another Model
+predictions. Anything that needs SQL after a prediction — a Window column, a Join, a formula that
+follows a key — is refused on the operation with a sentence. `read_stage`, `read_page`,
+`read_rows`, `count` and `column_values` evaluate the tail, so the Dataset editor pages through it;
+a SQL read of such a stage (`rows_query` and its kin) is refused the same way. For the plots,
+tables, tests and stat cards that do read SQL (A7.7), `plot::render::tail_rows` reads the evaluated
+rows and loads them into a private in-memory SQLite, as a fit's output data is loaded
+(`memory_rows`, typed by `ColType`), so the stat compiler runs unchanged and a dashboard's
+conditions reach the rows as a Filter run in memory. `load_library` does not load the models: a
+model's own dataset is resolved through the library, and describing models there would recurse
+once a saved dataset names one.
+
+**The inputs of a prediction** (A7.4). `sc_model::prediction_inputs` gives the columns a
+prediction reads, each a `PredictionInput { column, categorical }`: from the fit's encoding (a
+one-hot column is categorical), from the `new` bindings of a posterior (an `index` binding is
+categorical, so a county id is a choice of levels and not a slider), or from the provider's own
+`ModelProvider::inputs(state)` (the formula provider lists its bound columns less the response's
+own). When nothing knows them, they are every training column but the label.
+
+**The profiler** (`sc_analytics::simulate`, `profileModel`: `POST /api/models/{id}/profile` with
+`{ fit?, values?, level?, points? }`). Each input is described from up to 100 000 training rows as a
+number, integer, date, category or yes/no, starting at its **typical value**: the mean (rounded for
+an integer), the median date, or the most common level, with its range or up to 50 levels (the fit's
+own levels for a one-hot column). Values sent are checked against the input's kind, and an input the
+model does not read is refused by name. The answer is the prediction at the values and **a curve per
+input**, the others held where they are: 21 points across the range (2 to 101 on request; integers
+and whole-day dates deduplicated), or one point per level. Every row of every curve goes into **one
+batched** `predict_rows_at` call, so a posterior runs its standalone generated quantities once per
+profile, not once per point. Without `fit`, the active fit is used, else the newest fitted one; a
+model never fitted is refused, and the answer says whether the fit's dataset has changed since.
+
+**Scenarios** (A7.5, `compareScenarios`: `POST /api/models/{id}/scenarios` with `{ fit?, level?,
+scenarios: [{ name, values? }] }`). Each scenario is a set of input values over the typical ones,
+and the comparison answers each one's prediction and its **spread** on one shared 128-point grid:
+`draws` (at most 1 000, with a kernel density) where the model predicts from draws, `interval` for a
+regression — drawn as the Student t it came from, its degrees of freedom recovered from the
+interval's width (`t_degrees_of_freedom`), or a normal when the interval is no wider than a normal
+one — `classes` for a classifier, and `point` otherwise. The scenarios come in the request, not
+from a workspace, so the workspace, a dashboard's profiler and a report's still comparison all ask
+the same way.
+
+**The Simulation workspace** (A7.6, `ui/analytics/src/simulation/`). Its state is `SimulationState
+{ model, fit?, level?, values, scenarios }`; `values` holds only the inputs that were moved, and
+`check_state` allows at most 20 scenarios, each with a name of 1 to 200 bytes, no two alike, and a
+level in (0, 1). Picking another model clears the values and the scenarios, since its inputs are
+not the old model's. The screen has a control per input by its kind (a slider with a number box, a
+date picker, a drop-down of levels, a switch), the prediction with its interval or probabilities,
+and a small chart per input with its interval as a band (or a point and whisker per level), each
+marking the input's current value. Requests wait 150 ms after the last change and the old curves
+stay, faded, until the new ones arrive, so a dragged slider moves the prediction and every curve
+together. **Save scenario** names the current inputs; the comparison draws the saved scenarios
+(and "Current" when it differs from all of them) as densities, grouped bars per class, or bars, with
+a table of the inputs where they differ.
+
+**Scoring** (A7.7). **Score a dataset** creates "<dataset> scored by <model>", based on the chosen
+dataset, with one Model predictions operation carrying the interval, the workspace's fit and its
+level. The prediction column is `predicted` unless the source has one. The new dataset opens in the
+Dataset editor or a new Data explorer, and is plotted like any other through the in-memory tail
+above.
+
+**The panels** (A7.8). `profiler` and `scenarios` are panel kinds whose content is a
+`SimulationPanel { model, fit?, level?, values, scenarios }`, dragged from the workspace with its
+model, inputs and scenarios. `Panel::check` refuses a level outside (0, 1), duplicate scenario
+names, and a comparison without scenarios. `Panel::models` names the model, and the usage index maps
+models as it maps datasets, so the model's delete warning lists the Simulation workspaces and the
+dashboards and reports that hold these panels. `render_panel` answers a sentence when the model is
+gone; otherwise the browser draws the panels from `profileModel` and `compareScenarios`, because the
+model providers are the server's and not `sc-analytics`'s. On a dashboard the profiler is
+interactive (its inputs move for the viewer, and the panel keeps what it was dropped with); in a
+report it is drawn once at the inputs it was dragged with, beside the saved scenarios' comparison.
+
+**Models stay the admin's.** Both endpoints are admin only, like the model editor. An Analytics
+application cannot open a Simulation workspace (`WorkspaceKind::in_applications`, so
+`workspace_kinds: ["simulation"]` is refused), and these panels there say a simulation is shown only
+in the unrestricted Analytics UI. This is the decision A9 made for fit outputs, applied to
+prediction.
+
 #### Storage
 
 `_fd_models`: `id` (uuid pk), `name` (unique), `description`, `table_name` (the table the
 dataset's rows start from, written on save), `provider`, `dataset` (JSON, `{ "dataset_id": … }`),
 `related` (JSON, nullable — a posterior's related datasets, `[{ name, dataset_id, label }]`),
 `configuration` (JSON),
-`hyperparameters` (JSON — values or lists), `split` (JSON — fractions and seed), `attributes`
-(JSON), `view_state` (JSON object, A3.4).
+`hyperparameters` (JSON — values or lists), `split` (JSON — fractions and seed), `features`
+(JSON, nullable — the columns a fit encodes as features, in order; NULL for every column but the
+label), `attributes` (JSON), `view_state` (JSON object, A3.4).
 
 `view_state` is **not part of the model**: a dictionary the Analytics UI's model editor (and any
 other screen showing the model) keeps its layout in — which outputs are open, the optional plots
@@ -10815,14 +10979,189 @@ then a `run_js_code` step that calls `models.get("Radon")` and `m.writePosterior
 the draws as `m.draws`, `m.summary` and `m.variables` on the same handle (above).
 
 **What was left out, and why.** Prediction for new rows from a posterior (CmdStan's standalone
-generated quantities over a `new` pseudo-dataset) is **carried past** this design. A posterior
-declares no prediction, so `predict("Radon")` in a formula is refused when it is saved, and
-`m.predict` on its handle throws a sentence pointing at `m.draws`. When it is picked up, it
-arrives as those two accepting a posterior, not as an action. A forecast needs none of it: a time grid's horizon is a generated quantity of
-the fit itself. LOO/WAIC, a formula front end generating Stan, Bayesian providers from modules,
-and adjacency from geometry are later work. A fit still doesn't survive a restart; the chains
-die with the server. The admin-facing walk-through is `docs/tutorial-stan.md`; operating it
+generated quantities over a `new` pseudo-dataset) was **carried past** this design and arrived
+with analytics milestone A7 (A7.1, "Uncertainty, and simulation" above), as `predict()`,
+`m.predict` and `predictRows` accepting a posterior, not as an action. A posterior that names no
+`prediction` still predicts nothing: `predict("Radon")` over it is refused when it is saved, and
+`m.predict` on its handle throws a sentence saying how to name one and pointing at `m.draws`. A
+forecast needs none of it: a time grid's horizon is a generated quantity of the fit itself. LOO/WAIC, Bayesian providers from modules, and adjacency from geometry are later
+work; a formula front end generating Stan is the next subsection. A fit still doesn't survive a
+restart; the chains die with the server. The admin-facing walk-through is `docs/tutorial-stan.md`; operating it
 (installing CmdStan, the flags, the cache, the size of the draws) is `OPERATIONS.md` §9.
+
+#### Bayesian regression from a formula (`sc-bayesreg`)
+
+A provider, `bayesian_regression`, whose configuration is a formula in lme4/brms syntax rather
+than a Stan program: `price | weights(w) ~ area + region + (1 + area | county)`, with
+`sigma ~ region` on a line of its own. The provider generates the Stan program from the
+formula's **structure** and fits it through `sc-stan`. The plan, the decisions and the
+milestones are `TODO-bayesian-regression.md`. Both milestones have landed. R1 is the crate,
+the parser and resolver, the families and priors, the host's half, the canonicaliser and
+generator, the provider, and the editor. R2 adds the remaining families, non-linear and
+multivariate formulas, prediction in Rust, conversion to a Stan model, and cache warming (see
+"What R2 adds" below).
+
+**A clean-room implementation.** brms is GPL-2, and none of this is derived from its source.
+The crate follows published behaviour only: brms's reference documentation, Bürkner (2017,
+2018), lme4's paper (Bates et al. 2015), R's `?formula`/`?model.matrix` with Chambers & Hastie
+(1992), and the Stan User's Guide. The crate docs list them, and each module names the one it
+follows.
+
+**The pipeline.** All of it is pure Rust with no I/O:
+
+- *parse*: the text becomes a `Formula`. Lines, `bf()` unwrapped, the population-level terms
+  expanded by R's rules (`* / : ^ %in% -`, `0`/`1`, `0 + Intercept`), group-level terms
+  (`|`, `||`, `|ID|`, `gr(cor, id)`, `g1:g2`, `g1/g2`), the response's addition terms, and
+  pasted `prior(…)`/`set_prior(…)` calls lifted out as rows. Every error is a sentence with a
+  span, a line and character columns.
+- *resolve*: the formula is checked against what is known of the dataset. With the column
+  names it checks names (with a "did you mean"). With the shape it also checks types. With the
+  frames it also checks values and levels. The result is the family and links (brms's
+  documented defaults), each linear predictor's terms, the group-level **blocks** (terms
+  sharing an ID merge, across `mu` and `sigma` too), and the prior classes.
+- *priors*: a menu of families, each with argument constraints and the classes it is allowed
+  on. Precedence runs (class, coef, group) → (class, group) → (class). Defaults are documented
+  ones where brms documents them. The data-dependent ones (intercept, `sd`, `sigma`) follow a
+  stated rule of this implementation, because brms's documentation does not give one: over the
+  response on the link scale, `student_t(3, median, max(2.5, MAD))`, location 0 for the SDs.
+  An explicit row that no longer matches is kept and flagged, and save and fit refuse it.
+
+**The host's half** (`sc-model`), additive and with defaults:
+
+- `ModelProvider::lower(cfg, LowerInput)` answers the configuration the host should bind
+  with. `LowerInput` is the model with its shape (save, validate, load), or with its frames
+  (preview, fit). The default `None` means "as written", so every `stan` model is untouched.
+  `validate_model`, the posterior fit and the server's preview and suggest handlers use the
+  lowered configuration wherever they read the model's. A fit stores it on the instance as the
+  attribute `lowered_configuration` (`ATTR_LOWERED`), beside the coordinates, rather than in
+  the provider's `state`, so it cannot collide with a provider's own keys.
+- `sc_model::terms` and the binding kind `terms` (`{dataset, terms, intercept,
+  intercept_column}`): a model matrix from a list of terms with R's `model.matrix` coding.
+  That is treatment contrasts or dummy coding by the *Statistical Models in S* margin rule,
+  interactions with the first variable fastest, columns named `regionNorth` and
+  `area:regionNorth`, and the transforms `log`, `log1p`, `exp`, `sqrt`, `abs`, `inv`, `I()`,
+  `scale()` and `poly()`. What is fitted (levels, `scale`'s constants, `poly`'s recurrence) is
+  stored as a `TermsEncoding` in the coordinates' `designs`, so the same matrix can be rebuilt
+  for new rows, and an unseen level is refused by name. It lives in the host so that a second
+  formula front end gets it free.
+- The dimension kind `names` (`{kind: "names", of: <terms-bound variable>}`): the matrix's
+  column names as a dimension. A `size` of it sizes a coefficient vector, and the axis is
+  labelled by the column names. Nothing indexes into it.
+
+**Canonicalisation and the generated program** (`canon`, `generate`). The resolved formula
+becomes a `Structure`: the generator version, the family and every link, per linear predictor
+whether it has an intercept (centred or not), coefficients (bounded or not) and an offset, per
+block whether it is correlated and which predictors it feeds, the response's addition terms
+(each argument a column or one number), and the two structural priors, a bound on `b` and
+`constant()` on a distributional parameter. It holds no column name, no count and no prior
+number. Blocks are sorted by signature, so the order terms are written in does not matter. The
+program is a function of the structure alone, at the fixed path `model.stan`, and starts with
+a header naming the generator version and the structure's JSON. Structurally equal models are
+therefore byte-identical programs with one compile-cache key: `y ~ x + (1 | g)` and
+`log_radon ~ floor + region + (1 + floor | county)` share an executable. That is the point of
+the design, because the cache only helps if equivalent models hit it.
+
+- *Names* are positional: `N`, `Y`; per linear predictor *p* `K_p`, `X_p`, `b_p` and the
+  intercept (`Intercept_c_p` sampled on the centred predictors, `Intercept_p` recovered in
+  generated quantities); per block *k* `N_k`, `J_k`, `M_k_j`/`Z_k_j` per part, `sd_k`, `z_k`,
+  `L_k`, `r_k`, `Cor_k`.
+- *Group-level effects* use the non-centred construction of the Stan User's Guide:
+  `r = (diag_pre_multiply(sd, L) * z)'`, with `L ~ lkj_corr_cholesky(η)` when correlated. A
+  block over several linear predictors (a shared `|ID|`) is one `r` whose columns are split
+  between them.
+- *Priors* are data: a prior is a code and three numbers, and one program function,
+  `prior_lpdf`, branches on the code. Changing `normal(0, 5)` to `student_t(3, 0, 2.5)` never
+  recompiles.
+- *The likelihood* is vectorised, or a loop over the rows when there are weights, censoring or
+  truncation (CDFs for censoring, the mass between the bounds for truncation). Each family's
+  mean parameterisation is brms's documented one.
+- *The data plan* binds every data variable with the host's own kinds: `count`, `column`,
+  `terms` for the model matrices and offsets, `width` for their sizes, a `values` dimension
+  per grouping column (named after the column) with `size` and `index`, `value` for the prior
+  numbers, and the main dataset's nulls policy `drop`.
+
+The golden files (`crates/sc-bayesreg/tests/golden/`, one per family × block shape × addition
+term, 326 in all since R2) pin the text, and every one passes the real `stanc` when a CmdStan is
+present. Any change to what the generator emits fails them until `GENERATOR_VERSION` is
+bumped and they are regenerated, so a cached executable cannot silently change meaning.
+
+**What R2 adds.** Every R2 field of the `Structure` is left out of its canonical JSON when it is
+unused, so an R1 model's structure, program and cache key are what they were. The 176 R1 golden
+programs are byte-identical, and `GENERATOR_VERSION` is still 1.
+
+- *Families* (R2.1): the zero-inflated, hurdle and zero-one-inflated families, beta-binomial,
+  von Mises, ex-Gaussian, asymmetric Laplace, the four ordinal families (`cumulative`,
+  `sratio`, `cratio`, `acat`) and `categorical`. Each is a table entry with a `Kind`
+  (standard, ordinal, categorical). An ordinal model has thresholds in place of an intercept
+  (their number is data, from the response or `thres(k)`), a `disc` fixed at 1 unless it has a
+  formula, and `cs()` category-specific effects. The categories are Bürkner & Vuorre (2019)'s
+  four models over the link's CDF. A categorical response is an `index` into a `values`
+  dimension of its column, with one linear predictor per category but the first.
+- *Terms* (R2.1): `mo(x)` monotonic effects (a simplex over the column's levels, a Dirichlet
+  prior), `gr(g, by = h)` (SDs and correlations per level of `h`, a group level using those of
+  the level its rows are in, refused when a level of `g` is in two of `h`), fixed parameters
+  (`nu = 4`, structurally the same as `constant(4)`), grouping by a combination (`g1:g2`,
+  `g1/g2`), and grouping by a foreign key's referenced rows when the model has a related dataset
+  over that table, so a level with no rows still gets a parameter.
+- *Non-linear formulas* (R2.2): the main formula is an expression (`NlExpr`) when another line
+  is the formula of a name it uses (`nl` is inferred, and the editor says so). The parameters
+  are renamed `nlp_1…` and the columns `C_1…` in order of first appearance, and literals are
+  printed in one form. A non-linear parameter's intercept is an ordinary coefficient, never
+  centred, and its coefficients need a proper prior.
+- *Multivariate models* (R2.3): several response lines, `mvbind(y1, y2) ~ …`, or
+  `bf(…) + bf(…) + set_rescor(…)`. Each response has its own submodel. A distributional
+  parameter's line belongs to the response in the same `bf(…)`, and terms sharing an `|ID|` are
+  one block across responses. The responses are sorted by their structural signature, and a
+  later one's variables have a suffix (`Y_2`, `sigma_2`). Gaussian responses without addition
+  terms have residual correlations by default (`rescor`). A response measured on some rows only
+  (`subset(s)`) is bound through a masked column.
+- *The binder* (`sc-model`) gained one additive key, `derived_columns`. It names columns added
+  to a dataset before binding: `combine` (the combination of several columns, as text) and
+  `mask` (a column where a yes/no column is true, null elsewhere). They are ordinary columns to
+  every binding and to the save-time check, and a model without the key is untouched.
+- *Prediction in Rust* (R2.4): a fit's state keeps a prediction pack: the lowered
+  configuration, the binder's coordinates, and the draws a linear predictor reads, thinned to at
+  most 1 000 (fewer for a model with many group levels, about 250 000 numbers in all). A
+  prediction evaluates the bindings on the new rows with the fit's encodings and levels, refusing
+  an unknown level or a null by name, and answers the posterior mean of E[y] per family. These
+  are the same expressions as the program's optional `epred_1` (the configuration key `epred`).
+  The provider's outcome is `Posterior { prediction: Some("epred") }`, except for a
+  multivariate or categorical model. `sc_model::predict_rows` hands a posterior's rows to its
+  provider as they are, so `predict("…")` and `m.predict(…)` work. With `keep_draws` off, or a
+  needed variable excluded, the fit records why there is no pack, and a prediction says so.
+- *Conversion to a Stan model* (R2.5, `sc_bayesreg::eject`, the endpoint `convertModelToStan`):
+  the formula is lowered against its rows, the program is written at a path in a file store
+  (refused if the file exists), and a new `stan` model is saved with the lowered bindings, so it
+  fits to the same draws with the same seed. `feldspar stan warm` (an alias of `feldspar
+  cmdstan warm`) compiles the R1 families × no block / one correlated block / one uncorrelated
+  block into the server's compile cache.
+
+**The provider** (`BayesRegProvider`). Its configuration is `formula`, `family`, `links`,
+`priors` (only the rows the admin set), `center`, and the Stan sampler's settings, the `stan`
+provider's own keys. `lower` runs the pipeline and answers the configuration plus the bindings,
+the dimensions, the policies, the generated program, the structure, the resolved prior table
+and the layout the parameter table needs. With the frames, the data-dependent defaults are
+computed and a row naming a level is matched exactly. Both use the rows the fit will keep, so
+the numbers shown are the numbers used. `interface` parses the generated program with the
+Stan provider's own declaration parser, so every host check (sizes, types, bounds, labels,
+draw plan) runs on it unchanged. `fit_posterior` hands the program to
+`StanProvider::run_program`, the one implementation of compile → chains → draws → publish,
+which `StanProvider::fit_posterior` now also calls after reading its program from a store. So
+the compile cache, the process budget and the runner are shared, not duplicated. The provider
+adds a brms-style table ("Population-level effects", "Group-level effects ~county",
+"Family-specific parameters") computed with the host's R̂ and ESS, and stores the structure,
+the generator version and the resolved priors in the state. `program_changed` regenerates
+from the formula and compares the program's hash with the snapshot's.
+
+**The editor's API.** `checkFormula` (`POST /api/model-formula/check`) checks a model against
+its dataset's shape. It answers the located mistakes, the pasted prior calls merged into the
+rows (and those they replaced), the prior table with its rules, the generated program and the
+derived bindings. `checkPriors` (`POST /api/model-formula/priors`) answers the same against
+the rows, so the table shows numbers. Neither fails on a bad formula, because the mistakes are
+the answer. The model editor (`FormulaEditor.tsx`) is a Monaco formula editor with completion
+and underlined mistakes, the family and link pickers, the prior table (§7 of the TODO), and,
+collapsed, the bindings and the program. It has no binding table, no Compile button and no
+cache state.
 
 ---
 
@@ -11146,9 +11485,10 @@ pub struct Operation { id: String, enabled: bool, #[serde(flatten)] op: Op }  //
 pub enum Op { Calculated, Filter, Select, Sort, Window, Aggregate, Limit, Stack, Split, Complete, Join, Union, SpatialJoin }
 ```
 
-The operations are the goals document's, less the two that need later machinery
-(Neighbourhood column in A8, Model predictions in A7). Milestone A1 built the first twelve; the
-Spatial join and the geometry union came with A5 (§14.6):
+The operations are the goals document's, less the Neighbourhood column, which needs A8's
+machinery. Milestone A1 built the first twelve; the Spatial join and the geometry union came with
+A5 (§14.6), and Model predictions with A7 (§14.2, "Uncertainty, and simulation"), which adds a
+model's prediction and its interval as columns and runs the operations after it in memory:
 
 | keep the grain | change the grain | combine |
 |---|---|---|
@@ -11293,7 +11633,7 @@ reads. Split view (A4) holds either editor or a workspace on each side.
 Dashboard, Simulation, Notebook). The store keeps any kind; `createWorkspace`
 refuses one whose milestone has not arrived, naming it ("arrives with milestone A2"), and
 `listWorkspaceKinds` says which are here so the create dialog lists the rest disabled — since
-A6.1, the Simulation and the Notebook. `state` is JSON owned by the kind — an explorer's is its dataset and
+A7.6, the Notebook. `state` is JSON owned by the kind — an explorer's is its dataset and
 drop zones — saved as it changes (`saveWorkspaceState`) and restored when the workspace is
 opened.
 
@@ -11365,7 +11705,8 @@ explorer's ECharts compiler like every other plot; their data reference names th
 
 **Open as model** (A3.7; `explorer/openAsModel.ts`) asks the explorer's question as a model when
 the roles are one response on Y and one factor on X: a dataset based on the explorer's with a
-Select columns keeping the two (a model's features are every column but its label), and a linear
+Select columns keeping the two (a model's features are every column but its label until it
+chooses them), and a linear
 regression of Y — a logistic one when Y is not a number — opened in the editor.
 
 **The Data explorer** (A2.7–A2.14; `ui/analytics/src/explorer`, `src/plot`). Its state is what

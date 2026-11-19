@@ -372,7 +372,10 @@ impl Cause {
         let CauseKind::Caller { role: served, .. } = &self.0 else {
             return (role, user);
         };
-        let named_id = user.as_ref().and_then(|u| u.get("id")).and_then(Json::as_str);
+        let named_id = user
+            .as_ref()
+            .and_then(|u| u.get("id"))
+            .and_then(Json::as_str);
         if self.user_id().is_none() || self.user_id() != named_id {
             return (role, user);
         }
@@ -1201,8 +1204,12 @@ mod tests {
         }
         // And the system names anyone, at their stored role.
         let system = Principal::system();
-        let named = Principal::narrowed(&system, Role::ADMIN, Some(json!({ "id": "u-2", "role": 1 })))
-            .unwrap();
+        let named = Principal::narrowed(
+            &system,
+            Role::ADMIN,
+            Some(json!({ "id": "u-2", "role": 1 })),
+        )
+        .unwrap();
         assert_eq!(named.role(), Role::ADMIN);
     }
 

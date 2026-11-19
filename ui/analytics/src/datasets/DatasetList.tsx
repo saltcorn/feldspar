@@ -1,13 +1,15 @@
 // The list of datasets, on the Analytics UI's front page (analytics TODO A1.16,
 // A1.21): every dataset, each edited, cloned or deleted from its row, and a new
-// one made on a base — a table, or another dataset — or got from the public
+// one made on a base — a table, or another dataset, asked for in the dialog
+// the heading's "+ New dataset" opens — or got from the public
 // datasets ("Get datasets", `PublicDatasets.tsx`). The list is global, because
 // models and panels share the datasets; one opens in the Dataset editor.
 //
 // In a self-serve application (A9.3) the server lists the datasets its user
 // owns or that are shared with them, on the application's tables. Its owner
-// shares, edits and deletes one; making one needs the application's Dataset
-// editor; models and the public datasets are the unrestricted UI's.
+// edits and deletes one, and shares it from the Dataset editor; making one
+// needs the application's Dataset editor; models and the public datasets are
+// the unrestricted UI's.
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import Alert from "react-bootstrap/Alert";
@@ -18,14 +20,14 @@ import Form from "react-bootstrap/Form";
 import Modal from "react-bootstrap/Modal";
 import Table from "react-bootstrap/Table";
 
+import { AddButton } from "../AddButton";
 import { api, errorMessage } from "../api";
 import type { DatasetUsageResponse, ListDatasetsResponse, ListDatasetTablesResponse } from "../client";
 import { T, useT } from "../i18n";
 import { useAnnounce, useChanges, usePane } from "../panes";
 import { workspaceKindName } from "../labels";
-import { ShareSelect } from "../share";
 import { useShell } from "../shell";
-import { describeGrain, type Base, type Grain } from "./ops";
+import type { Base } from "./ops";
 import { PublicDatasetsModal } from "./PublicDatasetsModal";
 
 export type DatasetItem = ListDatasetsResponse[number];
@@ -51,6 +53,8 @@ export function DatasetList({ onOpen }: { onOpen: (id: string) => void }) {
   const [deleting, setDeleting] = useState<{ item: DatasetItem; usage: DatasetUsageResponse } | null>(
     null,
   );
+  const [creating, setCreating] = useState(false);
+  const [getting, setGetting] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -87,19 +91,39 @@ export function DatasetList({ onOpen }: { onOpen: (id: string) => void }) {
   };
 
   return (
-    <section className="mb-5">
-      <h2 className="h3 mb-3">
-        <T text="Datasets" />
-      </h2>
+    <section className="card mb-4">
+      <div className="card-header">
+        <h2 className="card-title">
+          <T text="Datasets" />
+        </h2>
+        <div className="card-actions d-flex gap-2">
+          {mayMake && !application && (
+            <Button size="sm" variant="outline-primary" onClick={() => setGetting(true)}>
+              <T text="Get datasets" />
+            </Button>
+          )}
+          {mayMake && <AddButton label={t("New dataset")} onClick={() => setCreating(true)} />}
+        </div>
+      </div>
       {error && (
-        <Alert variant="danger" dismissible onClose={() => setError(null)}>
+        <Alert className="m-3" variant="danger" dismissible onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
-      {mayMake && <NewDatasetForm datasets={datasets ?? []} onCreated={onOpen} />}
+      {creating && (
+        <NewDatasetDialog datasets={datasets ?? []} onClose={() => setCreating(false)} onCreated={onOpen} />
+      )}
+      <PublicDatasetsModal
+        show={getting}
+        onHide={() => setGetting(false)}
+        onOpen={(id) => {
+          setGetting(false);
+          onOpen(id);
+        }}
+      />
       {datasets && datasets.length === 0 && (
-        <p className="text-secondary">
-          <T text="No datasets yet. Make one above, on a table." />
+        <p className="card-body text-secondary mb-0">
+          <T text="No datasets yet. Make one on a table with the + New dataset button." />
         </p>
       )}
       {datasets && datasets.length > 0 && (
@@ -112,12 +136,6 @@ export function DatasetList({ onOpen }: { onOpen: (id: string) => void }) {
               <th>
                 <T text="Based on" />
               </th>
-              <th>
-                <T text="Operations" />
-              </th>
-              <th>
-                <T text="Rows" />
-              </th>
               <th />
             </tr>
           </thead>
@@ -129,35 +147,16 @@ export function DatasetList({ onOpen }: { onOpen: (id: string) => void }) {
                     {d.name}
                   </Button>
                   {d.description && <div className="text-secondary small">{d.description}</div>}
+                  {d.error && (
+                    <div>
+                      <Badge bg="danger-lt" title={d.error}>
+                        <T text="has an error" />
+                      </Badge>
+                    </div>
+                  )}
                 </td>
                 <td>{describeBase(d.base, datasets)}</td>
-                <td>{d.operations}</td>
-                <td>
-                  {d.error ? (
-                    <Badge bg="danger-lt" title={d.error}>
-                      <T text="has an error" />
-                    </Badge>
-                  ) : (
-                    <span className="text-secondary small">{describeGrain(d.grain as Grain, t)}</span>
-                  )}
-                </td>
                 <td className="text-end text-nowrap">
-                  {d.may_change && (
-                    <>
-                      <ShareSelect
-                        value={d.share_role}
-                        label={d.name}
-                        onShare={async (role) => {
-                          try {
-                            await api.shareDataset(d.id, { share_role: role });
-                            await load();
-                          } catch (err) {
-                            setError(errorMessage(err, t("Could not share the dataset.")));
-                          }
-                        }}
-                      />{" "}
-                    </>
-                  )}
                   <Button size="sm" variant="outline-primary" onClick={() => onOpen(d.id)}>
                     {d.may_change ? <T text="Edit" /> : <T text="Open" />}
                   </Button>{" "}
@@ -269,23 +268,14 @@ export function DatasetList({ onOpen }: { onOpen: (id: string) => void }) {
   );
 }
 
-/** A new dataset: its name, and its base — picked now and never changed. */
-export function NewDatasetForm({
-  datasets,
-  initialTable,
-  onCreated,
-}: {
-  datasets: DatasetItem[];
-  initialTable?: string | null;
-  onCreated: (id: string) => void;
-}) {
+/** The state of a new dataset's form: its name, and its base — picked now
+ * and never changed — with the tables it can be on loaded. */
+function useNewDataset(initialTable: string | null | undefined, onCreated: (id: string) => void) {
   const { t } = useT();
-  const { application } = useShell();
   const [tables, setTables] = useState<TableItem[]>([]);
   const [name, setName] = useState("");
   const [base, setBase] = useState(initialTable ? `table:${initialTable}` : "");
   const [error, setError] = useState<string | null>(null);
-  const [getting, setGetting] = useState(false);
 
   useEffect(() => {
     api
@@ -311,45 +301,137 @@ export function NewDatasetForm({
     }
   };
 
+  return { tables, name, setName, base, setBase, error, create, ready: name.trim() !== "" && base !== "" };
+}
+
+/** The base picker: the tables, then the datasets. */
+function BaseSelect({
+  value,
+  onChange,
+  tables,
+  datasets,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  tables: TableItem[];
+  datasets: DatasetItem[];
+}) {
+  const { t } = useT();
   return (
-    <Card className="mb-4">
-      <Card.Body>
-        {error && <Alert variant="danger">{error}</Alert>}
-        <Form onSubmit={create} className="d-flex gap-2 flex-wrap align-items-end">
-          <Form.Group controlId="dataset-name">
+    <Form.Select value={value} onChange={(e) => onChange(e.target.value)}>
+      <optgroup label={t("Tables")}>
+        {tables.map((table) => (
+          <option key={table.name} value={`table:${table.name}`}>
+            {table.name}
+          </option>
+        ))}
+      </optgroup>
+      {datasets.length > 0 && (
+        <optgroup label={t("Datasets")}>
+          {datasets.map((d) => (
+            <option key={d.id} value={`dataset:${d.id}`}>
+              {d.name}
+            </option>
+          ))}
+        </optgroup>
+      )}
+    </Form.Select>
+  );
+}
+
+/** The front page's "+ New dataset": the name and base asked for in a dialog. */
+function NewDatasetDialog({
+  datasets,
+  onClose,
+  onCreated,
+}: {
+  datasets: DatasetItem[];
+  onClose: () => void;
+  onCreated: (id: string) => void;
+}) {
+  const { t } = useT();
+  const form = useNewDataset(null, onCreated);
+  return (
+    <Modal show onHide={onClose}>
+      <Form onSubmit={form.create}>
+        <Modal.Header closeButton>
+          <Modal.Title>
+            <T text="New dataset" />
+          </Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          {form.error && <Alert variant="danger">{form.error}</Alert>}
+          <Form.Group controlId="dataset-name" className="mb-3">
             <Form.Label>
-              <T text="New dataset" />
+              <T text="Name" />
             </Form.Label>
             <Form.Control
-              value={name}
+              autoFocus
+              value={form.name}
               placeholder={t("House prices by area")}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => form.setName(e.target.value)}
             />
           </Form.Group>
           <Form.Group controlId="dataset-base">
             <Form.Label>
               <T text="Based on" />
             </Form.Label>
-            <Form.Select value={base} onChange={(e) => setBase(e.target.value)}>
-              <optgroup label={t("Tables")}>
-                {tables.map((table) => (
-                  <option key={table.name} value={`table:${table.name}`}>
-                    {table.name}
-                  </option>
-                ))}
-              </optgroup>
-              {datasets.length > 0 && (
-                <optgroup label={t("Datasets")}>
-                  {datasets.map((d) => (
-                    <option key={d.id} value={`dataset:${d.id}`}>
-                      {d.name}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-            </Form.Select>
+            <BaseSelect value={form.base} onChange={form.setBase} tables={form.tables} datasets={datasets} />
+            <Form.Text muted>
+              <T text="The base cannot be changed later: every operation is written against the columns it provides." />
+            </Form.Text>
           </Form.Group>
-          <Button type="submit" disabled={name.trim() === "" || base === ""}>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={onClose}>
+            <T text="Cancel" />
+          </Button>
+          <Button type="submit" disabled={!form.ready}>
+            <T text="Create" />
+          </Button>
+        </Modal.Footer>
+      </Form>
+    </Modal>
+  );
+}
+
+/** A new dataset as a card on a page of its own: its name, and its base. */
+export function NewDatasetForm({
+  datasets,
+  initialTable,
+  onCreated,
+}: {
+  datasets: DatasetItem[];
+  initialTable?: string | null;
+  onCreated: (id: string) => void;
+}) {
+  const { t } = useT();
+  const { application } = useShell();
+  const form = useNewDataset(initialTable, onCreated);
+  const [getting, setGetting] = useState(false);
+
+  return (
+    <Card className="mb-4">
+      <Card.Body>
+        {form.error && <Alert variant="danger">{form.error}</Alert>}
+        <Form onSubmit={form.create} className="d-flex gap-2 flex-wrap align-items-end">
+          <Form.Group controlId="dataset-name">
+            <Form.Label>
+              <T text="New dataset" />
+            </Form.Label>
+            <Form.Control
+              value={form.name}
+              placeholder={t("House prices by area")}
+              onChange={(e) => form.setName(e.target.value)}
+            />
+          </Form.Group>
+          <Form.Group controlId="dataset-base">
+            <Form.Label>
+              <T text="Based on" />
+            </Form.Label>
+            <BaseSelect value={form.base} onChange={form.setBase} tables={form.tables} datasets={datasets} />
+          </Form.Group>
+          <Button type="submit" disabled={!form.ready}>
             <T text="Create" />
           </Button>
           {!application && (

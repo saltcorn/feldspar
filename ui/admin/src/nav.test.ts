@@ -75,15 +75,21 @@ describe("the admin sidebar", () => {
 
   /** The Analytics UI is a bundle of its own, so its entry is a page and not
    * a hash route; it replaced *Predictive models* (analytics TODO A3.8). It is
-   * out of the sidebar, Insights heading and all, until `ANALYTICS_IN_SIDEBAR`
-   * is turned back on. */
-  it("has no Analytics entry or Insights heading while Analytics is switched off", () => {
+   * in the sidebar, under an Insights heading, exactly while
+   * `ANALYTICS_IN_SIDEBAR` is on. */
+  it("shows the Analytics entry and Insights heading exactly while Analytics is switched on", () => {
     const labels = NAV.map((item) => item.label);
     expect(labels).not.toContain("Predictive models");
-    expect(ANALYTICS_IN_SIDEBAR).toBe(false);
-    expect(labels).not.toContain("Analytics");
-    expect(NAV.map((item) => item.href)).not.toContain("/analytics/");
-    expect(NAV.map((item) => item.group)).not.toContain("Insights");
+    expect(labels.includes("Analytics")).toBe(ANALYTICS_IN_SIDEBAR);
+    expect(NAV.map((item) => item.href).includes("/analytics/")).toBe(
+      ANALYTICS_IN_SIDEBAR,
+    );
+    expect(NAV.map((item) => item.group).includes("Insights")).toBe(
+      ANALYTICS_IN_SIDEBAR,
+    );
+    if (ANALYTICS_IN_SIDEBAR) {
+      expect(labels.indexOf("Analytics")).toBe(labels.indexOf("Agents") + 1);
+    }
     expect(activeLabels("/models")).toEqual([]);
   });
 
@@ -91,6 +97,11 @@ describe("the admin sidebar", () => {
     expect(ANALYTICS_NAV_ITEM.label).toBe("Analytics");
     expect(ANALYTICS_NAV_ITEM.group).toBe("Insights");
     expect(ANALYTICS_NAV_ITEM.href).toBe("/analytics/");
+    // A different application: it opens in a new tab.
+    expect(ANALYTICS_NAV_ITEM.newTab).toBe(true);
+    expect(NAV.filter((item) => item.newTab).map((item) => item.label)).toEqual(
+      ANALYTICS_IN_SIDEBAR ? ["Analytics"] : [],
+    );
   });
 
   it("lights up Settings for the data-only checklists, and not for an application's", () => {
@@ -111,13 +122,17 @@ describe("the admin sidebar", () => {
 
   /** Each heading is drawn once, where its group starts, so a group whose
    * entries were split would get its heading twice. */
-  it("groups the entries under Data, Automation and Administration", () => {
+  it("groups the entries under Data, Automation, Insights and Administration", () => {
     const groups = NAV.map((item) => item.group).filter(
       (group, n, all) => group !== all[n - 1],
     );
     // Insights sits between Automation and Administration while the Analytics
     // entry is in the sidebar (`ANALYTICS_IN_SIDEBAR`).
-    expect(groups).toEqual(["Data", "Automation", "Administration"]);
+    expect(groups).toEqual(
+      ANALYTICS_IN_SIDEBAR
+        ? ["Data", "Automation", "Insights", "Administration"]
+        : ["Data", "Automation", "Administration"],
+    );
     const members = (group: string) =>
       NAV.filter((item) => item.group === group).map((item) => item.label);
     expect(members("Data")).toEqual([

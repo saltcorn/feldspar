@@ -108,7 +108,7 @@ async fn run(args: &[String]) -> Result<()> {
         Some("agent") => agent_command(&args[1..]).await,
         Some("i18n") => i18n_command(&args[1..]).await,
         Some("llm") => llm_command(&args[1..]).await,
-        Some("cmdstan") => cmdstan_command(&args[1..]).await,
+        Some("cmdstan" | "stan") => cmdstan_command(&args[1..]).await,
         Some("python") => python_command(&args[1..]).await,
         Some("demo") => demo_command(&args[1..]).await,
         Some("trigger") => trigger_command(&args[1..]).await,
@@ -270,6 +270,9 @@ fn print_usage() {
     eprintln!("  feldspar demo analytics [--replace] [database flags]");
     eprintln!("  feldspar cmdstan status [--cmdstan DIR]");
     eprintln!("  feldspar cmdstan install [--version V] [--dir D] [--jobs J]");
+    eprintln!(
+        "  feldspar cmdstan warm [--cmdstan DIR] [--stan-cache-dir DIR] [--family F]... [--list]"
+    );
     eprintln!(
         "  feldspar python check [--url URL | --offline] [--python-dir PATH] [--python-bin PATH] \
          [--import MODULE]..."

@@ -2076,6 +2076,34 @@ Nothing prunes the cache — old entries are only disk. Deleting the directory, 
 it, is always safe while no compile is running: the next fit recompiles. A compile interrupted
 by a restart leaves a `*.building-*` directory that the next boot removes.
 
+**Formula models** (the `bayesian_regression` provider, `y ~ x + (1 | g)`) generate their
+program, and the program depends only on the model's **structure**: the family and links,
+which linear predictors there are, whether each has an intercept and an offset, how many
+group-level blocks and whether each is correlated, the response's addition terms. Column
+names, the number of predictors, groups and levels, and every prior's numbers are data. So
+`price ~ area + (1 | county)` and `log_radon ~ floor + region + (1 + floor | county)` are one
+executable, and a node compiles each structure once, whoever writes it and whatever their
+columns are called. On a typical installation that is a handful of entries in total. The
+generated program's header names the generator version and the structure, so an entry read
+off disk says what it is. A feldspar upgrade that changes the generator (its version is in
+that header) makes a new set of entries, compiled again on each structure's first fit after
+the upgrade. To keep the first fits from waiting their minute in **Compiling**, warm the cache
+on each node after an install or an upgrade:
+
+```sh
+feldspar stan warm                      # every R1 family, three common shapes each
+feldspar stan warm --family poisson     # only some families (repeat --family)
+feldspar stan warm --list               # what it would compile
+feldspar stan warm --stan-cache-dir DIR # a server started with --stan-cache-dir
+```
+
+It compiles one program at a time (39 in all, half a minute or so each), into the cache
+directory the server uses by default, and says of each whether it was already there. A second
+run compiles nothing. Run it with the same `--cmdstan` the server uses, because the cache is
+keyed by the CmdStan version. The
+formula editor has no Compile button and shows no cache state, on purpose: whether a structure
+happens to be compiled must not steer which model an admin writes.
+
 ### 9.4 How big a fit can get
 
 Four ceilings, each a server flag because each is about this host's memory, and each refused

@@ -1,4 +1,4 @@
-//! Workspaces (analytics TODO A1.12, A1.21, A3.0, A4.2, A5.8, A6.1): the six kinds of the goals
+//! Workspaces (analytics TODO A1.12, A1.21, A3.0, A4.2, A5.8, A6.1, A7.6): the six kinds of the goals
 //! document, and the `_fd_workspaces` table that keeps each one's state.
 //!
 //! A workspace is a name, a kind and a **state** — JSON owned by the kind's
@@ -105,18 +105,24 @@ impl WorkspaceKind {
     }
 
     /// The milestone that brings it, when it is not here yet (`None` when it
-    /// is): the Analytics UI plan's A7–A9. The notebook is not scheduled. The
-    /// report arrived with A4.3, as the first place panels are dropped, and
-    /// the map with A5.8, the dashboard with A6.1.
+    /// is). The notebook is not scheduled. The report arrived with A4.3, as
+    /// the first place panels are dropped, the map with A5.8, the dashboard
+    /// with A6.1 and the simulation with A7.6.
     pub fn arrives_in(self) -> Option<&'static str> {
         match self {
             WorkspaceKind::DataExplorer
             | WorkspaceKind::Report
             | WorkspaceKind::Map
-            | WorkspaceKind::Dashboard => None,
-            WorkspaceKind::Simulation => Some("A7"),
+            | WorkspaceKind::Dashboard
+            | WorkspaceKind::Simulation => None,
             WorkspaceKind::Notebook => Some("a later milestone"),
         }
+    }
+
+    /// Whether an Analytics application (A9) may open it. A simulation
+    /// predicts with a model, and models are the admin's alone.
+    pub fn in_applications(self) -> bool {
+        !matches!(self, WorkspaceKind::Simulation)
     }
 
     /// Whether a workspace of this kind can be created and opened.
@@ -255,7 +261,9 @@ pub async fn bootstrap_workspaces(catalog: &Catalog) -> Result<Table> {
 
 /// Create a workspace. Refused for an empty name. Any kind is stored: whether
 /// one can be created yet is [`WorkspaceKind::check_available`], asked by the
-/// API.
+/// API. The state is stored as it is: a restore or a sync brings states saved
+/// by earlier versions, which a newer check must not refuse; the API checks a
+/// state it is given ([`check_new_state`]).
 pub async fn create_workspace(catalog: &Catalog, workspace: &Workspace) -> Result<()> {
     check(workspace)?;
     let insert = Insert::row(
@@ -285,6 +293,15 @@ pub async fn create_workspace(catalog: &Catalog, workspace: &Workspace) -> Resul
         ],
     );
     exec(catalog, insert.into()).await
+}
+
+/// Check the state a workspace is to be **created** with through the API (a
+/// fit's report saved from the model editor), as a saved state is checked.
+pub fn check_new_state(kind: WorkspaceKind, state: &Json) -> Result<()> {
+    if !state.is_object() {
+        return Err(Error::invalid("a workspace's state is a JSON object"));
+    }
+    crate::panel::check_state(kind, state)
 }
 
 /// Rename a workspace; its kind and state are untouched.
@@ -489,7 +506,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_six_kinds_parse_and_the_explorer_report_map_and_dashboard_are_here() {
+    fn all_six_kinds_parse_and_all_but_the_notebook_are_here() {
         for kind in WorkspaceKind::ALL {
             assert_eq!(WorkspaceKind::parse(kind.as_str()).expect("parses"), kind);
         }
@@ -503,16 +520,21 @@ mod tests {
                 WorkspaceKind::DataExplorer,
                 WorkspaceKind::Report,
                 WorkspaceKind::Map,
-                WorkspaceKind::Dashboard
+                WorkspaceKind::Dashboard,
+                WorkspaceKind::Simulation,
             ]
         );
         WorkspaceKind::DataExplorer.check_available().expect("A2");
         WorkspaceKind::Report.check_available().expect("A4");
         WorkspaceKind::Map.check_available().expect("A5");
         WorkspaceKind::Dashboard.check_available().expect("A6");
-        assert_eq!(WorkspaceKind::Simulation.arrives_in(), Some("A7"));
-        let err = WorkspaceKind::Simulation.check_available().expect_err("A7");
-        assert!(err.to_string().contains("milestone A7"), "{err}");
+        WorkspaceKind::Simulation.check_available().expect("A7");
+        let err = WorkspaceKind::Notebook
+            .check_available()
+            .expect_err("later");
+        assert!(err.to_string().contains("a later milestone"), "{err}");
+        assert!(!WorkspaceKind::Simulation.in_applications());
+        assert!(WorkspaceKind::Dashboard.in_applications());
         // The Dataset editor and the model editor are not kinds of workspace.
         assert!(WorkspaceKind::parse("dataset_editor").is_err());
         assert!(WorkspaceKind::parse("model_fit").is_err());

@@ -128,7 +128,7 @@ pub(crate) fn check_app_gates(handlers: &crate::handler::HandlerRegistry) -> Res
 /// yet. The framework, its routes and its tests stay; turn this back on (with
 /// the admin sidebar's `ANALYTICS_IN_SIDEBAR`) to offer it again. A test that
 /// needs it calls [`install_analytics_framework`] itself.
-pub const ANALYTICS_FRAMEWORK_ENABLED: bool = false;
+pub const ANALYTICS_FRAMEWORK_ENABLED: bool = true;
 
 /// Install the Analytics framework into `sc-app`'s registry. Idempotent.
 pub fn install_analytics_framework() -> Result<()> {
@@ -204,8 +204,11 @@ pub struct AnalyticsFramework {
 
 /// `Cache-Control` for a content-hashed asset: it never changes under its name.
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
-/// `Cache-Control` for the document: ask again, so a new build is picked up.
-const REVALIDATE: &str = "no-cache";
+/// `Cache-Control` for the Analytics UI's document, here and on the admin
+/// host: never kept, so a page loaded — or gone back to — after an upgrade is
+/// the new build. (`no-cache` still lets a browser hand back a page it kept for
+/// Back/Forward, running the old build.)
+pub(crate) const DOCUMENT_CACHE_CONTROL: &str = "no-store";
 
 impl AnalyticsFramework {
     /// The bundle's file at `rest` (relative, no `..`), if it has one.
@@ -260,7 +263,7 @@ impl Framework for AnalyticsFramework {
             });
         };
         let cache = if rest == "index.html" {
-            REVALIDATE
+            DOCUMENT_CACHE_CONTROL
         } else {
             IMMUTABLE
         };
@@ -320,6 +323,13 @@ mod tests {
         assert_eq!(doc.status, 200);
         assert_eq!(&doc.body[..], b"<html>shell</html>");
         assert!(doc.content_type.starts_with("text/html"));
+        assert!(
+            doc.headers
+                .iter()
+                .any(|(k, v)| k.eq_ignore_ascii_case("cache-control") && v == "no-store"),
+            "the document is never kept: {:?}",
+            doc.headers
+        );
         let asset = fw
             .handle(AppRequest::get("/analytics/assets/app-1a2b.js"), &catalog)
             .await

@@ -1,6 +1,7 @@
 // The Markdown of text panels and a report's text blocks (analytics TODO
 // A4.4): the part of it a report needs — headings, paragraphs, lists, quotes,
-// code, rules, and strong, emphasis, code and links within a line — parsed
+// code, rules, pipe tables, and strong, emphasis, code and links within a
+// line — parsed
 // into a small tree that `Markdown.tsx` draws as React elements.
 //
 // A tree, not HTML: nothing a person types reaches `innerHTML`, so there is
@@ -25,7 +26,11 @@ export type MdBlock =
   | { kind: "list"; ordered: boolean; start: number; items: Inline[][] }
   | { kind: "quote"; children: Inline[] }
   | { kind: "code"; text: string }
-  | { kind: "rule" };
+  | { kind: "rule" }
+  | { kind: "table"; align: Align[]; header: Inline[][]; rows: Inline[][][] };
+
+/** A table column's alignment, from its separator cell (`:--`, `:-:`, `--:`). */
+export type Align = "left" | "center" | "right" | null;
 
 const HEADING = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
 const BULLET = /^\s{0,3}[-*+]\s+(.*)$/;
@@ -33,6 +38,52 @@ const NUMBERED = /^\s{0,3}(\d{1,9})[.)]\s+(.*)$/;
 const QUOTE = /^\s{0,3}>\s?(.*)$/;
 const FENCE = /^\s{0,3}(```|~~~)/;
 const RULE = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
+
+/** A table's separator row: `| --- | :-: |`, at least one cell, every cell
+ * dashes with an optional colon at either end. */
+const TABLE_SEPARATOR = /^\s{0,3}\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+
+/** A row's cells: split on the pipes that are not escaped or in code, the
+ * outer pipes optional. */
+export function tableCells(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
+  const cells: string[] = [];
+  let cell = "";
+  let code = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === "\\" && s[i + 1] === "|") {
+      cell += "\\|";
+      i++;
+    } else if (c === "`") {
+      code = !code;
+      cell += c;
+    } else if (c === "|" && !code) {
+      cells.push(cell.trim());
+      cell = "";
+    } else {
+      cell += c;
+    }
+  }
+  cells.push(cell.trim());
+  return cells;
+}
+
+/** Whether `lines[i]` begins a table: a row with a pipe, then a separator
+ * row with as many cells. */
+function startsTable(lines: string[], i: number): boolean {
+  const next = lines[i + 1];
+  if (next === undefined || !lines[i].includes("|") || !TABLE_SEPARATOR.test(next) || !next.includes("-")) return false;
+  return tableCells(lines[i]).length === tableCells(next).length;
+}
+
+function alignOf(cell: string): Align {
+  const left = cell.startsWith(":");
+  const right = cell.endsWith(":");
+  return left && right ? "center" : right ? "right" : left ? "left" : null;
+}
 
 /** Whether a line starts a block of its own, ending a paragraph. */
 function startsBlock(line: string): boolean {
@@ -77,6 +128,20 @@ export function parseMarkdown(source: string): MdBlock[] {
       blocks.push({ kind: "quote", children: parseInline(body.join(" ").trim()) });
       continue;
     }
+    if (startsTable(lines, i)) {
+      const header = tableCells(line);
+      const align = tableCells(lines[i + 1]).map(alignOf);
+      i += 2;
+      const rows: Inline[][][] = [];
+      // The body runs to the first blank line, or line without a pipe; a row
+      // is cut or padded to the header's width.
+      while (i < lines.length && lines[i].trim() !== "" && lines[i].includes("|")) {
+        const cells = tableCells(lines[i++]);
+        rows.push(header.map((_, k) => parseInline(cells[k] ?? "")));
+      }
+      blocks.push({ kind: "table", align, header: header.map(parseInline), rows });
+      continue;
+    }
     const numbered = NUMBERED.exec(line);
     if (BULLET.test(line) || numbered) {
       const ordered = Boolean(numbered);
@@ -93,7 +158,11 @@ export function parseMarkdown(source: string): MdBlock[] {
       continue;
     }
     const body: string[] = [];
-    while (i < lines.length && lines[i].trim() !== "" && (body.length === 0 || !startsBlock(lines[i]))) {
+    while (
+      i < lines.length &&
+      lines[i].trim() !== "" &&
+      (body.length === 0 || (!startsBlock(lines[i]) && !startsTable(lines, i)))
+    ) {
       body.push(lines[i++].trim());
     }
     blocks.push({ kind: "paragraph", children: parseInline(body.join(" ")) });

@@ -352,7 +352,8 @@ async fn a_self_serve_application_reads_as_its_user_and_only_its_tables() -> sc_
             )),
         )
         .await;
-    assert!(why.contains("milestone A7"), "{why}");
+    // A simulation predicts with models, which are the admin's alone (A7.6).
+    assert!(why.contains("admin's alone"), "{why}");
 
     let created = admin
         .ok(

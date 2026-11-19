@@ -25,8 +25,9 @@ becomes a Stan program's data:
 3. **Cases by region and week**: a BYM2 spatial model with a weekly random walk. Here it is an
    **adjacency table**, crossed with a time axis.
 
-Then there is a section on **doing prediction in code**, which is how a posterior answers a
-question about a new row for now.
+Then there is a section on **prediction for new homes**: the program says how a new row is
+predicted, and the posterior then predicts in formulas, datasets and the Simulation workspace
+like any other model, with a distribution for each row.
 
 This continues from [tutorial-models.md](tutorial-models.md): you know the Analytics UI's
 **model editor**, a named dataset and a fit. You don't need to know much Stan to follow along, since the programs are given in
@@ -662,18 +663,84 @@ too: `index(main.region → regions)`, `index(main.week → week)`, and `column(
 
 ---
 
-## Doing prediction in code
+## Prediction for new homes
 
 A predictive model from [tutorial-models.md](tutorial-models.md) predicts in a formula: a
-calculated field whose formula is `predict("House prices")` fills itself in. **A posterior
-doesn't do that here.** Saving `predict("Radon")` in a formula is refused, because the model is
+calculated field whose formula is `predict("House prices")` fills itself in. A posterior can do
+the same once its program says **how** to predict a row, because only the program knows: for
+radon, a new home's level is its county's `alpha`, plus `beta` times its floor, plus a home's own
+noise `sigma_y`. Stan computes that for new data itself, by **standalone generated quantities**:
+CmdStan reruns only the `generated quantities` block over the draws a fit already made, with new
+data in place of the old.
 
-> a posterior: its draws are the answer, and a posterior does not predict rows here — read its
-> draws in a code body (`m.draws(…)`, on `models.get(…)`) and compute the prediction there
+### The program predicts
 
-and `m.predict(row)` on its handle throws the same sentence. (Stan can do it itself, with
-CmdStan's standalone generated quantities over new data. That is designed and not yet built.)
-Meanwhile it's about fifteen lines, because code bodies have **`models`** beside `db`.
+Copy `models/radon.stan` to `models/radon_predict.stan` and give it data for the rows being
+predicted and a generated quantity over them:
+
+```stan
+data {
+  // … N, J, county, x, u, y as before …
+  int<lower=0> N_new;                                // count(new)
+  array[N_new] int<lower=1, upper=J> county_new;     // index(new.county -> counties)
+  vector[N_new] x_new;                               // column(new.floor)
+}
+// … parameters, transformed parameters and model as before …
+generated quantities {
+  vector[N_new] y_new;
+  for (i in 1:N_new) y_new[i] = normal_rng(alpha[county_new[i]] + beta * x_new[i], sigma_y);
+}
+```
+
+(The `log_lik` of the original can stay. It is left out here to keep the listing short.)
+
+**`new` is a dataset you never define.** It has the main dataset's columns, and its rows are
+whichever rows are being predicted. A fit binds it with no rows, so `N_new` is 0 and `y_new` is
+empty while sampling. In the binding table, bind the three new variables over `new`:
+
+| Variable | Binding |
+|---|---|
+| `N_new` | `count(new)` |
+| `county_new` | `index(new.county → counties)` |
+| `x_new` | `column(new.floor)` |
+
+Over `new` a binding is a count, a column, columns or an index into a dimension the fit made.
+Nothing may index *into* `new`. The **index** is what makes this correct: a new home's county
+gets the position that county had **at fit time**, so its `alpha` is the right one.
+
+Then set **Prediction** (in the settings, beside the program) to `y_new`. The save refuses a
+prediction that is not a generated quantity with one axis sized by `count(new)`. It also needs a
+**File store for the raw CmdStan run**, because the prediction reads the fit's run back. Fit, and
+make the fit **active**.
+
+### It predicts like any model
+
+- **In a formula.** `predicted_radon = predict("Radon")` on `homes` now saves, and every home
+  gets the mean of its posterior predictive distribution.
+- **From the API and code.** `predictRows` answers each row with a **distribution**: `{ mean, sd,
+  lower, upper, level }`, at level 0.9 (the 5 % and 95 % quantiles) unless you ask for another.
+  `m.predict(row, { detail: true })` in a code body gives the same object.
+- **In the Analytics UI.** A Model predictions operation in a dataset adds `predicted`,
+  `predicted_lower` and `predicted_upper` to every row. A *Simulation* workspace profiles the
+  model and compares scenarios ([tutorial-analytics.md](tutorial-analytics.md) part 7). In a
+  Simulation workspace the county is a drop-down, not a slider: a column bound by `index` is a
+  category.
+
+A county the fit never saw is refused by name: "`county` is `27099` in row `#1` of the rows
+being predicted, which is not one of the 85 values the fit saw in `counties`…". Refit after adding
+a county. A null is refused the same way.
+
+Each prediction is one CmdStan process per chain, run from the fit's own copy of the program, so
+it costs a compile only when the cache was cleared. Batch your rows: `predictRows` with a filter,
+a page of a calculated field, a Model predictions operation and a profile are each **one** call,
+however many rows they hold.
+
+### Or in code, from the draws
+
+A model whose program does not predict can still be predicted from in a code body, which has
+**`models`** beside `db`. Saving `predict("Radon")` over the original program is refused, because
+the model names no prediction, and the sentence says how to name one or to use `m.draws(…)`
+instead. With `m.draws(…)` it is about fifteen lines.
 
 Add `predicted_mean`, `predicted_q5` and `predicted_q95` (Float) to `homes`, mark the Radon fit
 **active**, and give `homes` a trigger on **insert** with a `run_js_code` body:
@@ -702,7 +769,7 @@ await db.homes.where({ id: row.id }).update({
 
 Insert a home in County 85. It gets that county's `alpha` mean as its prediction. Its interval
 combines the county's uncertainty with a home's own spread `sigma_y`, which is the posterior
-predictive distribution.
+predictive distribution: the same answer `y_new` gives, computed by hand.
 
 Three things make this correct rather than approximately right:
 

@@ -196,6 +196,24 @@ describe("a spatial join", () => {
   });
 });
 
+describe("the Model predictions operation", () => {
+  it("starts with no model and a prediction column whose name is free", () => {
+    const priced = { columns: [{ name: "prediction", type: "float" }], grain: { kind: "derived" as const } };
+    expect(defaultParams("model_predictions", priced.columns)).toEqual({
+      model: "",
+      name: "prediction_2",
+      interval: true,
+    });
+  });
+
+  it("says which model it adds, and whether with the interval", () => {
+    const predict = (params: Record<string, unknown>) =>
+      describeOperation(op("p", "model_predictions", { model: "House prices", name: "predicted", ...params }), t);
+    expect(predict({})).toBe("predicted = House prices, with its interval");
+    expect(predict({ interval: false })).toBe("predicted = House prices");
+  });
+});
+
 describe("what a formula may name", () => {
   it("offers the columns, one step along each key, and the child tables' counts", () => {
     const all = formulaCompletions(houses, report).map((c) => c.text);

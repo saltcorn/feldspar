@@ -1595,16 +1595,17 @@ fn path_under_mount(mount: &str, path: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// The Analytics framework is held back from the first release: a server
-    /// registers Saltcorn UI and not `analytics`. (Nothing else in this test
-    /// binary registers it; the integration tests that need it do so
-    /// themselves.) Turning `ANALYTICS_FRAMEWORK_ENABLED` back on means
-    /// replacing this test with one that it is offered.
+    /// A server offers the Analytics framework exactly when
+    /// `ANALYTICS_FRAMEWORK_ENABLED` is on (it was held back from the first
+    /// release, and is on again since 0.1.3), and Saltcorn UI always.
     #[test]
-    fn the_analytics_framework_is_not_offered_while_switched_off() {
+    fn the_analytics_framework_is_offered_while_switched_on() {
         install_compiled_frameworks();
         assert!(sc_app::framework_factory("saltcorn-ui").is_some());
-        assert!(sc_app::framework_factory(sc_analytics::app::ANALYTICS_FRAMEWORK).is_none());
+        assert_eq!(
+            sc_app::framework_factory(sc_analytics::app::ANALYTICS_FRAMEWORK).is_some(),
+            crate::analytics_app::ANALYTICS_FRAMEWORK_ENABLED,
+        );
     }
 
     #[test]

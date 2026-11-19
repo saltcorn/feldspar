@@ -9297,6 +9297,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-bayesreg"
+version = "0.1.3-dev"
+dependencies = [
+ "async-trait",
+ "sc-dataset",
+ "sc-error",
+ "sc-files",
+ "sc-model",
+ "sc-stan",
+ "sc-types",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "sc-catalog"
 version = "0.1.3-dev"
 dependencies = [
@@ -9371,6 +9387,7 @@ dependencies = [
  "sc-app",
  "sc-auth",
  "sc-backup",
+ "sc-bayesreg",
  "sc-catalog",
  "sc-check",
  "sc-config",
@@ -9443,6 +9460,7 @@ dependencies = [
 name = "sc-dataset"
 version = "0.1.3-dev"
 dependencies = [
+ "async-trait",
  "chrono",
  "sc-auth",
  "sc-catalog",
@@ -9915,6 +9933,7 @@ dependencies = [
  "sc-app",
  "sc-auth",
  "sc-backup",
+ "sc-bayesreg",
  "sc-catalog",
  "sc-check",
  "sc-config",

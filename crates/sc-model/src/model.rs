@@ -129,6 +129,19 @@ pub struct Model {
     /// with (§5). On the **model**, not the instance, because that is what makes
     /// two instances of one model comparable.
     pub split: Split,
+    /// The dataset columns a fit encodes as **features**, in the order given —
+    /// or `None` for every column but the label, which is what every model
+    /// saved before this field existed means.
+    ///
+    /// On the model rather than in the configuration because it is the host's
+    /// and not the provider's: the host encodes the features (Phase 3) for every
+    /// provider whose outcome is per row, so one list serves them all, and no
+    /// provider's own settings could collide with it. A hypothesis test and a
+    /// posterior name their columns in their own settings and take none
+    /// ([`OutcomeSpec::takes_features`](crate::OutcomeSpec::takes_features)).
+    ///
+    /// The label is never a feature; naming it here is refused on save.
+    pub features: Option<Vec<String>>,
     /// Sparse per-model values (§9).
     pub attributes: Attrs,
 }
@@ -157,6 +170,7 @@ impl Model {
             configuration: Attrs::new(),
             hyperparameters: Attrs::new(),
             split: Split::default(),
+            features: None,
             attributes: Attrs::new(),
         }
     }
@@ -180,6 +194,12 @@ impl Model {
     /// Set one configuration value, returning `self` for chaining.
     pub fn config(mut self, key: impl Into<String>, value: impl Into<Json>) -> Model {
         self.configuration.insert(key.into(), value.into());
+        self
+    }
+
+    /// Encode only these columns as features (see [`Model::features`]).
+    pub fn features<S: Into<String>>(mut self, columns: impl IntoIterator<Item = S>) -> Model {
+        self.features = Some(columns.into_iter().map(Into::into).collect());
         self
     }
 

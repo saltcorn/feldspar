@@ -3607,6 +3607,15 @@ async fn serve_analytics(
         )
     });
     set_cache_control(&mut response, rest);
+    if !is_hashed_asset(rest) {
+        // The document is `no-store`, not just `no-cache`: a page kept for
+        // Back/Forward is the build it was loaded with, and the Analytics UI is
+        // a page people leave (its **Admin** link) and come back to.
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(crate::analytics_app::DOCUMENT_CACHE_CONTROL),
+        );
+    }
     let policy = crate::security::analytics_content_security_policy(&map_hosts(state).await);
     let policy = HeaderValue::from_str(&policy)
         .unwrap_or_else(|_| HeaderValue::from_static(ANALYTICS_CONTENT_SECURITY_POLICY));

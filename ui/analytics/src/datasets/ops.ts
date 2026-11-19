@@ -10,7 +10,7 @@
 /** Where a dataset's rows start. */
 export type Base = { kind: "table"; table: string } | { kind: "dataset"; dataset: string };
 
-/** The operation kinds: A1's, and A5's Spatial join. */
+/** The operation kinds: A1's, A5's Spatial join and A7's Model predictions. */
 export type OpKind =
   | "calculated"
   | "filter"
@@ -24,7 +24,8 @@ export type OpKind =
   | "complete"
   | "join"
   | "union"
-  | "spatial_join";
+  | "spatial_join"
+  | "model_predictions";
 
 /** One operation of a dataset. */
 export type Operation = {
@@ -110,6 +111,13 @@ export const OP_KINDS: KindInfo[] = [
     label: "Spatial join",
     group: "combine",
     about: "Join another table or dataset where the geometries meet, or to the nearest.",
+  },
+  {
+    kind: "model_predictions",
+    label: "Model predictions",
+    group: "keep",
+    about:
+      "Add a model's prediction for every row, with its interval. The operations after it are computed in memory.",
   },
 ];
 
@@ -227,6 +235,8 @@ export function defaultParams(kind: OpKind, columns: StageColumn[]): Record<stri
         right: "",
         suffix: "_right",
       };
+    case "model_predictions":
+      return { model: "", name: uniqueName("prediction", columns.map((c) => c.name)), interval: true };
   }
 }
 
@@ -422,6 +432,10 @@ export function describeOperation(
     }
     case "union":
       return t("with {other}", { other: otherName(p.with, datasetName) });
+    case "model_predictions":
+      return p.interval === false
+        ? t("{name} = {model}", { name: str(p.name), model: str(p.model) })
+        : t("{name} = {model}, with its interval", { name: str(p.name), model: str(p.model) });
     case "spatial_join": {
       const other = otherName(p.with, datasetName);
       const left = str(p.left);

@@ -1,45 +1,64 @@
-// The model editor (analytics TODO A3.5–A3.6), at `#/models/<id>` and
-// `#/models/new`: one model — its dataset, its provider, its settings and
-// hyperparameters, its split — and below it the fit being looked at, with its
-// outputs, and the model's earlier fits.
+// The model editor (analytics TODO A3.5–A3.6; design A1 "Workbench"), at
+// `#/models/<id>` and `#/models/new`: one model — its dataset, its provider,
+// its settings and hyperparameters, its split — beside the model's fits.
+//
+// **The workbench.** A bar along the top holds the model's name, what a fit of
+// it produces, how it is called (`predict("…")`), whether what is on the
+// screen is saved, and Fit. Under it, a banner says when the dataset has
+// changed since the active fit. Then two columns: **Setup** on the left, the
+// questions in the order they come in — which data, which algorithm, which
+// features, what to tune, how the rows are divided — each a numbered section;
+// and the **Fits** on the right, each a card (`FitCard.tsx`) that keeps the
+// fit table's columns and opens in place on what the fit came to. Its full
+// report is still the modal (`FitReportModal.tsx`), opened from the card.
+//
+// For a provider that **binds data** (a posterior — Stan TODO §18) the setup
+// has no Features, Tuning or Split, because a posterior is not divided and
+// not searched: a formula model's sections are its Formula, its Priors and
+// its Sampler, with the data binding and the generated program folded under
+// them; a hand-written Stan model's are its program and data (the binding
+// table, `ModelBindings.tsx`) and its Sampler. Its fits' Result column is a
+// trust verdict built from the sampler's diagnostics, and an open card shows
+// the checks against their thresholds.
+//
+// **Narrow.** The editor sizes itself by its own width (a container query),
+// not the window's, because a split view gives it half of one: below the
+// breakpoint the columns become two tabs, Setup and Fits, each section of the
+// setup folds to a one-line summary, and a card's hyperparameters and report
+// drop under its name.
+//
+// **Saving.** An existing model is saved as it is edited, a moment after the
+// last change, and the bar says so ("All changes saved"); a new one is
+// created by "Create model" or by its first Fit. **Fit saves first**: a fit of
+// what is on the screen and a save of what is on the screen are the same
+// intention. While a fit runs its progress is pushed by the server
+// (`progress.ts`) into its card; when it finishes its card opens.
 //
 // A model is not a workspace: it is a global, named entity that formulas,
 // actions and panels refer to, as a dataset is. What a workspace would have
 // given — reopening as it was left — is the model's **view state**
-// (`viewState.ts`): which outputs are folded, the optional plots chosen and
-// the fit selected, written key by key as they change and read back on open.
-// None of it touches the model: a fit does not record it, and nothing about
-// "changed since this fit" looks at it.
-//
-// The form is the admin UI's model form, moved here (TODO "Predictive
-// models" 6.2–6.4), and the order is the order the questions come in: **which
-// data**, then **which provider and with what settings**, then **how the rows
-// are divided**. For a provider that **binds data** (a posterior — Stan TODO
-// §18) the form grows the program, its editor, the related datasets,
-// dimensions and the binding table (`ModelBindings.tsx`), and the split and
-// the grid are hidden, because a posterior is not divided and not searched.
-//
-// **Fit saves first**: a fit of what is on the screen and a save of what is on
-// the screen are the same intention. While a fit runs its progress is pushed
-// by the server (`progress.ts`); when it finishes it becomes the fit shown.
+// (`viewState.ts`): the optional plots chosen for the reports and the fit
+// open, written key by key as they change and read back on open. None of it
+// touches the model.
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Alert from "react-bootstrap/Alert";
 import Button from "react-bootstrap/Button";
-import Card from "react-bootstrap/Card";
-import Col from "react-bootstrap/Col";
+import Dropdown from "react-bootstrap/Dropdown";
 import Form from "react-bootstrap/Form";
-import Row from "react-bootstrap/Row";
 import Spinner from "react-bootstrap/Spinner";
-import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
 import { T, useT } from "../i18n";
 import { useAnnounce, useChanges, usePane } from "../panes";
 import { routeHash } from "../router";
-import { DatasetPicker, type DatasetItem } from "./DatasetPicker";
-import { FitRunning } from "./FitRunning";
-import { FitView } from "./FitView";
+import { useShell } from "../shell";
+import { DatasetPicker, datasetOptionLabel, type DatasetItem } from "./DatasetPicker";
+import { FitCard, FitHeader, type FitCardContext } from "./FitCard";
+import { fitNumbers, splitBar, tuningChanges, withValidation, type SplitForm } from "./fitCard";
+import { FitReportModal, type ReportTab } from "./FitReportModal";
+import { FormulaSection, type FormulaFrame } from "./FormulaEditor";
+import { FORMULA_KEYS, FORMULA_PROVIDER, readRows, writeRows, type FormulaCheck } from "./formula";
 import { BindingSection, type BindingState } from "./ModelBindings";
 import {
   BINDINGS_KEY,
@@ -52,18 +71,21 @@ import {
   POLICIES_KEY,
   buildHyperparameters,
   buildPolicies,
-  formatTimestamp,
+  featureChoices,
+  featuresBody,
   gridPoints,
-  headlineMetric,
   instanceLabel,
   orderInstances,
+  outcomeLabel,
   outcomeSummary,
   parseDraft,
   parseDrafts,
   printDrafts,
   printGridValue,
+  offered,
+  readColumns,
+  readFeatures,
   readHyperparameters,
-  readMetrics,
   readModelDataset,
   readOutcome,
   readPolicies,
@@ -77,21 +99,29 @@ import {
 } from "./models";
 import { useFitProgress } from "./progress";
 import { SettingsFields, buildConfig, readConfig } from "./settings";
-import { StatusBadge, fitTone } from "./StatusBadge";
-import { chosenFit, editorPatch, readEditorView, toggled, type EditorView } from "./viewState";
+import { StatusBadge } from "./StatusBadge";
+import { chosenFit, editorPatch, readEditorView, type EditorView } from "./viewState";
 
 /** How long the form waits after a keystroke before asking the server which
  * providers this dataset resolves. */
 const DEBOUNCE_MS = 600;
 
-/** The split as the form edits it: four boxes of text, so a half-typed `0.` is
- * not a number this form has to have an opinion about. */
-type SplitForm = { train: string; validation: string; test: string; seed: string };
+/** How long an existing model waits after the last edit before it is saved. */
+const AUTOSAVE_MS = 1200;
+
+/** How many fits are listed before "Show older fits". */
+const SHOWN_FITS = 6;
+
+/** How many sampler settings are shown before "Advanced". */
+const SAMPLER_SHOWN = 4;
 
 /** A split's part, as its box is labelled. */
 function splitName(part: "train" | "validation" | "test", t: (s: string) => string): string {
   return part === "train" ? t("Train") : part === "validation" ? t("Validation") : t("Test");
 }
+
+/** Whether the model on the screen is saved. */
+type SaveState = "saved" | "dirty" | "saving" | "error";
 
 export function ModelEditor({
   modelId,
@@ -108,6 +138,8 @@ export function ModelEditor({
   const { t } = useT();
   const pane = usePane();
   const changed = useAnnounce();
+  const { application } = useShell();
+  const mayCreate = !application || application.createWorkspaces;
   // Bumped when the model is changed on the other side of a split view, to
   // read it again.
   const [reloads, setReloads] = useState(0);
@@ -118,13 +150,15 @@ export function ModelEditor({
 
   const [id, setId] = useState<string | null>(modelId ?? null);
   const [model, setModel] = useState<ModelItem | null>(null);
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [datasetId, setDatasetId] = useState("");
-  const [provider, setProvider] = useState("");
-  const [config, setConfig] = useState<Record<string, string>>({});
-  const [hyper, setHyper] = useState<Record<string, string>>({});
-  const [split, setSplit] = useState<SplitForm>({
+  const [name, setNameRaw] = useState("");
+  const [description, setDescriptionRaw] = useState("");
+  const [datasetId, setDatasetIdRaw] = useState("");
+  const [provider, setProviderRaw] = useState("");
+  const [config, setConfigRaw] = useState<Record<string, string>>({});
+  const [hyper, setHyperRaw] = useState<Record<string, string>>({});
+  // The columns a fit encodes, or null for every column but the label.
+  const [features, setFeaturesRaw] = useState<string[] | null>(null);
+  const [split, setSplitRaw] = useState<SplitForm>({
     train: String(DEFAULT_SPLIT.train),
     validation: String(DEFAULT_SPLIT.validation),
     test: String(DEFAULT_SPLIT.test),
@@ -135,7 +169,7 @@ export function ModelEditor({
   const [providers, setProviders] = useState<ProviderItem[]>([]);
   const [resolved, setResolved] = useState(false);
   const [instances, setInstances] = useState<InstanceItem[]>([]);
-  const [binding, setBinding] = useState<BindingState>({
+  const [binding, setBindingRaw] = useState<BindingState>({
     related: [],
     dimensions: [],
     policies: {},
@@ -143,19 +177,52 @@ export function ModelEditor({
   });
   const [iface, setIface] = useState<Interface | null>(null);
   const [programCheck, setProgramCheck] = useState<string | null>(null);
+  const [formulaCheck, setFormulaCheck] = useState<FormulaCheck | null>(null);
 
-  // The view state's part that is the editor's, and the fit on the screen.
+  // The view state's part that is the editor's.
   const [view, setView] = useState<EditorView>({ collapsed: [], plots: [], fit: null });
-  const [selected, setSelected] = useState<string | null>(null);
+  // The fit cards open.
+  const [openFits, setOpenFits] = useState<string[]>([]);
   // The fit running now, followed over its progress socket.
   const [running, setRunning] = useState<string | null>(null);
+  // The fit whose full report is open, and on which tab.
+  const [reporting, setReporting] = useState<{ id: string; tab: ReportTab } | null>(null);
+  const [showOlder, setShowOlder] = useState(false);
+  const [showDescription, setShowDescription] = useState(false);
+  const [showFeatures, setShowFeatures] = useState(false);
+  // Narrow: which tab is shown, and which setup sections are unfolded.
+  const [tab, setTab] = useState<"setup" | "fits">(modelId ? "fits" : "setup");
+  const [unfolded, setUnfolded] = useState<string[]>([]);
+
+  // --- edits, and saving them ------------------------------------------------
+
+  // Every edit the admin makes bumps `edits`; the autosave writes the form and
+  // records the generation it wrote. Loading the model is not an edit.
+  const [edits, setEdits] = useState(0);
+  const [savedEdits, setSavedEdits] = useState(0);
+  const [saveState, setSaveState] = useState<SaveState>("saved");
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const touch = () => setEdits((n) => n + 1);
+  const setName = (v: string) => (setNameRaw(v), touch());
+  const setDescription = (v: string) => (setDescriptionRaw(v), touch());
+  const setDatasetId = (v: string) => (setDatasetIdRaw(v), touch());
+  const setProvider = (v: string) => (setProviderRaw(v), touch());
+  const setConfigKey = (key: string, value: string) => (setConfigRaw((c) => ({ ...c, [key]: value })), touch());
+  const setHyperKey = (key: string, value: string) => (setHyperRaw((h) => ({ ...h, [key]: value })), touch());
+  const setFeatures = (u: string[] | null | ((c: string[] | null) => string[] | null)) => (setFeaturesRaw(u), touch());
+  const setSplit = (u: SplitForm | ((s: SplitForm) => SplitForm)) => (setSplitRaw(u), touch());
+  const setBinding = (u: BindingState | ((b: BindingState) => BindingState)) => (setBindingRaw(u), touch());
 
   const dataset = useMemo(() => ({ dataset_id: datasetId }), [datasetId]);
   const datasetJson = JSON.stringify(dataset);
   const mainDataset = datasets.find((d) => d.id === datasetId) ?? null;
   const bindsData = Boolean(providers.find((p) => p.name === provider)?.binds_data);
+  // A formula provider binds data too, but derives its bindings from the
+  // formula (TODO-bayesian-regression §7): it has no binding table.
+  const formulaProvider = provider === FORMULA_PROVIDER;
+  const bindingTable = bindsData && !formulaProvider;
   const configJson = JSON.stringify(
-    configurationOf(specOf(providers, provider), config, bindsData ? binding : null),
+    configurationOf(specOf(providers, provider), config, bindingTable ? binding : null),
   );
 
   // --- loading ---------------------------------------------------------------
@@ -163,13 +230,13 @@ export function ModelEditor({
   const fill = useCallback((existing: ModelItem) => {
     const stored = readModelDataset(existing.dataset);
     setModel(existing);
-    setName(existing.name);
-    setDescription(existing.description);
-    setDatasetId(stored?.dataset_id ?? "");
-    setProvider(existing.provider);
-    setConfig(readConfig(existing.configuration));
+    setNameRaw(existing.name);
+    setDescriptionRaw(existing.description);
+    setDatasetIdRaw(stored?.dataset_id ?? "");
+    setProviderRaw(existing.provider);
+    setConfigRaw(readConfig(existing.configuration));
     const configuration = (existing.configuration ?? {}) as Record<string, unknown>;
-    setBinding({
+    setBindingRaw({
       related: readRelated(existing.related),
       dimensions: Object.entries(printDrafts(DIMENSION_KINDS, configuration[DIMENSIONS_KEY])).map(
         ([dimension, draft]) => ({ name: dimension, draft }),
@@ -177,9 +244,10 @@ export function ModelEditor({
       policies: readPolicies(configuration[POLICIES_KEY]),
       bindings: printDrafts(BINDING_KINDS, configuration[BINDINGS_KEY]),
     });
-    setHyper(readHyperparameters(existing.hyperparameters));
+    setHyperRaw(readHyperparameters(existing.hyperparameters));
+    setFeaturesRaw(readFeatures(existing.features));
     const storedSplit = readSplit(existing.split);
-    setSplit({
+    setSplitRaw({
       train: String(storedSplit.train),
       validation: String(storedSplit.validation),
       test: String(storedSplit.test),
@@ -205,10 +273,18 @@ export function ModelEditor({
           const ordered = orderInstances(fits);
           setView(remembered);
           setInstances(ordered);
-          setSelected(chosenFit(routeFit, remembered.fit, ordered));
+          // The card open: the fit the address names, else the one the view
+          // state remembers, else the active fit, else the newest fitted.
+          const open =
+            chosenFit(routeFit, remembered.fit, ordered) ??
+            ordered.find((f) => f.active)?.id ??
+            ordered.find((f) => f.status === "fitted")?.id ??
+            null;
+          setOpenFits(open ? [open] : []);
+          if (ordered.length === 0) setTab("setup");
           setRunning(ordered.find((f) => f.status === "fitting")?.id ?? null);
         } else {
-          setDatasetId(askedDataset ?? "");
+          setDatasetIdRaw(askedDataset ?? "");
         }
         setReady(true);
       } catch (err) {
@@ -293,12 +369,19 @@ export function ModelEditor({
     }
   };
 
-  const select = (fit: string) => {
-    setSelected(fit);
+  /** Open or close a fit's card; the one opened last is remembered. */
+  const toggleFit = (fit: string) => {
+    const opening = !openFits.includes(fit);
+    setOpenFits((open) => (opening ? [...open, fit] : open.filter((f) => f !== fit)));
+    if (opening) changeView({ fit });
+  };
+
+  const openFit = (fit: string) => {
+    setOpenFits((open) => (open.includes(fit) ? open : [...open, fit]));
     changeView({ fit });
   };
 
-  // The fit that finished becomes the fit shown, and the model is read again
+  // The fit that finished has its card opened, and the model is read again
   // for its last fit.
   const live = useFitProgress(running, () => {
     const finished = running;
@@ -307,7 +390,7 @@ export function ModelEditor({
     changed("model", id);
     void loadInstances(id);
     void api.getModel(id).then(setModel).catch(() => undefined);
-    if (finished) select(finished);
+    if (finished) openFit(finished);
   });
 
   // --- what the form knows ---------------------------------------------------
@@ -317,15 +400,33 @@ export function ModelEditor({
   const hyperSpace = buildHyperparameters(chosen?.hyperparameters ?? [], hyper);
   const points = gridPoints(hyperSpace);
   const validationRows = Number(split.validation) > 0;
+  const takesFeatures = Boolean(chosen?.takes_features);
+  const label = outcomeLabel(outcome);
+  const datasetColumns = readColumns(mainDataset?.columns);
+  const choices = featureChoices(datasetColumns, label);
+  /** Tick or untick one feature, keeping the dataset's order. */
+  const toggleFeature = (column: string, on: boolean) =>
+    setFeatures((current) => {
+      const next = new Set(current ?? []);
+      if (on) next.add(column);
+      else next.delete(column);
+      return choices.map((c) => c.name).filter((name) => next.has(name));
+    });
   // A binding provider's own controls edit these settings; the rest (the
   // sampler's, the runs store) are rendered as settings like any provider's.
   const settingsSpec = (chosen?.config_spec ?? []).filter(
-    (field) => !bindsData || !BINDING_FORM_KEYS.includes(field.name),
+    (field) =>
+      (!bindsData || !BINDING_FORM_KEYS.includes(field.name)) &&
+      (!formulaProvider || !FORMULA_KEYS.includes(field.name)),
   );
-  // The fit on the screen: the one chosen, else the active one, else the
-  // newest that fitted.
-  const shown =
-    selected ?? instances.find((f) => f.active)?.id ?? instances.find((f) => f.status === "fitted")?.id ?? null;
+
+  // The fits' numbers, and the fit the setup is compared with: the active
+  // one, else the newest that fitted.
+  const numbers = useMemo(() => fitNumbers(instances), [instances]);
+  const activeFit = instances.find((f) => f.active) ?? null;
+  const reference = activeFit ?? instances.find((f) => f.status === "fitted") ?? null;
+  const tuningWas = reference && !bindsData ? tuningChanges(hyper, reference.hyperparameters) : {};
+  const tuningChanged = Object.keys(tuningWas).length > 0;
 
   // --- saving and fitting ----------------------------------------------------
 
@@ -337,7 +438,7 @@ export function ModelEditor({
     provider,
     dataset,
     related: bindsData ? relatedBody(binding.related) : [],
-    configuration: configurationOf(specOf(providers, provider), config, bindsData ? binding : null),
+    configuration: configurationOf(specOf(providers, provider), config, bindingTable ? binding : null),
     hyperparameters: bindsData ? {} : hyperSpace,
     split: bindsData
       ? DEFAULT_SPLIT
@@ -347,23 +448,52 @@ export function ModelEditor({
           test: Number(split.test),
           seed: Math.trunc(Number(split.seed)) || 0,
         },
+    features: featuresBody(features, label, takesFeatures, datasetColumns),
     attributes: {},
   });
 
   /** Save, and answer the model's id — the same path Fit takes. `over`
-   * replaces parts of the form's body, for a change made in the same breath. */
-  const save = async (over: Partial<ReturnType<typeof body>> = {}): Promise<string> => {
-    const saved = await api.saveModel({ ...body(), ...over });
-    setId(saved.id);
-    setModel(saved);
-    setError(saved.error ?? null);
-    setProgramCheck(programCheckText(saved.program_check));
-    changed("model", saved.id);
-    // A new model now has an address of its own, so a reload comes back to it.
-    // Replaced rather than navigated to, so the form is not built again under
-    // the fit that is about to start.
-    if (!modelId && !id) pane.replace({ name: "model", id: saved.id });
-    return saved.id;
+   * replaces parts of the form's body, for a change made in the same breath.
+   * `movePasted` moves prior calls pasted into a formula into the prior
+   * table first, as committing the field does (§3.7) — not while the admin
+   * is still typing, which is when the autosave runs. */
+  const save = async (
+    over: Partial<ReturnType<typeof body>> = {},
+    { movePasted = true }: { movePasted?: boolean } = {},
+  ): Promise<string> => {
+    const generation = edits;
+    let current = { ...body(), ...over };
+    if (formulaProvider && movePasted) {
+      const answer = (await api.checkFormula(current as never)) as unknown as FormulaCheck;
+      if (answer.pasted > 0) {
+        setConfigRaw((c) => ({ ...c, formula: answer.formula, priors: writeRows(answer.priors) }));
+        current = {
+          ...current,
+          configuration: { ...current.configuration, formula: answer.formula, priors: answer.priors },
+        };
+      }
+    }
+    setSaveState("saving");
+    try {
+      const saved = await api.saveModel(current);
+      setId(saved.id);
+      setModel(saved);
+      setError(saved.error ?? null);
+      setProgramCheck(programCheckText(saved.program_check));
+      setSavedEdits((g) => Math.max(g, generation));
+      setSaveError(null);
+      setSaveState("saved");
+      changed("model", saved.id);
+      // A new model now has an address of its own, so a reload comes back to
+      // it. Replaced rather than navigated to, so the form is not built again
+      // under the fit that is about to start.
+      if (!modelId && !id) pane.replace({ name: "model", id: saved.id });
+      return saved.id;
+    } catch (err) {
+      setSaveState("error");
+      setSaveError(errorMessage(err, t("Could not save the model.")));
+      throw err;
+    }
   };
 
   /** Save, showing a refusal on the form and rejecting with it. */
@@ -376,8 +506,21 @@ export function ModelEditor({
     }
   };
 
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
+  // The autosave: an existing model, a moment after the last edit. A refusal
+  // is shown in the bar and tried again at the next edit.
+  const latestSave = useRef(save);
+  latestSave.current = save;
+  useEffect(() => {
+    if (!id || edits === savedEdits) return undefined;
+    setSaveState((s) => (s === "saving" ? s : "dirty"));
+    const timer = window.setTimeout(() => {
+      void latestSave.current({}, { movePasted: false }).catch(() => undefined);
+    }, AUTOSAVE_MS);
+    return () => window.clearTimeout(timer);
+  }, [id, edits, savedEdits]);
+
+  /** "Create model": a new model saved for the first time. */
+  const create = async () => {
     setBusy(true);
     setError(null);
     try {
@@ -399,6 +542,7 @@ export function ModelEditor({
       const started = await api.fitModel(saved, { name: null, description: null });
       await loadInstances(saved);
       setRunning(started.id);
+      setTab("fits");
     } catch (err) {
       setError(errorMessage(err, t("Could not start the fit.")));
     } finally {
@@ -415,14 +559,28 @@ export function ModelEditor({
     }
   };
 
+  const cancel = async (instance: InstanceItem) => {
+    try {
+      await api.cancelModelFit(instance.id);
+      if (id) await loadInstances(id);
+    } catch (err) {
+      setError(errorMessage(err, t("Could not cancel the fit.")));
+    }
+  };
+
   const removeInstance = async (instance: InstanceItem) => {
-    if (!window.confirm(t('Remove the fit "{name}"?', { name: instanceLabel(instance) }))) return;
+    const question = instance.report
+      ? t('Remove the fit "{name}"? Its report "{report}" stays, but its plots and tables will say the fit is gone.', {
+          name: instanceLabel(instance),
+          report: instance.report.name,
+        })
+      : t('Remove the fit "{name}"?', { name: instanceLabel(instance) });
+    if (!window.confirm(question)) return;
     try {
       await api.deleteModelInstance(instance.id);
-      if (selected === instance.id) {
-        setSelected(null);
-        changeView({ fit: null });
-      }
+      setOpenFits((open) => open.filter((f) => f !== instance.id));
+      if (view.fit === instance.id) changeView({ fit: null });
+      if (reporting?.id === instance.id) setReporting(null);
       if (id) await loadInstances(id);
     } catch (err) {
       setError(errorMessage(err, t("Could not remove that fit.")));
@@ -444,210 +602,440 @@ export function ModelEditor({
     );
   }
 
-  return (
-    <div className="an-page an-model-editor">
-      <div className="d-flex align-items-center gap-2 mb-3 flex-wrap">
-        <Button variant="outline-secondary" size="sm" onClick={() => pane.go({ name: "home" })}>
-          ← <T text="All models" />
-        </Button>
-        <h2 className="h3 mb-0">{id ? name || t("Model") : t("New model")}</h2>
-        {model?.error && (
-          <StatusBadge tone="red" title={model.error}>
-            <T text="Cannot be fitted" />
-          </StatusBadge>
+  // --- what stops a fit ------------------------------------------------------
+
+  const unmatched = formulaProvider ? (formulaCheck?.table?.unmatched.length ?? 0) : 0;
+  const blocker =
+    name.trim() === ""
+      ? t("Name the model first")
+      : datasetId === "" || provider === ""
+        ? t("Choose a dataset and a provider first")
+        : unmatched > 0
+          ? unmatched === 1
+            ? t("Resolve 1 unmatched prior first")
+            : t("Resolve {count} unmatched priors first", { count: unmatched })
+          : !bindsData && !splitSums(split)
+            ? t("The split must sum to 1")
+            : !bindsData && points === 0
+              ? t("A tuning list is empty")
+              : null;
+
+  // --- the setup column ------------------------------------------------------
+
+  const section = (key: string) => ({
+    folded: !unfolded.includes(key),
+    onFold: () => setUnfolded((u) => (u.includes(key) ? u.filter((k) => k !== key) : [...u, key])),
+  });
+  let step = 0;
+  const next = () => ++step;
+  const providerName = chosen?.name ?? provider;
+
+  const dataSection = (
+    <SetupSection
+      n={next()}
+      title={<T text="Data" />}
+      summary={mainDataset ? datasetOptionLabel(mainDataset) : t("No dataset chosen")}
+      {...section("data")}
+    >
+      <DatasetPicker
+        compact
+        value={datasetId}
+        onChange={setDatasetId}
+        datasets={datasets}
+        idPrefix="model-main"
+        back={id ? routeHash({ name: "model", id }) : undefined}
+        onCopied={async (copy) => {
+          setDatasets((list) => [...list.filter((d) => d.id !== copy.id), copy]);
+          setDatasetIdRaw(copy.id);
+          // Saved at once: the copy is this model's from now on, and the next
+          // thing done with it is usually to edit it.
+          if (id) await saveQuietly({ dataset: { dataset_id: copy.id } });
+          else touch();
+        }}
+        beforeEdit={id ? () => saveQuietly({}) : undefined}
+        previewNote={() => (
+          <T text="The first rows, and the type each column’s values came back as — which is what the provider’s form is built from." />
+        )}
+      />
+    </SetupSection>
+  );
+
+  const algorithmSection = (
+    <SetupSection
+      n={next()}
+      title={<T text="Algorithm" />}
+      summary={[providerName || t("No provider chosen"), label && t("label {label}", { label })]
+        .filter(Boolean)
+        .join(" · ")}
+      {...section("algorithm")}
+    >
+      <Form.Group className="mb-2" controlId="modelProvider">
+        <Form.Label>
+          <T text="Provider" />
+        </Form.Label>
+        <Form.Select value={provider} onChange={(e) => setProvider(e.target.value)}>
+          <option value="">—</option>
+          {/* A provider whose module was uninstalled under a saved model is
+              still shown, or saving this form would silently repoint the
+              model at another one. */}
+          {provider !== "" && providers.every((p) => p.name !== provider) && (
+            <option value={provider}>{t("{name} (not on this server)", { name: provider })}</option>
+          )}
+          {/* An unlisted provider (Stan, for now) is offered only to the model
+              that already uses it. */}
+          {providers.filter((p) => offered(p, provider, model)).map((p) => (
+            <option key={p.name} value={p.name}>
+              {p.name}
+              {p.module ? ` — ${p.module}` : ""}
+              {p.unavailable ? ` — ${t("unavailable here")}` : ""}
+            </option>
+          ))}
+        </Form.Select>
+        {chosen && <Form.Text muted>{chosen.description}</Form.Text>}
+        {/* Listed rather than hidden (Stan TODO §4): the model can still be
+            written and saved, and the reason is what the admin needs to fix
+            the server. */}
+        {chosen?.unavailable && (
+          <Alert variant="warning" className="mt-2 mb-0 py-2 small">
+            {chosen.unavailable}
+          </Alert>
+        )}
+      </Form.Group>
+      {chosen && !bindsData && settingsSpec.length > 0 && (
+        <>
+          {!resolved && (
+            <p className="text-muted small">
+              <T text="The dataset could not be read, so a setting that would offer this dataset's columns is a text box here." />
+            </p>
+          )}
+          <div className="an-wb-fields mt-3">
+            <SettingsFields spec={settingsSpec} values={config} onChange={setConfigKey} idPrefix="model-config" />
+          </div>
+        </>
+      )}
+      <div className="small an-wb-outcome">
+        {outcome ? (
+          <>
+            → <T text="Outcome:" /> <strong>{outcomeSummary(outcome)}</strong>
+          </>
+        ) : (
+          <span className="text-muted">
+            {chosen?.outcome_error ??
+              (resolved ? t("Pick a provider.") : t("Pick a dataset that reads, and this says what a fit would produce."))}
+          </span>
         )}
       </div>
-      {error && <Alert variant="danger">{error}</Alert>}
+      {chosen?.standardise && (
+        <Form.Text muted className="d-block">
+          <T text="This provider is handed standardised features, so its parameters are in standard deviations rather than the data's own units." />
+        </Form.Text>
+      )}
+    </SetupSection>
+  );
 
-        <Form onSubmit={(e) => void submit(e)}>
-          <Row>
-            <Col md={6}>
-              <Form.Group className="mb-3" controlId="modelName">
-                <Form.Label>
-                  <T text="Name" /><span className="text-danger"> *</span>
-                </Form.Label>
-                <Form.Control value={name} required onChange={(e) => setName(e.target.value)} />
-                <Form.Text muted>
-                  <T text='What predict("…") in a formula and models.get("…") in code name this model by.' />
-                </Form.Text>
-              </Form.Group>
-            </Col>
-            <Col md={6}>
-              <Form.Group className="mb-3" controlId="modelDescription">
-                <Form.Label><T text="Description" /></Form.Label>
-                <Form.Control
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
+  const featureCount = features === null ? choices.length : features.length;
+  const featuresSection = chosen && takesFeatures && !bindsData && (
+    <SetupSection
+      n={next()}
+      title={<T text="Features" />}
+      summary={
+        features === null
+          ? t("All but the label · {count}", { count: choices.length })
+          : t("{count} chosen", { count: features.length })
+      }
+      aside={
+        <Button size="sm" variant="outline-secondary" onClick={() => setShowFeatures((v) => !v)}>
+          {showFeatures ? <T text="Done" /> : <T text="Choose…" />}
+        </Button>
+      }
+      {...section("features")}
+    >
+      <div className="small">
+        <strong>{features === null ? t("All columns but the label") : t("The columns chosen")}</strong>
+        <span className="text-secondary"> · {t("{count} columns", { count: featureCount })}</span>
+      </div>
+      {showFeatures && (
+        <div className="mt-2">
+          <Form.Check
+            type="radio"
+            id="model-features-all"
+            name="model-features"
+            label={t("Every column but the label")}
+            checked={features === null}
+            onChange={() => setFeatures(null)}
+          />
+          <Form.Check
+            type="radio"
+            id="model-features-chosen"
+            name="model-features"
+            label={t("Only the columns ticked below")}
+            checked={features !== null}
+            // Starts from every column, so choosing is unticking the few to
+            // leave out.
+            onChange={() => setFeatures(choices.map((c) => c.name))}
+          />
+          {features !== null && (
+            <div className="an-wb-colchecks mt-2 ms-4">
+              {choices.length === 0 && (
+                <span className="text-muted small">
+                  <T text="The dataset's columns are not known yet: pick a dataset that reads." />
+                </span>
+              )}
+              {choices.map((column) => (
+                <Form.Check
+                  key={column.name}
+                  type="checkbox"
+                  id={`model-feature-${column.name}`}
+                  label={
+                    <>
+                      {column.name}
+                      {column.type && column.type !== "unknown" && (
+                        <span className="text-muted small"> {column.type}</span>
+                      )}
+                    </>
+                  }
+                  checked={features.includes(column.name)}
+                  onChange={(e) => toggleFeature(column.name, e.target.checked)}
                 />
-              </Form.Group>
-            </Col>
-          </Row>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      <p className="text-secondary small mt-2 mb-0">
+        <T text="A row with a blank in a chosen column, or in the label, is left out of the fit." />
+      </p>
+    </SetupSection>
+  );
 
-          {/* --- the dataset ------------------------------------------------ */}
-          <Card className="mb-3">
-            <Card.Header><T text="Dataset" /></Card.Header>
-            <Card.Body>
-              <DatasetPicker
-                value={datasetId}
-                onChange={setDatasetId}
-                datasets={datasets}
-                idPrefix="model-main"
-                back={id ? routeHash({ name: "model", id }) : undefined}
-                onCopied={async (copy) => {
-                  setDatasets((list) => [...list.filter((d) => d.id !== copy.id), copy]);
-                  setDatasetId(copy.id);
-                  // Saved at once: the copy is this model's from now on, and
-                  // the next thing done with it is usually to edit it.
-                  if (id) await saveQuietly({ dataset: { dataset_id: copy.id } });
-                }}
-                beforeEdit={id ? () => saveQuietly({}) : undefined}
-                previewNote={(preview) => (
+  const tuningSection = chosen && !bindsData && chosen.hyperparameters.length > 0 && (
+    <SetupSection
+      n={next()}
+      title={<T text="Tuning" />}
+      changed={tuningChanged}
+      tint={tuningChanged}
+      summary={
+        chosen.hyperparameters
+          .map((f) => `${f.label.toLowerCase()} ${hyper[f.name]?.trim() || printGridValue(f.default) || t("default")}`)
+          .join(" · ")
+      }
+      aside={
+        points > 1 ? (
+          <span className="badge bg-secondary-lt">
+            {points > MAX_GRID_POINTS
+              ? t("{count} combinations — over {cap}", { count: points, cap: MAX_GRID_POINTS })
+              : t("{count} combinations", { count: points })}
+          </span>
+        ) : undefined
+      }
+      {...section("tuning")}
+    >
+      <div className="an-wb-fields">
+        {chosen.hyperparameters.map((field) => (
+          <Form.Group
+            key={field.name}
+            controlId={`model-hyper-${field.name}`}
+            className={(hyper[field.name] ?? "").includes(",") || tuningWas[field.name] ? "an-wb-wide" : undefined}
+          >
+            <Form.Label>{field.label}</Form.Label>
+            <Form.Control
+              className="font-monospace"
+              value={hyper[field.name] ?? ""}
+              placeholder={printGridValue(field.default) || t("the default")}
+              onChange={(e) => setHyperKey(field.name, e.target.value)}
+            />
+            {(hyper[field.name] ?? "").includes(",") || tuningWas[field.name] ? (
+              <Form.Text muted>
+                <T text="One value, or a list to try each." />
+                {tuningWas[field.name] && reference && (
                   <>
-                    <T text="The first rows, and the type each column’s values came back as — which is what the provider’s form below is built from." />
-                    {!bindsData &&
-                      preview.primary_key &&
-                      ` ${t("Split by {column}.", { column: preview.primary_key })}`}
+                    {" "}
+                    {t("Was {value} in fit #{fit}.", {
+                      value: tuningWas[field.name],
+                      fit: numbers.get(reference.id) ?? "",
+                    })}
                   </>
                 )}
+              </Form.Text>
+            ) : null}
+          </Form.Group>
+        ))}
+      </div>
+      {points > MAX_GRID_POINTS && (
+        <p className="text-danger small mt-2 mb-0">
+          {t("{count} combinations, and each one is a fit — more than the {cap} a fit will run.", {
+            count: points,
+            cap: MAX_GRID_POINTS,
+          })}
+        </p>
+      )}
+      {points === 0 && (
+        <p className="text-danger small mt-2 mb-0">
+          <T text="One of these is an empty list, which is a search over nothing." />
+        </p>
+      )}
+      {points > 1 && !validationRows && (
+        <div className="an-wb-note mt-3">
+          <p className="mb-2">
+            <T text="A list needs validation rows to pick the best value. None are set." />
+          </p>
+          <Button size="sm" variant="outline-secondary" onClick={() => setSplit((s) => withValidation(s))}>
+            <T text="Use 10% for validation" />
+          </Button>
+        </div>
+      )}
+    </SetupSection>
+  );
+
+  const bar = splitBar(split);
+  const splitSection = !bindsData && (
+    <SetupSection
+      n={next()}
+      title={<T text="Split" />}
+      summary={[...bar.map((b) => `${splitName(b.part, t).toLowerCase()} ${b.percent}%`), t("seed {seed}", { seed: split.seed })].join(
+        " · ",
+      )}
+      {...section("split")}
+    >
+      <div className="an-wb-splitbar" aria-hidden="true">
+        {bar.map((b) => (
+          <span key={b.part} className={`is-${b.part}`} style={{ flexBasis: `${b.percent}%` }}>
+            {splitName(b.part, t)} {b.percent}%
+          </span>
+        ))}
+      </div>
+      <div className="an-wb-split">
+        {(["train", "validation", "test"] as const).map((part) => (
+          <Form.Group key={part} controlId={`model-split-${part}`}>
+            <Form.Label>{splitName(part, t)}</Form.Label>
+            <Form.Control
+              type="number"
+              step="0.05"
+              min="0"
+              max="1"
+              value={split[part]}
+              onChange={(e) => setSplit((s) => ({ ...s, [part]: e.target.value }))}
+            />
+          </Form.Group>
+        ))}
+        <Form.Group controlId="model-split-seed">
+          <Form.Label>
+            <T text="Seed" />
+          </Form.Label>
+          <Form.Control type="number" value={split.seed} onChange={(e) => setSplit((s) => ({ ...s, seed: e.target.value }))} />
+        </Form.Group>
+      </div>
+      {!splitSums(split) && (
+        <p className="text-danger small mt-2 mb-0">
+          <T text="The three fractions must sum to 1." />
+        </p>
+      )}
+      <p className="text-secondary small mt-2 mb-1">
+        <T text="Each row keeps its side between fits: it is set by the row's key and the seed." />
+      </p>
+      <details className="an-wb-details small">
+        <summary>
+          <T text="How?" />
+        </summary>
+        <T text="Which side of the split a row falls on is a hash of its primary key and the seed, not a shuffle — so new rows arriving keep every old row where it was, and the test metric of this fit is comparable with the test metric of the last one. The fractions are therefore approximate; each fit records the counts it got." />
+      </details>
+    </SetupSection>
+  );
+
+  /** The sampler's settings: the first few, the rest under Advanced. */
+  const samplerSection = (n: number) =>
+    chosen &&
+    settingsSpec.length > 0 && (
+      <SetupSection
+        n={n}
+        title={<T text="Sampler" />}
+        summary={settingsSpec
+          .slice(0, SAMPLER_SHOWN)
+          .map((f) => `${f.label.toLowerCase()} ${config[f.name] ?? printGridValue(f.default)}`)
+          .join(" · ")}
+        {...section("sampler")}
+      >
+        <div className="an-wb-fields">
+          <SettingsFields
+            spec={settingsSpec.slice(0, SAMPLER_SHOWN)}
+            values={config}
+            onChange={setConfigKey}
+            idPrefix="model-config"
+          />
+        </div>
+        {settingsSpec.length > SAMPLER_SHOWN && (
+          <details className="an-wb-details">
+            <summary>
+              {t("Advanced · {count} more", { count: settingsSpec.length - SAMPLER_SHOWN })}{" "}
+              {settingsSpec.slice(SAMPLER_SHOWN).every((f) => (config[f.name] ?? "") === "") && (
+                <span className="badge bg-secondary-lt ms-1">
+                  <T text="all defaults" />
+                </span>
+              )}
+            </summary>
+            <div className="an-wb-fields mt-2">
+              <SettingsFields
+                spec={settingsSpec.slice(SAMPLER_SHOWN)}
+                values={config}
+                onChange={setConfigKey}
+                idPrefix="model-config"
               />
-            </Card.Body>
-          </Card>
+            </div>
+          </details>
+        )}
+      </SetupSection>
+    );
 
-          {/* --- the provider ----------------------------------------------- */}
-          <Card className="mb-3">
-            <Card.Header><T text="Provider" /></Card.Header>
-            <Card.Body>
-              <Row>
-                <Col md={5}>
-                  <Form.Group className="mb-3" controlId="modelProvider">
-                    <Form.Label>
-                      <T text="Model provider" /><span className="text-danger"> *</span>
-                    </Form.Label>
-                    <Form.Select value={provider} onChange={(e) => setProvider(e.target.value)}>
-                      <option value="">—</option>
-                      {/* A provider whose module was uninstalled under a saved
-                          model is still shown, or saving this form would
-                          silently repoint the model at another one. */}
-                      {provider !== "" && providers.every((p) => p.name !== provider) && (
-                        <option value={provider}>
-                          {t("{name} (not on this server)", { name: provider })}
-                        </option>
-                      )}
-                      {providers.map((p) => (
-                        <option key={p.name} value={p.name}>
-                          {p.name}
-                          {p.module ? ` (${p.module})` : ""}
-                          {p.unavailable ? ` — ${t("unavailable here")}` : ""}
-                        </option>
-                      ))}
-                    </Form.Select>
-                    {chosen && <Form.Text muted>{chosen.description}</Form.Text>}
-                    {/* Listed rather than hidden (Stan TODO §4): the model can
-                        still be written and saved, and the reason is what the
-                        admin needs to fix the server. */}
-                    {chosen?.unavailable && (
-                      <Alert variant="warning" className="mt-2 mb-0 py-2 small">
-                        {chosen.unavailable}
-                      </Alert>
-                    )}
-                  </Form.Group>
-                </Col>
-                <Col md={7}>
-                  <Form.Label><T text="Outcome" /></Form.Label>
-                  <div className="mb-3">
-                    {outcome ? (
-                      <StatusBadge tone="blue">{outcomeSummary(outcome)}</StatusBadge>
-                    ) : (
-                      <span className="text-muted">
-                        {chosen?.outcome_error ??
-                          (resolved
-                            ? t("Pick a provider.")
-                            : t("Pick a dataset that reads, and this says what a fit would produce."))}
-                      </span>
-                    )}
-                  </div>
-                  {chosen?.standardise && (
-                    <Form.Text muted className="d-block">
-                      <T text="This provider is handed standardised features, so its parameters are in standard deviations rather than the data's own units." />
-                    </Form.Text>
-                  )}
-                </Col>
-              </Row>
+  // A formula model's own parts, numbered on from the algorithm.
+  const formulaStart = step;
+  const formulaFrame = (f: FormulaFrame): ReactNode =>
+    f.part === "data" ? (
+      <details className="an-wb-section an-wb-section-details">
+        <summary>{f.title}</summary>
+        <div className="d-flex justify-content-end px-3 pt-2">{f.aside}</div>
+        {f.children}
+      </details>
+    ) : (
+      <SetupSection
+        n={formulaStart + (f.part === "formula" ? 1 : 2)}
+        title={f.title}
+        aside={f.aside}
+        problem={f.problem}
+        flush={f.flush}
+        summary={
+          f.part === "formula"
+            ? (config.formula ?? "").split("\n")[0]
+            : t("{count} set by you", { count: readRows(config.priors).length })
+        }
+        {...section(f.part)}
+      >
+        {f.children}
+      </SetupSection>
+    );
 
-              {chosen && !bindsData && settingsSpec.length > 0 && (
-                <>
-                  <hr />
-                  <h4 className="h5"><T text="Settings" /></h4>
-                  {!resolved && !bindsData && (
-                    <p className="text-muted small">
-                      <T text="The dataset could not be read, so a setting that would offer this dataset's columns is a text box here." />
-                    </p>
-                  )}
-                  <SettingsFields
-                    spec={settingsSpec}
-                    values={config}
-                    onChange={(key, value) => setConfig((c) => ({ ...c, [key]: value }))}
-                    idPrefix="model-config"
-                  />
-                </>
-              )}
-
-              {chosen && !bindsData && chosen.hyperparameters.length > 0 && (
-                <>
-                  <hr />
-                  <h4 className="h5"><T text="Hyperparameters" /></h4>
-                  <p className="text-muted small">
-                    <T text="A value, or several separated by commas — a fit runs every combination of the lists, scores each on the validation rows and reports the winner. A blank box leaves the provider's own default." />
-                  </p>
-                  <Row>
-                    {chosen.hyperparameters.map((field) => (
-                      <Col md={4} key={field.name}>
-                        <Form.Group className="mb-3" controlId={`model-hyper-${field.name}`}>
-                          <Form.Label>{field.label}</Form.Label>
-                          <Form.Control
-                            className="font-monospace"
-                            value={hyper[field.name] ?? ""}
-                            placeholder={printGridValue(field.default) || t("the default")}
-                            onChange={(e) =>
-                              setHyper((h) => ({ ...h, [field.name]: e.target.value }))
-                            }
-                          />
-                        </Form.Group>
-                      </Col>
-                    ))}
-                  </Row>
-                  {points > 1 && (
-                    <p className="text-muted small mb-0">
-                      {points > MAX_GRID_POINTS
-                        ? t(
-                            "{count} combinations, and each one is a fit — more than the {cap} a fit will run.",
-                            { count: points, cap: MAX_GRID_POINTS },
-                          )
-                        : t("{count} combinations, and each one is a fit.", {
-                            count: points,
-                          })}{" "}
-                      {!validationRows &&
-                        t(
-                          "A search scores its points on the validation rows, and this split has none — give it some below.",
-                        )}
-                    </p>
-                  )}
-                  {points === 0 && (
-                    <p className="text-danger small mb-0">
-                      <T text="One of these is an empty list, which is a search over nothing." />
-                    </p>
-                  )}
-                </>
-              )}
-            </Card.Body>
-          </Card>
-
-          {/* --- the program and its data (a binding provider) --------------- */}
-          {bindsData && chosen && (
+  const setupBody = (
+    <>
+      {dataSection}
+      {algorithmSection}
+      {formulaProvider && chosen && (
+        <FormulaSection
+          config={config}
+          setConfig={setConfigKey}
+          modelBody={body}
+          savedId={id}
+          onConverted={(made) => pane.go({ name: "model", id: made })}
+          frame={formulaFrame}
+          between={samplerSection(formulaStart + 3)}
+          onCheck={setFormulaCheck}
+        />
+      )}
+      {bindingTable && chosen && (
+        <>
+          <SetupSection n={next()} title={<T text="Program and data" />} summary={t("The program and its bindings")} {...section("program")}>
             <BindingSection
               spec={chosen.config_spec}
               config={config}
-              setConfig={(key, value) => setConfig((c) => ({ ...c, [key]: value }))}
+              setConfig={setConfigKey}
               state={binding}
               setState={setBinding}
               iface={iface}
@@ -657,190 +1045,363 @@ export function ModelEditor({
               modelBody={body}
               modelId={id}
             />
-          )}
-          {/* The sampler's settings come after the program and its data, which
-              are what the admin is answering first. */}
-          {bindsData && chosen && settingsSpec.length > 0 && (
-            <Card className="mb-3">
-              <Card.Header><T text="Settings" /></Card.Header>
-              <Card.Body>
-                <SettingsFields
-                  spec={settingsSpec}
-                  values={config}
-                  onChange={(key, value) => setConfig((c) => ({ ...c, [key]: value }))}
-                  idPrefix="model-config"
-                />
-              </Card.Body>
-            </Card>
-          )}
+          </SetupSection>
+          {samplerSection(next())}
+        </>
+      )}
+      {!bindsData && (
+        <>
+          {featuresSection}
+          {tuningSection}
+          {splitSection}
+        </>
+      )}
+    </>
+  );
 
-          {/* --- the split --------------------------------------------------- */}
-          {!bindsData && (
-          <Card className="mb-3">
-            <Card.Header><T text="Split" /></Card.Header>
-            <Card.Body>
-              <Row>
-                {(["train", "validation", "test"] as const).map((part) => (
-                  <Col md={3} key={part}>
-                    <Form.Group className="mb-3" controlId={`model-split-${part}`}>
-                      <Form.Label>{splitName(part, t)}</Form.Label>
-                      <Form.Control
-                        type="number"
-                        step="0.05"
-                        min="0"
-                        max="1"
-                        value={split[part]}
-                        onChange={(e) => setSplit((s) => ({ ...s, [part]: e.target.value }))}
-                      />
-                    </Form.Group>
-                  </Col>
-                ))}
-                <Col md={3}>
-                  <Form.Group className="mb-3" controlId="model-split-seed">
-                    <Form.Label><T text="Seed" /></Form.Label>
-                    <Form.Control
-                      type="number"
-                      value={split.seed}
-                      onChange={(e) => setSplit((s) => ({ ...s, seed: e.target.value }))}
-                    />
-                  </Form.Group>
-                </Col>
-              </Row>
-              {!splitSums(split) && (
-                <p className="text-danger small mb-2">
-                  <T text="The three fractions must sum to 1." />
-                </p>
-              )}
-              <p className="text-muted small mb-0">
-                <T text="Which side of the split a row falls on is a hash of its primary key and the seed, not a shuffle — so new rows arriving keep every old row where it was, and the test metric of this fit is comparable with the test metric of the last one. The fractions are therefore approximate; each fit records the counts it got." />
-              </p>
-            </Card.Body>
-          </Card>
-          )}
+  // --- the fits column -------------------------------------------------------
 
-          {programCheck && (
-            <Alert variant="secondary">
-              <pre className="text-pre-wrap small mb-0">{programCheck}</pre>
-            </Alert>
-          )}
+  // Running first, then the active fit, then newest first.
+  const ordered = [...instances].sort(
+    (a, b) => Number(b.status === "fitting") - Number(a.status === "fitting"),
+  );
+  const listed = showOlder ? ordered : ordered.slice(0, SHOWN_FITS);
+  const posteriorModel = bindsData;
+  const cardCtx: FitCardContext | null = model
+    ? {
+        model,
+        datasetName: mainDataset?.name,
+        providerDescription: chosen?.description,
+        formula: formulaProvider ? { formula: config.formula ?? "", family: config.family ?? "gaussian" } : null,
+        plots: view.plots,
+        onPlots: (plots) => changeView({ plots }),
+        mayCreate,
+        posterior: posteriorModel,
+      }
+    : null;
 
-          <div className="btn-list mb-4">
-            <Button type="submit" disabled={busy}>
-              {busy ? <T text="Saving…" /> : id ? <T text="Save changes" /> : <T text="Create model" />}
-            </Button>
-            <Button variant="success" disabled={busy || running !== null} onClick={() => void fit()}>
-              <T text="Fit" />
-            </Button>
-            <span className="text-muted small align-self-center">
-              <T text="Fitting saves this model first, so what is fitted is what is on the screen." />
-            </span>
-          </div>
-        </Form>
+  const savedNote =
+    !id ? null : saveState === "saving" ? (
+      <span className="text-secondary">
+        <T text="Saving…" />
+      </span>
+    ) : saveState === "error" ? (
+      <span className="text-danger" title={saveError ?? undefined}>
+        <T text="Not saved" />
+      </span>
+    ) : saveState === "dirty" ? (
+      <span className="text-secondary">
+        <T text="Unsaved changes" />
+      </span>
+    ) : (
+      <span className="text-secondary">
+        ✓ <T text="All changes saved" />
+      </span>
+    );
 
-      {/* --- the fit ------------------------------------------------------------ */}
-      {running && <FitRunning instance={running} live={live} />}
-      {model && shown && (
-        <section className="mb-4" aria-label={t("The fit")}>
-          <FitView
-            key={shown}
-            model={model}
-            instanceId={shown}
-            collapsed={view.collapsed}
-            plots={view.plots}
-            onToggle={(output) => changeView({ collapsed: toggled(view.collapsed, output) })}
-            onPlots={(plots) => changeView({ plots })}
-            onChanged={() => id && void loadInstances(id)}
+  const classes = ["an-wb", `an-wb-tab-${tab}`];
+
+  return (
+    <>
+    <div className={classes.join(" ")}>
+      {/* --- the bar ---------------------------------------------------------- */}
+      <div className="an-wb-bar">
+        <a
+          href={pane.href({ name: "home" })}
+          className="an-wb-back"
+          onClick={(e) => {
+            e.preventDefault();
+            pane.go({ name: "home" });
+          }}
+        >
+          ← <span className="an-wb-back-text"><T text="All models" /></span>
+        </a>
+        <div className="an-wb-title">
+          <label htmlFor="modelName" className="an-wb-title-label">
+            <T text="Model name" />
+          </label>
+          <input
+            id="modelName"
+            className="an-wb-name"
+            value={name}
+            required
+            placeholder={t("New model")}
+            size={Math.max(8, name.length + 1)}
+            onChange={(e) => setName(e.target.value)}
           />
-        </section>
-      )}
-
-      {/* --- the fits ----------------------------------------------------------- */}
-      {id && (
-        <Card className="mb-3">
-          <Card.Header>
-            <T text="Fits" />
-          </Card.Header>
-          <Table hover responsive className="card-table table-vcenter">
-            <thead>
-              <tr>
-                <th>
-                  <T text="Fit" />
-                </th>
-                <th>
-                  <T text="Status" />
-                </th>
-                <th>
-                  <T text="Result" />
-                </th>
-                <th>
-                  <T text="Hyperparameters" />
-                </th>
-                <th className="text-end">
-                  <T text="Actions" />
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {instances.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="text-muted">
-                    <T text="Not fitted yet. A fit reads every row of the dataset and runs on the server; this list says how it went." />
-                  </td>
-                </tr>
+        </div>
+        {outcome && <span className="badge bg-blue-lt an-wb-outcome-badge">{outcomeSummary(outcome)}</span>}
+        {model?.error && (
+          <StatusBadge tone="red" title={model.error}>
+            <T text="Cannot be fitted" />
+          </StatusBadge>
+        )}
+        {id && name.trim() !== "" && (
+          <code className="an-wb-call" title={t('What predict("…") in a formula and models.get("…") in code name this model by.')}>
+            predict({JSON.stringify(name.trim())})
+          </code>
+        )}
+        <div className="an-wb-bar-end">
+          <div className="an-wb-saved small">
+            {savedNote}
+            {!id && (
+              <Button size="sm" variant="outline-primary" disabled={busy || name.trim() === ""} onClick={() => void create()}>
+                <T text="Create model" />
+              </Button>
+            )}
+          </div>
+          <div className="an-wb-fit">
+            <Button
+              variant="primary"
+              disabled={busy || running !== null || blocker !== null}
+              onClick={() => void fit()}
+            >
+              {running !== null ? <T text="Fitting…" /> : <>▶ <T text="Fit" /></>}
+            </Button>
+            {(blocker || (saveState === "error" && saveError)) && (
+              <div className="an-wb-blocker small text-danger" title={saveError ?? undefined}>
+                {blocker ?? saveError}
+              </div>
+            )}
+          </div>
+          <Dropdown align="end">
+            <Dropdown.Toggle variant="outline-secondary" className="an-more" aria-label={t("More")}>
+              ⋯
+            </Dropdown.Toggle>
+            <Dropdown.Menu>
+              <Dropdown.Item onClick={() => setShowDescription((v) => !v)}>
+                <T text="Description" />
+              </Dropdown.Item>
+              {id && (
+                <Dropdown.Item onClick={() => void save().catch(() => undefined)}>
+                  <T text="Save now" />
+                </Dropdown.Item>
               )}
-              {instances.map((instance) => (
-                <tr key={instance.id} className={instance.id === shown ? "table-active" : undefined}>
-                  <td>
-                    <Button variant="link" className="p-0" onClick={() => select(instance.id)}>
-                      {instanceLabel(instance)}
-                    </Button>
-                    {instance.name.trim() !== "" && (
-                      <div className="text-muted small">{formatTimestamp(instance.created)}</div>
-                    )}
-                  </td>
-                  <td>
-                    <div className="d-flex align-items-center gap-2">
-                      <StatusBadge tone={fitTone(instance.status)}>{instance.status}</StatusBadge>
-                      {instance.active && (
-                        <StatusBadge tone="green">
-                          <T text="active" />
-                        </StatusBadge>
-                      )}
-                      {instance.dataset_changed && (
-                        <StatusBadge tone="yellow" title={t("The dataset has changed since this fit.")}>
-                          <T text="dataset changed" />
-                        </StatusBadge>
-                      )}
-                    </div>
-                    {instance.error && <div className="text-danger small">{instance.error}</div>}
-                    {instance.warnings.length > 0 && (
-                      <div className="text-warning small">{t("{count} warnings", { count: instance.warnings.length })}</div>
-                    )}
-                  </td>
-                  <td>{headlineMetric(readMetrics(instance.metrics)) ?? outcomeSummary(readOutcome(instance.outcome))}</td>
-                  <td className="text-muted small font-monospace">{hyperparameterText(instance.hyperparameters)}</td>
-                  <td className="text-end">
-                    <div className="btn-list justify-content-end flex-nowrap">
-                      {instance.status === "fitted" && !instance.active && (
-                        <Button size="sm" variant="outline-primary" onClick={() => void activate(instance)}>
-                          <T text="Activate" />
-                        </Button>
-                      )}
-                      <Button size="sm" variant="outline-danger" onClick={() => void removeInstance(instance)}>
-                        <T text="Remove" />
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </Table>
-          <Card.Footer className="text-muted small">
-            <T text='The active fit is the one predict("…") and models.get("…") answer with. A fit still running when the server stops is failed at boot.' />
-          </Card.Footer>
-        </Card>
-      )}
+            </Dropdown.Menu>
+          </Dropdown>
+        </div>
+      </div>
+
+      <div className="an-wb-page">
+        {(showDescription || description.trim() !== "") && (
+          <Form.Group className="mb-3" controlId="modelDescription">
+            <Form.Control
+              size="sm"
+              value={description}
+              placeholder={t("Description")}
+              aria-label={t("Description")}
+              onChange={(e) => setDescription(e.target.value)}
+            />
+          </Form.Group>
+        )}
+        {error && <Alert variant="danger">{error}</Alert>}
+        {activeFit?.dataset_changed && (
+          <div className="an-wb-banner">
+            <span>
+              <strong>
+                <T text="Dataset changed since the active fit." />
+              </strong>{" "}
+              {t("Fit #{fit} was trained on an earlier version of the dataset.", {
+                fit: numbers.get(activeFit.id) ?? "",
+              })}
+            </span>
+            <Button
+              size="sm"
+              variant="outline-secondary"
+              className="ms-auto"
+              disabled={busy || running !== null || blocker !== null}
+              onClick={() => void fit()}
+            >
+              <T text="Refit now" />
+            </Button>
+          </div>
+        )}
+        {programCheck && (
+          <Alert variant="secondary">
+            <pre className="text-pre-wrap small mb-0">{programCheck}</pre>
+          </Alert>
+        )}
+
+        {/* --- narrow: two tabs ------------------------------------------------ */}
+        <div className="an-wb-tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "setup"}
+            className={tab === "setup" ? "is-active" : undefined}
+            onClick={() => setTab("setup")}
+          >
+            <T text="Setup" />
+            {tuningChanged && <span className="an-wb-dot" aria-label={t("changed since the fit")} />}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "fits"}
+            className={tab === "fits" ? "is-active" : undefined}
+            onClick={() => setTab("fits")}
+          >
+            {t("Fits · {count}", { count: instances.length })}
+          </button>
+        </div>
+
+        <div className="an-wb-columns">
+          {/* --- setup ------------------------------------------------------- */}
+          <div className="an-wb-setup">
+            <div className="an-wb-setup-head">
+              <span>
+                <T text="Setup" />
+              </span>
+              {tuningChanged && reference && (
+                <span className="ms-auto small text-secondary">
+                  <span className="an-wb-dot" /> {t("changed since fit #{fit}", { fit: numbers.get(reference.id) ?? "" })}
+                </span>
+              )}
+            </div>
+            {setupBody}
+          </div>
+
+          {/* --- fits -------------------------------------------------------- */}
+          <div className="an-wb-fits">
+            <div className="an-wb-fits-head">
+              <h2>
+                <T text="Fits" />
+              </h2>
+              <span className="badge bg-secondary-lt">{instances.length}</span>
+              <span className="an-wb-order small text-secondary">
+                <T text="Running first, then the active fit, then newest" />
+              </span>
+            </div>
+            {instances.length === 0 ? (
+              <div className="an-wb-empty">
+                <T text="Not fitted yet. A fit reads every row of the dataset and runs on the server; its card here says how it went." />
+              </div>
+            ) : (
+              cardCtx && (
+                <>
+                  <FitHeader posterior={posteriorModel} />
+                  {listed.map((instance) => (
+                    <FitCard
+                      key={instance.id}
+                      ctx={cardCtx}
+                      instance={instance}
+                      number={numbers.get(instance.id) ?? 0}
+                      open={openFits.includes(instance.id)}
+                      onToggle={() => toggleFit(instance.id)}
+                      live={instance.id === running ? live : null}
+                      onReport={(reportTab) => setReporting({ id: instance.id, tab: reportTab })}
+                      onActivate={() => void activate(instance)}
+                      onRemove={() => void removeInstance(instance)}
+                      onCancel={() => void cancel(instance)}
+                      onChanged={() => id && void loadInstances(id)}
+                    />
+                  ))}
+                  {ordered.length > SHOWN_FITS && (
+                    <a
+                      href="#"
+                      className="small"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        setShowOlder((v) => !v);
+                      }}
+                    >
+                      {showOlder
+                        ? t("Show fewer fits")
+                        : t("Show {count} older fits", { count: ordered.length - SHOWN_FITS })}
+                    </a>
+                  )}
+                  <p className="text-secondary small mt-3 mb-0">
+                    <T text='The active fit is the one predict("…") and models.get("…") answer with. A fit still running when the server stops is failed at boot.' />
+                  </p>
+                </>
+              )
+            )}
+          </div>
+        </div>
+      </div>
     </div>
+
+      {model && reporting && (
+        <FitReportModal
+          key={`${reporting.id}:${reporting.tab}`}
+          model={model}
+          instanceId={reporting.id}
+          initialTab={reporting.tab}
+          providerDescription={providers.find((p) => p.name === model.provider)?.description}
+          datasetName={datasets.find((d) => d.id === readModelDataset(model.dataset)?.dataset_id)?.name}
+          plots={view.plots}
+          onPlots={(plots) => changeView({ plots })}
+          onChanged={() => id && void loadInstances(id)}
+          onClose={() => setReporting(null)}
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * One numbered section of the setup column. Below the editor's breakpoint it
+ * folds to its title and a one-line summary, unfolded by its caret; above it,
+ * it is always open and the summary and caret are not drawn.
+ */
+function SetupSection({
+  n,
+  title,
+  aside,
+  summary,
+  changed = false,
+  tint = false,
+  problem = false,
+  flush = false,
+  folded,
+  onFold,
+  children,
+}: {
+  n: number;
+  title: ReactNode;
+  aside?: ReactNode;
+  /** What the section comes to, for its folded form. */
+  summary?: string;
+  /** Differs from the fit the setup is compared with: a dot by the title. */
+  changed?: boolean;
+  /** Tinted, as a changed section is. */
+  tint?: boolean;
+  problem?: boolean;
+  /** The body runs to the section's edges (a table). */
+  flush?: boolean;
+  folded: boolean;
+  onFold: () => void;
+  children: ReactNode;
+}) {
+  const { t } = useT();
+  const classes = ["an-wb-section"];
+  if (folded) classes.push("is-folded");
+  if (tint) classes.push("is-changed");
+  if (problem) classes.push("has-problem");
+  return (
+    <section className={classes.join(" ")}>
+      <header className="an-wb-section-head">
+        <span className="an-wb-step">{n}</span>
+        <div className="an-wb-section-title">
+          <h3>
+            {title}
+            {changed && <span className="an-wb-dot" aria-label={t("changed since the fit")} />}
+          </h3>
+          {summary && <div className="an-wb-section-summary">{summary}</div>}
+        </div>
+        {aside && <div className="an-wb-section-aside">{aside}</div>}
+        <button
+          type="button"
+          className="an-wb-fold"
+          aria-expanded={!folded}
+          aria-label={folded ? t("Open") : t("Close")}
+          onClick={onFold}
+        >
+          {folded ? "▾" : "▴"}
+        </button>
+      </header>
+      <div className={flush ? "an-wb-section-body is-flush" : "an-wb-section-body"}>{children}</div>
+    </section>
   );
 }
 
@@ -896,10 +1457,3 @@ function programCheckText(raw: unknown): string | null {
   return parts.length > 0 ? parts.join("\n\n") : null;
 }
 
-/** The hyperparameter point a fit used, on one line. */
-function hyperparameterText(raw: unknown): string {
-  if (!raw || typeof raw !== "object") return "—";
-  const entries = Object.entries(raw as Record<string, unknown>);
-  if (entries.length === 0) return "—";
-  return entries.map(([key, value]) => `${key}=${printGridValue(value)}`).join(" ");
-}

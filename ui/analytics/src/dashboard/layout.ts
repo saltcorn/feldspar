@@ -53,6 +53,11 @@ export function defaultSize(kind: PanelKind | undefined): { w: number; h: number
     case "fit_table":
     case "summary_table":
       return { w: 6, h: 4 };
+    // The inputs and a curve per input (A7.8).
+    case "profiler":
+      return { w: 12, h: 8 };
+    case "scenarios":
+      return { w: 6, h: 6 };
     default:
       return { w: 6, h: 5 };
   }

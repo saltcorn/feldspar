@@ -26,8 +26,10 @@
 //! per variable.
 
 mod assist;
+mod derived;
 mod dimension;
 mod labels;
+mod new_rows;
 mod resolve;
 mod spec;
 mod structured;
@@ -48,12 +50,17 @@ use crate::interface::Interface;
 use crate::model::{MAIN_DATASET, Model, NamedDataset};
 
 pub use assist::{DataPreview, Suggestions, VariablePreview, preview_data, suggest_bindings};
+pub use derived::DerivedColumn;
 pub use dimension::{
     Coordinates, DesignCoordinates, DimensionCoordinates, DimensionKind, MAX_GRID_STEPS,
 };
 pub use labels::{
     Axis, EXCLUDE_VARIABLES_KEY, KEEP_DRAWS_KEY, Labeller, RecordedAxes, element_label,
     excluded_variables, keeps_draws, named_axes, recorded_axes,
+};
+pub use new_rows::{
+    NEW_DATASET, PredictionInput, PredictionPack, add_new_rows, bind_new_rows, bound_columns,
+    check_prediction, names_new_rows, prediction_pack,
 };
 pub use resolve::{
     BindReport, BoundData, DEFAULT_MAX_DATA_VALUES, DatasetReport, DropReport, VariableReport,
@@ -76,6 +83,10 @@ pub const DIMENSIONS_KEY: &str = "dimensions";
 pub const POLICIES_KEY: &str = "policies";
 /// The configuration key holding explicit labels for output variables (§15).
 pub const LABELS_KEY: &str = "labels";
+/// The configuration key holding the columns the binder adds to a dataset
+/// before binding: an object from each new column's name to a
+/// [`DerivedColumn`] (TODO-bayesian-regression R2.1, R2.3). Absent means none.
+pub const DERIVED_COLUMNS_KEY: &str = "derived_columns";
 
 /// The column a related dataset's read carries its label formula's value in
 /// (see [`binding_dataset`]). Reserved, like the split key.
@@ -100,7 +111,14 @@ pub fn binding_dataset(related: &NamedDataset) -> Dataset {
 /// And the outputs' configuration (§§14–15): `exclude_variables` and `labels`
 /// name output variables, and each label names a dimension.
 pub fn check_bindings(interface: &Interface, model: &Model) -> Result<()> {
-    let spec = spec::Spec::parse(&model.configuration)?;
+    check_bindings_with(interface, model, &model.configuration)
+}
+
+/// [`check_bindings`] against `config` rather than the model's own
+/// configuration — the configuration a provider
+/// [lowered](crate::ModelProvider::lower) it to.
+pub fn check_bindings_with(interface: &Interface, model: &Model, config: &Attrs) -> Result<()> {
+    let spec = spec::Spec::parse(config)?;
     let mut datasets = vec![resolve::DatasetColumns {
         name: MAIN_DATASET,
         columns: model
@@ -121,8 +139,38 @@ pub fn check_bindings(interface: &Interface, model: &Model) -> Result<()> {
                 .collect(),
         });
     }
-    resolve::check_structure(interface, &model.configuration, &spec, &datasets)?;
-    labels::check_outputs(interface, &model.configuration, &spec, &|name| {
+    // The rows being predicted (§19): the main dataset's columns, unless a
+    // related dataset already has the name.
+    if new_rows::names_new_rows(config) && !model.related.iter().any(|r| r.name == NEW_DATASET) {
+        new_rows::check_new_rows(&spec)?;
+        let columns = datasets[0].columns.clone();
+        datasets.push(resolve::DatasetColumns {
+            name: NEW_DATASET,
+            columns,
+        });
+    }
+    for (name, derived) in &spec.derived {
+        if let Some(d) = datasets.iter_mut().find(|d| d.name == derived.dataset()) {
+            for read in derived.reads() {
+                if !d.columns.contains(&read) {
+                    return Err(Error::invalid(format!(
+                        "the derived column `{name}` reads `{read}`, which is not a column of \
+                         `{}`",
+                        d.name
+                    )));
+                }
+            }
+            d.columns.push(name.as_str());
+        } else {
+            return Err(Error::invalid(format!(
+                "the derived column `{name}` is added to `{}`, which is not a dataset of the \
+                 model",
+                derived.dataset()
+            )));
+        }
+    }
+    resolve::check_structure(interface, config, &spec, &datasets)?;
+    labels::check_outputs(interface, config, &spec, &|name| {
         resolve::dimension_source(&spec, &datasets, name).is_some()
     })
 }

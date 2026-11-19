@@ -123,3 +123,23 @@ fn the_status_report_says_what_is_missing() {
     assert!(report.contains("feldspar cmdstan install"), "{report}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn warm_takes_the_cache_the_families_and_a_list() {
+    assert_eq!(
+        CmdStanArgs::parse(&args(
+            "warm --stan-cache-dir /var/cache/stan --family poisson --family Beta --list"
+        ))
+        .unwrap(),
+        CmdStanArgs::Warm {
+            cmdstan: None,
+            cache_dir: Some("/var/cache/stan".into()),
+            families: vec!["poisson".into(), "Beta".into()],
+            list: true,
+        }
+    );
+    let err = CmdStanArgs::parse(&args("warm --jobs 2"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unknown argument `--jobs`"), "{err}");
+}

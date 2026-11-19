@@ -200,6 +200,13 @@ impl AnalyticsConfig {
                     e.message_and_causes()
                 ))
             })?;
+            if !kind.in_applications() {
+                return Err(refuse(format!(
+                    "`{CFG_WORKSPACE_KINDS}`: a {} workspace predicts with models, which are the \
+                     admin's alone, so an application cannot open one",
+                    kind.label()
+                )));
+            }
             if !workspace_kinds.contains(&kind) {
                 workspace_kinds.push(kind);
             }
@@ -541,7 +548,11 @@ mod tests {
         );
         refused(
             json!({ "mode": "self_serve", "workspace_kinds": ["simulation"] }),
-            "milestone A7",
+            "admin's alone",
+        );
+        refused(
+            json!({ "mode": "self_serve", "workspace_kinds": ["notebook"] }),
+            "a later milestone",
         );
         refused(
             json!({ "mode": "self_serve", "workspace_kinds": [] }),

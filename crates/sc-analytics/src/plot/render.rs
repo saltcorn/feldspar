@@ -301,7 +301,8 @@ pub(crate) async fn plot_rows_in(
             };
             let def = scope.extend(&def);
             let schema = Schema::of_catalog(catalog)?;
-            let library = sc_dataset::load_library(catalog).await?;
+            let mut library = sc_dataset::load_library(catalog).await?;
+            sc_dataset::load_models(catalog, &mut library).await;
             let compiled = compile(&schema, &library, &def, Options::default());
             let stage = match compiled.last() {
                 Ok(stage) => stage,
@@ -313,6 +314,10 @@ pub(crate) async fn plot_rows_in(
                     )));
                 }
             };
+            // A scored dataset (A7.7): its rows are computed in memory.
+            if stage.tail().is_some() {
+                return tail_rows(catalog, caller, stage).await;
+            }
             Ok(match stage.unordered_query() {
                 Ok(query) => Ok(PlotRows {
                     query,
@@ -347,7 +352,8 @@ pub(crate) async fn plot_rows_in(
     }
 }
 
-/// The table a fit's output data is loaded into.
+/// The table a fit's output data, or a scored dataset's rows, are loaded
+/// into.
 const FIT_OUTPUT_TABLE: &str = "fit_output";
 
 /// Rows per `INSERT` when loading a fit's output data.
@@ -356,32 +362,22 @@ const LOAD_BATCH: usize = 500;
 /// `data` in a fresh in-memory SQLite database, as [`PlotRows`].
 async fn fit_output_rows(data: &sc_model::OutputData) -> Result<PlotRows> {
     use sc_model::Column;
-    let db: Arc<dyn DatabaseDriver> = Arc::new(sc_db_sqlite::SqliteDriver::open_in_memory()?);
     let frame = &data.frame;
-    let typed: Vec<(&str, &Column, ColType, &str)> = frame
+    let columns: Vec<StageColumn> = frame
         .columns
         .iter()
-        .map(|(name, column)| {
-            let (ty, sql) = match column {
-                Column::Float(_) => (ColType::Float, "double precision"),
-                Column::Int(_) => (ColType::Int, "bigint"),
-                Column::Bool(_) => (ColType::Bool, "boolean"),
-                Column::Str(_) | Column::Null(_) => (ColType::Text, "text"),
-                Column::Date(_) => (ColType::Timestamp, "timestamptz"),
-            };
-            (name.as_str(), column, ty, sql)
+        .map(|(name, column)| StageColumn {
+            name: name.clone(),
+            ty: match column {
+                Column::Float(_) => ColType::Float,
+                Column::Int(_) => ColType::Int,
+                Column::Bool(_) => ColType::Bool,
+                Column::Str(_) | Column::Null(_) => ColType::Text,
+                Column::Date(_) => ColType::Timestamp,
+            },
+            key: None,
         })
         .collect();
-    db.apply_schema(&SchemaChange::CreateTable {
-        name: FIT_OUTPUT_TABLE.to_owned(),
-        columns: typed
-            .iter()
-            .map(|(name, _, _, sql)| ColumnDef::new(*name, *sql))
-            .collect(),
-        primary_key: Vec::new(),
-        unlogged: false,
-    })
-    .await?;
     let value = |column: &Column, i: usize| -> Value {
         match column {
             Column::Float(v) => v[i].map_or(Value::Null, Value::Float),
@@ -394,29 +390,102 @@ async fn fit_output_rows(data: &sc_model::OutputData) -> Result<PlotRows> {
             Column::Null(_) => Value::Null,
         }
     };
-    let names: Vec<String> = typed.iter().map(|(n, ..)| (*n).to_owned()).collect();
-    let mut start = 0;
-    while start < frame.rows && !names.is_empty() {
-        let end = (start + LOAD_BATCH).min(frame.rows);
-        let rows = (start..end)
-            .map(|i| {
-                typed
-                    .iter()
-                    .map(|(_, column, ..)| Expr::Lit(value(column, i)))
-                    .collect()
-            })
-            .collect();
-        let insert = Insert {
-            table: FIT_OUTPUT_TABLE.to_owned(),
-            columns: names.clone(),
-            rows,
-            returning: Vec::new(),
-        };
-        db.query(&Statement::from(insert))
-            .await?
-            .try_collect()
-            .await?;
-        start = end;
+    let rows = (0..frame.rows)
+        .map(|i| frame.columns.iter().map(|(_, c)| value(c, i)).collect())
+        .collect();
+    memory_rows(columns, Grain::Derived, rows).await
+}
+
+/// The rows of a stage computed in memory after a Model predictions
+/// operation (analytics TODO A7.7) — a scored dataset — read as the caller
+/// and loaded into a fresh in-memory SQLite database, as a fit's output data
+/// is, so every stat runs on them unchanged. More rows than
+/// `sc_dataset::MAX_IN_MEMORY_ROWS` are refused with the sentence saying so.
+pub(crate) async fn tail_rows(
+    catalog: &Catalog,
+    caller: &Caller,
+    stage: &sc_dataset::Stage,
+) -> Result<Result<PlotRows>> {
+    let read = match sc_dataset::read_rows(catalog, caller, stage, None, None).await {
+        Ok(read) => read,
+        // Too many rows, a prediction refused: said, as a plot that cannot
+        // be drawn says so.
+        Err(e) if matches!(e.repr(), sc_error::Repr::Invalid(_)) => return Ok(Err(e)),
+        Err(e) => return Err(e),
+    };
+    // The stage's own types where it knows them: a column whose values are
+    // all null is still a number.
+    let known = stage.shape();
+    let columns = read
+        .columns
+        .into_iter()
+        .map(|mut c| {
+            if c.ty == ColType::Unknown
+                && let Some(k) = known.columns.iter().find(|k| k.name == c.name)
+            {
+                c.ty = k.ty;
+            }
+            c
+        })
+        .collect();
+    Ok(Ok(memory_rows(columns, read.grain, read.rows).await?))
+}
+
+/// The SQLite column type a column of `ty` is loaded as.
+fn memory_type(ty: ColType) -> &'static str {
+    match ty {
+        ColType::Int => "bigint",
+        ColType::Float => "double precision",
+        ColType::Decimal => "numeric",
+        ColType::Bool => "boolean",
+        ColType::Date => "date",
+        ColType::Time => "time",
+        ColType::Timestamp => "timestamptz",
+        ColType::Json | ColType::Geometry => "jsonb",
+        ColType::Uuid => "uuid",
+        ColType::Bytes => "bytea",
+        ColType::Text | ColType::Unknown => "text",
+    }
+}
+
+/// `rows` (each in `columns`' order) in a fresh in-memory SQLite database,
+/// as [`PlotRows`] of that shape.
+async fn memory_rows(
+    columns: Vec<StageColumn>,
+    grain: Grain,
+    rows: Vec<Vec<Value>>,
+) -> Result<PlotRows> {
+    let db: Arc<dyn DatabaseDriver> = Arc::new(sc_db_sqlite::SqliteDriver::open_in_memory()?);
+    db.apply_schema(&SchemaChange::CreateTable {
+        name: FIT_OUTPUT_TABLE.to_owned(),
+        columns: columns
+            .iter()
+            .map(|c| ColumnDef::new(c.name.clone(), memory_type(c.ty)))
+            .collect(),
+        primary_key: Vec::new(),
+        unlogged: false,
+    })
+    .await?;
+    let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+    if !names.is_empty() {
+        let mut rows = rows.into_iter().peekable();
+        while rows.peek().is_some() {
+            let batch: Vec<Vec<Expr>> = rows
+                .by_ref()
+                .take(LOAD_BATCH)
+                .map(|row| row.into_iter().map(Expr::Lit).collect())
+                .collect();
+            let insert = Insert {
+                table: FIT_OUTPUT_TABLE.to_owned(),
+                columns: names.clone(),
+                rows: batch,
+                returning: Vec::new(),
+            };
+            db.query(&Statement::from(insert))
+                .await?
+                .try_collect()
+                .await?;
+        }
     }
     let query = Select::from(Source::table(FIT_OUTPUT_TABLE)).columns(
         names
@@ -426,17 +495,7 @@ async fn fit_output_rows(data: &sc_model::OutputData) -> Result<PlotRows> {
     );
     Ok(PlotRows {
         query,
-        shape: StageShape {
-            columns: typed
-                .iter()
-                .map(|(name, _, ty, _)| StageColumn {
-                    name: (*name).to_owned(),
-                    ty: *ty,
-                    key: None,
-                })
-                .collect(),
-            grain: Grain::Derived,
-        },
+        shape: StageShape { columns, grain },
         db: RowsDb::Memory(db),
     })
 }

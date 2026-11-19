@@ -97,5 +97,6 @@ pub fn carries_a_model(method: &str, path: &str) -> bool {
         && (path == "/api/models"
             || path.starts_with("/api/model-data/")
             || path.starts_with("/api/model-datasets/")
-            || path.starts_with("/api/model-bindings/"))
+            || path.starts_with("/api/model-bindings/")
+            || path.starts_with("/api/model-formula/"))
 }

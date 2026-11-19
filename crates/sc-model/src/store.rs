@@ -84,6 +84,11 @@ pub const COL_RELATED: &str = "related";
 /// the screens showing the model keep their layout in. Not part of the model:
 /// see [`model_view_state`].
 pub const COL_VIEW_STATE: &str = "view_state";
+/// Column: the feature columns a fit encodes, as a JSON array of names
+/// ([`Model::features`]). **Nullable**, for the reason [`COL_RELATED`] is:
+/// `bootstrap_table` adds it to a table that has rows, and NULL is "every
+/// column but the label", which is what a row written before it existed means.
+pub const COL_FEATURES: &str = "features";
 
 /// The fields of the `_fd_models` table, in declaration order.
 fn model_fields() -> Vec<DataField> {
@@ -106,6 +111,7 @@ fn model_fields() -> Vec<DataField> {
         DataField::plain(COL_SPLIT, json()).required(),
         DataField::plain(COL_ATTRIBUTES, json()).required(),
         DataField::plain(COL_RELATED, json()),
+        DataField::plain(COL_FEATURES, json()),
         // Nullable, as a column added to a table that has rows must be; NULL
         // reads as `{}`.
         DataField::plain(COL_VIEW_STATE, json()),
@@ -481,6 +487,7 @@ fn model_columns() -> Vec<String> {
         COL_SPLIT,
         COL_ATTRIBUTES,
         COL_RELATED,
+        COL_FEATURES,
     ]
     .iter()
     .map(|c| (*c).to_owned())
@@ -508,6 +515,10 @@ fn model_values(model: &Model) -> Result<Vec<Value>> {
             Value::Null
         } else {
             Value::Json(related_json(&model.related))
+        },
+        match &model.features {
+            None => Value::Null,
+            Some(columns) => Value::Json(json!(columns)),
         },
     ])
 }
@@ -604,6 +615,27 @@ fn model_from_row(row: &Row, resolver: &Resolver) -> Result<Model> {
         other => return Err(at(bad_column(COL_RELATED, "json", other).to_string())),
     };
 
+    // Strict as `related` is: NULL (or a table the bootstrap has not reached)
+    // is every column but the label, and a list of anything but names is
+    // refused rather than read as some other set of features.
+    let features: Option<Vec<String>> = match row.get(COL_FEATURES) {
+        None | Some(Value::Null) | Some(Value::Json(Json::Null)) => None,
+        Some(Value::Json(value @ Json::Array(_))) => {
+            Some(serde_json::from_value(value.clone()).map_err(|_| {
+                at(format!(
+                    "{COL_FEATURES} should be a json array of column names"
+                ))
+            })?)
+        }
+        Some(Value::Json(other)) => {
+            return Err(at(format!(
+                "{COL_FEATURES} should be a json array, got {}",
+                kind_of(other)
+            )));
+        }
+        other => return Err(at(bad_column(COL_FEATURES, "json", other).to_string())),
+    };
+
     // The derived column is written from the dataset; a dataset that no
     // longer resolves has no table of its own to say, and keeps the one it had
     // so the model stays listed under it.
@@ -632,6 +664,7 @@ fn model_from_row(row: &Row, resolver: &Resolver) -> Result<Model> {
         configuration: object(row, COL_CONFIGURATION).map_err(|e| at(e.to_string()))?,
         hyperparameters: object(row, COL_HYPERPARAMETERS).map_err(|e| at(e.to_string()))?,
         split,
+        features,
         attributes: object(row, COL_ATTRIBUTES).map_err(|e| at(e.to_string()))?,
     })
 }

@@ -120,13 +120,13 @@ async function loadMonaco(): Promise<Monaco> {
 }
 
 let monacoPromise: Promise<Monaco> | null = null;
-function monacoModule(): Promise<Monaco> {
+export function monacoModule(): Promise<Monaco> {
   monacoPromise ??= loadMonaco();
   return monacoPromise;
 }
 
 /** Monaco's theme for the colour scheme in force. */
-function monacoTheme(): string {
+export function monacoTheme(): string {
   return document.documentElement.getAttribute("data-bs-theme") === "dark" ? "vs-dark" : "vs";
 }
 

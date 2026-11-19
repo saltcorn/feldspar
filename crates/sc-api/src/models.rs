@@ -179,16 +179,43 @@ pub async fn predict_for(
             }
             let mut out = serde_json::Map::new();
             out.insert("value".to_owned(), value);
-            if let Prediction::Class {
-                probability: Some(p),
-                ..
-            } = prediction
-            {
-                out.insert("probability".to_owned(), json!(p));
-            }
+            prediction_detail(prediction, &mut out);
             Ok(Json::Object(out))
         })
         .collect()
+}
+
+/// A prediction's uncertainty, beside its value (analytics TODO A7.2): a
+/// class's probability (and every class's), a distribution's standard
+/// deviation, interval and level.
+pub fn prediction_detail(prediction: &Prediction, out: &mut serde_json::Map<String, Json>) {
+    match prediction {
+        Prediction::Class {
+            probability,
+            probabilities,
+            ..
+        } => {
+            if let Some(p) = probability {
+                out.insert("probability".to_owned(), json!(p));
+            }
+            if !probabilities.is_empty() {
+                out.insert("probabilities".to_owned(), json!(probabilities));
+            }
+        }
+        Prediction::Distribution {
+            sd,
+            lower,
+            upper,
+            level,
+            ..
+        } => {
+            out.insert("sd".to_owned(), json!(sd));
+            out.insert("lower".to_owned(), json!(lower));
+            out.insert("upper".to_owned(), json!(upper));
+            out.insert("level".to_owned(), json!(level));
+        }
+        _ => {}
+    }
 }
 
 /// What a formula's save check needs to know about the model called `name` —
@@ -210,7 +237,26 @@ pub async fn describe_model(
         ))
     })?;
     let spec = provider.outcome_spec();
-    let prediction_types = spec.possible_prediction_types();
+    let mut prediction_types = spec.possible_prediction_types();
+    // A posterior whose prediction is a setting of the model (a Stan
+    // program's generated quantity, §19) predicts only when it is set.
+    if let sc_model::OutcomeSpec::Posterior {
+        prediction: Some(key),
+    } = &spec
+    {
+        let a_setting = provider
+            .config_declaration()
+            .iter()
+            .any(|f| f.name() == key.as_str());
+        let set = model
+            .configuration
+            .get(key)
+            .and_then(Json::as_str)
+            .is_some_and(|v| !v.trim().is_empty());
+        if a_setting && !set {
+            prediction_types.clear();
+        }
+    }
     let no_prediction = prediction_types.is_empty().then(|| {
         let posterior = matches!(spec, sc_model::OutcomeSpec::Posterior { .. });
         sc_model::no_per_row_prediction(posterior).to_owned()
@@ -226,7 +272,50 @@ pub async fn describe_model(
         no_prediction,
         active_fit,
         not_rows_of_table: grain_refusal(&model),
+        uncertainty: provider.uncertainty().name().to_owned(),
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Predict literal `rows` with `model`'s active fit (or `fit`), each with its
+/// uncertainty at `level` — [`ModelHost::predict_inputs`](sc_catalog::ModelHost::predict_inputs),
+/// the Model predictions operation's call (analytics TODO A7.3). The rows are
+/// matched to the model's inputs by name and need not be rows of its table.
+pub async fn predict_inputs(
+    catalog: &Catalog,
+    registry: &ModelRegistry,
+    source: &dyn DatasetSource,
+    cap: u64,
+    model: &str,
+    fit: Option<&str>,
+    rows: &[Json],
+    level: f64,
+) -> Result<Vec<Json>> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (model, instance) = resolve_fit(catalog, model, fit).await?;
+    let answer = sc_model::predict_subject_at(
+        registry,
+        source,
+        &model,
+        &instance,
+        Subject::Rows(rows),
+        cap,
+        Some(level),
+    )
+    .await
+    .map_err(|e| Error::invalid(format!("`{}`: {e}", model.name)))?;
+    answer
+        .predictions
+        .iter()
+        .map(|prediction| {
+            let mut out = serde_json::Map::new();
+            out.insert("value".to_owned(), prediction.to_json()?);
+            prediction_detail(prediction, &mut out);
+            Ok(Json::Object(out))
+        })
+        .collect()
 }
 
 /// Why `model`'s dataset's rows are not rows of its table, when they are not

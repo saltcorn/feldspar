@@ -224,6 +224,7 @@ pub use mcp::{MCP_PROTOCOL_VERSION, MCP_ROUTE, MCP_SERVER_NAME};
 pub use mcp_proxy::MCP_PROXY_ROUTE;
 pub use models::{
     ModelServices, StanSettings, install_model_host, install_models, install_models_with,
+    stan_cache_dir,
 };
 pub use modules::ModuleServices;
 pub use notices::{

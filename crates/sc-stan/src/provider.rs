@@ -87,6 +87,9 @@ pub mod config_keys {
     /// Whether the draws are kept at all (the summary always is) — the
     /// host's key.
     pub const KEEP_DRAWS: &str = sc_model::KEEP_DRAWS_KEY;
+    /// The generated quantity that predicts the rows of `new` (§19), if the
+    /// program has one: `vector[N_new] y_new`.
+    pub const PREDICTION: &str = "prediction";
 }
 
 use config_keys::*;
@@ -184,6 +187,11 @@ impl StanProvider {
         &self.budget
     }
 
+    /// How the provider reaches a file store by name.
+    pub(crate) fn stores(&self) -> &dyn StoreLookup {
+        self.stores.as_ref()
+    }
+
     /// The CmdStan this provider compiles with, when one was found.
     pub fn cmdstan(&self) -> Option<&CmdStan> {
         self.cmdstan.as_ref().ok()
@@ -226,6 +234,160 @@ impl StanProvider {
                 )),
             }),
         }
+    }
+}
+
+impl StanProvider {
+    /// Fit `program` (TODO-bayesian-regression R1.6): compile it (or find it
+    /// in the cache), run one process per chain, read the draws back, and
+    /// publish the raw run when `config` keeps one (Stan TODO §§13–14). The
+    /// one implementation of compile → chains → draws → publish, which
+    /// `fit_posterior` calls with the program read from its store and a
+    /// formula provider calls with the program it generated.
+    pub async fn run_program(
+        &self,
+        program: &Program,
+        input: &PosteriorInput,
+        config: &Attrs,
+        ctx: &FitContext<'_>,
+    ) -> Result<PosteriorResult> {
+        let cmdstan = match &self.cmdstan {
+            Ok(cmdstan) => cmdstan,
+            Err(why) => {
+                return Err(Error::config(format!(
+                    "this Stan model cannot be fitted because CmdStan was not found: {why}"
+                )));
+            }
+        };
+        let settings = RunSettings::from_config(config, fresh_seed)?;
+        let cancelled = || ctx.cancelled();
+        let watch = Watch::new(settings.max_runtime(), &cancelled);
+        let run_id = input
+            .instance
+            .map_or_else(|| uuid::Uuid::new_v4().to_string(), |id| id.to_string());
+
+        // The run directory, as it will be published (§14).
+        let dir = RunDir::create(&self.scratch, &run_id)?;
+        program.layout(&dir.path().join("program"))?;
+        dir.write(DATA_FILE, &to_json(&input.data)?)?;
+        dir.write("coordinates.json", &to_json(&input.coordinates)?)?;
+        dir.write(
+            "config.json",
+            &to_json(&json!({
+                "program": program.main_path(),
+                "method": settings.method,
+                "settings": settings,
+                "arguments": settings.arguments(1),
+                "cmdstan": cmdstan.version.to_string(),
+            }))?,
+        )?;
+
+        let compiled = self
+            .cache
+            .compile(cmdstan, program, &watch, &|| {
+                ctx.report(&Progress::stage(FitStage::Compiling));
+            })
+            .await?;
+        let report = |progress: &Progress| ctx.report(progress);
+        let chains = run_chains(
+            &Run {
+                exe: &compiled.exe,
+                src: &compiled.src,
+                program: program.main_path(),
+                dir: dir.path(),
+                settings: &settings,
+            },
+            &self.budget,
+            &watch,
+            &report,
+        )
+        .await?;
+
+        ctx.report(&Progress::stage(FitStage::Summarising));
+        let warmup_rows = match settings.method {
+            Method::Sample if settings.save_warmup => {
+                usize::try_from(settings.iter_warmup.div_ceil(settings.thin)).unwrap_or(0)
+            }
+            _ => 0,
+        };
+        // Chain by chain, each file a line at a time, the variables the host
+        // will not read skipped as they go past (§14).
+        let skip = |variable: &str| input.unread.contains(variable);
+        let mut draws = Vec::new();
+        let mut records = Vec::with_capacity(chains.len());
+        for chain in &chains {
+            let output = read_output_file(&chain.csv, chain.chain, warmup_rows, &skip)?;
+            draws.extend(output.draws);
+            records.push(json!({
+                "chain": chain.chain,
+                "wall_seconds": chain.wall.as_secs_f64(),
+                "step_size": output.adaptation.as_ref().map(|a| a.step_size),
+                "timing": output.timing,
+            }));
+        }
+        let iterations = match settings.method {
+            Method::Optimize => chains
+                .first()
+                .and_then(|c| std::fs::read_to_string(&c.log).ok())
+                .and_then(|log| optimizer_iterations(&log)),
+            Method::Sample | Method::Pathfinder => None,
+        };
+
+        let run = match text(config, RUNS_STORE) {
+            None => None,
+            Some(store_name) => {
+                let store = self.stores.store(store_name)?;
+                let runs_dir = text(config, RUNS_DIR).unwrap_or(DEFAULT_RUNS_DIR);
+                let path = publish(dir.path(), store.as_ref(), runs_dir, &input.model, &run_id)
+                    .await
+                    .with_context(|| {
+                        format!("publishing the raw run to the file store `{store_name}`")
+                    })?;
+                Some(RunLocation {
+                    store: store_name.to_owned(),
+                    path,
+                })
+            }
+        };
+
+        // Small, by design (§14): the program snapshot and its hashes, the
+        // seed, the toolchain, the interface, the cache key and the run's
+        // location. The draws are rows of their own.
+        let state = json!({
+            "program": {
+                "store": program.store,
+                "main": program.main_path(),
+                "files": program.files.iter().map(|f| json!({
+                    "path": f.path, "text": f.text, "sha256": f.sha256,
+                })).collect::<Vec<_>>(),
+            },
+            "hashes": program.hashes(),
+            "seed": settings.seed,
+            "method": settings.method,
+            "settings": settings,
+            "cmdstan": cmdstan.version.to_string(),
+            "compiled": compiled.key,
+            "cached": compiled.cached,
+            "interface": input.interface,
+            "chains": records,
+            "run": run,
+        });
+        Ok(PosteriorResult {
+            state,
+            draws,
+            parameters: Vec::new(),
+            run: PosteriorRun {
+                method: match settings.method {
+                    Method::Sample => PosteriorMethod::Mcmc,
+                    Method::Optimize => PosteriorMethod::Mode,
+                    Method::Pathfinder => PosteriorMethod::Approximation,
+                },
+                max_treedepth: (settings.method == Method::Sample)
+                    .then_some(settings.max_treedepth),
+                wall_seconds: chains.iter().map(|c| c.wall.as_secs_f64()).collect(),
+                iterations,
+            },
+        })
     }
 }
 
@@ -375,16 +537,28 @@ impl ModelProvider for StanProvider {
             FormField::new(RUNS_DIR, BasicType::Text).label("Directory in that store"),
             FormField::new(EXCLUDE_VARIABLES, BasicType::Json)
                 .label("Variables whose draws are not kept"),
+            FormField::new(PREDICTION, BasicType::Text).label(
+                "Prediction: the generated quantity predicting the rows of `new` (needs a runs \
+                 store)",
+            ),
             FormField::new(KEEP_DRAWS, BasicType::Bool)
                 .label("Keep the draws")
                 .default_value(true),
         ]
     }
 
+    /// A posterior, predicting the rows of `new` when the configuration
+    /// names the generated quantity that does (§19).
     fn outcome_spec(&self) -> OutcomeSpec {
-        // Prediction for new rows (§19) is carried past this milestone, so a
-        // posterior names none and `predict()` over one is refused on save.
-        OutcomeSpec::Posterior { prediction: None }
+        OutcomeSpec::Posterior {
+            prediction: Some(PREDICTION.to_owned()),
+        }
+    }
+
+    /// A prediction is the posterior predictive distribution of each new row
+    /// (§19), from the generated quantity's draws.
+    fn uncertainty(&self) -> sc_model::Uncertainty {
+        sc_model::Uncertainty::Distribution
     }
 
     fn binds_data(&self) -> bool {
@@ -455,6 +629,15 @@ impl ModelProvider for StanProvider {
                 )));
             }
         }
+        if let Some(prediction) = text(config, PREDICTION) {
+            if text(config, RUNS_STORE).is_none() {
+                return Err(Error::invalid(format!(
+                    "`{PREDICTION}` is `{prediction}`, and a prediction runs the program's \
+                     generated quantities over the fit's own draws, which CmdStan reads only \
+                     from its raw run: choose a `{RUNS_STORE}` to keep it in"
+                )));
+            }
+        }
         if text(config, RUNS_DIR).is_some() && text(config, RUNS_STORE).is_none() {
             return Err(Error::invalid(format!(
                 "`{RUNS_DIR}` is set but `{RUNS_STORE}` is not: choose the file store the runs \
@@ -472,8 +655,18 @@ impl ModelProvider for StanProvider {
 
     async fn predict(&self, _state: &Json, _frame: &Frame) -> Result<Vec<Prediction>> {
         Err(Error::invalid(
-            "this Stan model does not predict rows: it is inspected through its posterior",
+            "a Stan model predicts rows through its `new` dataset and the generated quantity \
+             its `prediction` names, not from one frame",
         ))
+    }
+
+    /// Standalone generated quantities over the fit's draws (§19).
+    async fn predict_posterior(
+        &self,
+        state: &Json,
+        request: &sc_model::PosteriorPrediction,
+    ) -> Result<Vec<Vec<f64>>> {
+        self.generate_quantities(state, request).await
     }
 
     async fn interface(&self, config: &Attrs) -> Result<Option<Interface>> {
@@ -481,151 +674,20 @@ impl ModelProvider for StanProvider {
         Ok(Some(program.interface()?))
     }
 
-    /// Compile (or find in the cache), run one process per chain, read the
-    /// draws back, and publish the raw run when the model keeps one (§§13–14).
+    /// Read the program out of its store, then [`run_program`](StanProvider::run_program).
     async fn fit_posterior(
         &self,
         input: &PosteriorInput,
         config: &Attrs,
         ctx: &FitContext<'_>,
     ) -> Result<PosteriorResult> {
-        let cmdstan = match &self.cmdstan {
-            Ok(cmdstan) => cmdstan,
-            Err(why) => {
-                return Err(Error::config(format!(
-                    "this Stan model cannot be fitted because CmdStan was not found: {why}"
-                )));
-            }
-        };
-        let settings = RunSettings::from_config(config, fresh_seed)?;
-        let cancelled = || ctx.cancelled();
-        let watch = Watch::new(settings.max_runtime(), &cancelled);
-        let program = self.program(config).await?;
-        let run_id = input
-            .instance
-            .map_or_else(|| uuid::Uuid::new_v4().to_string(), |id| id.to_string());
-
-        // The run directory, as it will be published (§14).
-        let dir = RunDir::create(&self.scratch, &run_id)?;
-        program.layout(&dir.path().join("program"))?;
-        dir.write(DATA_FILE, &to_json(&input.data)?)?;
-        dir.write("coordinates.json", &to_json(&input.coordinates)?)?;
-        dir.write(
-            "config.json",
-            &to_json(&json!({
-                "program": program.main_path(),
-                "method": settings.method,
-                "settings": settings,
-                "arguments": settings.arguments(1),
-                "cmdstan": cmdstan.version.to_string(),
-            }))?,
-        )?;
-
-        let compiled = self
-            .cache
-            .compile(cmdstan, &program, &watch, &|| {
-                ctx.report(&Progress::stage(FitStage::Compiling));
-            })
-            .await?;
-        let report = |progress: &Progress| ctx.report(progress);
-        let chains = run_chains(
-            &Run {
-                exe: &compiled.exe,
-                src: &compiled.src,
-                program: program.main_path(),
-                dir: dir.path(),
-                settings: &settings,
-            },
-            &self.budget,
-            &watch,
-            &report,
-        )
-        .await?;
-
-        ctx.report(&Progress::stage(FitStage::Summarising));
-        let warmup_rows = match settings.method {
-            Method::Sample if settings.save_warmup => {
-                usize::try_from(settings.iter_warmup.div_ceil(settings.thin)).unwrap_or(0)
-            }
-            _ => 0,
-        };
-        // Chain by chain, each file a line at a time, the variables the host
-        // will not read skipped as they go past (§14).
-        let skip = |variable: &str| input.unread.contains(variable);
-        let mut draws = Vec::new();
-        let mut records = Vec::with_capacity(chains.len());
-        for chain in &chains {
-            let output = read_output_file(&chain.csv, chain.chain, warmup_rows, &skip)?;
-            draws.extend(output.draws);
-            records.push(json!({
-                "chain": chain.chain,
-                "wall_seconds": chain.wall.as_secs_f64(),
-                "step_size": output.adaptation.as_ref().map(|a| a.step_size),
-                "timing": output.timing,
-            }));
+        if let Err(why) = &self.cmdstan {
+            return Err(Error::config(format!(
+                "this Stan model cannot be fitted because CmdStan was not found: {why}"
+            )));
         }
-        let iterations = match settings.method {
-            Method::Optimize => chains
-                .first()
-                .and_then(|c| std::fs::read_to_string(&c.log).ok())
-                .and_then(|log| optimizer_iterations(&log)),
-            Method::Sample | Method::Pathfinder => None,
-        };
-
-        let run = match text(config, RUNS_STORE) {
-            None => None,
-            Some(store_name) => {
-                let store = self.stores.store(store_name)?;
-                let runs_dir = text(config, RUNS_DIR).unwrap_or(DEFAULT_RUNS_DIR);
-                let path = publish(dir.path(), store.as_ref(), runs_dir, &input.model, &run_id)
-                    .await
-                    .with_context(|| {
-                        format!("publishing the raw run to the file store `{store_name}`")
-                    })?;
-                Some(RunLocation {
-                    store: store_name.to_owned(),
-                    path,
-                })
-            }
-        };
-
-        // Small, by design (§14): the program snapshot and its hashes, the
-        // seed, the toolchain, the interface, the cache key and the run's
-        // location. The draws are rows of their own.
-        let state = json!({
-            "program": {
-                "store": program.store,
-                "main": program.main_path(),
-                "files": program.files.iter().map(|f| json!({
-                    "path": f.path, "text": f.text, "sha256": f.sha256,
-                })).collect::<Vec<_>>(),
-            },
-            "hashes": program.hashes(),
-            "seed": settings.seed,
-            "method": settings.method,
-            "settings": settings,
-            "cmdstan": cmdstan.version.to_string(),
-            "compiled": compiled.key,
-            "interface": input.interface,
-            "chains": records,
-            "run": run,
-        });
-        Ok(PosteriorResult {
-            state,
-            draws,
-            parameters: Vec::new(),
-            run: PosteriorRun {
-                method: match settings.method {
-                    Method::Sample => PosteriorMethod::Mcmc,
-                    Method::Optimize => PosteriorMethod::Mode,
-                    Method::Pathfinder => PosteriorMethod::Approximation,
-                },
-                max_treedepth: (settings.method == Method::Sample)
-                    .then_some(settings.max_treedepth),
-                wall_seconds: chains.iter().map(|c| c.wall.as_secs_f64()).collect(),
-                iterations,
-            },
-        })
+        let program = self.program(config).await?;
+        self.run_program(&program, input, config, ctx).await
     }
 
     /// Chains × kept iterations × (the program's outputs + CmdStan's own

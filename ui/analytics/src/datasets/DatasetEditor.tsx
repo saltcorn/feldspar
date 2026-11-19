@@ -3,7 +3,8 @@
 //
 // Selecting an operation shows the rows as they are after it — the base shows
 // the rows it starts from — so the effect of each operation can be seen on its
-// own. Operations are added from the Add menu or from the spreadsheet's
+// own. Under its name, whoever may change it picks who it is shared with.
+// Operations are added from the Add menu or from the spreadsheet's
 // headers, edited in their form, dragged to reorder, switched off and deleted.
 // Every change is saved at once; the server compiles the dataset and marks
 // each operation, and one that stopped working — a column an earlier operation
@@ -20,6 +21,7 @@ import Spinner from "react-bootstrap/Spinner";
 import { api, errorMessage } from "../api";
 import { T, useT } from "../i18n";
 import { useAnnounce, useChanges } from "../panes";
+import { ShareSelect } from "../share";
 import type { DatasetItem } from "./DatasetList";
 import { opKindAbout, opKindName } from "../labels";
 import { OperationForm, type Others } from "./OperationForm";
@@ -74,6 +76,9 @@ export function DatasetEditor({
   const [ticked, setTicked] = useState<string[]>([]);
   const [dragging, setDragging] = useState<number | null>(null);
   const [dropAt, setDropAt] = useState<number | null>(null);
+  // This dataset's own row in the list: who it is shared with, and whether
+  // this user may change that.
+  const [listed, setListed] = useState<DatasetItem | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -87,7 +92,9 @@ export function DatasetEditor({
       .catch((err: unknown) => setError(errorMessage(err, t("Could not open the dataset."))));
     Promise.all([api.listDatasetTables(), api.listDatasets()])
       .then(([tables, datasets]) => {
-        if (live) setOthers({ tables, datasets: datasets.filter((d) => d.id !== id) });
+        if (!live) return;
+        setOthers({ tables, datasets: datasets.filter((d) => d.id !== id) });
+        setListed(datasets.find((d) => d.id === id) ?? null);
       })
       .catch(() => undefined);
     return () => {
@@ -213,6 +220,24 @@ export function DatasetEditor({
             </Badge>
           )}
         </div>
+        {listed?.may_change && (
+          <div className="mb-2">
+            <ShareSelect
+              value={listed.share_role}
+              label={def.name}
+              wide
+              onShare={async (role) => {
+                try {
+                  await api.shareDataset(id, { share_role: role });
+                  setListed({ ...listed, share_role: role });
+                  changed("dataset", id);
+                } catch (err) {
+                  setError(errorMessage(err, t("Could not share the dataset.")));
+                }
+              }}
+            />
+          </div>
+        )}
         {error && (
           <Alert variant="danger" dismissible onClose={() => setError(null)}>
             {error}
