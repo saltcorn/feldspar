@@ -1123,6 +1123,17 @@ server's locale and naming the table and constraint. Only a violation of a catal
   constraint with no admin message gets the same sentence instead of the database's. Tests:
   `sc-access` unit tests, `sc-api` `constraints::an_unexplained_integrity_violation_…`.
 
+## BC1 — Breadcrumbs in the admin UI (user feedback)
+
+It was easy to get lost: an application's checklist run said only "Checklist run" over the
+checklist's name, and a table's data grid "Table data" over the table's label, with nothing
+saying where the screen sits or how to get back up.
+
+- [x] **BC1.1** Every screen that is not the root of a sidebar section shows the trail of screens
+  above it in place of its pre-title, each step a link (`breadcrumbs.ts`, `PageHeader`'s
+  `crumbs`); root screens keep their group pre-title. The agent chat, which has no page header,
+  shows it in its top bar. Test: `ui/admin/src/breadcrumbs.test.tsx`.
+
 ---
 
 ## Open questions

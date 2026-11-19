@@ -18,6 +18,7 @@ import {
   type AgentSection,
 } from "../agentNav";
 import { IconArrowLeft } from "../icons";
+import { agentsCrumbs } from "../breadcrumbs";
 import { PageHeader } from "../layout";
 import { T, useT } from "../i18n";
 
@@ -62,7 +63,7 @@ export function AgentHeader({
   const screen = AGENT_SECTIONS.find((s) => s.id === section)?.label(t) ?? "";
   return (
     <PageHeader
-      pretitle={t("Agent")}
+      crumbs={agentsCrumbs(t)}
       title={agent}
       docTitle={`${agent} · ${screen}`}
       actions={

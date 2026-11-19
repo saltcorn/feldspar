@@ -59,6 +59,7 @@ import {
   type Selection,
 } from "../fileSelection";
 import { IconDots, IconFile, IconFolder, IconSearch } from "../icons";
+import { fileStoresCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
 import { OptionalRoleSelect } from "../roleSelect";
 import { roleLabel, useRoles, type Roles } from "../roles";
@@ -341,7 +342,7 @@ export function FileManager({
   return (
     <>
       <PageHeader
-        pretitle={t("Data")}
+        crumbs={fileStoresCrumbs(t)}
         title={
           <>
             <T text="Files" /> <span className="text-muted">— {store}</span>

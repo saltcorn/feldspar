@@ -38,6 +38,7 @@ import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
 import { IconArrowLeft, IconPlayerStop, IconTrash } from "../icons";
+import { streamCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
 import {
   applyFrame,
@@ -162,8 +163,9 @@ export function StreamObserve({ streamId }: { streamId: string }) {
   return (
     <>
       <PageHeader
-        pretitle="Stream"
-        title={name || "Observe"}
+        crumbs={streamCrumbs(t, streamId, name)}
+        title={t("Observe")}
+        docTitle={name ? `${name} · ${t("Observe")}` : t("Observe")}
         actions={
           <div className="btn-list">
             <Button

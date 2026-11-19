@@ -18,6 +18,7 @@ import { conclusionNotice, transcriptFromRun, type Conclusion } from "../agentCh
 import { prettyContext } from "../agentRuns";
 import type { GetRunDiffResponse, GetRunResponse } from "../client";
 import { IconArrowLeft } from "../icons";
+import { agentRunsCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
 import {
   diffLines,
@@ -178,7 +179,7 @@ export function AgentRunDetail({ run, onRefresh }: { run: GetRunResponse; onRefr
   return (
     <>
       <PageHeader
-        pretitle={`Run of ${run.subject}`}
+        crumbs={agentRunsCrumbs(t, run.subject)}
         title={
           <>
             {run.description || "Run"}{" "}

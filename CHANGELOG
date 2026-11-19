@@ -2,6 +2,55 @@
 
 Changes in reverse chronological order.
 
+## Trigger editor: one unreadable dataset no longer stops it loading (bug report)
+
+Editing a trigger on a table showed "Could not load the actions and tables.". The form asks
+`listActions?table=<table>`, and the handler answered `fit_model`'s model picker with
+`sc_model::models_for_table`, which loads and resolves each model and, to do that, reads **every**
+dataset in the installation. One dataset this build cannot read failed the request with a 400.
+In the reported case, the dataset had been saved by a build with an operation this one does not
+know (`model_predictions`, from the `analytics-is-back` branch). The editor of every trigger on a
+table broke with it.
+
+- The picker needs only names, so the handler now asks `sc_model::model_names_for_table`, which
+  reads `_fd_models` alone and never the datasets.
+- Test: `sc-model` `model_store::model_names_for_a_table_do_not_read_the_datasets` (a dataset
+  whose operations name an unknown kind: loading the models still refuses, the names do not).
+- **Compatibility:** no API or stored data changes. The dataset itself is still unreadable to
+  this build; the Analytics screens that load it still report it.
+
+## Admin UI: breadcrumbs on every screen below a section's root (BC1)
+
+A screen below a section's root now shows the way down to it from the sidebar, over its title, every
+step a link back up. Before, it had only a pre-title ("Checklist run", "Table data"), and nothing on
+the screen said where it was.
+
+- **What the trails are.** For example: `Applications › Shop › Checklists › Smoke test` over a
+  checklist run; `Tables › Book loans` over a table's data; `Triggers › On signup › Runs` over a
+  workflow run; `Agents › help desk › Runs` over an agent run; `Settings › Checklists` above a
+  Data Layer checklist. The trail lists the screens above this one only, and the title names the
+  screen itself.
+- **Screens covered:** table, table data, changesets and a changeset, database connections; file
+  store form and file manager; stream form and observe; trigger form (one opened from a table's
+  page goes back to that table), workflow editor, workflow runs, a run (workflow or agent); agent
+  settings, chat (in its top bar), runs and memories, LLM provider form; application settings,
+  views, pages, library, translations, GraphQL, a view, a page's properties, checklists, a
+  checklist and a checklist run; roles; code library; shared translations. Root screens (Home, All
+  entities, Tables, File stores, Streams, Triggers, Agents, Applications, Users, Source control,
+  Settings) keep their group pre-title.
+- **Titles that changed**, because the trail now carries what they used to repeat: table data is
+  titled "Data", a checklist run "Run started <time>", stream observe "Observe", workflow runs
+  "Runs", the workflow editor "Workflow" with its version (and "unsaved") as badges, the GraphQL
+  explorer "GraphQL". A run's version moved from the pre-title to a badge. Browser tab titles
+  still name the record (`books data`, `On signup · Runs`).
+- Back buttons are unchanged.
+- Code: `ui/admin/src/breadcrumbs.ts` (one builder per section, so two screens under one parent
+  link it the same way; `useApplicationName` for the checklist screens), `Breadcrumbs` and
+  `PageHeader`'s `crumbs` in `ui/admin/src/layout.tsx`, `.admin-breadcrumb` in `admin.css`.
+- Tests: `ui/admin/src/breadcrumbs.test.tsx` (the trails, and the header drawing one in place of
+  the pre-title); the agent runs/memory tests now expect the trail.
+- **Compatibility:** UI only. No routes, API or stored data changed.
+
 ## Checklists: browser steps judge the app, not the checker's own browser; `feldspar check run` drives a browser
 
 The `fanacity-essentials` checklist failed on its second step for reasons that were not the

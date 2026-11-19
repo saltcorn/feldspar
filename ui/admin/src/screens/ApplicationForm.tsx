@@ -48,6 +48,7 @@ import {
   type CodingAgentChoice,
 } from "../appNav";
 import { IconArrowLeft } from "../icons";
+import { applicationsCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader, PublicBadge } from "../layout";
 import { isPublic, roleName, roleOptions, useRoles } from "../roles";
 import { RoleSelect } from "../roleSelect";
@@ -1350,7 +1351,7 @@ export function ApplicationForm({
   return (
     <>
       <PageHeader
-        pretitle={t("Applications")}
+        crumbs={applicationsCrumbs(t)}
         title={appId ? stored?.name || t("Edit application") : t("New application")}
         actions={
           <div className="d-flex align-items-center gap-3">

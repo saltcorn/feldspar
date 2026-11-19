@@ -25,7 +25,8 @@ import { api, errorMessage } from "../api";
 import { navigate } from "../App";
 import type { GetWorkflowResponse, ListActionsResponse } from "../client";
 import { IconArrowLeft, IconPlus } from "../icons";
-import { AlertBody, PageBody, PageHeader } from "../layout";
+import { triggerCrumbs } from "../breadcrumbs";
+import { AlertBody, PageBody, PageHeader, StatusBadge } from "../layout";
 import { useRoles } from "../roles";
 import {
   KIND_INFO,
@@ -360,8 +361,22 @@ export function WorkflowEditor({ triggerId }: { triggerId: string }) {
   return (
     <>
       <PageHeader
-        pretitle={`Workflow · version ${meta.version}${dirty ? " · unsaved" : ""}`}
-        title={meta.name}
+        crumbs={triggerCrumbs(t, triggerId, meta.name)}
+        title={
+          <>
+            {t("Workflow")}{" "}
+            <StatusBadge tone="secondary">
+              {t("version {version}", { version: String(meta.version) })}
+            </StatusBadge>
+            {dirty && (
+              <>
+                {" "}
+                <StatusBadge tone="yellow">{t("unsaved")}</StatusBadge>
+              </>
+            )}
+          </>
+        }
+        docTitle={`${meta.name} · ${t("Workflow")}`}
         actions={
           <>
             <Button variant="outline-secondary" onClick={() => navigate("/triggers")}>

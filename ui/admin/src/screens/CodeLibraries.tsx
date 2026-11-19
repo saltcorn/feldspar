@@ -33,6 +33,7 @@ import {
   type LibraryDraft,
 } from "../codeLibraries";
 import { forgetLibraryNames } from "../codeTypes";
+import { settingsCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader } from "../layout";
 import { T, useT } from "../i18n";
 
@@ -128,7 +129,7 @@ export function CodeLibraries() {
 
   return (
     <>
-      <PageHeader pretitle="Settings · Development" title={t("Code library")} />
+      <PageHeader crumbs={settingsCrumbs(t)} title={t("Code library")} />
       <PageBody>
         <p className="text-muted">
           <T text="Shared JavaScript for code queries and triggers, imported with lib(name). An app's library overrides an instance-wide one of the same name; triggers see instance-wide libraries only. Runs with the importer's db, fs, fetch and user." />

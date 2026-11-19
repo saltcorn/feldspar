@@ -35,6 +35,7 @@ import type {
 } from "../client";
 import { navigate } from "../App";
 import { IconArrowLeft, IconChevronDown, IconChevronRight } from "../icons";
+import { agentsCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader } from "../layout";
 import { OptionalRoleSelect } from "../roleSelect";
 import { useRoles } from "../roles";
@@ -317,6 +318,7 @@ export function AgentForm({ agentId, tab: rawTab }: { agentId?: string; tab?: st
         <AgentHeader agent={savedName} section="settings" actions={save} />
       ) : (
         <PageHeader
+          crumbs={agentsCrumbs(t)}
           title={t("New agent")}
           actions={
             <>

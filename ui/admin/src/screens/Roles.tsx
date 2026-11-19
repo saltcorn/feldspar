@@ -28,6 +28,7 @@ import Table from "react-bootstrap/Table";
 
 import { api } from "../api";
 import type { ListRolesResponse } from "../client";
+import { usersCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader } from "../layout";
 import { T, useT } from "../i18n";
 
@@ -101,7 +102,7 @@ export function Roles() {
 
   return (
     <>
-      <PageHeader pretitle={t("Administration")} title={t("Roles")} />
+      <PageHeader crumbs={usersCrumbs(t)} title={t("Roles")} />
       <PageBody>
         {error && <Alert variant="danger">{error}</Alert>}
 

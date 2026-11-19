@@ -17,6 +17,7 @@ import { navigate } from "../App";
 import { checklistPath, checklistRunPath, outcomeTone, type ChecklistRun as Run } from "../checklists";
 import { runErrorMessage, useChecklistProgress } from "../checklistProgress";
 import { IconArrowLeft } from "../icons";
+import { checklistCrumbs, checklistsCrumbs, useApplicationName } from "../breadcrumbs";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
 import { RunStatus } from "./Checklists";
 import { when } from "./WorkflowRuns";
@@ -28,6 +29,7 @@ export function ChecklistRun({ runId, appId }: { runId: string; appId: string | 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const progress = useChecklistProgress();
+  const appName = useApplicationName(appId);
 
   useEffect(() => {
     setRun(null);
@@ -58,8 +60,14 @@ export function ChecklistRun({ runId, appId }: { runId: string; appId: string | 
   return (
     <>
       <PageHeader
-        pretitle={t("Checklist run")}
-        title={run?.checklist_name ?? ""}
+        // Down to the checklist this is a run of: the run itself is the title.
+        crumbs={
+          run
+            ? checklistCrumbs(t, appId, appName, run.checklist, run.checklist_name)
+            : checklistsCrumbs(t, appId, appName)
+        }
+        title={run ? t("Run started {when}", { when: when(run.started_at) }) : t("Checklist run")}
+        docTitle={run ? `${run.checklist_name} · ${t("Run")}` : t("Checklist run")}
         actions={
           <>
             <Button

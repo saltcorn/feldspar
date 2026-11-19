@@ -24,6 +24,7 @@ import { api, errorMessage } from "../api";
 import { navigate } from "../App";
 import type { GetRunResponse } from "../client";
 import { IconArrowLeft } from "../icons";
+import { triggersCrumbs, workflowRunsCrumbs } from "../breadcrumbs";
 import { AlertBody, PageBody, PageHeader, StatusBadge } from "../layout";
 import { SettingsFields, buildConfig, type FieldSpec } from "../settings";
 import {
@@ -141,13 +142,21 @@ export function RunDetail({ runId }: { runId: string }) {
   return (
     <>
       <PageHeader
-        pretitle={`Run of ${run.subject}${
-          run.subject_version == null ? "" : ` · version ${run.subject_version}`
-        }`}
+        crumbs={
+          triggerId ? workflowRunsCrumbs(t, triggerId, run.subject) : triggersCrumbs(t)
+        }
         title={
           <>
             {run.description || "Run"}{" "}
             <StatusBadge tone={runTone(run.state)}>{run.state}</StatusBadge>
+            {run.subject_version != null && (
+              <>
+                {" "}
+                <StatusBadge tone="secondary">
+                  {t("version {version}", { version: String(run.subject_version) })}
+                </StatusBadge>
+              </>
+            )}
           </>
         }
         actions={

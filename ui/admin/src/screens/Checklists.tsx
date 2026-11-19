@@ -26,6 +26,7 @@ import { checklistPath, checklistRunPath, runTone } from "../checklists";
 import type { ListChecklistStartersResponse, ListChecklistsResponse } from "../client";
 import { runErrorMessage, useChecklistProgress } from "../checklistProgress";
 import { IconPlus } from "../icons";
+import { applicationCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
 import { when } from "./WorkflowRuns";
 import { T, useT } from "../i18n";
@@ -320,7 +321,12 @@ export function Checklists({ appId }: { appId: string | null }) {
 
   return (
     <>
-      <PageHeader pretitle={appName ?? ""} title={t("Checklists")} actions={actions} />
+      <PageHeader
+        crumbs={applicationCrumbs(t, appId, appName)}
+        title={t("Checklists")}
+        docTitle={appName ? `${appName} · ${t("Checklists")}` : t("Checklists")}
+        actions={actions}
+      />
       {progress.toast}
       <PageBody>{body}</PageBody>
     </>

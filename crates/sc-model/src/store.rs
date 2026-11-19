@@ -404,6 +404,26 @@ pub async fn models_for_table(catalog: &Catalog, table: &str) -> Result<Vec<Mode
     Ok(out)
 }
 
+/// The **names** of the models over `table`, ordered by name — all that
+/// `fit_model`'s picker in the trigger editor needs (`listActions`).
+///
+/// Read from the models table alone, without [`models_for_table`]'s resolving
+/// of every model's datasets. That resolving reads *every* dataset in the
+/// installation, so one this build cannot read — saved by a newer build with an
+/// operation this one does not know — would otherwise fail the action list,
+/// and with it the editor of every trigger on a table.
+pub async fn model_names_for_table(catalog: &Catalog, table: &str) -> Result<Vec<String>> {
+    let select = Select::from(Source::table(MODELS_TABLE))
+        .filter(Expr::col(COL_TABLE_NAME).eq(Expr::lit(table)));
+    let mut out: Vec<String> = rows(catalog, select)
+        .await?
+        .iter()
+        .map(|row| text(row, COL_NAME))
+        .collect::<Result<_>>()?;
+    out.sort();
+    Ok(out)
+}
+
 /// Delete a model, returning whether one was there to delete.
 ///
 /// **Its instances go with it** — the opposite of what deleting an agent does to

@@ -29,6 +29,7 @@ import { navigate } from "../App";
 import { DataGrid, fileStoreOf, isCalc, isDocument, isSecret, type FieldInfo } from "./DataGrid";
 import { display, fromPicker, pickerType, toPicker, type RowRecord } from "../grid/gridValues";
 import { IconArrowLeft } from "../icons";
+import { tableCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader } from "../layout";
 import { ALL_WRITES, canSubmit, formOffered, writesOf, type TableWrites } from "../tableWrites";
 import type { BrowseFilesResponse, ListFieldsResponse, ListTablesResponse } from "../client";
@@ -102,8 +103,8 @@ export function TableData({ table }: { table: string }) {
     // (`admin.css`).
     <div className="data-page">
       <PageHeader
-        pretitle="Table data"
-        title={label}
+        crumbs={tableCrumbs(t, table, label)}
+        title={t("Data")}
         docTitle={t("{table} data", { table: label })}
         actions={
           <>
