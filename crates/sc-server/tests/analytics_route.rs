@@ -99,6 +99,13 @@ async fn an_admin_gets_the_bundle_under_its_own_policy() {
             // No catalog, so no stored settings: the default base map's host.
             analytics_content_security_policy(&sc_config::MapSettings::default().hosts()).as_str()
         );
+        // Never kept, so a page loaded or gone back to after an upgrade is the
+        // new build.
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store",
+            "{path}"
+        );
         let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
             .await
             .unwrap();
@@ -110,6 +117,10 @@ async fn an_admin_gets_the_bundle_under_its_own_policy() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CACHE_CONTROL).unwrap(),
+        "public, max-age=31536000, immutable"
+    );
     // `/analyticsx` is not the Analytics UI's.
     let response = router
         .clone()

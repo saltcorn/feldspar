@@ -2,6 +2,19 @@
 
 Changes in reverse chronological order.
 
+## Analytics UI: a reload always serves the latest build
+
+The Analytics UI's document (`index.html`) is now sent `Cache-Control: no-store` instead of
+`no-cache`. This applies on the admin host (`serve_analytics`) and on an Analytics application's
+host (`analytics_app::DOCUMENT_CACHE_CONTROL`). The browser keeps no copy of the page, so every load
+or reload fetches it from the server, and with it the current build's hashed script names. That
+includes a page reached with Back/Forward. The hashed assets stay `immutable`, and the admin UI's own
+document is unchanged.
+
+Tests: `analytics_route` checks that the document is `no-store` and the asset `immutable` on the
+admin host, and the `analytics_app` unit test checks that the document is `no-store` on an
+application's host.
+
 ## Analytics model editor: a fit is read in its report, in a modal, and saved as a Report workspace
 
 The model editor no longer shows the fit's outputs under the form. That view (rows, outputs,
