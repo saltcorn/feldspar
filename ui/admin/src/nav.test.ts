@@ -97,6 +97,11 @@ describe("the admin sidebar", () => {
     expect(ANALYTICS_NAV_ITEM.label).toBe("Analytics");
     expect(ANALYTICS_NAV_ITEM.group).toBe("Insights");
     expect(ANALYTICS_NAV_ITEM.href).toBe("/analytics/");
+    // A different application: it opens in a new tab.
+    expect(ANALYTICS_NAV_ITEM.newTab).toBe(true);
+    expect(NAV.filter((item) => item.newTab).map((item) => item.label)).toEqual(
+      ANALYTICS_IN_SIDEBAR ? ["Analytics"] : [],
+    );
   });
 
   it("lights up Settings for the data-only checklists, and not for an application's", () => {

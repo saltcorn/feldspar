@@ -222,6 +222,9 @@ type NavItem = {
   icon: ReactNode;
   /** Route prefixes that light this entry up. */
   matches: string[];
+  /** Opens in a new tab: an application of its own rather than a screen of
+   * this one. */
+  newTab?: boolean;
 };
 
 /** The headings the installation's entries are grouped under, in sidebar
@@ -244,8 +247,10 @@ export const ANALYTICS_NAV_ITEM: NavItem = {
   // `#/models/…` links redirect into its model editor (`modelRedirect.ts`).
   // Beside Agents rather than under Tables: a model is a question asked *of*
   // a table, and the section it belongs to is the one about answering
-  // questions rather than the one about storing rows.
+  // questions rather than the one about storing rows. A different
+  // application, so it opens in a tab of its own and the admin UI stays put.
   href: "/analytics/",
+  newTab: true,
   group: "Insights",
   label: "Analytics",
   icon: <IconChartHistogram />,
@@ -705,6 +710,8 @@ function NavLink({
         className={active ? "nav-link active" : "nav-link"}
         href={item.href}
         aria-current={active ? "page" : undefined}
+        target={item.newTab ? "_blank" : undefined}
+        rel={item.newTab ? "noopener" : undefined}
         // Folded, the icon is all there is to go on, so the name becomes the
         // hover label. Unfolded it is already on screen and a tooltip would
         // only repeat it.

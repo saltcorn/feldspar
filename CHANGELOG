@@ -2,6 +2,12 @@
 
 Changes in reverse chronological order.
 
+## Admin UI: the Analytics sidebar entry opens in a new tab
+
+The Analytics UI is an application of its own, so its sidebar entry now opens it in a new tab
+(`target="_blank"`, `rel="noopener"`) and the admin UI stays where it was. A sidebar entry says so
+with `newTab` (`ui/admin/src/App.tsx`); `nav.test.ts` checks Analytics is the only one.
+
 ## Analytics front page: "+ New" buttons in the section headings, Workspaces first
 
 The Datasets, Models and Workspaces sections of the Analytics UI's front page now look alike: each
