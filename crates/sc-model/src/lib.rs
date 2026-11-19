@@ -145,10 +145,11 @@ pub use fit::{
 pub use frame::{Column, ColumnType, Frame, canonical_key};
 pub use instance::{ATTR_ERROR, FitStatus, InstanceId, ModelInstance, RESTARTED};
 pub use instance_store::{
-    INSTANCES_TABLE, ProgressWrite, active_model_instance, bootstrap_model_instances,
-    cancel_requested, delete_model_instance, fitted, list_model_instances, load_model_instance,
-    reap_fitting_instances, record_fit_progress, request_fit_cancel, require_model_instance,
-    save_fitted_instance, save_fitted_instance_with_outputs, save_model_instance,
+    ATTR_REPORT, INSTANCES_TABLE, ProgressWrite, active_model_instance, bootstrap_model_instances,
+    cancel_requested, delete_model_instance, fitted, instance_report, list_model_instances,
+    load_model_instance, reap_fitting_instances, record_fit_progress, request_fit_cancel,
+    require_model_instance, save_fitted_instance, save_fitted_instance_with_outputs,
+    save_model_instance, set_instance_report,
 };
 pub use interface::{Declaration, Element, Interface, SizeExpr, SizeOp, SizeTree};
 pub use metrics::{

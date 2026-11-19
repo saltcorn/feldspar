@@ -972,6 +972,12 @@ pub(crate) fn register(set: &mut EndpointSet) {
             .input(TypeSchema::struct_of([
                 StructField::new("name", TypeSchema::text()),
                 StructField::new("kind", TypeSchema::text()),
+                // The new workspace's state, checked as a saved one is; `{}`
+                // without it.
+                StructField::new("state", TypeSchema::optional(TypeSchema::json())),
+                // For a report: the model fit it is the report of, which is
+                // then linked to it (the fit's `report`).
+                StructField::new("fit", TypeSchema::optional(TypeSchema::uuid())),
             ]))
             .output(workspace_schema()),
     );

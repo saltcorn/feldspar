@@ -389,11 +389,11 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             async move {
                 let id = sc_model::ModelId(parse_uuid(ctx.path_param("id")?, "model")?);
                 let model = sc_model::load_model(&catalog, id).await?;
-                let out: Vec<Json> = sc_model::list_model_instances(&catalog, id)
-                    .await?
-                    .iter()
-                    .map(|i| with_dataset_changed(model_instance_json(i), i, model.as_ref()))
-                    .collect();
+                let mut out = Vec::new();
+                for i in sc_model::list_model_instances(&catalog, id).await? {
+                    let json = with_dataset_changed(model_instance_json(&i), &i, model.as_ref());
+                    out.push(with_report(&catalog, json, &i).await);
+                }
                 Ok(HandlerResponse::ok(Json::Array(out)))
             }
         }
@@ -440,6 +440,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 if let Json::Object(map) = &mut out {
                     map.insert("program_changed".to_owned(), json!(changed));
                 }
+                let out = with_report(&catalog, out, &instance).await;
                 Ok(HandlerResponse::ok(out))
             }
         }
@@ -1091,6 +1092,24 @@ fn with_dataset_changed(
     let changed = model.and_then(|m| sc_model::dataset_changed(instance, &m.dataset, &m.related));
     if let Json::Object(map) = &mut out {
         map.insert("dataset_changed".to_owned(), json!(changed));
+    }
+    out
+}
+
+/// A fit's JSON with the Report workspace saved from its report, as `{ id,
+/// name }` — `null` when none was, or when that workspace has since been
+/// deleted (or cannot be read), so the model editor offers to save it again.
+async fn with_report(catalog: &Catalog, mut out: Json, instance: &sc_model::ModelInstance) -> Json {
+    let report = match sc_model::instance_report(instance) {
+        Some(id) => sc_analytics::load_workspace(catalog, sc_analytics::WorkspaceId(id))
+            .await
+            .ok()
+            .flatten()
+            .map(|ws| json!({ "id": ws.id.0, "name": ws.name })),
+        None => None,
+    };
+    if let Json::Object(map) = &mut out {
+        map.insert("report".to_owned(), report.unwrap_or(Json::Null));
     }
     out
 }

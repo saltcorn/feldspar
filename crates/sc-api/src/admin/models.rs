@@ -747,6 +747,15 @@ fn model_instance_schema() -> TypeSchema {
         // so the model editor's list of fits can say which are out of date;
         // null when it cannot tell, or where it was not asked.
         StructField::new("dataset_changed", TypeSchema::optional(TypeSchema::bool())),
+        // The Report workspace saved from this fit's report (`createWorkspace`
+        // with `fit`), while it exists; null otherwise, or where not asked.
+        StructField::new(
+            "report",
+            TypeSchema::optional(TypeSchema::struct_of([
+                StructField::new("id", TypeSchema::uuid()),
+                StructField::new("name", TypeSchema::text()),
+            ])),
+        ),
     ])
 }
 

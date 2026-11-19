@@ -41,7 +41,7 @@ pub mod tools;
 mod workspace;
 
 pub use workspace::{
-    WORKSPACES_TABLE, Workspace, WorkspaceId, WorkspaceKind, bootstrap_workspaces,
+    WORKSPACES_TABLE, Workspace, WorkspaceId, WorkspaceKind, bootstrap_workspaces, check_new_state,
     create_workspace, delete_workspace, list_workspaces, load_workspace, rename_workspace,
     require_workspace, save_workspace_state, share_workspace,
 };

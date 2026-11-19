@@ -261,7 +261,9 @@ pub async fn bootstrap_workspaces(catalog: &Catalog) -> Result<Table> {
 
 /// Create a workspace. Refused for an empty name. Any kind is stored: whether
 /// one can be created yet is [`WorkspaceKind::check_available`], asked by the
-/// API.
+/// API. The state is stored as it is: a restore or a sync brings states saved
+/// by earlier versions, which a newer check must not refuse; the API checks a
+/// state it is given ([`check_new_state`]).
 pub async fn create_workspace(catalog: &Catalog, workspace: &Workspace) -> Result<()> {
     check(workspace)?;
     let insert = Insert::row(
@@ -291,6 +293,15 @@ pub async fn create_workspace(catalog: &Catalog, workspace: &Workspace) -> Resul
         ],
     );
     exec(catalog, insert.into()).await
+}
+
+/// Check the state a workspace is to be **created** with through the API (a
+/// fit's report saved from the model editor), as a saved state is checked.
+pub fn check_new_state(kind: WorkspaceKind, state: &Json) -> Result<()> {
+    if !state.is_object() {
+        return Err(Error::invalid("a workspace's state is a JSON object"));
+    }
+    crate::panel::check_state(kind, state)
 }
 
 /// Rename a workspace; its kind and state are untouched.

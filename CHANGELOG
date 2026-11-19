@@ -2,6 +2,65 @@
 
 Changes in reverse chronological order.
 
+## Analytics model editor: a fit is read in its report, in a modal, and saved as a Report workspace
+
+The model editor no longer shows the fit's outputs under the form. That view (rows, outputs,
+classes, search, posterior warnings, try a row) was too long. Each fit in the **Fits** list now has
+a **Report** column with **View**, which opens the fit's report in a modal. The modal also opens
+when a fit started in the editor finishes, or when a link names a fit (`#/model-instances/<id>`).
+
+- **The report** is built as a Report workspace's state (`ui/analytics/src/models/fitReport.ts`)
+  and drawn read-only (`report/ReportPreview.tsx`). It holds:
+  - **The facts of the fit**, as a table: model, provider type and description, outcome, dataset,
+    fit name and description, when fitted, status, the predicted column, features,
+    hyperparameters and fit id.
+  - **Notices**: a failed fit, the dataset or program changed since the fit.
+  - **A posterior's warnings**, first, then its **Diagnostics** and **Data** (the binding).
+  - **Rows** (for any other fit).
+  - **Outputs**: every output as a panel (`fit_table`, or a plot spec over the fit's output data).
+    An output that cannot be drawn is listed with its reason. The optional plots are added with
+    **More plots** in the modal, and are still kept in the model's view state.
+  - A classification's **Classes**, with its confusion matrix, and the **Hyperparameter search**.
+
+  The facts are written into text when the report is built. A fit never changes, so they cannot go
+  stale.
+- **Nothing is stored until "Save as report workspace"**, in the modal's footer, under a name that
+  can be edited (default "<model> — <fit> report"). The workspace is created with its state in one
+  request and linked to the fit. From then on the fit's row, and the modal, link to it. It is on
+  the Analytics front page like any other workspace, and can be edited as one.
+- **Print** prints the report as a Report workspace's Export PDF does.
+- **Posterior** and **Try a row** are tabs of the modal: the variable explorer, write back and the
+  run download, and the what-if row. They used to be on the editor page.
+- **Warnings**: a fit's "N warnings" in its row opens its report.
+- **Removing a fit** that has a saved report says the report stays, but its plots and tables will
+  say the fit is gone.
+- **Markdown**: text blocks (and text panels) now read GFM pipe tables, with alignment, `\|` and
+  pipes inside code (`panels/markdown.ts`).
+- **API**:
+  - `createWorkspace` takes an optional `state`, checked as `saveWorkspaceState` checks one
+    (`sc_analytics::check_new_state`), and an optional `fit` (report workspaces only), recorded on
+    the fit as the `report` attribute (`sc_model::set_instance_report`).
+  - `listModelInstances` and `getModelInstance` answer `report: { id, name }` while that
+    workspace exists, and `null` otherwise.
+  - `sc_analytics::create_workspace` itself still stores any state: a restore or a sync brings
+    states from earlier versions.
+- Removed: `models/FitView.tsx`, and `OutputsPanel` (the folding cards; `OutputTableView` and
+  `OutputBody` stay for the model comparison and `fit_table` panels). An output can no longer be
+  dragged from the model editor into a report open in a split view: the saved report replaces
+  that.
+- Tests:
+  - `sc-server` `analytics_api::a_fits_report_is_saved_as_a_workspace_linked_to_the_fit`: one
+    request creates the report and links it; a bad state, an unknown fit or a non-report kind
+    creates nothing; deleting the workspace removes the link.
+  - `ui/analytics` `models/fitReport.test.ts`: the facts, notices, panels, the search, a
+    posterior's warnings first, the state reading back as built.
+  - `panels/markdown.test.ts`: pipe tables.
+- **Compatibility:**
+  - No migration. The link is a key in the fit's existing `attributes` JSON.
+  - The new request fields and the `report` field are optional, so older clients are unaffected.
+  - The model's view state keeps its keys; `collapsed` is no longer read.
+  - Existing report text with a pipe row directly over a `---|---` row now renders as a table.
+
 ## Trigger editor: one unreadable dataset no longer stops it loading (bug report)
 
 Editing a trigger on a table showed "Could not load the actions and tables.". The form asks

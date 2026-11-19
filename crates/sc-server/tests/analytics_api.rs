@@ -685,6 +685,106 @@ fn report_of(panels: &[Value]) -> Value {
         .collect::<Vec<_>>() })
 }
 
+/// The model editor's fit report: "Save as report workspace" creates the
+/// report with its state in one request, and links the fit to it for as long
+/// as the workspace exists.
+#[tokio::test]
+async fn a_fits_report_is_saved_as_a_workspace_linked_to_the_fit() -> sc_error::Result<()> {
+    let (mut client, _db) = setup().await?;
+    let dataset = client
+        .ok("POST", "/api/datasets", Some(prices("prices")))
+        .await;
+    let dataset_id = dataset["dataset"]["id"].as_str().unwrap().to_owned();
+    let model = client
+        .ok(
+            "POST",
+            "/api/models",
+            Some(json!({
+                "name": "House prices",
+                "provider": "linear_regression",
+                "dataset": { "dataset_id": dataset_id },
+                "configuration": { "label": "price" },
+                "split": { "train": 0.8, "validation": 0.0, "test": 0.2, "seed": 7 },
+            })),
+        )
+        .await;
+    let model_id = model["id"].as_str().unwrap().to_owned();
+    let fit = client.fit(&model_id).await;
+    let fit_id = fit["id"].as_str().unwrap().to_owned();
+    assert_eq!(fit["report"], Value::Null, "{fit}");
+
+    let mut state = report_of(&[panel(
+        "fit_table",
+        json!({ "fit": fit_id, "output": "coefficients" }),
+    )]);
+    state["blocks"].as_array_mut().unwrap().insert(
+        0,
+        json!({ "id": "h", "kind": "heading", "text": "House prices", "level": 1 }),
+    );
+
+    // A state the report refuses, or a fit that is not one, creates nothing.
+    let bad = json!({ "blocks": [{ "id": "x", "kind": "slide" }] });
+    let error = client
+        .refused(
+            "POST",
+            "/api/workspaces",
+            Some(json!({ "name": "Bad", "kind": "report", "state": bad, "fit": fit_id })),
+        )
+        .await;
+    assert!(error.contains("not a kind of block"), "{error}");
+    client
+        .refused(
+            "POST",
+            "/api/workspaces",
+            Some(json!({ "name": "Bad", "kind": "report", "state": state, "fit": uuid::Uuid::new_v4() })),
+        )
+        .await;
+    let error = client
+        .refused(
+            "POST",
+            "/api/workspaces",
+            Some(json!({ "name": "Bad", "kind": "dashboard", "fit": fit_id })),
+        )
+        .await;
+    assert!(error.contains("only a report"), "{error}");
+    assert_eq!(client.ok("GET", "/api/workspaces", None).await, json!([]));
+
+    let saved = client
+        .ok(
+            "POST",
+            "/api/workspaces",
+            Some(json!({ "name": "House prices report", "kind": "report", "state": state, "fit": fit_id })),
+        )
+        .await;
+    assert_eq!(saved["state"], state);
+    let report_id = saved["id"].as_str().unwrap().to_owned();
+
+    // The fit links to it, in the list and on its own.
+    let link = json!({ "id": report_id, "name": "House prices report" });
+    let listed = client
+        .ok("GET", &format!("/api/models/{model_id}/instances"), None)
+        .await;
+    assert_eq!(listed[0]["report"], link, "{listed}");
+    let one = client
+        .ok("GET", &format!("/api/model-instances/{fit_id}"), None)
+        .await;
+    assert_eq!(one["report"], link);
+
+    // It is a workspace like any other, on the front page.
+    let workspaces = client.ok("GET", "/api/workspaces", None).await;
+    assert_eq!(workspaces[0]["id"], json!(report_id));
+
+    // Deleted, the link goes, and the fit's row offers to save it again.
+    client
+        .ok("DELETE", &format!("/api/workspaces/{report_id}"), None)
+        .await;
+    let listed = client
+        .ok("GET", &format!("/api/models/{model_id}/instances"), None)
+        .await;
+    assert_eq!(listed[0]["report"], Value::Null, "{listed}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn dashboards_hold_tiles_of_panels_and_stat_cards() -> sc_error::Result<()> {
     let (mut client, _db) = setup().await?;

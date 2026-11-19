@@ -2,9 +2,10 @@
 // moved from the admin UI's instance screen).
 //
 // While it runs, the editor shows the stage, a progress bar per chain, and
-// Cancel (`FitRunning.tsx`). After: the **warnings first**,
-// in plain language and in the order they matter (chains that disagree before
-// a tree depth that was hit), then the diagnostics, then one section per
+// Cancel (`FitRunning.tsx`). After, this is the "Posterior" tab of the fit's
+// report modal (`FitReportModal.tsx`), beside the report — whose **warnings
+// come first**, in plain language and in the order they matter
+// (`fitReport.ts`). Here: the diagnostics, then one section per
 // variable: its summary labelled by the database (`alpha[Aitkin]`, not
 // `alpha.1`), and for a chosen element its trace per chain and its histogram;
 // for a one-axis labelled variable, the forest plot a hierarchical model is
@@ -46,7 +47,6 @@ import {
   formatNumber,
   matchElements,
   metricRows,
-  orderWarnings,
   readModelDataset,
   readMetrics,
   readParameters,
@@ -60,7 +60,6 @@ import {
   type ModelItem,
   type RecordedAxes,
   type SummaryTable,
-  type WarningKind,
   type WriteBackForm,
 } from "./models";
 import type { BindReport } from "./ModelBindings";
@@ -212,46 +211,6 @@ export function PosteriorInstance({
           </Col>
         </Row>
       )}
-    </>
-  );
-}
-
-/** The heading each kind of warning is read under. */
-function useWarningTitle(): (kind: WarningKind) => string {
-  const { t } = useT();
-  return (kind) => {
-    switch (kind) {
-      case "rhat":
-        return t("The chains disagree");
-      case "divergent":
-        return t("Divergent transitions");
-      case "ebfmi":
-        return t("The sampler moved poorly between energy levels");
-      case "ess":
-        return t("Too few effective draws");
-      case "treedepth":
-        return t("Trajectories were cut short");
-      case "other":
-        return t("Worth knowing");
-    }
-  };
-}
-
-/** The warnings, ordered and headed — shown above a posterior's outputs
- * (`FitView.tsx`), because they say whether any of them can be trusted. A fit
- * with warnings is still fitted — a posterior is not wrong because it is hard
- * — and these say what to do. */
-export function Warnings({ warnings }: { warnings: string[] }) {
-  const title = useWarningTitle();
-  if (warnings.length === 0) return null;
-  return (
-    <>
-      {orderWarnings(warnings).map((w) => (
-        <Alert variant={w.serious ? "danger" : "warning"} key={w.text}>
-          <div className="fw-bold">{title(w.kind)}</div>
-          {w.text}
-        </Alert>
-      ))}
     </>
   );
 }

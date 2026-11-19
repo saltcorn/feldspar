@@ -1,13 +1,15 @@
 // The model editor (analytics TODO A3.5–A3.6), at `#/models/<id>` and
 // `#/models/new`: one model — its dataset, its provider, its settings and
-// hyperparameters, its split — and below it the fit being looked at, with its
-// outputs, and the model's earlier fits.
+// hyperparameters, its split — and below it the model's fits. A fit is read
+// in its **report** (`FitReportModal.tsx`), a modal opened from its row: its
+// facts, warnings, outputs and the rest, as a Report workspace would hold it,
+// with "Save as report workspace". The editor shows no outputs itself.
 //
 // A model is not a workspace: it is a global, named entity that formulas,
 // actions and panels refer to, as a dataset is. What a workspace would have
 // given — reopening as it was left — is the model's **view state**
-// (`viewState.ts`): which outputs are folded, the optional plots chosen and
-// the fit selected, written key by key as they change and read back on open.
+// (`viewState.ts`): the optional plots chosen for the reports and the fit
+// selected, written key by key as they change and read back on open.
 // None of it touches the model: a fit does not record it, and nothing about
 // "changed since this fit" looks at it.
 //
@@ -21,7 +23,7 @@
 //
 // **Fit saves first**: a fit of what is on the screen and a save of what is on
 // the screen are the same intention. While a fit runs its progress is pushed
-// by the server (`progress.ts`); when it finishes it becomes the fit shown.
+// by the server (`progress.ts`); when it finishes its report opens.
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import Alert from "react-bootstrap/Alert";
@@ -39,7 +41,7 @@ import { useAnnounce, useChanges, usePane } from "../panes";
 import { routeHash } from "../router";
 import { DatasetPicker, type DatasetItem } from "./DatasetPicker";
 import { FitRunning } from "./FitRunning";
-import { FitView } from "./FitView";
+import { FitReportModal } from "./FitReportModal";
 import { FormulaSection } from "./FormulaEditor";
 import { FORMULA_KEYS, FORMULA_PROVIDER, writeRows, type FormulaCheck } from "./formula";
 import { BindingSection, type BindingState } from "./ModelBindings";
@@ -86,7 +88,7 @@ import {
 import { useFitProgress } from "./progress";
 import { SettingsFields, buildConfig, readConfig } from "./settings";
 import { StatusBadge, fitTone } from "./StatusBadge";
-import { chosenFit, editorPatch, readEditorView, toggled, type EditorView } from "./viewState";
+import { chosenFit, editorPatch, readEditorView, type EditorView } from "./viewState";
 
 /** How long the form waits after a keystroke before asking the server which
  * providers this dataset resolves. */
@@ -159,6 +161,8 @@ export function ModelEditor({
   const [selected, setSelected] = useState<string | null>(null);
   // The fit running now, followed over its progress socket.
   const [running, setRunning] = useState<string | null>(null);
+  // The fit whose report is open, if any.
+  const [reporting, setReporting] = useState<string | null>(null);
 
   const dataset = useMemo(() => ({ dataset_id: datasetId }), [datasetId]);
   const datasetJson = JSON.stringify(dataset);
@@ -221,6 +225,8 @@ export function ModelEditor({
           setView(remembered);
           setInstances(ordered);
           setSelected(chosenFit(routeFit, remembered.fit, ordered));
+          // A link to one fit (`#/model-instances/<id>`) opens its report.
+          if (routeFit && ordered.some((f) => f.id === routeFit)) setReporting(routeFit);
           setRunning(ordered.find((f) => f.status === "fitting")?.id ?? null);
         } else {
           setDatasetId(askedDataset ?? "");
@@ -313,7 +319,13 @@ export function ModelEditor({
     changeView({ fit });
   };
 
-  // The fit that finished becomes the fit shown, and the model is read again
+  /** Open a fit's report. */
+  const openReport = (fit: string) => {
+    select(fit);
+    setReporting(fit);
+  };
+
+  // The fit that finished has its report opened, and the model is read again
   // for its last fit.
   const live = useFitProgress(running, () => {
     const finished = running;
@@ -322,7 +334,7 @@ export function ModelEditor({
     changed("model", id);
     void loadInstances(id);
     void api.getModel(id).then(setModel).catch(() => undefined);
-    if (finished) select(finished);
+    if (finished) openReport(finished);
   });
 
   // --- what the form knows ---------------------------------------------------
@@ -459,13 +471,20 @@ export function ModelEditor({
   };
 
   const removeInstance = async (instance: InstanceItem) => {
-    if (!window.confirm(t('Remove the fit "{name}"?', { name: instanceLabel(instance) }))) return;
+    const question = instance.report
+      ? t('Remove the fit "{name}"? Its report "{report}" stays, but its plots and tables will say the fit is gone.', {
+          name: instanceLabel(instance),
+          report: instance.report.name,
+        })
+      : t('Remove the fit "{name}"?', { name: instanceLabel(instance) });
+    if (!window.confirm(question)) return;
     try {
       await api.deleteModelInstance(instance.id);
       if (selected === instance.id) {
         setSelected(null);
         changeView({ fit: null });
       }
+      if (reporting === instance.id) setReporting(null);
       if (id) await loadInstances(id);
     } catch (err) {
       setError(errorMessage(err, t("Could not remove that fit.")));
@@ -847,19 +866,18 @@ export function ModelEditor({
 
       {/* --- the fit ------------------------------------------------------------ */}
       {running && <FitRunning instance={running} live={live} />}
-      {model && shown && (
-        <section className="mb-4" aria-label={t("The fit")}>
-          <FitView
-            key={shown}
-            model={model}
-            instanceId={shown}
-            collapsed={view.collapsed}
-            plots={view.plots}
-            onToggle={(output) => changeView({ collapsed: toggled(view.collapsed, output) })}
-            onPlots={(plots) => changeView({ plots })}
-            onChanged={() => id && void loadInstances(id)}
-          />
-        </section>
+      {model && reporting && (
+        <FitReportModal
+          key={reporting}
+          model={model}
+          instanceId={reporting}
+          providerDescription={providers.find((p) => p.name === model.provider)?.description}
+          datasetName={datasets.find((d) => d.id === readModelDataset(model.dataset)?.dataset_id)?.name}
+          plots={view.plots}
+          onPlots={(plots) => changeView({ plots })}
+          onChanged={() => id && void loadInstances(id)}
+          onClose={() => setReporting(null)}
+        />
       )}
 
       {/* --- the fits ----------------------------------------------------------- */}
@@ -883,6 +901,9 @@ export function ModelEditor({
                 <th>
                   <T text="Hyperparameters" />
                 </th>
+                <th>
+                  <T text="Report" />
+                </th>
                 <th className="text-end">
                   <T text="Actions" />
                 </th>
@@ -891,7 +912,7 @@ export function ModelEditor({
             <tbody>
               {instances.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="text-muted">
+                  <td colSpan={6} className="text-muted">
                     <T text="Not fitted yet. A fit reads every row of the dataset and runs on the server; this list says how it went." />
                   </td>
                 </tr>
@@ -899,7 +920,12 @@ export function ModelEditor({
               {instances.map((instance) => (
                 <tr key={instance.id} className={instance.id === shown ? "table-active" : undefined}>
                   <td>
-                    <Button variant="link" className="p-0" onClick={() => select(instance.id)}>
+                    <Button
+                      variant="link"
+                      className="p-0"
+                      disabled={instance.status === "fitting"}
+                      onClick={() => openReport(instance.id)}
+                    >
                       {instanceLabel(instance)}
                     </Button>
                     {instance.name.trim() !== "" && (
@@ -922,11 +948,30 @@ export function ModelEditor({
                     </div>
                     {instance.error && <div className="text-danger small">{instance.error}</div>}
                     {instance.warnings.length > 0 && (
-                      <div className="text-warning small">{t("{count} warnings", { count: instance.warnings.length })}</div>
+                      <Button
+                        variant="link"
+                        className="p-0 text-warning small"
+                        title={t("Read the warnings in the fit's report")}
+                        onClick={() => openReport(instance.id)}
+                      >
+                        ⚠ {t("{count} warnings", { count: instance.warnings.length })}
+                      </Button>
                     )}
                   </td>
                   <td>{headlineMetric(readMetrics(instance.metrics)) ?? outcomeSummary(readOutcome(instance.outcome))}</td>
                   <td className="text-muted small font-monospace">{hyperparameterText(instance.hyperparameters)}</td>
+                  <td>
+                    {instance.status !== "fitting" && (
+                      <Button size="sm" variant="outline-secondary" onClick={() => openReport(instance.id)}>
+                        <T text="View" />
+                      </Button>
+                    )}
+                    {instance.report && (
+                      <div className="small mt-1">
+                        <a href={routeHash({ name: "workspace", id: instance.report.id })}>{instance.report.name}</a>
+                      </div>
+                    )}
+                  </td>
                   <td className="text-end">
                     <div className="btn-list justify-content-end flex-nowrap">
                       {instance.status === "fitted" && !instance.active && (

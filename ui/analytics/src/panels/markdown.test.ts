@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseInline, parseMarkdown, plainText, safeHref } from "./markdown";
+import { parseInline, parseMarkdown, plainText, safeHref, tableCells } from "./markdown";
 
 describe("Markdown for text blocks (A4.4)", () => {
   it("reads headings, paragraphs, lists, quotes, code and rules", () => {
@@ -68,4 +68,37 @@ describe("Markdown for text blocks (A4.4)", () => {
       { kind: "text", text: ")" },
     ]);
   });
+
+  it("reads pipe tables, their alignment, escaped pipes and pipes in code", () => {
+    const doc = parseMarkdown(
+      [
+        "Before",
+        "| name | value |",
+        "| :--- | ---: |",
+        "| *a* | 1 |",
+        "| b \\| c | `x|y` |",
+        "| short |",
+        "",
+        "after",
+      ].join("\n"),
+    );
+    expect(doc.map((b) => b.kind)).toEqual(["paragraph", "table", "paragraph"]);
+    const table = doc[1];
+    if (table.kind !== "table") throw new Error("not a table");
+    expect(table.align).toEqual(["left", "right"]);
+    expect(table.header.map(plainText)).toEqual(["name", "value"]);
+    expect(table.rows.map((r) => r.map(plainText))).toEqual([
+      ["a", "1"],
+      ["b | c", "x|y"],
+      ["short", ""],
+    ]);
+    expect(table.rows[0][0]).toMatchObject([{ kind: "em" }]);
+  });
+
+  it("does not read a table without its separator row, or with a different width", () => {
+    expect(parseMarkdown("a | b\nc | d").map((b) => b.kind)).toEqual(["paragraph"]);
+    expect(parseMarkdown("| a | b |\n| --- |").map((b) => b.kind)).toEqual(["paragraph"]);
+    expect(tableCells("| a | b |")).toEqual(["a", "b"]);
+  });
 });
+

@@ -1683,3 +1683,29 @@
     overflow: hidden;
   }
 }
+
+/* Pipe tables in Markdown (a report's text blocks; a fit's report). */
+.an-md-table {
+  width: auto;
+  margin-bottom: 0.75rem;
+}
+
+.an-md-table th,
+.an-md-table td {
+  padding: 0.2rem 0.6rem;
+}
+
+/* A fit's report in its modal (`FitReportModal.tsx`): the page is drawn as
+   the Report workspace draws it, narrower when the modal is. */
+.an-fit-report .an-report-preview {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.an-fit-report .an-report-preview .an-report-block + .an-report-block {
+  margin-top: 0.75rem;
+}
+
+.an-fit-report-name {
+  max-width: 24rem;
+}

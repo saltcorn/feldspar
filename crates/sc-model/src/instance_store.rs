@@ -543,6 +543,52 @@ pub async fn request_fit_cancel(catalog: &Catalog, id: InstanceId) -> Result<boo
     Ok(true)
 }
 
+/// The attribute holding the id of the Report workspace saved from this fit's
+/// report (analytics: the model editor's "Save as report workspace"). Set when
+/// that workspace is created; the workspace may since have been deleted, so a
+/// reader checks it still exists before linking to it.
+pub const ATTR_REPORT: &str = "report";
+
+/// The Report workspace recorded as this fit's report, if any — whether it
+/// still exists is the caller's to check.
+pub fn instance_report(instance: &ModelInstance) -> Option<uuid::Uuid> {
+    instance
+        .attributes
+        .get(ATTR_REPORT)
+        .and_then(Json::as_str)
+        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+}
+
+/// Record (or, with `None`, forget) the Report workspace saved from fit
+/// `id`'s report. The other attributes are kept.
+pub async fn set_instance_report(
+    catalog: &Catalog,
+    id: InstanceId,
+    report: Option<uuid::Uuid>,
+) -> Result<()> {
+    let instance = require_model_instance(catalog, id).await?;
+    let mut attributes = instance.attributes;
+    match report {
+        Some(report) => {
+            attributes.insert(ATTR_REPORT.to_owned(), Json::String(report.to_string()));
+        }
+        None => {
+            attributes.remove(ATTR_REPORT);
+        }
+    }
+    let update = Update::new(
+        INSTANCES_TABLE,
+        vec![Assignment::new(
+            COL_ATTRIBUTES,
+            Expr::lit(Value::Json(Json::Object(attributes))),
+        )],
+    )
+    .filter(Expr::col(COL_ID).eq(Expr::lit(id.0)));
+    let mut tx = catalog.primary(crate::INTERNAL_TABLES).begin().await?;
+    let written = run(tx.as_mut(), Statement::from(update)).await.map(drop);
+    sc_db::finish(tx, written).await
+}
+
 /// Fail every instance still saying `fitting`, and answer how many there were
 /// (§8).
 ///
