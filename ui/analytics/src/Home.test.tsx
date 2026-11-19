@@ -1,5 +1,5 @@
-// The front page: Workspaces, then Datasets, then Models. Each section's
-// heading row carries its secondary buttons and then, last, its "+ New …"
+// The front page: Workspaces, then Datasets, then Models, each a card. Each
+// card's header carries its secondary buttons and then, last, its "+ New …"
 // button, as the admin UI's page headers do; no section has an inline card
 // for making one — the datasets and workspaces ask for theirs in a dialog.
 
@@ -18,7 +18,7 @@ describe("the front page", () => {
     expect(at("Datasets")).toBeLessThan(at("Models"));
   });
 
-  it("ends each heading row with its plus button, after the secondary ones", () => {
+  it("ends each card header with its plus button, after the secondary ones", () => {
     for (const [section, secondary, label] of [
       ["Workspaces", [], "New workspace"],
       ["Datasets", ["Get datasets"], "New dataset"],
@@ -26,7 +26,7 @@ describe("the front page", () => {
     ] as const) {
       const before = secondary.map((text) => `<button[^>]*>${text}</button>`).join("");
       const row = new RegExp(
-        `<h2[^>]*>${section}</h2>${before}<button[^>]*><svg[^>]*class="icon icon-2"[^>]*>.*?</svg>${label}</button></div>`,
+        `<section class="card[^"]*"><div class="card-header"><h2 class="card-title">${section}</h2><div class="card-actions[^"]*">${before}<button[^>]*><svg[^>]*class="icon icon-2"[^>]*>.*?</svg>${label}</button></div></div>`,
       );
       expect(html).toMatch(row);
     }

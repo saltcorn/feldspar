@@ -4,7 +4,7 @@
 // Every workspace, most recently used first, each opened, renamed or deleted
 // from its row; and a new one made by name and kind (the heading's "+ New
 // workspace" button opens a dialog asking for both), the kinds not here yet
-// listed and disabled with the milestone that brings them. In a self-serve
+// listed, disabled and marked not yet available. In a self-serve
 // application (A9.3) the server lists its own and the kinds it opens; a
 // workspace is renamed, shared and deleted by its owner, and new ones are made
 // only where the application allows it.
@@ -55,20 +55,22 @@ export function WorkspaceList() {
   }, [load]);
 
   return (
-    <section className="mb-5">
-      <div className="d-flex align-items-center gap-2 mb-3">
-        <h2 className="h3 mb-0 me-auto">
+    <section className="card mb-4">
+      <div className="card-header">
+        <h2 className="card-title">
           <T text="Workspaces" />
         </h2>
-        {mayCreate && (
-          <AddButton
-            label={t("New workspace")}
-            onClick={() => setCreating(true)}
-          />
-        )}
+        <div className="card-actions d-flex gap-2">
+          {mayCreate && (
+            <AddButton
+              label={t("New workspace")}
+              onClick={() => setCreating(true)}
+            />
+          )}
+        </div>
       </div>
       {error && (
-        <Alert variant="danger" onClose={() => setError(null)} dismissible>
+        <Alert className="m-3" variant="danger" onClose={() => setError(null)} dismissible>
           {error}
         </Alert>
       )}
@@ -78,7 +80,7 @@ export function WorkspaceList() {
       )}
 
       {workspaces && workspaces.length === 0 && (
-        <p className="text-secondary">
+        <p className="card-body text-secondary mb-0">
           <T text="No workspaces yet." />
         </p>
       )}
@@ -242,7 +244,7 @@ function NewWorkspaceDialog({ kinds, onClose }: { kinds: KindItem[]; onClose: ()
           </Form.Group>
           {noneHere && (
             <Form.Text muted>
-              <T text="No kind of workspace can be created yet: each arrives with the milestone it names." />
+              <T text="No kind of workspace is available yet." />
             </Form.Text>
           )}
         </Modal.Body>

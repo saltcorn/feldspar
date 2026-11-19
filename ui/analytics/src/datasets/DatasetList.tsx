@@ -91,20 +91,22 @@ export function DatasetList({ onOpen }: { onOpen: (id: string) => void }) {
   };
 
   return (
-    <section className="mb-5">
-      <div className="d-flex align-items-center gap-2 mb-3">
-        <h2 className="h3 mb-0 me-auto">
+    <section className="card mb-4">
+      <div className="card-header">
+        <h2 className="card-title">
           <T text="Datasets" />
         </h2>
-        {mayMake && !application && (
-          <Button size="sm" variant="outline-primary" onClick={() => setGetting(true)}>
-            <T text="Get datasets" />
-          </Button>
-        )}
-        {mayMake && <AddButton label={t("New dataset")} onClick={() => setCreating(true)} />}
+        <div className="card-actions d-flex gap-2">
+          {mayMake && !application && (
+            <Button size="sm" variant="outline-primary" onClick={() => setGetting(true)}>
+              <T text="Get datasets" />
+            </Button>
+          )}
+          {mayMake && <AddButton label={t("New dataset")} onClick={() => setCreating(true)} />}
+        </div>
       </div>
       {error && (
-        <Alert variant="danger" dismissible onClose={() => setError(null)}>
+        <Alert className="m-3" variant="danger" dismissible onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
@@ -120,7 +122,7 @@ export function DatasetList({ onOpen }: { onOpen: (id: string) => void }) {
         }}
       />
       {datasets && datasets.length === 0 && (
-        <p className="text-secondary">
+        <p className="card-body text-secondary mb-0">
           <T text="No datasets yet. Make one on a table with the + New dataset button." />
         </p>
       )}

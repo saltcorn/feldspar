@@ -15,6 +15,12 @@ heading has its create button on the same line, labelled as the admin UI's are: 
   heading's secondary buttons (Get datasets, Compare) come before its primary "+ New …" button,
   which is rightmost.
 - The sections are reordered: Workspaces first, then Datasets, then Models.
+- Each section is a Tabler card: the title and its buttons in the `card-header` (`card-title`,
+  `card-actions`), the table as the card's body (`card-table`), and an error, a notice or the
+  "No … yet" sentence padded inside the card.
+- In the New workspace dialog a kind that is not here yet reads "Notebook (not yet available)"
+  rather than naming the milestone it arrives in (`workspaces/kinds.ts`, test in `kinds.test.ts`);
+  the hint when no kind can be made says "No kind of workspace is available yet."
 - The datasets table drops its Operations and Rows columns. A dataset that has an error says so
   with its "has an error" badge under its name, as a model that cannot be fitted does.
 - The sharing select moved from the datasets table to the Dataset editor, under the dataset's name

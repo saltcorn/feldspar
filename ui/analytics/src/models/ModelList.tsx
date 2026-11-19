@@ -124,31 +124,33 @@ export function ModelList() {
     setTicked((list) => (on ? [...list.filter((x) => x !== id), id] : list.filter((x) => x !== id)));
 
   return (
-    <section className="mb-5">
-      <div className="d-flex align-items-center gap-2 mb-3">
-        <h2 className="h3 mb-0 me-auto">
+    <section className="card mb-4">
+      <div className="card-header">
+        <h2 className="card-title">
           <T text="Models" />
         </h2>
-        <Button
-          size="sm"
-          variant="outline-primary"
-          disabled={ticked.length < 2}
-          title={ticked.length < 2 ? t("Tick two or more models to compare them.") : undefined}
-          onClick={() => pane.go({ name: "compareModels", ids: ticked })}
-        >
-          <T text="Compare" />
-          {ticked.length > 0 && ` (${ticked.length})`}
-        </Button>
-        <AddButton label={t("New model")} onClick={() => pane.go({ name: "newModel", dataset: null })} />
+        <div className="card-actions d-flex gap-2">
+          <Button
+            size="sm"
+            variant="outline-primary"
+            disabled={ticked.length < 2}
+            title={ticked.length < 2 ? t("Tick two or more models to compare them.") : undefined}
+            onClick={() => pane.go({ name: "compareModels", ids: ticked })}
+          >
+            <T text="Compare" />
+            {ticked.length > 0 && ` (${ticked.length})`}
+          </Button>
+          <AddButton label={t("New model")} onClick={() => pane.go({ name: "newModel", dataset: null })} />
+        </div>
       </div>
       {error && (
-        <Alert variant="danger" dismissible onClose={() => setError(null)}>
+        <Alert className="m-3" variant="danger" dismissible onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
-      {notice && <Alert variant="info">{notice}</Alert>}
+      {notice && <Alert className="m-3" variant="info">{notice}</Alert>}
       {models && models.length === 0 && (
-        <p className="text-secondary">
+        <p className="card-body text-secondary mb-0">
           <T text="No models yet. A model is a dataset and a provider that answers a question about it: make one here, or from a dataset's row above." />
         </p>
       )}

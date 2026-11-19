@@ -1,6 +1,6 @@
 // The workspace kinds, as the create dialog offers them (analytics TODO A1.15):
-// all eight, the ones not here yet disabled and saying which milestone brings
-// them — so the list shows where the Analytics UI is going, and nothing in it
+// all eight, the ones not here yet disabled and marked "not yet available" —
+// so the list shows where the Analytics UI is going, and nothing in it
 // opens onto nothing.
 
 import type { ListWorkspaceKindsResponse } from "../client";
@@ -21,10 +21,7 @@ export function kindOptions(
     value: k.kind,
     label: k.available
       ? workspaceKindName(k.kind, t)
-      : t("{kind} (arrives in {milestone})", {
-          kind: workspaceKindName(k.kind, t),
-          milestone: k.arrives_in ?? "",
-        }),
+      : t("{kind} (not yet available)", { kind: workspaceKindName(k.kind, t) }),
     disabled: !k.available,
   }));
 }
