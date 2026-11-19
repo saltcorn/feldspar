@@ -1045,6 +1045,87 @@ pub(crate) async fn fit_progress(
     )
 }
 
+/// `GET /api/checklists/{id}/run/live`: run a checklist, its progress pushed
+/// as it goes (TODO-checklists C5.1). Admin only, decided before the upgrade
+/// as the fit's progress socket's is; everything after it is a frame
+/// ([`crate::checklist_live`]).
+pub(crate) async fn checklist_run_live(
+    State(state): State<AppState>,
+    // An application's request on a path spelled like this one is not a
+    // checklist's: the `AdminSession` refuses it.
+    admin: AdminSession,
+    headers: axum::http::HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    MaybeUpgrade(ws): MaybeUpgrade,
+) -> Response {
+    let Ok(id) = id.parse::<uuid::Uuid>() else {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "the checklist id in the path is not a uuid",
+        );
+    };
+    run_live(
+        state,
+        admin,
+        &headers,
+        ws,
+        crate::checklist_live::LiveRun::One(id),
+    )
+}
+
+/// `GET /api/checklist-runs/live?application=`: run the enabled checklists of
+/// an application (`none`: the data-only ones; absent: all), pushing their
+/// progress as [`checklist_run_live`] does.
+pub(crate) async fn checklists_run_live(
+    State(state): State<AppState>,
+    admin: AdminSession,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+    MaybeUpgrade(ws): MaybeUpgrade,
+) -> Response {
+    let application = query.get("application").cloned();
+    run_live(
+        state,
+        admin,
+        &headers,
+        ws,
+        crate::checklist_live::LiveRun::All(application),
+    )
+}
+
+/// What the two run sockets share: the origin, the catalog, the upgrade. A
+/// plain `GET` of either runs nothing — only an upgrade does.
+fn run_live(
+    state: AppState,
+    admin: AdminSession,
+    headers: &axum::http::HeaderMap,
+    ws: Option<axum::extract::ws::WebSocketUpgrade>,
+    what: crate::checklist_live::LiveRun,
+) -> Response {
+    if !upgrade_origin_allowed(headers) {
+        return upgrade_origin_refused();
+    }
+    let Some(catalog) = state.apps.catalog().cloned() else {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this server has no catalog, so it has no checklists",
+        );
+    };
+    let Some(ws) = ws else {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "this path is a WebSocket: connect to it with `ws:`/`wss:` rather than fetching it",
+        );
+    };
+    crate::checklist_live::run_live_upgrade(
+        ws,
+        catalog,
+        Arc::clone(&state.apps),
+        what,
+        admin.watch(state.sessions.clone()),
+    )
+}
+
 /// The supervisor inside a server's stream services — a named function rather
 /// than a closure so the `Option::map` above reads as what it is.
 fn sc_server_stream_supervisor(

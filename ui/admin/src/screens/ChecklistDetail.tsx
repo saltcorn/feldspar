@@ -50,6 +50,7 @@ import {
   type ProposalSummary,
   type StepType,
 } from "../checklists";
+import { runErrorMessage, useChecklistProgress } from "../checklistProgress";
 import { IconArrowDown, IconArrowLeft, IconArrowUp, IconPlus } from "../icons";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
 import { RunStatus } from "./Checklists";
@@ -75,6 +76,7 @@ export function ChecklistDetail({
   const [busy, setBusy] = useState(false);
   // `null` closed, `"new"` adding, a step editing it.
   const [editing, setEditing] = useState<ChecklistStep | "new" | null>(null);
+  const progress = useChecklistProgress();
 
   const load = async () => {
     try {
@@ -128,10 +130,10 @@ export function ChecklistDetail({
     setBusy(true);
     setError(null);
     try {
-      const result = await api.runChecklist(checklistId);
+      const [result] = await progress.run({ checklist: checklistId });
       navigate(checklistRunPath(result.id, appId));
     } catch (err) {
-      setError(errorMessage(err, t("Could not run the checklist.")));
+      setError(runErrorMessage(err, t("Could not run the checklist.")));
       setBusy(false);
     }
   };
@@ -222,6 +224,7 @@ export function ChecklistDetail({
           </>
         }
       />
+      {progress.toast}
       <PageBody>
         {error && (
           <Alert variant="danger" dismissible onClose={() => setError(null)}>

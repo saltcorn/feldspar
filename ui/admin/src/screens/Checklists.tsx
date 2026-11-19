@@ -24,6 +24,7 @@ import { api, errorMessage } from "../api";
 import { navigate } from "../App";
 import { checklistPath, checklistRunPath, runTone } from "../checklists";
 import type { ListChecklistStartersResponse, ListChecklistsResponse } from "../client";
+import { runErrorMessage, useChecklistProgress } from "../checklistProgress";
 import { IconPlus } from "../icons";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
 import { when } from "./WorkflowRuns";
@@ -59,6 +60,7 @@ export function Checklists({ appId }: { appId: string | null }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const progress = useChecklistProgress();
   const [creating, setCreating] = useState(false);
   const [starters, setStarters] = useState<Starter[]>([]);
 
@@ -108,10 +110,10 @@ export function Checklists({ appId }: { appId: string | null }) {
     setBusy(true);
     setError(null);
     try {
-      const run = await api.runChecklist(item.id);
+      const [run] = await progress.run({ checklist: item.id });
       navigate(checklistRunPath(run.id, appId));
     } catch (err) {
-      setError(errorMessage(err, t("Could not run the checklist.")));
+      setError(runErrorMessage(err, t("Could not run the checklist.")));
       setBusy(false);
     }
   };
@@ -122,12 +124,12 @@ export function Checklists({ appId }: { appId: string | null }) {
     setError(null);
     setNotice(null);
     try {
-      const runs = await api.runChecklists({ application: appId ?? "none" });
+      const runs = await progress.run({ application: appId ?? "none" });
       const passed = runs.filter((r) => r.status === "passed").length;
       setNotice(t("{passed} of {count} checklists passed.", { passed, count: runs.length }));
       await load();
     } catch (err) {
-      setError(errorMessage(err, t("Could not run the checklists.")));
+      setError(runErrorMessage(err, t("Could not run the checklists.")));
     } finally {
       setBusy(false);
     }
@@ -319,6 +321,7 @@ export function Checklists({ appId }: { appId: string | null }) {
   return (
     <>
       <PageHeader pretitle={appName ?? ""} title={t("Checklists")} actions={actions} />
+      {progress.toast}
       <PageBody>{body}</PageBody>
     </>
   );

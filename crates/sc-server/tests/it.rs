@@ -108,6 +108,8 @@ mod call_api;
 mod checklist_browser;
 #[path = "checklist_frameworks.rs"]
 mod checklist_frameworks;
+#[path = "checklists_api.rs"]
+mod checklists_api;
 #[path = "clear_all_api.rs"]
 mod clear_all_api;
 #[path = "code_body_tables.rs"]

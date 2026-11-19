@@ -408,7 +408,7 @@ impl ChromiumDriver {
         let pass = new_csrf_token();
         self.allow(request.target, &pass);
         let seen = Arc::new(Mutex::new(Seen::default()));
-        let listeners = listen(&page, &seen).await?;
+        let listeners = listen(&page, &seen, &self.config.base_domain).await?;
         let run_page = Arc::new(tokio::sync::Mutex::new(RunPage {
             context,
             page,
@@ -718,6 +718,41 @@ fn host_of(url: &str) -> Option<&str> {
     let rest = url.split_once("://")?.1;
     let authority = rest.split(['/', '?', '#']).next()?;
     Some(authority.split(':').next().unwrap_or(authority))
+}
+
+/// Whether `url` is an HTTP request to this server — the base domain or a name
+/// under it — so one the page is waiting on.
+fn reaches_this_server(url: &str, base_domain: &str) -> bool {
+    let http = url.starts_with("http://") || url.starts_with("https://");
+    http && host_of(url).is_some_and(|host| {
+        host == base_domain
+            || host
+                .strip_suffix(base_domain)
+                .is_some_and(|sub| sub.ends_with('.'))
+    })
+}
+
+/// The host of a request that failed only because this browser resolves no
+/// name outside the base domain (`MAP * ~NOTFOUND`, [`ChromiumDriver::launch_config`]):
+/// the page asked for another site — map tiles, a CDN — which in production
+/// its visitors' browsers would reach. `None` for any other failure, which is
+/// the page's.
+fn refused_by_this_browser<'u>(url: &'u str, error: &str, base_domain: &str) -> Option<&'u str> {
+    if error != "net::ERR_NAME_NOT_RESOLVED" {
+        return None;
+    }
+    let host = host_of(url)?;
+    (!host.is_empty() && !reaches_this_server(url, base_domain)).then_some(host)
+}
+
+/// Whether a response is a `whoami` saying nobody is signed in. A generated
+/// application asks on every load (the scaffold's `src/auth.tsx`), and a 401 is
+/// how a guest's page learns it is a guest — the ordinary case, not a failed
+/// request. Whatever the REST mount, the endpoint's last segment is `whoami`.
+fn signed_out_answer(status: u16, url: &str) -> bool {
+    let path = strip_origin(url);
+    let path = path.split(['?', '#']).next().unwrap_or_default();
+    status == 401 && path.ends_with("/whoami")
 }
 
 /// A `goto` target: a path on the preview, and nothing else.
@@ -1158,7 +1193,11 @@ async fn screenshot(page: &Page, full_page: bool) -> Result<Vec<u8>> {
     clippy::disallowed_methods,
     reason = "tokio::spawn: CDP event listeners for one page; they write no rows, so there is no task scope to carry"
 )]
-async fn listen(page: &Page, seen: &Arc<Mutex<Seen>>) -> Result<Vec<tokio::task::JoinHandle<()>>> {
+async fn listen(
+    page: &Page,
+    seen: &Arc<Mutex<Seen>>,
+    base_domain: &str,
+) -> Result<Vec<tokio::task::JoinHandle<()>>> {
     let lock = |seen: &Arc<Mutex<Seen>>| {
         let seen = seen.clone();
         move |f: &mut dyn FnMut(&mut Seen)| f(&mut seen.lock().unwrap_or_else(|e| e.into_inner()))
@@ -1213,6 +1252,7 @@ async fn listen(page: &Page, seen: &Arc<Mutex<Seen>>) -> Result<Vec<tokio::task:
         .await
         .map_err(cdp)?;
     let with = lock(seen);
+    let ours = base_domain.to_owned();
     tasks.push(tokio::spawn(async move {
         while let Some(event) = sent.next().await {
             let (id, url) = (event.request_id.inner().clone(), event.request.url.clone());
@@ -1222,6 +1262,11 @@ async fn listen(page: &Page, seen: &Arc<Mutex<Seen>>) -> Result<Vec<tokio::task:
                 event.r#type,
                 Some(ResourceType::EventSource | ResourceType::WebSocket | ResourceType::Ping)
             );
+            // Nor one that is not a request to this server: a `data:` image
+            // is not network at all (Chromium may never say it finished), and
+            // another site's never resolves here, and may never be reported
+            // either way once the page gives up on it.
+            let endless = endless || !reaches_this_server(&url, &ours);
             with(&mut |s| {
                 if s.requests.len() > 1000 {
                     s.requests.clear();
@@ -1262,7 +1307,7 @@ async fn listen(page: &Page, seen: &Arc<Mutex<Seen>>) -> Result<Vec<tokio::task:
                 if document {
                     s.document = Some((url.clone(), status));
                 }
-                if status >= 400 {
+                if status >= 400 && !signed_out_answer(status, &url) {
                     Seen::push(
                         &mut s.failed_requests,
                         format!("{status} {}", strip_origin(&url)),
@@ -1277,6 +1322,7 @@ async fn listen(page: &Page, seen: &Arc<Mutex<Seen>>) -> Result<Vec<tokio::task:
         .await
         .map_err(cdp)?;
     let with = lock(seen);
+    let base_domain = base_domain.to_owned();
     tasks.push(tokio::spawn(async move {
         while let Some(event) = failures.next().await {
             let (id, error) = (event.request_id.inner().clone(), event.error_text.clone());
@@ -1289,6 +1335,14 @@ async fn listen(page: &Page, seen: &Arc<Mutex<Seen>>) -> Result<Vec<tokio::task:
             with(&mut |s| {
                 s.in_flight.remove(&id);
                 let url = s.requests.get(&id).cloned().unwrap_or_default();
+                if let Some(host) = refused_by_this_browser(&url, &error, &base_domain) {
+                    // Not the page's failure: this browser resolves no other
+                    // host, so a map's tiles or a CDN font can never load here.
+                    sc_log::log_verbose!(
+                        "the checking browser did not fetch {host}: it reaches only this server"
+                    );
+                    return;
+                }
                 Seen::push(
                     &mut s.failed_requests,
                     format!("failed {} ({error})", strip_origin(&url)),
@@ -1351,6 +1405,78 @@ mod tests {
             "/api/x?y"
         );
         assert_eq!(strip_origin("http://a.example.com"), "/");
+    }
+
+    #[test]
+    fn only_a_request_to_this_server_is_waited_for() {
+        for ours in [
+            "http://localhost:4000/api/x",
+            "http://fanacity.localhost:4000/assets/a.js",
+            "https://fanacity.localhost/",
+        ] {
+            assert!(reaches_this_server(ours, "localhost"), "{ours}");
+        }
+        for not_ours in [
+            "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=",
+            "blob:http://fanacity.localhost/123",
+            "https://tile.openstreetmap.org/2/1/1.png",
+            "https://notlocalhost/x",
+            "about:blank",
+        ] {
+            assert!(!reaches_this_server(not_ours, "localhost"), "{not_ours}");
+        }
+    }
+
+    #[test]
+    fn a_guests_whoami_is_not_a_failed_request() {
+        assert!(signed_out_answer(
+            401,
+            "http://fanacity.localhost:4000/api/whoami"
+        ));
+        assert!(signed_out_answer(
+            401,
+            "http://a.localhost/rest/v1/whoami?x=1"
+        ));
+        // Anything else the server refuses or breaks on is still the page's.
+        assert!(!signed_out_answer(500, "http://a.localhost/api/whoami"));
+        assert!(!signed_out_answer(403, "http://a.localhost/api/whoami"));
+        assert!(!signed_out_answer(401, "http://a.localhost/api/venues"));
+        assert!(!signed_out_answer(401, "http://a.localhost/api/whoami/me"));
+    }
+
+    #[test]
+    fn only_another_sites_unresolved_request_is_this_browsers_doing() {
+        let unresolved = "net::ERR_NAME_NOT_RESOLVED";
+        assert_eq!(
+            refused_by_this_browser(
+                "https://tile.openstreetmap.org/2/1/1.png",
+                unresolved,
+                "localhost"
+            ),
+            Some("tile.openstreetmap.org")
+        );
+        // A name under the base domain that does not resolve is the page's.
+        for ours in [
+            "http://localhost:4000/x",
+            "http://fanacity.localhost:4000/x",
+        ] {
+            assert_eq!(
+                refused_by_this_browser(ours, unresolved, "localhost"),
+                None,
+                "{ours}"
+            );
+        }
+        // A name that only ends like the base domain is another site.
+        assert_eq!(
+            refused_by_this_browser("https://notlocalhost/x", unresolved, "localhost"),
+            Some("notlocalhost")
+        );
+        // Another site's other failures, and a request with no URL, are the page's.
+        assert_eq!(
+            refused_by_this_browser("https://cdn.example/x", "net::ERR_FAILED", "localhost"),
+            None
+        );
+        assert_eq!(refused_by_this_browser("", unresolved, "localhost"), None);
     }
 
     #[test]

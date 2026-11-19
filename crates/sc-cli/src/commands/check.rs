@@ -72,7 +72,10 @@ pub(crate) async fn selected_checklists(
 /// The server's capabilities are brought up as `serve` brings them up — the
 /// trigger set, and the applications mounted from their last build with the
 /// router a browser's request meets — so an `http.*` step answers here what it
-/// answers in the admin UI. No listener is opened.
+/// answers in the admin UI. Where this host has a browser, it is started as
+/// `serve` starts it, with its loopback listener (the only one opened), so the
+/// `browser.*` and `react.*` steps run here as they do in the admin UI rather
+/// than being skipped.
 pub(crate) async fn check_run_command(args: &[String]) -> Result<()> {
     let (db, rest) = DbConfig::extract(args)?;
     let (file_stores, rest) = extract_file_stores(rest)?;
@@ -96,13 +99,18 @@ pub(crate) async fn check_run_command(args: &[String]) -> Result<()> {
     }
     let Services { apps, triggers, .. } =
         install_services(&catalog, &config, &ServiceManager::default()).await?;
-    let requests = if config.base_domain.is_some() {
+    let (requests, browser) = if config.base_domain.is_some() {
         mount_all(&apps).await;
         let sessions = Arc::new(SessionStore::database(catalog.clone()));
         let handlers = admin_handlers(catalog.clone(), apps.clone());
-        sc_server::install_app_requests(&config, &admin_endpoints(), &handlers, &sessions, &apps)?
+        let endpoints = admin_endpoints();
+        let requests =
+            sc_server::install_app_requests(&config, &endpoints, &handlers, &sessions, &apps)?;
+        let browser =
+            sc_server::serve_browser(&config, &endpoints, &handlers, &sessions, &apps).await?;
+        (requests, browser)
     } else {
-        None
+        (None, None)
     };
 
     let registry = sc_check::StepRegistry::installed();
@@ -112,14 +120,30 @@ pub(crate) async fn check_run_command(args: &[String]) -> Result<()> {
             requests
                 .as_ref()
                 .map(|r| r.as_ref() as &dyn sc_agent::AppRequester),
+        )
+        .with_browser(
+            browser
+                .as_ref()
+                .map(|b| b.as_ref() as &dyn sc_agent::BrowserDriver),
         );
     let mut runs = Vec::new();
+    let mut outcome = Ok(());
     for checklist in checklists.iter().filter(|c| c.enabled) {
-        let run = sc_check::run_checklist(&env, checklist, "cli").await?;
-        print!("{}", sc_cli::check::format_run(&run));
-        runs.push(run);
+        match sc_check::run_checklist(&env, checklist, "cli").await {
+            Ok(run) => {
+                print!("{}", sc_cli::check::format_run(&run));
+                runs.push(run);
+            }
+            Err(e) => {
+                outcome = Err(e);
+                break;
+            }
+        }
     }
-    sc_cli::check::verdict(&runs)
+    if let Some(browser) = &browser {
+        browser.shutdown();
+    }
+    outcome.and_then(|()| sc_cli::check::verdict(&runs))
 }
 
 /// `feldspar check list`: the checklists, with their last result.

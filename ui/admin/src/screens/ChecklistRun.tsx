@@ -15,6 +15,7 @@ import Table from "react-bootstrap/Table";
 import { api, errorMessage } from "../api";
 import { navigate } from "../App";
 import { checklistPath, checklistRunPath, outcomeTone, type ChecklistRun as Run } from "../checklists";
+import { runErrorMessage, useChecklistProgress } from "../checklistProgress";
 import { IconArrowLeft } from "../icons";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
 import { RunStatus } from "./Checklists";
@@ -26,6 +27,7 @@ export function ChecklistRun({ runId, appId }: { runId: string; appId: string | 
   const [run, setRun] = useState<Run | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const progress = useChecklistProgress();
 
   useEffect(() => {
     setRun(null);
@@ -44,10 +46,10 @@ export function ChecklistRun({ runId, appId }: { runId: string; appId: string | 
     setBusy(true);
     setError(null);
     try {
-      const next = await api.runChecklist(run.checklist);
+      const [next] = await progress.run({ checklist: run.checklist });
       navigate(checklistRunPath(next.id, appId));
     } catch (err) {
-      setError(errorMessage(err, t("Could not run the checklist.")));
+      setError(runErrorMessage(err, t("Could not run the checklist.")));
     } finally {
       setBusy(false);
     }
@@ -74,6 +76,7 @@ export function ChecklistRun({ runId, appId }: { runId: string; appId: string | 
           </>
         }
       />
+      {progress.toast}
       <PageBody>
         {error && <Alert variant="danger">{error}</Alert>}
         {run && (

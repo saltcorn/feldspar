@@ -2,6 +2,92 @@
 
 Changes in reverse chronological order.
 
+## Checklists: browser steps judge the app, not the checker's own browser; `feldspar check run` drives a browser
+
+The `fanacity-essentials` checklist failed on its second step for reasons that were not the
+application's, and from the command line every browser step was skipped.
+
+- **Another site's requests are not the page's failures.** The checking browser resolves no host
+  outside the base domain (`MAP * ~NOTFOUND`), so an app's map tiles (`tile.openstreetmap.org`) or
+  CDN assets fail with `ERR_NAME_NOT_RESOLVED`. That failure is now left out of the step's failed
+  requests, and logged at verbose ("the checking browser did not fetch …"). Before, it failed the
+  implicit clean check and read as `failed /2/1/1.png`, the host stripped, like a missing file of
+  the app's own.
+- **Only requests to this server are waited for.** `react.open_route` waits for the network to
+  be idle. A `data:` image (Leaflet's placeholder for a tile that failed) or another site's request
+  can stay "in flight" forever, as Chromium need not report it finished, so the step timed out with
+  the page rendered. Requests that are not HTTP to the base domain or a name under it are no longer
+  counted.
+- **A guest's `whoami` 401 is not a failed request.** Every generated app asks `whoami` on load
+  (the scaffold's `src/auth.tsx`), and a 401 is how a guest's page learns it is a guest. So every
+  guest page failed its clean check. A 401 from a path ending `/whoami` is now ignored; any other
+  status from it, and a 401 from anywhere else, still counts.
+- **`feldspar check run` starts the browser** as `serve` does, with its loopback listener, and shuts
+  it down at the end. It used to give the runner no browser, so every `browser.*`/`react.*` step was
+  skipped with "this host has no headless browser", even on a host that has one.
+- Code: `crates/sc-server/src/browser/driver.rs` (`reaches_this_server`,
+  `refused_by_this_browser`, `signed_out_answer`), `crates/sc-cli/src/commands/check.rs`.
+- **Compatibility:** no API or stored data changes. Checks get more lenient only for the three
+  cases above. `view_app` reports the same way, so the coding agent no longer chases those
+  phantom failures either.
+- **Tests:** unit tests for the three rules in the driver. The browser-driving integration tests
+  (`checklist_browser`, `view_app`) still pass. Checked by hand: `feldspar check run --app fanacity
+  --checklist fanacity-essentials` now passes all 13 steps on this machine (it was `incomplete`
+  from the CLI, and `failed` at step 2 from the admin UI).
+
+## Checklists: a "running" toast that follows the run step by step (TODO-checklists C5.1)
+
+Pressing Run on a checklist used to disable the button and show nothing else until the run had
+finished, which is minutes for a checklist that drives a browser. Now a toast opens, top right,
+naming the checklist and the step it is on ("Step 3 of 7: Open the orders list"), with a progress
+bar and the latest finished steps and how each went. It updates as each step finishes. The same
+toast shows on the checklists list (Run, and Run all, which also says "2 of 5"), on a checklist,
+and on a run's "Run again". Hiding it does not stop the run. When the run finishes, the screen
+opens its result as before.
+
+- **How: the run is a socket.** The Run buttons open a WebSocket, `/api/checklists/{id}/run/live`
+  (Run all: `/api/checklist-runs/live?application=`), instead of `POST …/run`. The server runs the
+  checklist on that connection and pushes a `progress` frame whenever a step begins or ends, then
+  `finished` with the runs (or `failed` with the reason), and closes
+  (`crates/sc-server/src/checklist_live.rs`). The run and its progress share one connection, so
+  nothing is polled and nothing has to be shared between nodes: a poll held in one process's
+  memory could have landed on another node, which had never heard of the run.
+- **The run outlives the socket.** It runs in its own task (`spawn_scoped`). If the tab closes or
+  the admin session lapses, the frames stop but the run finishes and is recorded as a `POST` run
+  would be. The page then says the connection was lost and that the result will be in the
+  checklist's runs; it does not run the checklist again.
+- **`sc_check::progress`.** `CheckEnv::with_progress(sink)` gives the runner a callback that
+  receives an `Event` as each checklist and step begins and ends. `Progress` folds those events
+  into what the toast shows. The socket keeps a `tokio::sync::watch` of that `Progress` and sends
+  the latest, so a slow browser is sent less, never a backlog. Every frame is the whole state: a
+  step over in a millisecond may not get its own frame, but the next frame lists it as done. The
+  runner keeps no global state.
+- **Security.** Both routes are admin-session raw routes, like the Observe and fit-progress
+  sockets. The handshake's `Origin` must be this host's, so another site cannot start a run, and
+  a plain `GET` without an upgrade runs nothing. On an application's host both paths are
+  nothing (404).
+- **Compatibility.** `POST /api/checklists/{id}/run` and `POST /api/checklist-runs` are
+  unchanged and remain what the CLI, agents, schedules and after-build checks use. A page whose
+  socket cannot open at all (an older server, a proxy that drops upgrades) falls back to the
+  `POST`: the run still happens, just without the step-by-step toast.
+- **Tests.**
+  - `sc-check` `checklists::a_run_reports_each_step_to_its_progress_sink_as_it_goes`: the exact
+    event sequence of a two-step run, and its fold halfway through. `progress::tests` covers the
+    fold across two checklists.
+  - `sc-server` `checklists_api::a_run_over_its_live_socket_pushes_each_step_then_the_run`, over a
+    real port:
+    - the progress frames arrive in order, then `finished` with a run that is stored;
+    - Run all reports how many checklists it runs;
+    - an unknown checklist gets a `failed` frame;
+    - a plain fetch, a malformed id or another origin's handshake runs nothing.
+  - `checklists_api::the_run_socket_routes_are_the_paths_the_spa_connects_to` holds the route
+    strings written in the admin to the server's.
+  - `app_serving` covers both paths on an application's host.
+  - `ui/admin` `checklistProgress.test.ts`: the toast's wording, the socket URL, frame parsing,
+    and `runLive` with a scripted socket. That covers progress, then the runs; a `failed`
+    reason; the POST fallback when the socket never opens; and no second run when the socket
+    drops mid-run.
+
 ## Fix: the agent screens' labels are readable by the i18n extractor; §2's crate table caught up
 
 Two `sc-cli` tests (`cargo test -p sc-cli --test it`) had been failing.
