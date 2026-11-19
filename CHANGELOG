@@ -14,7 +14,7 @@ they are drawn from the answers: asking again keeps the answered questions, repl
 ones, and discards the mockups (after a confirmation), since they were drawn without the new
 answers. Both are optional, but skipping them is asked about: proposing mockups before any
 question, or planning the first phases with neither, opens a confirmation that offers the
-skipped step instead. Before, a gap in the specification showed up only in the mockups
+skipped step instead. On Research, "Plan phases" asks to confirm when no mockup is chosen. Before, a gap in the specification showed up only in the mockups
 or the phases, and was fixed by rewriting the description.
 
 ## Plan & build: mockups to choose from before the build

@@ -47,6 +47,7 @@ import {
   askingDiscards,
   mockupsWithoutQuestions,
   planningUnresearched,
+  planningWithoutMockup,
   type ConstructionMockup,
   type MockupWidth,
   type MockupScreensLoader,
@@ -186,7 +187,9 @@ function StepHeader({
   return (
     <Card.Header>
       <Card.Title className="mb-0">
-        {number !== undefined && <span className="mockup-number mockup-number-sm">{number}</span>}
+        {number !== undefined && (
+          <span className="mockup-number mockup-number-sm me-2">{number}</span>
+        )}
         {title}
       </Card.Title>
       {children && <div className="card-actions btn-list">{children}</div>}
@@ -418,6 +421,35 @@ export function Construct({
       alternative: instead,
     });
   };
+  /** The research step's "Plan phases", confirmed when no mockup is chosen:
+   * offering to propose some when there are none. */
+  const planFromResearch = () => {
+    if (!construction) return;
+    const plan = () =>
+      void act(() => calls.plan(construction.specification), t("Could not plan the phases."));
+    const without = planningWithoutMockup(construction);
+    if (without === null) return plan();
+    confirmation.confirm(
+      without === "none"
+        ? {
+            title: t("Plan the phases without mockups?"),
+            body: t(
+              "No mockups were drawn, so the phases are planned without a look of the application to follow.",
+            ),
+            confirm: t("Plan phases anyway"),
+            onConfirm: plan,
+            alternative: { label: t("Propose mockups"), onClick: proposeChecked },
+          }
+        : {
+            title: t("Plan the phases without a chosen mockup?"),
+            body: t(
+              "None of the mockups is chosen, so the phases are planned without a look of the application to follow. Choose one first to have the phases follow it.",
+            ),
+            confirm: t("Plan phases anyway"),
+            onConfirm: plan,
+          },
+    );
+  };
 
   if (phaseId !== null) {
     const index = construction ? construction.phases.findIndex((p) => p.id === phaseId) : -1;
@@ -582,12 +614,7 @@ export function Construct({
                   void act(() => calls.chooseMockup(mockup), t("Could not choose the mockup."))
                 }
                 loadScreens={calls.mockupScreens}
-                onPlan={() =>
-                  planChecked(construction.specification, {
-                    label: t("Ask questions"),
-                    onClick: ask,
-                  })
-                }
+                onPlan={planFromResearch}
               />
             )}
             {construction && tab === "phases" && (
@@ -927,51 +954,48 @@ export function MockupsCard({
   }, [round]);
 
   return (
-    <Card className="mb-3">
-      <StepHeader title={t("Mockups")} number={2}>
-        <div className="btn-group" role="group" aria-label={t("Width")}>
-          {(["desktop", "phone"] as const).map((w) => (
-            <Button
-              key={w}
-              size="sm"
-              variant={width === w ? "secondary" : "outline-secondary"}
-              aria-pressed={width === w}
-              onClick={() => setWidth(w)}
-            >
-              {w === "desktop" ? (
-                <IconDeviceDesktop className="icon-2" />
+    <>
+      <Card className="mb-3">
+        <StepHeader title={t("Mockups")} number={2}>
+          {latest.length > 0 && (
+            <div className="btn-group" role="group" aria-label={t("Width")}>
+              {(["desktop", "phone"] as const).map((w) => (
+                <Button
+                  key={w}
+                  size="sm"
+                  variant={width === w ? "secondary" : "outline-secondary"}
+                  aria-pressed={width === w}
+                  onClick={() => setWidth(w)}
+                >
+                  {w === "desktop" ? (
+                    <IconDeviceDesktop className="icon-2" />
+                  ) : (
+                    <IconDeviceMobile className="icon-2" />
+                  )}
+                  {w === "desktop" ? t("Desktop") : t("Phone")}
+                </Button>
+              ))}
+            </div>
+          )}
+          {latest.length === 0 && (
+            <Button size="sm" variant="primary" disabled={busy || !editable} onClick={onPropose}>
+              {construction.designing ? (
+                <Spinner animation="border" size="sm" className="me-2" />
               ) : (
-                <IconDeviceMobile className="icon-2" />
+                <IconLayoutDashboard className="icon-2" />
               )}
-              {w === "desktop" ? t("Desktop") : t("Phone")}
+              <T text="Propose mockups" />
             </Button>
-          ))}
-        </div>
-        <Button
-          size="sm"
-          variant={chosen && (!hasPhases || rechosen) ? "primary" : "outline-primary"}
-          disabled={busy || !editable}
-          onClick={onPlan}
-        >
-          <IconSparkles className="icon-2" />
-          {hasPhases
-            ? chosen
-              ? t("Plan phases again from the chosen mockup")
-              : t("Plan phases again without a mockup")
-            : chosen
-              ? t("Plan phases from the chosen mockup")
-              : t("Plan phases without a mockup")}
-        </Button>
-      </StepHeader>
-      <Card.Body>
-        {construction.designing && (
-          <Alert variant="info" className="d-flex align-items-center gap-2">
-            <Spinner animation="border" size="sm" />
-            <T text="The construction agent is drawing the mockups. This takes a minute or two." />
-          </Alert>
-        )}
-        {latest.length === 0 && !construction.designing && (
-          <div className="research-empty">
+          )}
+        </StepHeader>
+        <Card.Body>
+          {construction.designing && (
+            <Alert variant="info" className="d-flex align-items-center gap-2">
+              <Spinner animation="border" size="sm" />
+              <T text="The construction agent is drawing the mockups. This takes a minute or two." />
+            </Alert>
+          )}
+          {latest.length === 0 && !construction.designing && (
             <div className="text-secondary">
               {construction.questions.length === 0 ? (
                 <T text="A few different looks of the main screens, drawn from the specification. Ask the questions first to have your answers in them." />
@@ -979,131 +1003,138 @@ export function MockupsCard({
                 <T text="A few different looks of the main screens, drawn from the specification and your answers, for you to choose one or say what should change." />
               )}
             </div>
-            <Button variant="outline-primary" disabled={busy || !editable} onClick={onPropose}>
-              <IconLayoutDashboard className="icon-2" />
-              <T text="Propose mockups" />
-            </Button>
-          </div>
-        )}
-        {rechosen && hasPhases && chosen && (
-          <Alert variant="warning" className="d-flex align-items-center gap-3">
-            <div className="flex-fill">
-              <T text="The phases were planned for another mockup. Plan them again so they follow this one." />
-            </div>
-            <Button size="sm" variant="primary" disabled={busy || !editable} onClick={onPlan}>
-              <IconSparkles className="icon-2" />
-              <T text="Plan phases again" />
-            </Button>
-          </Alert>
-        )}
-        {chosen && !latest.includes(chosen) && (
-          <Alert variant="secondary">
-            {t("The chosen mockup is “{title}”, from an earlier round.", { title: chosen.title })}
-          </Alert>
-        )}
-        {latest.length > 1 && (
-          // The mockups are alternatives: say so, and name them by number,
-          // with a way to each, as the second is a long way down.
-          <div className="mockup-compare">
-            <span className="text-secondary">
-              {t("{n} alternatives: look at each, then choose one or say what should change.", {
-                n: latest.length,
-              })}
-            </span>
-            <div className="mockup-compare-links">
-              {latest.map((mockup, i) => (
-                <Button
-                  key={mockup.id}
-                  size="sm"
-                  variant="outline-secondary"
-                  onClick={() =>
-                    document
-                      .getElementById(mockupAnchor(mockup.id))
-                      ?.scrollIntoView({ behavior: "smooth", block: "start" })
-                  }
-                >
-                  <span className="mockup-number mockup-number-sm">{i + 1}</span>
-                  {mockup.title}
-                </Button>
-              ))}
-            </div>
-          </div>
-        )}
-        <div className={width === "phone" ? "mockup-grid mockup-grid-phone" : "mockup-grid"}>
-          {latest.map((mockup, i) => (
-            <MockupPanel
-              key={mockup.id}
-              mockup={mockup}
-              number={i + 1}
-              total={latest.length}
-              loadScreens={loadScreens}
-              width={width}
-              busy={busy || !editable}
-              feedback={notes[mockup.id] ?? ""}
-              onFeedback={(text) => setNotes((n) => ({ ...n, [mockup.id]: text }))}
-              onChoose={() => choose(mockup.id)}
-            />
-          ))}
-        </div>
-        {latest.length > 0 && (
-          <div className="mockup-revise">
-            <Form.Label htmlFor="mockup-note">
-              <T text="A note on all of them (optional)" />
-            </Form.Label>
-            <Form.Control
-              id="mockup-note"
-              as="textarea"
-              rows={2}
-              value={note}
-              disabled={!editable}
-              placeholder={t("e.g. fewer screens, a sidebar instead of tabs")}
-              onChange={(e) => setNote(e.target.value)}
-            />
-            <div className="d-flex justify-content-between align-items-center mt-2">
-              <span className="text-secondary small">
-                <T text="Revising proposes a new round from your feedback; this round stays below." />
-              </span>
-              <Button
-                variant="outline-primary"
-                disabled={busy || !editable || (feedback.length === 0 && note.trim() === "")}
-                onClick={() => onRevise(feedback, note.trim() || null)}
-              >
-                <IconRefresh className="icon-2" />
-                <T text="Revise" />
+          )}
+          {rechosen && hasPhases && chosen && (
+            <Alert variant="warning" className="d-flex align-items-center gap-3">
+              <div className="flex-fill">
+                <T text="The phases were planned for another mockup. Plan them again so they follow this one." />
+              </div>
+              <Button size="sm" variant="primary" disabled={busy || !editable} onClick={onPlan}>
+                <IconSparkles className="icon-2" />
+                <T text="Plan phases again" />
               </Button>
+            </Alert>
+          )}
+          {chosen && !latest.includes(chosen) && (
+            <Alert variant="secondary">
+              {t("The chosen mockup is “{title}”, from an earlier round.", { title: chosen.title })}
+            </Alert>
+          )}
+          {latest.length > 1 && (
+            // The mockups are alternatives: say so, and name them by number,
+            // with a way to each, as the second is a long way down.
+            <div className="mockup-compare">
+              <span className="text-secondary">
+                {t("{n} alternatives: look at each, then choose one or say what should change.", {
+                  n: latest.length,
+                })}
+              </span>
+              <div className="mockup-compare-links">
+                {latest.map((mockup, i) => (
+                  <Button
+                    key={mockup.id}
+                    size="sm"
+                    variant="outline-secondary"
+                    onClick={() =>
+                      document
+                        .getElementById(mockupAnchor(mockup.id))
+                        ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                    }
+                  >
+                    <span className="mockup-number mockup-number-sm">{i + 1}</span>
+                    {mockup.title}
+                  </Button>
+                ))}
+              </div>
             </div>
+          )}
+          <div className={width === "phone" ? "mockup-grid mockup-grid-phone" : "mockup-grid"}>
+            {latest.map((mockup, i) => (
+              <MockupPanel
+                key={mockup.id}
+                mockup={mockup}
+                number={i + 1}
+                total={latest.length}
+                loadScreens={loadScreens}
+                width={width}
+                busy={busy || !editable}
+                feedback={notes[mockup.id] ?? ""}
+                onFeedback={(text) => setNotes((n) => ({ ...n, [mockup.id]: text }))}
+                onChoose={() => choose(mockup.id)}
+              />
+            ))}
           </div>
-        )}
-        {earlier.length > 0 && (
-          <details className="mockup-earlier">
-            <summary>{t("Earlier rounds ({n})", { n: earlier.length })}</summary>
-            <ul className="list-unstyled mb-0 mt-2">
-              {earlier.map((m) => (
-                <li key={m.id} className="d-flex align-items-start gap-2 mb-2">
-                  <span className="badge bg-secondary-lt">{t("Round {n}", { n: m.round })}</span>
-                  <div className="flex-fill">
-                    <strong>{m.title}</strong>
-                    {m.feedback && <div className="text-secondary small">{m.feedback}</div>}
-                  </div>
-                  {m.status === "chosen" ? (
-                    <StatusBadge tone="green">{t("Chosen")}</StatusBadge>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="outline-secondary"
-                      disabled={busy || !editable}
-                      onClick={() => choose(m.id)}
-                    >
-                      <T text="Choose" />
-                    </Button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </details>
-        )}
-      </Card.Body>
-    </Card>
+          {latest.length > 0 && (
+            <div className="mockup-revise">
+              <Form.Label htmlFor="mockup-note">
+                <T text="A note on all of them (optional)" />
+              </Form.Label>
+              <Form.Control
+                id="mockup-note"
+                as="textarea"
+                rows={2}
+                value={note}
+                disabled={!editable}
+                placeholder={t("e.g. fewer screens, a sidebar instead of tabs")}
+                onChange={(e) => setNote(e.target.value)}
+              />
+              <div className="d-flex justify-content-between align-items-center mt-2">
+                <span className="text-secondary small">
+                  <T text="Revising proposes a new round from your feedback; this round stays below." />
+                </span>
+                <Button
+                  variant="outline-primary"
+                  disabled={busy || !editable || (feedback.length === 0 && note.trim() === "")}
+                  onClick={() => onRevise(feedback, note.trim() || null)}
+                >
+                  <IconRefresh className="icon-2" />
+                  <T text="Revise" />
+                </Button>
+              </div>
+            </div>
+          )}
+          {earlier.length > 0 && (
+            <details className="mockup-earlier">
+              <summary>{t("Earlier rounds ({n})", { n: earlier.length })}</summary>
+              <ul className="list-unstyled mb-0 mt-2">
+                {earlier.map((m) => (
+                  <li key={m.id} className="d-flex align-items-start gap-2 mb-2">
+                    <span className="badge bg-secondary-lt">{t("Round {n}", { n: m.round })}</span>
+                    <div className="flex-fill">
+                      <strong>{m.title}</strong>
+                      {m.feedback && <div className="text-secondary small">{m.feedback}</div>}
+                    </div>
+                    {m.status === "chosen" ? (
+                      <StatusBadge tone="green">{t("Chosen")}</StatusBadge>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="outline-secondary"
+                        disabled={busy || !editable}
+                        onClick={() => choose(m.id)}
+                      >
+                        <T text="Choose" />
+                      </Button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </Card.Body>
+      </Card>
+      {/* The research's way on, under both of its parts. */}
+      <div className="research-plan">
+        <Button
+          variant={chosen && (!hasPhases || rechosen) ? "primary" : "outline-primary"}
+          disabled={busy || !editable}
+          onClick={onPlan}
+        >
+          <IconSparkles className="icon-2" />
+          {hasPhases ? t("Plan phases again") : t("Plan phases")}
+        </Button>
+      </div>
+    </>
   );
 }
 
@@ -1314,8 +1345,6 @@ function useMockupPages(
   return pages;
 }
 
-/** A phase's Run: it runs the phases before it first, so when any of those is
- * not done the admin is asked, with them named, before anything starts. */
 /** A question put to the admin before an action: what happens, the action,
  * and optionally another step to take instead. */
 type Confirmation = {
@@ -1369,6 +1398,8 @@ function useConfirmation() {
   return { confirm: setPending, modal };
 }
 
+/** A phase's Run: it runs the phases before it first, so when any of those is
+ * not done the admin is asked, with them named, before anything starts. */
 function useConfirmedRun(construction: Construction | null, run: (until: string) => void) {
   const { t } = useT();
   const [asking, setAsking] = useState<ConstructionPhase | null>(null);

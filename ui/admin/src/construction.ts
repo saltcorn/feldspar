@@ -383,6 +383,14 @@ export function planningUnresearched(construction: Construction): boolean {
   );
 }
 
+/** What the research step's "Plan phases" is asked to confirm: planning
+ * with no mockups drawn, or with none of them chosen; `null` when one is
+ * chosen. */
+export function planningWithoutMockup(construction: Construction): "none" | "unchosen" | null {
+  if (construction.mockups.length === 0) return "none";
+  return chosenMockup(construction) ? null : "unchosen";
+}
+
 /** Whether "Propose mockups" is asked to confirm: no questions asked yet, so
  * the mockups would be drawn from the specification alone, and asking later
  * discards them. */

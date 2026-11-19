@@ -348,10 +348,14 @@ describe("the mockups", () => {
     // The first round is listed below, with the chosen one marked.
     expect(html).toContain("Earlier rounds (1)");
     expect(html).toContain("from an earlier round");
-    expect(html).toContain("Plan phases from the chosen mockup");
+    expect(html).toMatch(/>Plan phases<\/button>/);
+    // Both widths, once there is something to show at them.
+    expect(html).toContain(">Phone</button>");
+    // A new round comes from revising, not from proposing again.
+    expect(html).not.toContain("Propose mockups</button>");
   });
 
-  it("offers planning without a mockup when none is chosen", () => {
+  it("offers the same planning when no mockup is chosen, asked to confirm", () => {
     const none = {
       ...withMockups,
       mockups: withMockups.mockups.map((m) => ({ ...m, status: "proposed" })),
@@ -359,7 +363,7 @@ describe("the mockups", () => {
     const html = renderToStaticMarkup(
       <MockupsCard construction={none} busy={false} onRevise={noop} onChoose={noop} onPlan={noop} onPropose={noop} loadScreens={loadScreens} />,
     );
-    expect(html).toContain("Plan phases without a mockup");
+    expect(html).toMatch(/>Plan phases<\/button>/);
     expect(html).toContain("Choose mockup 1");
     expect(html).toContain("Choose mockup 2");
   });
@@ -373,7 +377,7 @@ describe("the mockups", () => {
     const html = renderToStaticMarkup(
       <MockupsCard construction={planned} busy={false} onRevise={noop} onChoose={noop} onPlan={noop} onPropose={noop} loadScreens={loadScreens} />,
     );
-    expect(html).toContain("Plan phases again from the chosen mockup");
+    expect(html).toMatch(/>Plan phases again<\/button>/);
     // Choosing another stays possible.
     const button = html.match(/<button[^>]*>(?:(?!<\/button>).)*Choose mockup 1<\/button>/)?.[0];
     expect(button).toBeDefined();
@@ -406,8 +410,14 @@ describe("the mockups", () => {
     expect(html).toContain("Propose mockups");
     expect(html).not.toContain("alternatives");
     // The second part of the research, after the questions.
-    expect(html).toMatch(/mockup-number-sm">2<\/span>Mockups/);
+    expect(html).toMatch(/mockup-number-sm me-2">2<\/span>Mockups/);
     expect(html).toContain("Ask the questions first");
+    // No widths to pick before there is anything to show.
+    expect(html).not.toContain(">Phone</button>");
+    // Proposing is the card's action, planning comes under it.
+    expect(html.indexOf("Propose mockups</button>")).toBeGreaterThan(0);
+    expect(html.indexOf("Propose mockups</button>")).toBeLessThan(html.indexOf("card-body"));
+    expect(html).toMatch(/<\/div><div class="research-plan"><button[^>]*>.*Plan phases<\/button>/);
   });
 });
 
@@ -420,7 +430,7 @@ describe("the questions", () => {
     );
     expect(html).toMatch(/btn-primary[^>]*>(?:(?!<\/button>).)*Ask questions/);
     expect(html).toContain("leaves open");
-    expect(html).toMatch(/mockup-number-sm">1<\/span>Questions/);
+    expect(html).toMatch(/mockup-number-sm me-2">1<\/span>Questions/);
   });
 
   it("numbers the questions, shows the saved answers and how many are answered", () => {

@@ -210,7 +210,8 @@ specification leaves open, and the answers go with it to every run. Optional.
   specification: 1 Questions, 2 Mockups. The Specification tab offers only "Continue to
   research" and "Plan phases". Confirmations: asking again with mockups there (they are
   discarded), proposing mockups before any question, and planning the first phases with
-  neither questions nor mockups; the last two offer the skipped step instead.
+  neither questions nor mockups; the last two offer the skipped step instead. On Research,
+  one "Plan phases" button, confirmed when no mockup is drawn or none chosen.
 - [x] AC8.6 Tests: the tool's validation and the store (asking again keeps the answers); a
   scripted run asks, the answers are saved, and the mockup run and the plan are told them; the
   screen's step and cards.

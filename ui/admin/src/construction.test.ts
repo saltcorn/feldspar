@@ -16,6 +16,7 @@ import {
   askingDiscards,
   mockupsWithoutQuestions,
   planningUnresearched,
+  planningWithoutMockup,
   revisionFeedback,
   type ConstructionMockup,
   addPhase,
@@ -747,6 +748,12 @@ describe("the clarifying questions", () => {
     expect(mockupsWithoutQuestions(construction("draft", { questions: [question("q1")] }))).toBe(
       false,
     );
+    // Planning from the research without a chosen mockup.
+    expect(planningWithoutMockup(construction("draft"))).toBe("none");
+    expect(planningWithoutMockup(construction("draft", { mockups: [m] }))).toBe("unchosen");
+    expect(
+      planningWithoutMockup(construction("draft", { mockups: [{ ...m, status: "chosen" }] })),
+    ).toBe(null);
     // Asking with mockups there discards them.
     expect(askingDiscards(construction("draft"))).toBe(0);
     expect(askingDiscards(construction("draft", { mockups: [m, { ...m, id: "m2" }] }))).toBe(2);

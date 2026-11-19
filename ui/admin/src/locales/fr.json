@@ -1947,8 +1947,6 @@
   "Plan again": "Replanifier",
   "Plan phases": "Planifier les phases",
   "Plan phases again": "Planifier à nouveau les phases",
-  "Plan phases from the chosen mockup": "Planifier les phases d’après la maquette choisie",
-  "Plan phases without a mockup": "Planifier les phases sans maquette",
   "Plan tasks": "Planifier les tâches",
   "Plan “{phase}” again": "Replanifier « {phase} »",
   "Planned": "Planifiée",
@@ -2043,8 +2041,6 @@
   "{n} alternatives: look at each, then choose one or say what should change.": "{n} variantes : regardez chacune, puis choisissez-en une ou dites ce qui doit changer.",
   "Choose mockup {n}": "Choisir la maquette {n}",
   "Could not load the screens of this mockup.": "Impossible de charger les écrans de cette maquette.",
-  "Plan phases again from the chosen mockup": "Replanifier les phases d'après la maquette choisie",
-  "Plan phases again without a mockup": "Replanifier les phases sans maquette",
   "The phases were planned for another mockup. Plan them again so they follow this one.": "Les phases ont été planifiées pour une autre maquette. Replanifiez-les pour qu'elles suivent celle-ci.",
   "Research": "Recherche",
   "Questions": "Questions",
@@ -2072,6 +2068,10 @@
   "The construction agent has not asked anything yet, so the mockups are drawn from the specification alone. Asking questions afterwards discards them.": "L'agent de construction n'a encore rien demandé : les maquettes sont dessinées à partir de la seule spécification. Poser des questions ensuite les supprime.",
   "Propose mockups anyway": "Proposer quand même des maquettes",
   "Plan the phases without research?": "Planifier les phases sans recherche ?",
+  "Plan the phases without mockups?": "Planifier les phases sans maquettes ?",
+  "No mockups were drawn, so the phases are planned without a look of the application to follow.": "Aucune maquette n’a été dessinée : les phases sont donc planifiées sans apparence de l’application à suivre.",
+  "Plan the phases without a chosen mockup?": "Planifier les phases sans maquette choisie ?",
+  "None of the mockups is chosen, so the phases are planned without a look of the application to follow. Choose one first to have the phases follow it.": "Aucune maquette n’est choisie : les phases sont donc planifiées sans apparence de l’application à suivre. Choisissez-en une d’abord pour que les phases la suivent.",
   "No questions were asked and no mockups drawn, so the phases are planned from the specification alone. You can still do the research later and plan the phases again.": "Aucune question n'a été posée ni aucune maquette dessinée : les phases sont planifiées à partir de la seule spécification. Vous pourrez faire la recherche plus tard et planifier à nouveau les phases.",
   "Plan phases anyway": "Planifier quand même les phases"
 }

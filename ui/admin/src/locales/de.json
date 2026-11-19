@@ -1921,8 +1921,6 @@
   "Plan again": "Neu planen",
   "Plan phases": "Phasen planen",
   "Plan phases again": "Phasen neu planen",
-  "Plan phases from the chosen mockup": "Phasen nach dem gewählten Mockup planen",
-  "Plan phases without a mockup": "Phasen ohne Mockup planen",
   "Plan tasks": "Aufgaben planen",
   "Plan “{phase}” again": "„{phase}“ neu planen",
   "Planned": "Geplant",
@@ -2017,8 +2015,6 @@
   "{n} alternatives: look at each, then choose one or say what should change.": "{n} Alternativen: Sehen Sie sich jede an, dann wählen Sie eine oder sagen Sie, was sich ändern soll.",
   "Choose mockup {n}": "Mockup {n} wählen",
   "Could not load the screens of this mockup.": "Die Bildschirme dieses Mockups konnten nicht geladen werden.",
-  "Plan phases again from the chosen mockup": "Phasen neu planen, nach dem gewählten Mockup",
-  "Plan phases again without a mockup": "Phasen neu planen, ohne Mockup",
   "The phases were planned for another mockup. Plan them again so they follow this one.": "Die Phasen wurden für ein anderes Mockup geplant. Planen Sie sie neu, damit sie diesem folgen.",
   "Research": "Recherche",
   "Questions": "Fragen",
@@ -2046,6 +2042,10 @@
   "The construction agent has not asked anything yet, so the mockups are drawn from the specification alone. Asking questions afterwards discards them.": "Der Konstruktionsagent hat noch nichts gefragt, daher entstehen die Mockups allein aus der Spezifikation. Fragen danach verwirft sie.",
   "Propose mockups anyway": "Trotzdem Mockups vorschlagen",
   "Plan the phases without research?": "Die Phasen ohne Recherche planen?",
+  "Plan the phases without mockups?": "Die Phasen ohne Mockups planen?",
+  "No mockups were drawn, so the phases are planned without a look of the application to follow.": "Es wurden keine Mockups entworfen, daher werden die Phasen ohne ein Aussehen der Anwendung geplant, dem sie folgen können.",
+  "Plan the phases without a chosen mockup?": "Die Phasen ohne gewähltes Mockup planen?",
+  "None of the mockups is chosen, so the phases are planned without a look of the application to follow. Choose one first to have the phases follow it.": "Keines der Mockups ist gewählt, daher werden die Phasen ohne ein Aussehen der Anwendung geplant, dem sie folgen können. Wählen Sie zuerst eines, damit die Phasen ihm folgen.",
   "No questions were asked and no mockups drawn, so the phases are planned from the specification alone. You can still do the research later and plan the phases again.": "Es wurden keine Fragen gestellt und keine Mockups entworfen, daher werden die Phasen allein aus der Spezifikation geplant. Sie können die Recherche später nachholen und die Phasen neu planen.",
   "Plan phases anyway": "Trotzdem Phasen planen"
 }

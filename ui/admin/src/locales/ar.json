@@ -2025,8 +2025,6 @@
   "Plan again": "إعادة التخطيط",
   "Plan phases": "تخطيط المراحل",
   "Plan phases again": "إعادة تخطيط المراحل",
-  "Plan phases from the chosen mockup": "خطّط للمراحل وفق النموذج المختار",
-  "Plan phases without a mockup": "خطّط للمراحل دون نموذج أولي",
   "Plan tasks": "تخطيط المهام",
   "Plan “{phase}” again": "إعادة تخطيط «{phase}»",
   "Planned": "مخطط لها",
@@ -2121,8 +2119,6 @@
   "{n} alternatives: look at each, then choose one or say what should change.": "{n} بدائل: اطّلع على كل منها، ثم اختر واحدًا أو قل ما الذي يجب تغييره.",
   "Choose mockup {n}": "اختر النموذج الأولي {n}",
   "Could not load the screens of this mockup.": "تعذّر تحميل شاشات هذا النموذج الأولي.",
-  "Plan phases again from the chosen mockup": "أعد تخطيط المراحل وفق النموذج الأولي المختار",
-  "Plan phases again without a mockup": "أعد تخطيط المراحل دون نموذج أولي",
   "The phases were planned for another mockup. Plan them again so they follow this one.": "خُطِّطت المراحل لنموذج أولي آخر. أعد تخطيطها لتتبع هذا النموذج.",
   "Research": "البحث",
   "Questions": "الأسئلة",
@@ -2150,6 +2146,10 @@
   "The construction agent has not asked anything yet, so the mockups are drawn from the specification alone. Asking questions afterwards discards them.": "لم يسأل وكيل البناء شيئًا بعد، لذا تُرسم النماذج من المواصفات وحدها. طرح الأسئلة بعد ذلك يتجاهلها.",
   "Propose mockups anyway": "اقتراح النماذج على أي حال",
   "Plan the phases without research?": "التخطيط للمراحل دون بحث؟",
+  "Plan the phases without mockups?": "التخطيط للمراحل دون نماذج أولية؟",
+  "No mockups were drawn, so the phases are planned without a look of the application to follow.": "لم تُرسم أي نماذج أولية، لذا يُخطَّط للمراحل دون مظهر للتطبيق تتبعه.",
+  "Plan the phases without a chosen mockup?": "التخطيط للمراحل دون نموذج أولي مختار؟",
+  "None of the mockups is chosen, so the phases are planned without a look of the application to follow. Choose one first to have the phases follow it.": "لم يُختر أي نموذج أولي، لذا يُخطَّط للمراحل دون مظهر للتطبيق تتبعه. اختر واحدًا أولًا لتتبعه المراحل.",
   "No questions were asked and no mockups drawn, so the phases are planned from the specification alone. You can still do the research later and plan the phases again.": "لم تُطرح أسئلة ولم تُرسم نماذج، لذا تُخطَّط المراحل من المواصفات وحدها. يمكنك إجراء البحث لاحقًا وإعادة التخطيط للمراحل.",
   "Plan phases anyway": "التخطيط للمراحل على أي حال"
 }
