@@ -8,20 +8,25 @@
 // **changes only the keys it shows** and keeps every other one, which is what
 // stops an edit to the prompt from quietly resetting an agent's strong model.
 
+import { format, type Translator } from "./i18n";
 import type { FieldSpec } from "./settings";
+
+/** Labels and help are functions of the translator so that each `t()` is
+ * given its English text as a literal, which is what the extractor reads. */
+export type Translate = Translator["t"];
 
 /** The two optional model roles (`sc_agent::ATTR_STRONG` / `ATTR_CHEAP`). The
  * executor is the agent's own provider and model. */
 export const ROLES = [
   {
     key: "strong",
-    label: "Strong model",
-    help: "Plans, reviews and takes escalations.",
+    label: (t: Translate) => t("Strong model"),
+    help: (t: Translate) => t("Plans, reviews and takes escalations."),
   },
   {
     key: "cheap",
-    label: "Cheap model",
-    help: "Summarises, explores and writes commit messages.",
+    label: (t: Translate) => t("Cheap model"),
+    help: (t: Translate) => t("Summarises, explores and writes commit messages."),
   },
 ] as const;
 
@@ -34,13 +39,13 @@ export type RoleChoice = { provider: string; model: string };
 export const ANSWER_SETTINGS = [
   {
     key: "temperature",
-    label: "Temperature",
-    help: "Blank uses the provider's own default.",
+    label: (t: Translate) => t("Temperature"),
+    help: (t: Translate) => t("Blank uses the provider's own default."),
   },
   {
     key: "max_tokens",
-    label: "Max tokens per answer",
-    help: "Blank uses the provider's own default.",
+    label: (t: Translate) => t("Max tokens per answer"),
+    help: (t: Translate) => t("Blank uses the provider's own default."),
   },
 ] as const;
 
@@ -48,28 +53,28 @@ export const ANSWER_SETTINGS = [
 export const LIMITS = [
   {
     key: "max_steps",
-    label: "Max steps per run",
-    help: "How many times one run may go round the loop. Blank means 250.",
+    label: (t: Translate) => t("Max steps per run"),
+    help: (t: Translate) => t("How many times one run may go round the loop. Blank means 250."),
   },
   {
     key: "max_cost",
-    label: "Cost per run",
-    help: "In the models' priced currency, sessions included. Every model the agent uses needs a price.",
+    label: (t: Translate) => t("Cost per run"),
+    help: (t: Translate) => t("In the models' priced currency, sessions included. Every model the agent uses needs a price."),
   },
   {
     key: "max_wall_seconds",
-    label: "Working time per run (seconds)",
-    help: "Time spent calling models and tools; time waiting for you is not counted.",
+    label: (t: Translate) => t("Working time per run (seconds)"),
+    help: (t: Translate) => t("Time spent calling models and tools; time waiting for you is not counted."),
   },
   {
     key: "context_budget",
-    label: "Context per request (tokens)",
-    help: "The context is compacted at 80% of this. Blank uses the model's own working budget.",
+    label: (t: Translate) => t("Context per request (tokens)"),
+    help: (t: Translate) => t("The context is compacted at 80% of this. Blank uses the model's own working budget."),
   },
   {
     key: "max_images",
-    label: "Screenshots kept per run",
-    help: "Older ones are replaced by a note. Blank means 20.",
+    label: (t: Translate) => t("Screenshots kept per run"),
+    help: (t: Translate) => t("Older ones are replaced by a note. Blank means 20."),
   },
 ] as const;
 
@@ -79,23 +84,23 @@ export const LIMITS = [
 export const CREDITS = [
   {
     key: "credits_per_dollar",
-    label: "Credits per dollar",
-    help: "Per unit of the models' priced cost. Every model the agent uses needs a price, unless a rate per token is set too.",
+    label: (t: Translate) => t("Credits per dollar"),
+    help: (t: Translate) => t("Per unit of the models' priced cost. Every model the agent uses needs a price, unless a rate per token is set too."),
   },
   {
     key: "credits_per_1k_input",
-    label: "Credits per 1,000 input tokens",
-    help: "Used when a call's cost is unknown, or alone.",
+    label: (t: Translate) => t("Credits per 1,000 input tokens"),
+    help: (t: Translate) => t("Used when a call's cost is unknown, or alone."),
   },
   {
     key: "credits_per_1k_output",
-    label: "Credits per 1,000 output tokens",
-    help: "Used when a call's cost is unknown, or alone.",
+    label: (t: Translate) => t("Credits per 1,000 output tokens"),
+    help: (t: Translate) => t("Used when a call's cost is unknown, or alone."),
   },
   {
     key: "credits_min_balance",
-    label: "Balance needed to start",
-    help: "A run with less does not start. Blank is anything above 0.",
+    label: (t: Translate) => t("Balance needed to start"),
+    help: (t: Translate) => t("A run with less does not start. Blank is anything above 0."),
   },
 ] as const;
 
@@ -212,10 +217,10 @@ export function shellWarning(trait: string, values: Record<string, string>): str
 /** The form's tabs, in order. The first is where a new agent starts and where
  * the required fields are. */
 export const AGENT_TABS = [
-  { id: "general", label: "General" },
-  { id: "instructions", label: "Instructions" },
-  { id: "traits", label: "What it can do" },
-  { id: "limits", label: "Limits" },
+  { id: "general", label: (t: Translate) => t("General") },
+  { id: "instructions", label: (t: Translate) => t("Instructions") },
+  { id: "traits", label: (t: Translate) => t("What it can do") },
+  { id: "limits", label: (t: Translate) => t("Limits") },
 ] as const;
 
 export type AgentTab = (typeof AGENT_TABS)[number]["id"];
@@ -238,10 +243,11 @@ export function agentTabHref(agentId: string | undefined, tab: AgentTab): string
 export function missingRequired(
   name: string,
   provider: string,
+  t: Translate = format,
 ): { tab: AgentTab; message: string } | null {
-  if (name.trim() === "") return { tab: "general", message: "Give the agent a name." };
+  if (name.trim() === "") return { tab: "general", message: t("Give the agent a name.") };
   if (provider.trim() === "") {
-    return { tab: "general", message: "Choose an LLM provider for the main model." };
+    return { tab: "general", message: t("Choose an LLM provider for the main model.") };
   }
   return null;
 }

@@ -2,6 +2,35 @@
 
 Changes in reverse chronological order.
 
+## Fix: the agent screens' labels are readable by the i18n extractor; §2's crate table caught up
+
+Two `sc-cli` tests (`cargo test -p sc-cli --test it`) had been failing.
+
+- **i18n.** The Agents tabs and settings screens (`AgentForm.tsx`, `AgentHeader.tsx`) called
+  `t(item.label)`, `t(role.help)`, `t(missing.message)` and so on, which the extractor reports as
+  unreadable call sites, because the message id has to be a literal. The label and help fields of
+  the tables in `agentForm.ts` (`ROLES`, `ANSWER_SETTINGS`, `LIMITS`, `CREDITS`, `AGENT_TABS`) and
+  `agentNav.ts` (`AGENT_AREA_TABS`, `AGENT_SECTIONS`) are now functions, `(t) => t("Strong model")`,
+  and the screens call `role.label(t)`. `missingRequired` takes `t` (defaulting to `format`) and
+  returns the message already translated. The English text is unchanged, so the shipped catalogues
+  still match. `sc-agent-builtins`'s `docs_agents::the_tutorial_names_the_agent_form_roles_and_budgets`,
+  which reads those labels out of `agentForm.ts`, now matches the `label: (t: Translate) => t("…")`
+  form.
+- **Other test failures in the workspace run.**
+  - `sc-python`: `python_models` was the one module in `tests/it.rs` that needs the embedded
+    interpreter but had no `#[cfg(feature = "python-host")]`, so it failed in a default build.
+  - `sc-server` `other_events::an_error_trigger_sees_both_error_kinds_and_no_rejections` used a
+    NOT NULL violation as its system error. Since integrity violations became a 400, it is an
+    application error, so the test's `books.pages` check now divides by the value and a zero
+    raises a real database error (22012, still a 500).
+  - `sc-server` `locale_negotiation`: two French strings the test quoted had been retranslated
+    when their English was reworded ("Balises BCP-47…", "Vues et pages…"). The tests now take
+    the locale lock through `hold_locales()`, which also resets the process-wide enabled set to
+    English only. Before, a test that failed while it had French enabled made the next test
+    fail too.
+- **Docs.** TECHNICAL_DESIGN.md §2's direct-dependency table was missing `sc-auth → sc-http`,
+  `sc-api → sc-net` and `sc-backup → sc-email`, all added by recent commits.
+
 ## An automated backup can email an administrator when it fails
 
 A user asked to be told when a backup fails. Each automated backup schedule now has **Email on

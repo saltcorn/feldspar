@@ -203,6 +203,17 @@ async fn setup() -> sc_error::Result<(Client, TestDb)> {
 /// every `await` in the test it guards — which is the whole test.
 static LOCALES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// Take [`LOCALES`] and start from a monolingual installation.
+///
+/// Each test puts the set back as it ends, but one that fails an assertion ends
+/// early, still holding locales the next test does not expect. Resetting on the
+/// way in stops one failure from showing up as two.
+async fn hold_locales() -> tokio::sync::MutexGuard<'static, ()> {
+    let held = LOCALES.lock().await;
+    sc_i18n::set_active(sc_i18n::I18nSettings::default());
+    held
+}
+
 /// Save the Localisation section.
 async fn set_locales(client: &mut Client, default: &str, enabled: &str) {
     let answer = client
@@ -221,7 +232,7 @@ async fn set_locales(client: &mut Client, default: &str, enabled: &str) {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn a_request_is_served_in_the_language_it_negotiated() -> sc_error::Result<()> {
-    let _held = LOCALES.lock().await;
+    let _held = hold_locales().await;
     let (mut admin, _db) = setup().await?;
 
     // --- Monolingual: nothing is negotiated and nothing is said (D11) --------
@@ -450,7 +461,7 @@ async fn a_request_is_served_in_the_language_it_negotiated() -> sc_error::Result
 /// makes this test fail loudly rather than silently serving English.
 #[tokio::test]
 async fn what_the_server_says_is_said_in_the_request_s_language() -> sc_error::Result<()> {
-    let _held = LOCALES.lock().await;
+    let _held = hold_locales().await;
     let (mut admin, _db) = setup().await?;
 
     // --- English first, so every assertion below is a *change* --------------
@@ -512,7 +523,7 @@ async fn what_the_server_says_is_said_in_the_request_s_language() -> sc_error::R
     assert!(
         enabled["help"]
             .as_str()
-            .is_some_and(|h| h.starts_with("Étiquettes BCP-47")),
+            .is_some_and(|h| h.starts_with("Balises BCP-47")),
         "the help text hangs off ConfigDef rather than FormField, and is \
          translated where it is serialised: {}",
         enabled["help"]
@@ -541,7 +552,7 @@ async fn what_the_server_says_is_said_in_the_request_s_language() -> sc_error::R
     assert!(
         saltcorn_ui["description"]
             .as_str()
-            .is_some_and(|d| d.starts_with("Des vues et des pages")),
+            .is_some_and(|d| d.starts_with("Vues et pages")),
         "a framework's one-line pitch is a declared string and is translated \
          at the edge: {}",
         saltcorn_ui["description"]
