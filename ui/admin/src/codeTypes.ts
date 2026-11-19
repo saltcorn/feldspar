@@ -760,6 +760,146 @@ interface ScModels {
 `;
 }
 
+/** The declarations for `llm`: the configured LLM providers, over the run's own
+ * `db` — a transcription of `sc-expr`'s `__scMakeLlm`, on the same terms as
+ * {@link modelDeclarations}. A provider or model left out is the default. */
+export function llmDeclarations(): string {
+  return `
+/** One turn of a conversation. */
+interface ScLlmMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+/** What a charged call costs the run's caller: an agent's metering rates. */
+interface ScLlmCharge {
+  /** Credits per unit of the model's priced cost (usually dollars). */
+  credits_per_dollar?: number;
+  /** Credits per thousand input tokens, for a model without prices. */
+  credits_per_1k_input?: number;
+  /** Credits per thousand output tokens. */
+  credits_per_1k_output?: number;
+  /** The balance the caller needs for the call to be made. */
+  credits_min_balance?: number;
+}
+
+/** Which provider and model to call; either left out is the default. */
+interface ScLlmChoice {
+  /** A provider's name, as the LLM providers screen shows it. */
+  provider?: string;
+  /** One of the provider's models, by name. */
+  model?: string;
+  /** Charge the call to the run's caller in LLM credits, at these rates. An
+   * admin caller is not charged; a call with nobody to charge, or a balance at
+   * or below zero, is refused before the model is called. */
+  charge?: ScLlmCharge;
+}
+
+/** What to generate from. */
+interface ScLlmGenerate extends ScLlmChoice {
+  /** The last user turn, after \`messages\`. */
+  prompt?: string;
+  system?: string;
+  messages?: ScLlmMessage[];
+  temperature?: number;
+  max_tokens?: number;
+}
+
+/** A generated answer, with what it took. */
+interface ScLlmAnswer {
+  text: string;
+  provider: string;
+  model: string;
+  usage: { input_tokens: number; output_tokens: number };
+  /** In dollars; null when the model has no price. */
+  cost: number | null;
+  /** What a charged call took, as decimal strings; null when not charged. */
+  credits: { charged: string; balance: string } | null;
+}
+
+/** The configured LLM providers. */
+interface ScLlm {
+  /** A chat model's answer: its text, or with \`detail\` everything. */
+  generate(prompt: string, options: ScLlmGenerate & { detail: true }): Promise<ScLlmAnswer>;
+  generate(prompt: string, options?: ScLlmGenerate & { detail?: false }): Promise<string>;
+  generate(options: ScLlmGenerate & { detail: true }): Promise<ScLlmAnswer>;
+  generate(options: ScLlmGenerate & { detail?: false }): Promise<string>;
+  /** One vector for a text. */
+  embed(text: string, options?: ScLlmChoice): Promise<number[]>;
+  /** One vector per text, in order. */
+  embed(texts: string[], options?: ScLlmChoice): Promise<number[][]>;
+}
+`;
+}
+
+/** The declarations for `oauth`: a user's OAuth 2.0 tokens for an API, over
+ * the run's own `db` — a transcription of `sc-expr`'s `__scMakeOauth`, on the
+ * same terms as {@link llmDeclarations}. */
+export function oauthDeclarations(): string {
+  return `
+/** Where the tokens are kept: a row of an application table. */
+interface ScOAuthStore {
+  table: string;
+  /** The row's primary key. */
+  id: string | number;
+  fields: {
+    /** A Secret field. */
+    access_token: string;
+    /** A Secret field. */
+    refresh_token?: string;
+    /** A timestamp field: when the access token expires. */
+    expires_at?: string;
+  };
+  /** Other fields of the row, written with the tokens. */
+  set?: Record<string, unknown>;
+}
+
+/** The client, and the provider: a known one, or its addresses. */
+interface ScOAuthClient {
+  provider?: "google" | "microsoft";
+  token_url?: string;
+  client_id: string;
+  client_secret?: string;
+  store: ScOAuthStore;
+}
+
+/** A consent flow to begin. */
+interface ScOAuthBegin extends ScOAuthClient {
+  authorization_url?: string;
+  scope: string;
+  /** Extra authorization parameters (\`login_hint\`, \`prompt\`, …). */
+  params?: Record<string, string>;
+  /** A path on the application's host to come back to. */
+  return_to?: string;
+}
+
+/** An access token to hand out. */
+interface ScOAuthAccess extends ScOAuthClient {
+  /** The token a request was just refused with: renewed, unless another call
+   * already renewed it. */
+  refused?: string;
+  /** Renew it whatever is stored. */
+  force?: boolean;
+}
+
+/** An access token, and whether this call renewed it. */
+interface ScOAuthToken {
+  access_token: string;
+  expires_at: string | null;
+  refreshed: boolean;
+}
+
+/** A user's OAuth 2.0 tokens. */
+interface ScOAuth {
+  /** Begin the consent flow: where to send the caller's browser. */
+  begin(options: ScOAuthBegin): Promise<{ url: string; expires_in: number }>;
+  /** A token good for at least five minutes, renewed when it is due. */
+  accessToken(options: ScOAuthAccess & { detail: true }): Promise<ScOAuthToken>;
+  accessToken(options: ScOAuthAccess & { detail?: false }): Promise<string>;
+}
+`;
+}
+
 /** The TypeScript type one of v1's declared argument types arrives as.
  *
  * v1's own type names, which is the vocabulary `sc_module::spec` already
@@ -1029,6 +1169,32 @@ export function scopeDeclarations(
       ` * Each call is a database call of this run, on its budget; a draws answer\n` +
       ` * is at most 500 000 numbers — \`thin\` and \`chains\` keep it under. */\n` +
       `declare const models: ScModels;`,
+  );
+  parts.push(
+    `/** The LLM providers configured on this server. A provider or model left\n` +
+      ` * out is the default one:\n` +
+      ` *\n` +
+      ` * \`\`\`js\n` +
+      ` * const summary = await llm.generate("Summarise: " + row.body);\n` +
+      ` * const reply = await llm.generate({ system: "Be brief.", messages, model: "gpt-5-mini" });\n` +
+      ` * const vector = await llm.embed(row.title);\n` +
+      ` * \`\`\`\n` +
+      ` *\n` +
+      ` * Each call is a database call of this run, on its budget, and waits for\n` +
+      ` * the model: give the body a \`timeout_ms\` that leaves it time. */\n` +
+      `declare const llm: ScLlm;`,
+  );
+  parts.push(
+    `/** A user's OAuth 2.0 tokens for an API, kept in a row's Secret fields:\n` +
+      ` *\n` +
+      ` * \`\`\`js\n` +
+      ` * const { url } = await oauth.begin({ provider: "google", client_id, client_secret,\n` +
+      ` *   scope, return_to: "/settings", store });\n` +
+      ` * const token = await oauth.accessToken({ provider: "google", client_id, client_secret, store });\n` +
+      ` * \`\`\`\n` +
+      ` *\n` +
+      ` * Each call is a database call of this run, on its budget. */\n` +
+      `declare const oauth: ScOAuth;`,
   );
   parts.push(
     `/** Call an HTTP endpoint. The web's \`fetch\`, with the web's rules: a\n` +
@@ -1305,6 +1471,8 @@ export function codeLibrary(
     fileDeclarations(),
     triggerDeclarations(),
     modelDeclarations(),
+    llmDeclarations(),
+    oauthDeclarations(),
     moduleFunctionDeclarations(functions),
     tableDeclarations(tables),
     scopeDeclarations(scope, tables, functions),

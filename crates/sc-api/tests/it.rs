@@ -17,8 +17,12 @@ mod admin_client_sync;
 mod calc_after_read;
 #[path = "calc_fields.rs"]
 mod calc_fields;
+#[path = "client_filters.rs"]
+mod client_filters;
 #[path = "code_host_as_user.rs"]
 mod code_host_as_user;
+#[path = "code_host_llm.rs"]
+mod code_host_llm;
 #[path = "code_host_reads.rs"]
 mod code_host_reads;
 #[path = "code_host_rls_boundary.rs"]

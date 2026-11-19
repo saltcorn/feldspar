@@ -186,7 +186,15 @@ impl<'a> Scoped<'a> {
     ) -> Result<Vec<BTreeMap<String, Value>>> {
         match self.decided()? {
             Decided::Unchecked(access) => {
-                rows::aggregate_grouped(self.catalog, table, projections, query, access).await
+                rows::aggregate_grouped_in(
+                    self.catalog,
+                    table,
+                    projections,
+                    query,
+                    access,
+                    &self.executor,
+                )
+                .await
             }
             Decided::Checked(principal, user) => {
                 ownership::aggregate_grouped_by(

@@ -32,6 +32,7 @@ import Spinner from "react-bootstrap/Spinner";
 import { api, errorMessage } from "../api";
 import { navigate } from "../App";
 import { IconArrowLeft } from "../icons";
+import { applicationsCrumbs } from "../breadcrumbs";
 import { AlertBody, PageBody, PageHeader } from "../layout";
 import {
   asTranslations,
@@ -162,7 +163,7 @@ export function ApplicationTranslations({
 
   const header = (
     <PageHeader
-      pretitle={t("Application")}
+      crumbs={applicationsCrumbs(t)}
       title={app?.name ?? t("Application")}
       actions={
         <Button variant="outline-secondary" onClick={() => navigate("/applications")}>

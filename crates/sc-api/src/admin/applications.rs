@@ -410,13 +410,16 @@ fn static_dir_schema() -> TypeSchema {
 
 /// An upload slot (TODO F2, §2.3): where a resumable upload lands, who may
 /// start one, how large and of which types, and the code query that decides
-/// the rest. `max_bytes` 0 is the server's own limit; `hook` null is none.
+/// the rest. `read_role` is who besides the uploader reads a finished file
+/// (null: the folder's readers); `max_bytes` 0 is the server's own limit;
+/// `hook` null is none.
 fn upload_slot_schema() -> TypeSchema {
     TypeSchema::struct_of([
         StructField::new("name", TypeSchema::text()),
         StructField::new("store", TypeSchema::text()),
         StructField::new("folder", TypeSchema::text()),
         StructField::new("min_role", TypeSchema::int()),
+        StructField::new("read_role", TypeSchema::optional(TypeSchema::int())),
         StructField::new("max_bytes", TypeSchema::int()),
         StructField::new("mime_allow", TypeSchema::array(TypeSchema::text())),
         StructField::new("hook", TypeSchema::optional(TypeSchema::text())),

@@ -579,7 +579,11 @@ async fn call_tool(
     // its hash. At Verbose the arguments too, which is the rung an agent's
     // tool-call arguments already sit on.
     if sc_log::enabled(Verbosity::Verbose) {
-        sc_log::log_verbose!("MCP [{}] {name} {arguments}", caller.token.label);
+        sc_log::log_verbose!(
+            "MCP [{}] {name} {}",
+            caller.token.label,
+            redact_for_log(&arguments)
+        );
     }
     let started = Instant::now();
     let outcome = tools.call(name, &arguments, &ctx).await;
@@ -593,6 +597,38 @@ async fn call_tool(
     }
 
     json_rpc_result(id, tool_result(outcome))
+}
+
+/// A tool call's arguments as the audit line shows them: every value under a key
+/// that names a credential (`api_key`, `password`, `client_secret`, `token`, …)
+/// replaced by the secret sentinel. `createLlmProvider` carries an API key in its
+/// `config`, and the server log is not where a key should end up.
+fn redact_for_log(arguments: &Json) -> Json {
+    fn is_secret(key: &str) -> bool {
+        let key = key.to_ascii_lowercase();
+        key.contains("secret")
+            || key.contains("password")
+            || key.contains("api_key")
+            || key.contains("apikey")
+            || key == "token"
+            || key.ends_with("_token")
+    }
+    match arguments {
+        Json::Object(map) => Json::Object(
+            map.iter()
+                .map(|(k, v)| {
+                    let v = if is_secret(k) && !v.is_null() {
+                        Json::String(sc_types::SECRET_SENTINEL.to_owned())
+                    } else {
+                        redact_for_log(v)
+                    };
+                    (k.clone(), v)
+                })
+                .collect(),
+        ),
+        Json::Array(items) => Json::Array(items.iter().map(redact_for_log).collect()),
+        other => other.clone(),
+    }
 }
 
 /// What stands behind an administrator's MCP token as console authority: the
@@ -688,7 +724,7 @@ fn tool_set(state: &AppState, caller: &ApiCaller) -> ToolSet {
     let flags = sc_api::mcp::token_flags(&caller.token.grants);
     let grants = grants_from_attrs(&flags);
     let areas = areas_from_attrs(&flags);
-    sc_app::mcp::tool_set(grants, areas).with(state.mcp_endpoint_tools.iter().cloned())
+    sc_app::mcp::mcp_tool_set(grants, areas).with(state.mcp_endpoint_tools.iter().cloned())
 }
 
 /// Build the tier-2 tools of an endpoint set, once, at router assembly.
@@ -1087,6 +1123,24 @@ fn json_rpc_error(status: StatusCode, id: Json, code: i64, message: impl Into<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_audit_line_masks_a_credential_in_a_tool_calls_arguments() {
+        let shown = redact_for_log(&serde_json::json!({
+            "name": "OpenAI",
+            "backend": "openai_responses",
+            "config": { "api_key": "sk-live-123", "base_url": "https://api.openai.com/v1" },
+            "users": [{ "password": "hunter2", "email": "a@b.c" }],
+        }));
+        let text = shown.to_string();
+        assert!(
+            !text.contains("sk-live-123") && !text.contains("hunter2"),
+            "{text}"
+        );
+        assert_eq!(shown["config"]["base_url"], "https://api.openai.com/v1");
+        assert_eq!(shown["users"][0]["email"], "a@b.c");
+        assert_eq!(shown["name"], "OpenAI");
+    }
 
     #[test]
     fn an_unknown_peer_is_treated_as_remote() {

@@ -35,6 +35,7 @@ import type {
 } from "../client";
 import { navigate } from "../App";
 import { IconArrowLeft, IconChevronDown, IconChevronRight } from "../icons";
+import { agentsCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader } from "../layout";
 import { OptionalRoleSelect } from "../roleSelect";
 import { useRoles } from "../roles";
@@ -46,12 +47,12 @@ import {
   LIMITS,
   REASONING_EFFORTS,
   ROLES,
+  type Translate,
   agentAttributes,
   agentTab,
   agentTabHref,
   chargesCredits,
   missingRequired,
-  type Tr,
   readEffort,
   readNumbers,
   readRoles,
@@ -221,9 +222,9 @@ export function AgentForm({ agentId, tab: rawTab }: { agentId?: string; tab?: st
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    const missing = missingRequired(name, provider);
+    const missing = missingRequired(name, provider, t);
     if (missing) {
-      setError(missing.message(t));
+      setError(missing.message);
       setProblemTab(missing.tab);
       navigate(agentTabHref(agentId, missing.tab).slice(1));
       return;
@@ -287,7 +288,7 @@ export function AgentForm({ agentId, tab: rawTab }: { agentId?: string; tab?: st
 
   // The number boxes of one group, three or two to a row.
   const numberBoxes = (
-    attrs: readonly { key: string; label: (t: Tr) => string; help: (t: Tr) => string }[],
+    attrs: readonly { key: string; label: (t: Translate) => string; help: (t: Translate) => string }[],
     md: number,
   ) => (
     <Row>
@@ -317,6 +318,7 @@ export function AgentForm({ agentId, tab: rawTab }: { agentId?: string; tab?: st
         <AgentHeader agent={savedName} section="settings" actions={save} />
       ) : (
         <PageHeader
+          crumbs={agentsCrumbs(t)}
           title={t("New agent")}
           actions={
             <>
@@ -697,7 +699,7 @@ function NumberBox({
   value,
   onChange,
 }: {
-  attr: { key: string; label: (t: Tr) => string; help: (t: Tr) => string };
+  attr: { key: string; label: (t: Translate) => string; help: (t: Translate) => string };
   value: string;
   onChange: (value: string) => void;
 }) {

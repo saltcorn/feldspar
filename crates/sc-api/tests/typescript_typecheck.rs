@@ -88,6 +88,8 @@ export async function exercise(): Promise<void> {
   };
   const titles = await api.posts.list(query);
   const justTitle: string = titles[0].title;
+  // A column's filter may be a list of comparisons that must all hold: a range.
+  await api.posts.list({ filter: { published: ["gte.2020-01-01", "lt.2021-01-01"], title: "in.(a,b)" } });
 
   // The `select` decides the shape of the answer, and the compiler reads that
   // shape out of the string: embeds nest, aliases rename, and a key that may be
@@ -132,6 +134,8 @@ export async function exercise(): Promise<void> {
   await api.posts.list({ filter: { nope: "eq.1" } });
   // @ts-expect-error a filter value names a comparison
   await api.posts.list({ filter: { title: "hello" } });
+  // @ts-expect-error every comparison in a list names one
+  await api.posts.list({ filter: { title: ["eq.a", "hello"] } });
   // @ts-expect-error `sideways` is not an ordering direction
   await api.posts.list({ order: "title.sideways" });
   // @ts-expect-error a selected row has only what was selected
@@ -537,6 +541,7 @@ export function exercise(): void {
     .close();
 
   const all: PostsRow[] = useLiveRows(api.posts, { where: { author: "eq.7" }, orderBy: "published.desc" }).rows;
+  stream.subscribe({ where: { published: ["gte.2020-01-01", "lt.2021-01-01"] } }, { element() {} }).close();
   const titles = useLiveRows(api.posts, { select: "title,author(name)" }).rows;
   const title: string = titles[0].title;
   const name: string = titles[0].author!.name;

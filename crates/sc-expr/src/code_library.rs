@@ -125,7 +125,8 @@ pub(crate) fn library_params(mut handles: Vec<&'static str>) -> Vec<&'static str
 ///
 /// Everything before the code is on **one line**, so a line number the engine
 /// reports is the author's plus one ([`LIBRARY_LINE_OFFSET`]). `require` is the
-/// body's refusal and `models` rides on `db` exactly as in a body.
+/// body's refusal, and `models`, `llm` and `oauth` ride on `db` exactly as in
+/// a body.
 ///
 /// The code goes in a **block of its own**, so a top-level declaration in it
 /// shadows a handle rather than redeclaring it: `async function models()` or
@@ -141,7 +142,8 @@ pub(crate) fn library_definition(code: &str, handles: &[&str], wants_db: bool) -
         .collect::<Vec<_>>()
         .join(", ");
     let models = if wants_db {
-        "const models = __scMakeModels(db); "
+        "const models = __scMakeModels(db); const llm = __scMakeLlm(db); \
+         const oauth = __scMakeOauth(db); "
     } else {
         ""
     };

@@ -873,6 +873,87 @@ impl TriggerDispatcher {
         let result = fire_trigger_with(self, catalog, trigger, &event, None, Some(console)).await?;
         Ok(result.unwrap_or(Json::Null))
     }
+
+    /// Run a **snippet**: a code body that belongs to no trigger, once, on
+    /// `action` (`run_js_code`, `run_python_code`), with its console collected —
+    /// the MCP `run_code` tool, which is what an admin wrote a throwaway trigger
+    /// for before.
+    ///
+    /// The body runs inside **one transaction on the primary database**, which
+    /// it shares with whatever its writes cascade into. A body that fails is
+    /// rolled back, so a migration that stops half way leaves nothing half
+    /// done; one that succeeds is committed, unless `rollback` asks for the
+    /// trial run, in which case it is rolled back too. What a transaction
+    /// cannot take back is not taken back: a `fetch`, a file write, an email a
+    /// cascaded trigger sent, a row on another database or a module's table.
+    ///
+    /// `config` is the action's configuration (`code`, and `timeout_ms` if
+    /// given). The run is a level of the cascade, named `name`. The failure is a
+    /// value, for the reason [`test_run_trigger`](TriggerDispatcher::test_run_trigger)'s is.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_snippet(
+        &self,
+        catalog: &Catalog,
+        action: &str,
+        name: &str,
+        config: &Attrs,
+        payload: Json,
+        caller: Authority<'_>,
+        rollback: bool,
+    ) -> TestRun {
+        let console = sc_expr::console_sink();
+        let result = self
+            .run_snippet_inner(
+                catalog, action, name, config, payload, caller, rollback, &console,
+            )
+            .await;
+        TestRun {
+            result,
+            console: sc_expr::take_console(&console),
+        }
+    }
+
+    /// [`run_snippet`](TriggerDispatcher::run_snippet)'s fallible half.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_snippet_inner(
+        &self,
+        catalog: &Catalog,
+        action: &str,
+        name: &str,
+        config: &Attrs,
+        payload: Json,
+        caller: Authority<'_>,
+        rollback: bool,
+        console: &ConsoleSink,
+    ) -> Result<Json> {
+        let mut event = Event::new(EventKind::None).payload(payload);
+        event = match caller.principal() {
+            Some(caller) => event.caused_by(caller),
+            // The server's own authority: an event with no human cause.
+            None => event.by_system(),
+        };
+        let chain = event.firing(name)?;
+        let registry = self.registry();
+        let action = registry.require(action)?;
+        let tx = SharedTx::begin_primary(catalog)?;
+        let mut ctx = with_services(ActionContext::new(catalog, &event, config, name), self)
+            .with_chain(chain)
+            .with_transaction(tx.clone())
+            .with_console(Arc::clone(console));
+        let outcome = sc_catalog::cascade::surfacing_refusals(sc_catalog::with_origin(
+            event.origin(),
+            sc_catalog::changeset::scope_if(event.changeset.clone(), action.run(&mut ctx)),
+        ))
+        .await;
+        drop(ctx);
+        match (outcome, rollback) {
+            (Ok(value), true) => {
+                tx.rollback().await?;
+                Ok(value)
+            }
+            (outcome, _) => tx.finish(outcome).await,
+        }
+    }
 }
 
 /// What a [`test_run_trigger`](TriggerDispatcher::test_run_trigger) came back

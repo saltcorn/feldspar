@@ -39,6 +39,7 @@ pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
 pub mod declared;
 pub mod edit;
 pub mod model;
+pub mod progress;
 pub mod registry;
 pub mod runner;
 pub mod schedule;

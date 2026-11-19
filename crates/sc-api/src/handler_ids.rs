@@ -76,6 +76,8 @@ pub const LIST_BACKUP_SCHEDULES: HandlerId<AdminOnly> = HandlerId::new("listBack
 pub const CREATE_BACKUP_SCHEDULE: HandlerId<AdminOnly> = HandlerId::new("createBackupSchedule");
 pub const UPDATE_BACKUP_SCHEDULE: HandlerId<AdminOnly> = HandlerId::new("updateBackupSchedule");
 pub const DELETE_BACKUP_SCHEDULE: HandlerId<AdminOnly> = HandlerId::new("deleteBackupSchedule");
+pub const GET_BACKUP_FAILURE_RECIPIENTS: HandlerId<AdminOnly> =
+    HandlerId::new("getBackupFailureRecipients");
 pub const GET_CLEAR_ALL_PREVIEW: HandlerId<AdminOnly> = HandlerId::new("getClearAllPreview");
 pub const CLEAR_ALL: HandlerId<AdminOnly> = HandlerId::new("clearAll");
 

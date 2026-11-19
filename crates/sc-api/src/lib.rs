@@ -51,6 +51,7 @@
 pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
     sc_catalog::Unchecked::system("sc-api: the change log's user names for the history reader");
 
+pub mod access_summary;
 pub mod auth;
 // The host behind a code body's `db` (§10.1): plans in, rows out.
 pub mod code_host;

@@ -33,6 +33,7 @@ import { api, errorMessage } from "../api";
 import type { ListActionsResponse, ListTriggersResponse } from "../client";
 import { navigate } from "../App";
 import { IconArrowLeft } from "../icons";
+import { tableCrumbs, triggersCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader } from "../layout";
 import { OptionalRoleSelect } from "../roleSelect";
 import { useRoles } from "../roles";
@@ -360,7 +361,8 @@ export function TriggerForm({ triggerId, table }: { triggerId?: string; table?: 
   return (
     <>
       <PageHeader
-        pretitle={t("Automation")}
+        // A trigger created from a table's page is reached from that table.
+        crumbs={!triggerId && table ? tableCrumbs(t, table) : triggersCrumbs(t)}
         title={triggerId ? "Edit trigger" : "New trigger"}
         actions={
           <Button variant="outline-secondary" onClick={() => navigate("/triggers")}>

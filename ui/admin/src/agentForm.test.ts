@@ -146,7 +146,7 @@ describe("the form's tabs", () => {
   it("names what is missing before a save, on the tab that has it", () => {
     expect(missingRequired("helper", "house")).toBeNull();
     expect(missingRequired("  ", "house")?.tab).toBe("general");
-    expect(missingRequired("helper", "")?.message((text) => text)).toContain("LLM provider");
+    expect(missingRequired("helper", "")?.message).toContain("LLM provider");
   });
 
   it("sends a refusal about a trait or a tool to the traits tab, and others nowhere", () => {

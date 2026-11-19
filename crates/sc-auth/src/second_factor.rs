@@ -816,6 +816,7 @@ pub async fn issue_second_factor_challenge(
         signing_in.user().id(),
         challenge_purpose(remember),
         signing_in.epoch(),
+        signing_in.identity(),
     )
     .await
     .map(ChallengeToken::presented)
@@ -868,11 +869,10 @@ pub async fn spend_second_factor_challenge(
     token: &ChallengeToken,
     made_here: Option<&CredentialsChanged>,
 ) -> Result<Option<SpentChallenge>> {
-    let Some((user_id, purpose, issued_at)) =
-        spend_challenge_token(catalog, token.expose(), &CHALLENGES).await?
-    else {
+    let Some(spent) = spend_challenge_token(catalog, token.expose(), &CHALLENGES).await? else {
         return Ok(None);
     };
+    let (user_id, purpose, issued_at) = (spent.user, spent.purpose, spent.epoch);
     let user = match crate::lookup::load_user(catalog, user_id).await? {
         Some(user) if !user.is_disabled() => user,
         _ => return Ok(None),
@@ -888,7 +888,7 @@ pub async fn spend_second_factor_challenge(
         _ => return Ok(None),
     };
     Ok(Some(SpentChallenge {
-        signing_in: PasswordVerified::resumed(user, epoch),
+        signing_in: PasswordVerified::resumed(user, epoch, spent.sign_in),
         remember: purpose == PasswordTokenPurpose::SecondFactor,
     }))
 }

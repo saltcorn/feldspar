@@ -189,8 +189,9 @@ pub use source::{CompiledSource, DEFAULT_MAX_ROWS, DatasetSource, Read, SPLIT_KE
 pub use split::{Part, Split, SplitCounts, Splits};
 pub use store::{
     COL_TABLE_NAME, COL_VIEW_STATE, MODELS_QUERY, MODELS_TABLE, bootstrap_models, clone_model,
-    dataset_ref, delete_model, list_models, load_model, load_model_by_name, model_view_state,
-    models_for_table, patch_model_view_state, related_json, require_model, save_model,
+    dataset_ref, delete_model, list_models, load_model, load_model_by_name, model_names_for_table,
+    model_view_state, models_for_table, patch_model_view_state, related_json, require_model,
+    save_model,
 };
 pub use summary::{ElementSummary, ess_bulk, ess_mean, ess_tail, quantile, rhat};
 pub use validate::{ModelIssue, Models, validate_model};

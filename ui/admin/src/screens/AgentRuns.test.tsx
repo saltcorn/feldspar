@@ -6,8 +6,8 @@ import { AgentRuns } from "./AgentRuns";
 describe("AgentRuns", () => {
   const html = renderToStaticMarkup(<AgentRuns agent="help desk" />);
 
-  it("titles the page with the agent", () => {
-    expect(html).toContain('<div class="page-pretitle">Agent</div>');
+  it("titles the page with the agent, under the trail back to Agents", () => {
+    expect(html).toContain('<li class="breadcrumb-item"><a href="#/agents">Agents</a></li>');
     expect(html).toContain('<h2 class="page-title">help desk</h2>');
   });
 

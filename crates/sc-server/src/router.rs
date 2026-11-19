@@ -1045,6 +1045,87 @@ pub(crate) async fn fit_progress(
     )
 }
 
+/// `GET /api/checklists/{id}/run/live`: run a checklist, its progress pushed
+/// as it goes (TODO-checklists C5.1). Admin only, decided before the upgrade
+/// as the fit's progress socket's is; everything after it is a frame
+/// ([`crate::checklist_live`]).
+pub(crate) async fn checklist_run_live(
+    State(state): State<AppState>,
+    // An application's request on a path spelled like this one is not a
+    // checklist's: the `AdminSession` refuses it.
+    admin: AdminSession,
+    headers: axum::http::HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    MaybeUpgrade(ws): MaybeUpgrade,
+) -> Response {
+    let Ok(id) = id.parse::<uuid::Uuid>() else {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "the checklist id in the path is not a uuid",
+        );
+    };
+    run_live(
+        state,
+        admin,
+        &headers,
+        ws,
+        crate::checklist_live::LiveRun::One(id),
+    )
+}
+
+/// `GET /api/checklist-runs/live?application=`: run the enabled checklists of
+/// an application (`none`: the data-only ones; absent: all), pushing their
+/// progress as [`checklist_run_live`] does.
+pub(crate) async fn checklists_run_live(
+    State(state): State<AppState>,
+    admin: AdminSession,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+    MaybeUpgrade(ws): MaybeUpgrade,
+) -> Response {
+    let application = query.get("application").cloned();
+    run_live(
+        state,
+        admin,
+        &headers,
+        ws,
+        crate::checklist_live::LiveRun::All(application),
+    )
+}
+
+/// What the two run sockets share: the origin, the catalog, the upgrade. A
+/// plain `GET` of either runs nothing — only an upgrade does.
+fn run_live(
+    state: AppState,
+    admin: AdminSession,
+    headers: &axum::http::HeaderMap,
+    ws: Option<axum::extract::ws::WebSocketUpgrade>,
+    what: crate::checklist_live::LiveRun,
+) -> Response {
+    if !upgrade_origin_allowed(headers) {
+        return upgrade_origin_refused();
+    }
+    let Some(catalog) = state.apps.catalog().cloned() else {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this server has no catalog, so it has no checklists",
+        );
+    };
+    let Some(ws) = ws else {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "this path is a WebSocket: connect to it with `ws:`/`wss:` rather than fetching it",
+        );
+    };
+    crate::checklist_live::run_live_upgrade(
+        ws,
+        catalog,
+        Arc::clone(&state.apps),
+        what,
+        admin.watch(state.sessions.clone()),
+    )
+}
+
 /// The supervisor inside a server's stream services — a named function rather
 /// than a closure so the `Option::map` above reads as what it is.
 fn sc_server_stream_supervisor(
@@ -3119,6 +3200,7 @@ pub(crate) async fn apply_session(
     let ttl = policy.ttl;
     if let Some(who) = starting {
         let user = who.user().clone();
+        let identity = who.identity().cloned();
         // Bound to the host that issued it (security review #15): an
         // application's session is never admin authority on the admin host,
         // and names the one application it was issued by (2026-11, §2).
@@ -3155,7 +3237,7 @@ pub(crate) async fn apply_session(
                 let (jar, guest) = end_guest_session_at_sign_in(state, jar, &client).await;
                 // After the session exists, not before: an event that says
                 // someone logged in must not fire for a login that then failed.
-                fire_login(state, &user, guest.as_deref()).await;
+                fire_login(state, &user, guest.as_deref(), identity).await;
                 let mut cookie = session_cookie(state, token, domain.as_deref());
                 if remember && (policy.persistent || client.native) {
                     persist(&mut cookie, ttl);
@@ -3860,17 +3942,40 @@ async fn error_out(
 /// `session_id === payload.guest_session`. A sign-in from a browser that was
 /// nobody's guest has no payload, as before, so `payload.guest_session` reads
 /// null.
-async fn fire_login(state: &AppState, user: &User, guest_session: Option<&str>) {
+///
+/// `identity` is what an identity provider said about the person
+/// (TODO F8.6): `{ provider, claims }`, its name and its whole userinfo
+/// answer, merged into the payload beside `guest_session`. A password
+/// sign-in has none.
+async fn fire_login(
+    state: &AppState,
+    user: &User,
+    guest_session: Option<&str>,
+    identity: Option<Value>,
+) {
     let (Some(triggers), Some(catalog)) = (state.apps.triggers(), state.apps.catalog()) else {
         return;
     };
     let caller = sc_access::principal_of(Some(user));
     let mut event =
         sc_action::Event::login(caller.role(), caller.user().cloned().unwrap_or(Value::Null));
-    if let Some(guest_session) = guest_session {
-        event = event.payload(serde_json::json!({ "guest_session": guest_session }));
+    if let Some(payload) = login_payload(guest_session, identity) {
+        event = event.payload(payload);
     }
     triggers.fire(catalog, &event).await;
+}
+
+/// The `login` event's payload ([`fire_login`]): `None` when there is nothing
+/// to say, which keeps a password sign-in's payload null as it always was.
+fn login_payload(guest_session: Option<&str>, identity: Option<Value>) -> Option<Value> {
+    let mut payload = match identity {
+        Some(Value::Object(identity)) => identity,
+        _ => serde_json::Map::new(),
+    };
+    if let Some(guest_session) = guest_session {
+        payload.insert("guest_session".to_owned(), Value::from(guest_session));
+    }
+    (!payload.is_empty()).then_some(Value::Object(payload))
 }
 
 /// Who will read an error message, which decides how much of it to send.
@@ -3900,6 +4005,26 @@ pub const CSRF_REQUEST_HEADER: &str = CSRF_HEADER;
 mod tests {
     use super::*;
     use axum::body::to_bytes;
+
+    /// A password sign-in's payload is null as it always was; a provider's
+    /// carries `{ provider, claims }`, beside a guest session's id.
+    #[test]
+    fn the_login_payload_merges_the_identity_and_the_guest_session() {
+        assert_eq!(login_payload(None, None), None);
+        assert_eq!(
+            login_payload(Some("g1"), None),
+            Some(serde_json::json!({ "guest_session": "g1" }))
+        );
+        let identity = serde_json::json!({ "provider": "corp", "claims": { "name": "Ana" } });
+        assert_eq!(login_payload(None, Some(identity.clone())), Some(identity));
+        assert_eq!(
+            login_payload(
+                Some("g1"),
+                Some(serde_json::json!({ "provider": "corp", "claims": {} }))
+            ),
+            Some(serde_json::json!({ "provider": "corp", "claims": {}, "guest_session": "g1" }))
+        );
+    }
 
     async fn body_json(resp: Response) -> Value {
         let bytes = to_bytes(resp.into_body(), usize::MAX)

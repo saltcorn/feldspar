@@ -57,6 +57,24 @@ pub async fn first_user_with_role(catalog: &Catalog, role: Role) -> Result<Optio
     one(catalog, select).await
 }
 
+/// Every user whose **base** role is `role`, by email — `users.role` as an
+/// admin set it, no grants applied. What "the administrators" means to the
+/// server writing to them (an automated backup's failure email): someone
+/// raised to admin for an afternoon is not one of the people an installation
+/// reports its problems to.
+pub async fn users_with_base_role(catalog: &Catalog, role: Role) -> Result<Vec<User>> {
+    let mut select = Select::from(Source::table(USERS_TABLE))
+        .filter(Expr::col(COL_ROLE).eq(Expr::lit(i64::from(role))));
+    select.order = vec![OrderBy::asc(Expr::col(COL_EMAIL))];
+    let rows: Vec<Row> = catalog
+        .primary(crate::INTERNAL_TABLES)
+        .query(&Statement::from(select))
+        .await?
+        .try_collect()
+        .await?;
+    rows.iter().map(User::from_row).collect()
+}
+
 /// The user with this id at their **base** role — `users.role` as an admin set
 /// it, no grants applied. What the admin's user editor and the last-admin rule
 /// work with: a grant is not the role being edited, and a temporary admin is

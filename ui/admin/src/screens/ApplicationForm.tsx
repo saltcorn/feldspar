@@ -48,8 +48,9 @@ import {
   type CodingAgentChoice,
 } from "../appNav";
 import { IconArrowLeft } from "../icons";
+import { applicationsCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader, PublicBadge } from "../layout";
-import { isPublic, useRoles } from "../roles";
+import { isPublic, roleName, roleOptions, useRoles } from "../roles";
 import { RoleSelect } from "../roleSelect";
 import { setNotice } from "../notice";
 import {
@@ -1033,6 +1034,23 @@ export function ApplicationForm({
                 },
                 { key: "folder", label: t("Folder"), placeholder: "drops" },
                 { key: "min_role", label: t("Min role"), placeholder: "1" },
+                {
+                  key: "read_role",
+                  label: t("Readers"),
+                  // Who reads a finished file (UP1): the uploader always, and
+                  // the role chosen; or, a slot from before the setting, the
+                  // folder's readers.
+                  options: (value) => [
+                    ...roleOptions(value === "" ? null : Number(value), roles).map((r) => ({
+                      value: String(r.role),
+                      label:
+                        r.role === 1
+                          ? t("Uploader and admins")
+                          : t("Uploader and {role}", { role: roleName(r.role, roles) }),
+                    })),
+                    { value: "", label: t("The folder's readers") },
+                  ],
+                },
                 { key: "max_bytes", label: t("Max size"), placeholder: "1G" },
                 {
                   key: "mime_allow",
@@ -1046,7 +1064,7 @@ export function ApplicationForm({
             />
             <Form.Text muted className="d-block mb-3">
               <T
-                text="Resumable (tus) uploads to {route}. Files go to the uploader's folder, readable only by them and admins. Empty size: server limit. Empty types: any. The hook, a code query, is called first with the file's name, size and type, and may refuse it or choose the path."
+                text="Resumable (tus) uploads to {route}. A file belongs to its uploader. Readers: who else may read it; the folder's readers means everyone the store's and folder's access lets in, at every static directory (or Saltcorn UI /files/serve) that serves the folder. Empty size: server limit. Empty types: any. The hook, a code query, is called first with the file's name, size and type, and may refuse it, choose the path, or narrow the readers."
                 values={{
                   route: <code>{"{api mount}"}/_upload/{"{name}"}</code>,
                 }}
@@ -1333,7 +1351,7 @@ export function ApplicationForm({
   return (
     <>
       <PageHeader
-        pretitle={t("Applications")}
+        crumbs={applicationsCrumbs(t)}
         title={appId ? stored?.name || t("Edit application") : t("New application")}
         actions={
           <div className="d-flex align-items-center gap-3">

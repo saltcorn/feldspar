@@ -1341,7 +1341,7 @@ Two things in that line are decisions rather than defaults:
 
 ### 7.4 Creating tables
 
-Ten composite tools sit over the administrative surface, plus the ones generated
+These composite tools sit over the administrative surface, plus the ones generated
 from tagged endpoints:
 
 | Tool | For |
@@ -1350,6 +1350,7 @@ from tagged endpoints:
 | `edit_schema` | an **ordered list** of schema operations, applied as one transaction |
 | `describe_triggers`, `describe_action`, `save_trigger`, `delete_trigger` | the trigger half |
 | `describe_code_api` | the JavaScript API a `run_js_code` body or a `javascript` API query can call — `db`, `fetch`, `fs`, `trigger` |
+| `run_code` | run a code body once, without saving a trigger: committed when it succeeds (a one-off data migration, needs `allow_edit`), or with `rollback: true` rolled back either way (trying code out). A body that throws is always rolled back; a `fetch`, a file write or an email a cascaded trigger sent is not. Logged with its code. MCP only, not the in-app copilot |
 | `describe_applications`, `save_api_query`, `delete_api_query` | applications and their custom SQL |
 | `create_application`, `create_file_store` | a new application (React and a new local store by default; a git store on request) |
 | `update_application` | an application's connected tables, the store folders it serves as files, its CSP (the `csp` section needs `allow_access_changes`), its locales and the streams it exposes |

@@ -22,6 +22,7 @@ import { api, errorMessage } from "../api";
 import { navigate } from "../App";
 import { T, useT } from "../i18n";
 import { IconArrowLeft } from "../icons";
+import { settingsCrumbs } from "../breadcrumbs";
 import { AlertBody, PageBody, PageHeader } from "../layout";
 import {
   asTranslations,
@@ -122,7 +123,7 @@ export function SharedTranslations() {
 
   const header = (
     <PageHeader
-      pretitle={t("Settings")}
+      crumbs={settingsCrumbs(t)}
       title={t("Translations (shared)")}
       actions={
         <Button variant="outline-secondary" onClick={() => navigate("/settings")}>

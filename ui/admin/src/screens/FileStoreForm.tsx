@@ -54,6 +54,7 @@ import type {
 } from "../client";
 import { navigate } from "../App";
 import { IconArrowLeft, IconFolder, IconRefresh } from "../icons";
+import { fileStoresCrumbs } from "../breadcrumbs";
 import { AlertBody, PageBody, PageHeader } from "../layout";
 import { OptionalRoleSelect } from "../roleSelect";
 import { useRoles } from "../roles";
@@ -183,7 +184,7 @@ export function FileStoreForm({ storeId }: { storeId?: string }) {
   return (
     <>
       <PageHeader
-        pretitle={t("Data")}
+        crumbs={fileStoresCrumbs(t)}
         title={storeId ? "Edit file store" : "New file store"}
         actions={
           <Button variant="outline-secondary" onClick={() => navigate("/file-stores")}>

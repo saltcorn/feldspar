@@ -18,6 +18,7 @@ import { api, errorMessage } from "../api";
 import { navigate } from "../App";
 import { useBuilderAvailable } from "../builderStatus";
 import { IconArrowLeft } from "../icons";
+import { applicationsCrumbs } from "../breadcrumbs";
 import { AlertBody, PageBody, PageHeader } from "../layout";
 import {
   NO_LIBRARY,
@@ -104,7 +105,7 @@ export function ApplicationLibrary({ appId }: { appId: string }) {
 
   const header = (
     <PageHeader
-      pretitle="Application"
+      crumbs={applicationsCrumbs(t)}
       title={app?.name ?? "Application"}
       actions={
         <Button variant="outline-secondary" onClick={() => navigate("/applications")}>

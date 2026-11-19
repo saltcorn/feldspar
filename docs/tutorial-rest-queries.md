@@ -135,7 +135,9 @@ The filters:
 Filters given together are **ANDed**. A key may repeat, and every occurrence counts:
 `?published=gte.2020-01-01&published=lt.2024-01-01` is a range, because the request's query
 string is an ordered list of pairs all the way down rather than a map that keeps whichever value
-arrived last (§13.1).
+arrived last (§13.1). Several values of one column are `in.(…)`
+(`?status=in.(open,pending)`), not an `or`: there is no `or=`, and an `or` across columns is
+GraphQL's `where` or a code query's `.where({ or: [ … ] })`.
 
 `order` takes a precedence list and defaults to ascending: `order=published.desc,title`. `limit`
 and `offset` page. And `select`, `order`, `limit` and `offset` are therefore **reserved**: a
@@ -238,7 +240,9 @@ export function useRecentBooks() {
 
 The cast is the honest part: a REST row payload is opaque JSON to the endpoint model — the shape
 depends on the `select` *you* wrote — so `listBooks` returns `unknown[]` and the type is yours to
-state. A custom query, next, is the opposite: its shape is fixed when it is saved, so its return
+state. In the generated client a column's filter may also be a **list** of comparisons, all of
+which must hold — `filter: { published: ["gte.2020-01-01", "lt.2024-01-01"] }` sends
+`published` twice, which is the range above. A custom query, next, is the opposite: its shape is fixed when it is saved, so its return
 type is generated.
 
 ## Step 7 — A custom SQL query, from the admin UI

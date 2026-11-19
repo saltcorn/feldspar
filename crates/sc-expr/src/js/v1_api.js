@@ -514,9 +514,10 @@
   // v1's where-expression, as this server's filter object.
   //
   // Written as a list of clauses rather than one object with the fields' names
-  // as keys because v1 says several things about one column in one place and
-  // this server's filter takes one comparison per key: `{ pages: { gt: 100,
-  // lt: 500 } }` is two clauses on `pages`, and an object cannot hold both.
+  // as keys because v1 says several things about one column in one place, in
+  // shapes (`{ gt, lt, equal }`, `ilike`, `in`) that are not all this server's
+  // operators: `{ pages: { gt: 100, lt: 500 } }` becomes one clause per
+  // comparison on `pages`, each translated on its own.
   const translateWhere = (where) => {
     if (where === undefined || where === null) return null;
     if (!isObject(where)) {

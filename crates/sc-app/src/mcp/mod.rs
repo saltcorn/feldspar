@@ -101,9 +101,16 @@ pub use update::TOOL_UPDATE_APP;
 /// the administration MCP server — so a tool means the same thing, checks the
 /// same grants and is refused in the same words whichever of them asked. It
 /// lives here rather than in [`sc_api::mcp`] because this is the lowest layer
-/// that can name every tool in it.
+/// that can name every tool in it. The MCP server builds [`mcp_tool_set`],
+/// which is this and the tools that are its alone.
 pub fn tool_set(grants: Grants, areas: Areas) -> ToolSet {
     ToolSet::core(grants, areas).with(app_tools())
+}
+
+/// What the administration MCP server offers: [`tool_set`], and the tools that
+/// are the MCP server's alone ([`sc_api::mcp::mcp_only_tools`]).
+pub fn mcp_tool_set(grants: Grants, areas: Areas) -> ToolSet {
+    tool_set(grants, areas).with(sc_api::mcp::mcp_only_tools())
 }
 
 /// The application tools alone: reading them, creating one (its store, its

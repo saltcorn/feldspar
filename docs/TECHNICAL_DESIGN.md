@@ -371,7 +371,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-catalog` | `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-proc` `sc-query` `sc-types` |
 | `sc-config` | `sc-catalog` `sc-db` `sc-error` `sc-i18n` `sc-log` `sc-query` `sc-types` |
 | `sc-email` | `sc-catalog` `sc-config` `sc-error` `sc-net` |
-| `sc-auth` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
+| `sc-auth` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-http` `sc-log` `sc-query` `sc-types` |
 | `sc-llm` | `sc-catalog` `sc-config` `sc-db` `sc-error` `sc-log` `sc-net` `sc-query` `sc-types` |
 | `sc-access` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-query` `sc-types` |
 | `sc-mcp` | `sc-catalog` `sc-db` `sc-error` `sc-net` `sc-query` `sc-types` |
@@ -384,7 +384,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-bayesreg` | `sc-error` `sc-model` `sc-stan` `sc-types` |
 | `sc-agent` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-workflow` | `sc-action` `sc-agent` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
-| `sc-api` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-query` `sc-ratelimit` `sc-types` |
+| `sc-api` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-net` `sc-query` `sc-ratelimit` `sc-types` |
 | `sc-app` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-proc` `sc-query` `sc-stream` `sc-types` |
 | `sc-live` | `sc-access` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-stream` `sc-types` |
 | `sc-action-builtins` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-config` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-net` `sc-query` `sc-types` |
@@ -393,7 +393,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-python` | `sc-action` `sc-action-builtins` `sc-catalog` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-proc` `sc-types` |
 | `sc-check` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-types` `sc-viewpattern` |
 | `sc-agent-builtins` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-proc` `sc-query` `sc-repomap` `sc-types` |
-| `sc-backup` | `sc-access` `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-net` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-backup` | `sc-access` `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-net` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
 | `sc-sync` | `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-mcp` `sc-model` `sc-module` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
 | `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-bayesreg` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-http` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-sync` `sc-types` `sc-viewpattern` `sc-workflow` |
 | `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-bayesreg` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-sync` `sc-types` `sc-viewpattern` `sc-workflow` |
@@ -1349,6 +1349,26 @@ pub struct User {
   An application's generated client has `oauthProviders()` and
   `oauthSignInUrl(provider, returnTo)` whenever it has `login`, and the scaffold's
   `Login.tsx` renders a button per provider.
+
+  **Claims, groups and the `login` event** (TODO F8.6). A provider record may also have:
+  `claim_fields`, one `claim=field` per line, copying userinfo claims onto fields an admin added
+  to the users table (a system column or a field that is not there is refused on save, and
+  skipped and logged at sign-in if it went away since; a list goes into a JSON column as it is,
+  into a text column joined with commas); and `groups_claim` (default `groups`) with
+  `group_roles`, one `group=role` per line (a leading `/` of a Keycloak path is ignored; the
+  admin role is refused). Both apply at **every** sign-in, in `account_for`, before the
+  admin-host check and the second-factor decision, and a new account is created with them.
+  The most privileged matching group's role wins; a promotion always applies, while a lower
+  role, or falling back to `new_user_role` when no group matches, applies only to a role the
+  mapping manages (one it lists, or `new_user_role`), so an administrator or a role given by
+  hand is never lowered. A userinfo answer without the groups claim leaves the role alone. A
+  failure to write is logged and the sign-in goes on. The `login` event's payload for a
+  provider's sign-in is `{ provider, claims }` (the provider's name and its whole userinfo
+  answer, never a token), beside `guest_session` when there is one; a password sign-in's stays
+  null. It rides on `PasswordVerified::with_identity` → `FullyAuthenticated::identity`, and
+  through a second-factor challenge in the nullable JSON column `_fd_password_tokens.sign_in`.
+  Only the userinfo endpoint is read, not the ID token, so a Keycloak mapper must have "Add to
+  userinfo" on.
 - **Two-factor authentication** (`sc_auth::second_factor`, `sc-server/src/second_factor.rs`).
   Codes from an authenticator app (TOTP, RFC 6238: HMAC-SHA-1, 6 digits, 30 seconds, one step
   of drift either way), and 10 single-use recovery codes. It belongs to the **account**, not
@@ -1476,6 +1496,16 @@ expressed as an **ownership formula** — a JavaScript expression, stored in the
 Ownership *extends* access below the role floor; it never narrows it. A caller who already
 meets `min_role` is unaffected by the formula (and by RLS, through a role-floor clause in
 every policy). A table with no formula behaves exactly as the plain role model does.
+
+**Said in words to agents.** This OR is the rule agents most often get backwards: they write
+"users see only their own rows" as floor 80 plus `owner === user.id`, which changes nothing for
+any signed-in user. The design stays as it is. Instead, `sc_api::access_summary` restates a
+table's rules with the deployment's role names: who reaches every row, who reaches only the rows
+the formula grants, and, when no role the formula could serve is below the floor, that the
+formula changes nobody's access. `edit_schema` returns it in `notes` for every table whose access
+settings a batch set or that it created, on a dry run too, and `describe_schema` returns it as
+`access_summary`. It is a restatement, not a warning: the schema cannot tell an intended
+"formula for public only" from a mistake.
 
 **The users table: you may always read yourself.** The one exception to "no formula, plain role
 model" is `users`. On it, a read is also granted by the built-in rule
@@ -2241,9 +2271,10 @@ the grants in force (started, not ended, not revoked). A grant never lowers a ro
 
 ### 7.4b LLM credits (`sc_auth::credits`, TODO-payments P6, design C3)
 
-A user's **LLM credits** are what a metered agent's model calls are charged to (§11.2). The
-ledger has one spender — an agent run's model calls — and is deliberately not a general
-metering facility: an application that charges for something else keeps its own tables.
+A user's **LLM credits** are what a metered agent's model calls are charged to (§11.2), and a
+code body's `llm` calls that ask to be (`charge`, §10.1). The ledger has one kind of spender —
+model calls — and is deliberately not a general metering facility: an application that charges
+for something else keeps its own tables.
 
 - **Three ordinary tables.** **`credit_buckets`** — one per grant: `(user_id → users, amount,
   remaining, kind, source, key, expires_at, note, created_at)`, `(source, key)` unique.
@@ -2270,10 +2301,13 @@ metering facility: an application that charges for something else keeps its own 
   `rollover` records what that did to the balance. An expired earlier bucket still carries what it
   held when it expired: nothing spends an expired bucket, and a renewal usually arrives just
   after the period, and its allowance, has ended. A replayed grant carries nothing again.
-- **`debit_credits`** is called by the agent loop and nothing else: no code body, workflow,
-  action or module can spend credits. It takes from the soonest-expiring bucket first (never
-  expiring last), and what the buckets do not cover becomes debt: the call has already happened,
-  so a debit is never refused. A debit whose key (`<run>:<step>`) exists does nothing.
+- **`debit_credits`** is called for model calls and nothing else: by the agent loop, and by the
+  code host for an `llm` call with a `charge` (`sc_api::code_host::llm`, keyed `code:<uuid>`,
+  noted with the trigger it ran for). No code body, workflow, action or module can debit an
+  arbitrary amount: a charged `llm` call is priced by the meter from the call's own usage. It
+  takes from the soonest-expiring bucket first (never expiring last), and what the buckets do not
+  cover becomes debt: the call has already happened, so a debit is never refused. A debit whose
+  key (`<run>:<step>`) exists does nothing.
 - **One writer per user.** Every operation is one transaction that first locks the user's
   `users` row `FOR UPDATE`; concurrent debits for one user take turns and never overdraw.
 - **The low-balance notice.** A debit that takes the balance from at or above the user's
@@ -2353,7 +2387,8 @@ signed-in user owns them by `user`.
   cleared — and the `login` event's payload is `{ guest_session: <public id> }`, which the
   application's own trigger uses to move the guest's rows to the account (`update_rows` where
   `session_id !== null && session_id === payload.guest_session`). A login from a browser that was
-  nobody's guest has no payload, as before — and a field a payload does not have reads as null,
+  nobody's guest has no payload, as before (an identity provider's sign-in has
+  `{ provider, claims }`, §7.2) — and a field a payload does not have reads as null,
   so the trigger's first half is what keeps it from matching every row with no session.
 - **The live socket** (P2.8) is resolved like a REST request: the upgrade's cookie names the
   guest session (an upgrade is a GET, and a cross-site one is refused by its `Origin`), the
@@ -3494,7 +3529,8 @@ means something for one provider is a cost paid by everybody.
   and `Field` (below), which are not a seventh surface but v1's vocabulary over the first and the
   fourth, and `models`, whose
   `models.get("…")` answers a model handle (§14.2) and which is also not a surface: its
-  requests are `op: "models"` on the `db` host, on the run's call budget. It runs on its
+  requests are `op: "models"` on the `db` host, on the run's call budget. `llm` is the same
+  kind of thing (below): the configured LLM providers, as `op: "llm"` requests on `db`. It runs on its
   **own pool of isolates**, not the single pure isolate every ownership formula shares, which
   is what lets it suspend on a host call and carry a configurable `timeout_ms` (default 5s,
   max 60s) without either becoming a property of every authorization decision in the process.
@@ -3603,6 +3639,7 @@ formula string, which is what the `update_rows` and `delete_rows` actions take:
 
 ```js
 .where({ status: "draft", pages: { gte: 100 }, id: { in: [1, 2, 3] } })
+.where({ due: { gte: "2026-01-01", lt: "2026-02-01" } })   // several operators: all hold
 .where({ or: [ { status: "draft" }, { and: [ { status: "sent" }, { paid: false } ] } ] })
 .where('status === "draft" && ordersↃcustomer.length > 3')
 ```
@@ -4086,6 +4123,115 @@ set and the authority is re-checked, since what the guest sends is what a body c
 **Deliberately not in it**: firing an *event* by kind and channel (a body that wants a table's
 triggers writes the row); fire-and-forget, which needs §18's queue and is otherwise a run nobody
 waits for or reports; and a transaction spanning parent and child.
+
+#### `llm`: the configured LLM providers in a code body
+
+A body that wanted a model's answer used to call the vendor's API with `fetch` and a key of its
+own, beside providers the instance already had configured (a user report). `llm` reaches those
+providers:
+
+```js
+const summary = await llm.generate("Summarise: " + row.body);          // the text
+const reply = await llm.generate({ system, messages, model, provider,  // messages: { role, content }
+                                   temperature, max_tokens });
+const full = await llm.generate("Hi", { detail: true });  // { text, provider, model, usage, cost }
+const vector = await llm.embed(row.title);                // one vector; an array gives one each
+```
+
+- **Not a surface.** Like `models`, it is a `const` over the run's own `db` handle
+  (`__scMakeLlm(db)`, in a code library too), and each call is one `op: "llm"` plan on the `db`
+  host (`sc_api::code_host::llm`), on the run's call budget. Python's `saltcorn.llm` is the same
+  plan from the other prelude. A body with no `db` has no `llm`.
+- **Resolution is the agents'.** A blank provider is the default provider (`sc_llm::
+  default_llm_provider`). A blank model is that provider's default chat model (`require_llm_model`)
+  or its default embedding model (`resolve_model`). A chat model must be a row, and an embedding
+  model may be any name the provider serves, as for `embed_from`. A `system` message is folded
+  into the request's system prompt, after `system`, since `LlmRequest` has one system prompt.
+- **Whose call.** A code body is admin-authored configuration, so by default its model calls are
+  the installation's: they go through the call log (`LoggedProvider`, the embed endpoint's log) and
+  are not charged to anybody's LLM credits (§7.4b), as an `embed_from` field's are not.
+- **Charged calls.** `charge: { credits_per_dollar, credits_per_1k_input, credits_per_1k_output,
+  credits_min_balance }` charges a call to the **run's caller** (the host's principal: the user
+  whose request or write the body answers), at a metered agent's rates under the same names.
+  `sc_llm::Meter` prices it, and lives in `sc-llm` rather than `sc-agent` so both use one rule
+  (`sc_agent::meter` re-exports it). The agent's terms hold, so a code body is no way round the
+  meter: an admin caller is not charged (`credits` is `null`); a call with nobody to charge, a
+  balance at or below zero or under the minimum, and a rate per dollar on an unpriced model are
+  refused **before** the model is called; the debit is made after, whatever the balance, in its
+  own transaction, so a rolled-back step or `run_code` still leaves it. `generate`'s detailed
+  answer carries `credits: { charged, balance }` as decimal strings.
+- **Viewer-only hosts.** `llm` is **refused on a `viewer_only` host**, charged or not: an agent's sandbox runs code the model wrote,
+  and a provider reached from there would be a model call outside the agent's budget and its
+  user's credits. A view pattern's code and a module route are viewer-only too, and do not get it.
+- **Time.** A call holds the run until the model answers, inside the trigger's `timeout_ms`
+  (default 5 s, at most 60 s), which a body that calls a model should raise.
+
+Providers can be set up without the admin UI as well. The provider and model endpoints are
+tagged for MCP (§13.6): `createLlmProvider`, `updateLlmProvider`, `deleteLlmProvider`,
+`setDefaultLlmProvider`, `listLlmProviderBackends`, `createLlmModel`, `updateLlmModel`,
+`deleteLlmModel`, `listLlmModelSettings`, `fetchLlmModels` and `testLlmModel`, with the create,
+edit and drop grants on the writes. The key goes in and reads back masked, as over the admin
+API, and the MCP audit line at Verbose masks credential-named arguments. From a terminal,
+`feldspar llm list | set-provider | set-model | set-default | test` saves through the same
+`sc_llm` checks, taking the key from `--api-key-env` or `--api-key-file` and never from the
+command line.
+
+#### `oauth`: a user's OAuth 2.0 tokens in a code body (TODO OA1)
+
+An application calling Gmail, Google Calendar or Microsoft Graph needs a bearer token, and
+Google is phasing out passwords for IMAP (a user report). Hand-rolled, that is a public GET
+endpoint for the redirect, `state` and PKCE kept somewhere, a code exchange with the client
+secret, and a refresh job. The module consent flow already did all of it, for modules only.
+`oauth` gives the same flow to application code:
+
+```js
+const { url } = await oauth.begin({ provider: "google", client_id, client_secret, scope,
+  params, return_to: "/settings",
+  store: { table: "connections", id: row.id,
+           fields: { access_token, refresh_token, expires_at }, set: { status: "connected" } } });
+const token = await oauth.accessToken({ provider: "google", client_id, client_secret, store,
+                                        refused, force, detail });
+```
+
+- **One flow, two askers.** The flow (its registry, the request's checks, `CONSENT_PREFIX`,
+  `ConsentFlow`) moved from `sc_module::consent` to **`sc_auth::consent`**, because `sc-api` is
+  below `sc-module` and both need it. A flow records its `Asker` (`Module(name)` or
+  `Application`) and how the asker decides where tokens go: the module keeps its declared-table
+  rule (`sc_module::consent::token_store`), and the code host has its own
+  (`sc_api::code_host::oauth`). The browser's half (`sc_server::oauth`'s consent route, the
+  shared callback, the completion) is unchanged and serves both.
+- **Not a surface.** Like `llm`, a `const` over the run's `db` (`__scMakeOauth(db)`, in a code
+  library too, and `saltcorn.oauth` in Python), each call one `op: "oauth"` plan (`what:
+  "begin" | "access_token"`) on the run's budget. `provider: "google" | "microsoft"` is prelude
+  sugar for the two providers' addresses, and Google's `access_type=offline` and
+  `prompt=consent`, without which there is no refresh token. Refused on a `viewer_only` host.
+- **Where tokens may go.** An application table: never a `_fd_*` table (refused by name, before
+  the lookup) and never a module's. The token fields must be Secret fields (§9 "Secret fields"),
+  and `expires_at` and the `set` fields must be the table's. The row must be readable **at the
+  run's default authority** when `begin` is called, so a wrong id is an error before the user
+  consents.
+- **Whose write.** `TokenStore::writer` records the authority the row is written at when the
+  browser comes back. It is `None`, the server's, when the body runs as admin (a trigger's
+  default; the author checks the row is the caller's, as a module does). It is the caller's
+  principal when the body runs as its caller (a custom query's default), and then the completion
+  writes through `Scoped`'s ownership rule, so the table's floors and ownership formula decide
+  at completion. On an RLS table the admin authority is its cause's (`as_cause_on`), so the
+  write is the caller's there too.
+- **Renewal on use, not on a schedule.** `access_token` reads the row at the run's authority,
+  secrets revealed. A token good for more than `REFRESH_MARGIN` (5 min) is answered as it is.
+  Otherwise the token is renewed at `token_url` (`grant_type=refresh_token`, `sc_net`'s client
+  builder, 15 s) and the answer is written back through the same scope: the access token, a new
+  refresh token when the provider sent one (Microsoft rotates them, Google keeps its own), and
+  the expiry. Renewals are serialised **per row in this process** (a `tokio` mutex per table and
+  id), and the row is read again under the lock, so concurrent runs renew once. `refused: token`
+  says a request was refused with that token: it is renewed unless the row already holds
+  another. `invalid_grant` is an error saying to connect again with `oauth.begin`. A scheduled
+  trigger can therefore just call `accessToken` before each request; a separate refresh job
+  is not needed. Two server processes may each renew once, which every provider tolerates.
+- **The hand-rolled path still works.** `response({ status: 302, headers: { location } })` from
+  a public GET custom query is a real redirect (`location` is not a server-owned header), and
+  `app_oauth::a_public_get_query_answers_a_real_redirect` keeps it so. The tutorial points away
+  from it, because `state`, PKCE and binding the tokens to the right user are easy to get wrong.
 
 #### `Table` and `Field`: Saltcorn 1's API in a code body
 
@@ -5249,8 +5395,9 @@ with the run's caller.
   could not reach one would have to choose between failing and skipping the check, and
   `TraitContext::require_evaluator` makes the first choice explicit.
 - **`query_table`'s `where` is a JSON object, not a formula.** Each entry is a field against a
-  value to match exactly or an object with one operator key (`eq`, `ne`, `gt`, `gte`, `lt`,
-  `lte`, `like`, `ilike`, `in`, `is_null`), all ANDed. A model writes JSON reliably and
+  value to match exactly or an object of operator keys (`eq`, `ne`, `gt`, `gte`, `lt`,
+  `lte`, `like`, `ilike`, `in`, `is_null`), all ANDed — `{ gte: a, lt: b }` on one field is a
+  range. An object with any key that is not an operator is a literal (a `Json` column's value). A model writes JSON reliably and
   JavaScript unreliably, and the object form is the one whose vocabulary the schema can
   enumerate. `max_rows` is a **ceiling** the `limit` argument is clamped to, and the result
   carries `more_rows_available` so a truncated answer is not stated as a complete one.
@@ -7163,7 +7310,8 @@ one is rewritten. The admin file manager's `/upload` and the backup upload are b
 section, as a number or with a `K`/`M`/`G` suffix, with a flag on the command line winning). A
 large file from an application's client does not go
 through either: it goes to an **upload slot**, `Application::uploads` (`sc_app::UploadSlot`:
-`name`, `store`, `folder`, `min_role` (default admin), `max_bytes` (0 = the server's limit, which
+`name`, `store`, `folder`, `min_role` (default admin), `read_role` (the finished file's own
+floor; see below), `max_bytes` (0 = the server's limit, which
 also caps a larger value), `mime_allow` (matched on the name's type, as a `File` field's is) and
 an optional `hook`). `save_application` validates slots beside the static directories
 (`validate_upload_slots`: an identifier name, unique; a store in the subset; a folder inside the
@@ -7188,12 +7336,33 @@ folder, stopping at the declared length (a body that runs past it is a `413`, no
 bound written), and keeps what arrived when the connection drops; `HEAD` answers the offset,
 which is the temporary file's size rather than the row's. When the offset reaches the length the
 file is renamed into place (a destination that exists is a `409`, also checked at creation) and
-given its owner (the uploader), `attributes.filename` and the hook's attributes; the response
+given its owner (the uploader), `attributes.filename`, the hook's attributes and its own
+`min_role`; the response
 carries `Feldspar-File-Path` and, when a static directory or `/files/serve` covers it,
 `Feldspar-File-Url`. `DELETE` abandons it. The upload's state is a row of `_fd_uploads`, so a
 resume survives a restart; only its uploader (`user:<id>`, or a hash of an anonymous browser's
 cookie) may continue, inspect or abandon it, and anybody else gets the 404 an unknown id gets.
 A sweep every ten minutes removes uploads begun over 24 hours ago, with their bytes.
+
+**Who reads a finished upload** (UP1, from a user report: one user's uploaded signature was
+served to another). The owner rule (§2.1) only ever *adds* a reader, so a file with no floor of
+its own is read by everyone the store's and folders' floors let in — every signed-in user, in a
+folder at the user role. The slot's `read_role` is therefore written onto the file as its
+`min_role`: `1` means only the uploader (through the owner rule) and admins, a larger role shares
+the slot's files with that role (a gallery), and `null` gives the file no floor of its own, which
+is how slots behaved before the setting. The hook's `min_role` is combined with it by taking the
+stricter, so a hook narrows a file's readers and never widens them; and neither can loosen the
+folder's floor, which `check_access` applies regardless. Defaults keep running applications as
+they were: `UploadSlot::from_json` reads an absent `read_role` as `null`, so a stored or
+backed-up slot keeps its readers, while a slot *added* through the admin API, the application
+form or `update_application` without the key gets `1` (`sc_app::fill_read_roles`), and one sent
+back without it keeps what is stored, so a client older than the setting changes nothing.
+A file is reachable by URL only where a route serves its folder: a static directory over it (or
+over a folder inside it), and `/files/serve/<store>/…` in a Saltcorn UI application, which
+serves every store the application declares. Elsewhere, only the application's own code hands it
+out (a code query, a row's `File` field). `update_application` warns, when it changes uploads or
+static directories, about each slot with `read_role` `null` that such a route serves
+(`sc_app::upload_exposure_warnings`).
 
 **The client side (TODO F2.11).** The generated client has `api.uploads.<slot>(file, { onProgress,
 signal, retries, chunkSize, filename })` for each slot (`sc_api::generate_app_client` with the
@@ -9749,6 +9918,13 @@ on a field makes a `DataFieldKind::File` stored as `text`. `type: "file"` is ref
 sentence saying what to write instead, and so is a store that does not exist. Before this, an
 agent that read `listFieldTypes` (where `file` is a *kind*) tried `type: "file"`, was refused,
 and kept images in a `bytes` column.
+
+**`edit_schema` makes Secret fields** (TODO SF1). `secret: true` on `add_field` or a field of
+`create_table` makes a `DataFieldKind::Secret`, with no `type`; with `references`, `expression`
+or `file_store` beside it, it is refused. `describe_schema` reports `secret: true`, and
+`alter_field` accepts it back on a field that is already a secret. Making a field a secret,
+or `secret: false` on one, is refused, since the column's values are stored in plain text or
+sealed. Every other rule (no key, unique, default or `users` field) is the schema editor's.
 
 **The creates run the server's own handlers.** Creating an application is a sequence — store,
 record, scaffold, builder agent, first build — two of whose steps need the agent registry and
@@ -14437,7 +14613,8 @@ shared callback (on the admin UI's host) exchanges the code; the completion, in 
 started, writes the tokens through the row layer (sealed, and heard by the module's service as a
 change that is not its own) and leaves for `return_to`, with `oauth_error=…` on a failure. The
 module never sees the code, and the application never sees a token. Renewing a token is the
-module's own business, with its own `fetch`.
+module's own business, with its own `fetch`. The flow itself lives in `sc_auth::consent`, which application
+code bodies' `oauth.begin` also uses (§10, "`oauth`: a user's OAuth 2.0 tokens in a code body").
 
 **The vocabulary** is four functions, store-relative paths throughout:
 `write(store, path, data, { contentType, filename }) → path`, `read(store, path, { encoding }) →

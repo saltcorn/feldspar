@@ -32,6 +32,7 @@ import {
   type UndoConflict,
 } from "../history";
 import { IconArrowLeft } from "../icons";
+import { changesetsCrumbs, tableCrumbs, tablesCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader } from "../layout";
 import { T, useT } from "../i18n";
 import { ChangesetLine, EntryBlock } from "./RowHistory";
@@ -76,7 +77,7 @@ export function Changesets({ initialTable }: { initialTable?: string }) {
   return (
     <>
       <PageHeader
-        pretitle="Row history"
+        crumbs={initialTable ? tableCrumbs(t, initialTable) : tablesCrumbs(t)}
         title={t("Changesets")}
         actions={
           <Button variant="outline-secondary" onClick={() => navigate("/tables")}>
@@ -202,6 +203,7 @@ export function Changesets({ initialTable }: { initialTable?: string }) {
 
 /** One changeset: who, when, where from, and every row it changed. */
 export function ChangesetDetail({ id }: { id: string }) {
+  const { t } = useT();
   const [changeset, setChangeset] = useState<GetChangesetResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -225,7 +227,7 @@ export function ChangesetDetail({ id }: { id: string }) {
   return (
     <>
       <PageHeader
-        pretitle="Changeset"
+        crumbs={changesetsCrumbs(t)}
         title={changeset ? sourceLabel(changeset.source) : "Changeset"}
         actions={
           <Button variant="outline-secondary" onClick={() => navigate("/changesets")}>

@@ -270,10 +270,18 @@ async fn a_refused_change_does_not_stop_the_others() -> Result<()> {
     let error = |i: usize| results[i]["error"].as_str().unwrap().to_owned();
     assert!(error(0).contains("ownership"), "{}", error(0));
     assert!(error(1).contains("title"), "{}", error(1));
-    assert!(error(2).contains("foreign key"), "{}", error(2));
+    assert!(
+        error(2).contains("note: the referenced row does not exist"),
+        "{}",
+        error(2)
+    );
     assert!(error(3).contains("not a synced table"), "{}", error(3));
     assert!(error(5).contains("primary key"), "{}", error(5));
-    assert!(error(8).contains("foreign key"), "{}", error(8));
+    assert!(
+        error(8).contains("other rows still refer to this row"),
+        "{}",
+        error(8)
+    );
     assert_eq!(query(&db, "SELECT title FROM notes").await?, vec!["mine"]);
     Ok(())
 }

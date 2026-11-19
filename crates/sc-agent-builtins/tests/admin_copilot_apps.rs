@@ -851,3 +851,61 @@ async fn upload_slots_are_an_edit_and_are_validated_like_the_form() -> Result<()
     assert!(unknown.contains("no upload slot"), "{unknown}");
     Ok(())
 }
+
+/// UP1: a slot added without `read_role` is its uploader's; one sent again
+/// without it keeps what it had; an explicit `null` inherits the folder's
+/// readers, which the result warns about once a static directory serves the
+/// folder.
+#[tokio::test]
+async fn a_new_upload_slots_files_are_its_uploaders_unless_it_says_otherwise() -> Result<()> {
+    let env = Env::with_schema(SCHEMA).await?;
+    app_with_api(&env).await?;
+    env.with_file_store("media", None).await?;
+    let update = |section: Json| {
+        let env = &env;
+        async move {
+            let mut args = json!({ "application": "blog" });
+            args.as_object_mut()
+                .unwrap()
+                .extend(section.as_object().unwrap().clone());
+            call(env, &default_grants(), "update_application", args).await
+        }
+    };
+    let read_role = || async {
+        load_application_by_subdomain(&env.catalog, "blog")
+            .await
+            .unwrap()
+            .unwrap()
+            .uploads[0]
+            .read_role
+    };
+
+    let slot = json!({ "name": "sigs", "store": "media", "folder": "sigs", "min_role": 80 });
+    let added = update(json!({ "uploads": { "add": [slot.clone()] } })).await?;
+    assert_eq!(added["uploads"][0]["read_role"], json!(1), "{added}");
+    assert_eq!(read_role().await, Some(Role::ADMIN));
+
+    let opened = update(json!({ "uploads": { "add": [
+        { "name": "sigs", "store": "media", "folder": "sigs", "read_role": null }
+    ] } }))
+    .await?;
+    assert_eq!(opened["uploads"][0]["read_role"], Json::Null, "{opened}");
+    assert!(
+        opened.get("warnings").is_none(),
+        "nothing serves the folder: {opened}"
+    );
+    // Sent again without the setting: kept, not reset to the default.
+    update(json!({ "uploads": { "add": [slot.clone()] } })).await?;
+    assert_eq!(read_role().await, None);
+
+    let served = update(json!({ "static_dirs": { "add": [
+        { "mount": "/media", "file_store": "media", "path": "" }
+    ] } }))
+    .await?;
+    let warning = served["warnings"][0].as_str().unwrap_or_default();
+    assert!(
+        warning.contains("`sigs`") && warning.contains("`/media/sigs`"),
+        "{served}"
+    );
+    Ok(())
+}

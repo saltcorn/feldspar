@@ -267,6 +267,18 @@ pub const PROVIDER_TRUST_EMAILS: &str = "trust_emails";
 /// personal account), `organizations`, `consumers`, or one directory's id or
 /// domain.
 pub const PROVIDER_TENANT: &str = "tenant";
+/// Which of the provider's claims are written onto which fields of the users
+/// table at every sign-in: one `claim=field` per line (`given_name=first_name`).
+/// The fields are ones the admin added; a system column is refused.
+pub const PROVIDER_CLAIM_FIELDS: &str = "claim_fields";
+/// The claim the provider lists the person's groups in (`groups`).
+pub const PROVIDER_GROUPS_CLAIM: &str = "groups_claim";
+/// Which group gives which role, one `group=role` per line (`apps-plus=30`).
+/// Never the administrator's role: whoever runs the provider's groups would
+/// then make administrators here.
+pub const PROVIDER_GROUP_ROLES: &str = "group_roles";
+/// The claim [`PROVIDER_GROUPS_CLAIM`] defaults to: Keycloak's group mapper's.
+pub const DEFAULT_GROUPS_CLAIM: &str = "groups";
 
 /// The custom preset: every URL is the admin's to give.
 pub const PRESET_CUSTOM: &str = "custom";
@@ -426,7 +438,50 @@ pub fn oauth_provider_spec() -> Vec<FormField> {
                  address, administrators' included, so use only for a provider where only your \
                  organisation sets addresses.",
             ),
+        FormField::new(PROVIDER_CLAIM_FIELDS, BasicType::Text)
+            .label("Copy claims to user fields")
+            .multiline()
+            .default_value("")
+            .sublabel(
+                "One claim=field per line, e.g. given_name=first_name. Written at every \
+                 sign-in onto fields you added to the users table.",
+            ),
+        FormField::new(PROVIDER_GROUPS_CLAIM, BasicType::Text)
+            .label("Groups claim")
+            .default_value(DEFAULT_GROUPS_CLAIM)
+            .sublabel("The claim listing the person's groups."),
+        FormField::new(PROVIDER_GROUP_ROLES, BasicType::Text)
+            .label("Roles from groups")
+            .multiline()
+            .default_value("")
+            .sublabel(
+                "One group=role per line, e.g. apps-plus=30. Set at every sign-in: the most \
+                 privileged matching group wins. A role not listed here is never lowered, and \
+                 no group can give the admin role.",
+            ),
     ]
+}
+
+/// Parse `key=value` lines: blank lines and `#` comments skipped, both sides
+/// trimmed. `what` names the setting in an error.
+fn mapping_lines(text: &str, what: &str) -> Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        match line.split_once('=') {
+            Some((key, value)) if !key.trim().is_empty() && !value.trim().is_empty() => {
+                out.push((key.trim().to_owned(), value.trim().to_owned()));
+            }
+            _ => {
+                return Err(Error::invalid(format!(
+                    "`{what}`: `{line}` should be written name=value"
+                )));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// The role an account a provider creates gets unless the admin chose one: the
@@ -453,6 +508,13 @@ pub struct OAuthProvider {
     pub new_user_role: Role,
     /// [`PROVIDER_TRUST_EMAILS`].
     pub trust_emails: bool,
+    /// [`PROVIDER_CLAIM_FIELDS`]: `(claim, users field)`, in order.
+    pub claim_fields: Vec<(String, String)>,
+    /// [`PROVIDER_GROUPS_CLAIM`].
+    pub groups_claim: String,
+    /// [`PROVIDER_GROUP_ROLES`]: `(group, role)`, in order; never the admin
+    /// role.
+    pub group_roles: Vec<(String, Role)>,
 }
 
 impl OAuthProvider {
@@ -555,6 +617,29 @@ impl OAuthProvider {
                     ))
                 })?,
         };
+        let claim_fields = mapping_lines(&text(PROVIDER_CLAIM_FIELDS), PROVIDER_CLAIM_FIELDS)?;
+        let groups_claim = match text(PROVIDER_GROUPS_CLAIM) {
+            c if c.is_empty() => DEFAULT_GROUPS_CLAIM.to_owned(),
+            c => c,
+        };
+        let group_roles = mapping_lines(&text(PROVIDER_GROUP_ROLES), PROVIDER_GROUP_ROLES)?
+            .into_iter()
+            .map(|(group, role)| {
+                role.parse::<u64>()
+                    .ok()
+                    .and_then(|r| Role::try_from(r).ok())
+                    // Never the administrator's: the provider's groups are
+                    // whoever runs its directory's to set.
+                    .filter(|r| !r.is_admin())
+                    .map(|r| (group.clone(), r))
+                    .ok_or_else(|| {
+                        Error::invalid(format!(
+                            "identity provider `{name}`: group `{group}` must give a role from \
+                             2 to 100, got `{role}`; a group cannot make administrators"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(OAuthProvider {
             label: text(PROVIDER_LABEL),
             client_id: text(PROVIDER_CLIENT_ID),
@@ -571,8 +656,52 @@ impl OAuthProvider {
             create_users: flag(PROVIDER_CREATE_USERS),
             new_user_role,
             trust_emails,
+            claim_fields,
+            groups_claim,
+            group_roles,
         })
     }
+
+    /// The role a sign-in by somebody now at `current`, in `groups`, leaves
+    /// them at — `None` to leave it alone ([`PROVIDER_GROUP_ROLES`]).
+    ///
+    /// The most privileged role a group gives wins. A promotion always
+    /// applies; a less privileged group, or no group (which is
+    /// [`new_user_role`](OAuthProvider::new_user_role)), applies only to a
+    /// role the mapping manages — one it lists, or the new-user role — so an
+    /// administrator, or a role an admin gave by hand, is never lowered.
+    /// `groups` is `None` when the provider sent no such claim: a mapper
+    /// switched off must not demote everybody.
+    pub fn role_from_groups(&self, current: Role, groups: Option<&[String]>) -> Option<Role> {
+        if self.group_roles.is_empty() {
+            return None;
+        }
+        let groups = groups?;
+        let managed =
+            current == self.new_user_role || self.group_roles.iter().any(|(_, r)| *r == current);
+        let target = self
+            .group_roles
+            .iter()
+            .filter(|(group, _)| groups.iter().any(|g| group_matches(group, g)))
+            .map(|(_, role)| *role)
+            .reduce(Role::most_privileged);
+        match target {
+            Some(target) if target != current && (target.outranks(current) || managed) => {
+                Some(target)
+            }
+            // In no group: back to the new-user role, but only from a role
+            // the mapping gave.
+            None if managed && current != self.new_user_role => Some(self.new_user_role),
+            _ => None,
+        }
+    }
+}
+
+/// Whether the mapping's `group` names the provider's `claimed` one. Keycloak
+/// sends full paths (`/staff/apps-plus`) when asked to, so a leading `/` on
+/// either side is not a difference.
+fn group_matches(group: &str, claimed: &str) -> bool {
+    group.trim_start_matches('/') == claimed.trim_start_matches('/')
 }
 
 /// The stored provider records, as stored (secrets included), in order.
@@ -777,5 +906,91 @@ mod tests {
             "https://login.microsoftonline.com/corp.onmicrosoft.com/oauth2/v2.0/authorize"
         );
         assert!(microsoft(Some("evil/path"), false).is_err());
+    }
+
+    fn mapped(group_roles: &str) -> OAuthProvider {
+        OAuthProvider::from_attrs(&attrs(json!({
+            "name": "corp", "label": "Corp", "preset": "custom", "client_id": "id",
+            "authorization_url": "https://sso.corp/auth",
+            "token_url": "https://sso.corp/token",
+            "userinfo_url": "https://sso.corp/me",
+            "new_user_role": 80,
+            "claim_fields": "# names\n name = full_name \n\ngiven_name=first_name\n",
+            "group_roles": group_roles,
+        })))
+        .unwrap()
+    }
+
+    #[test]
+    fn claim_and_group_mappings_are_lines_of_name_value() {
+        let provider = mapped("apps-plus=30\n/staff=40");
+        assert_eq!(
+            provider.claim_fields,
+            [
+                ("name".to_owned(), "full_name".to_owned()),
+                ("given_name".to_owned(), "first_name".to_owned()),
+            ]
+        );
+        assert_eq!(provider.groups_claim, DEFAULT_GROUPS_CLAIM);
+        assert_eq!(
+            provider.group_roles,
+            [
+                ("apps-plus".to_owned(), Role::of(30)),
+                ("/staff".to_owned(), Role::of(40)),
+            ]
+        );
+        // Nothing stored: no mapping, as a provider saved before there was one.
+        let plain = OAuthProvider::from_attrs(&attrs(json!({
+            "name": "google", "label": "Google", "preset": "google", "client_id": "id",
+        })))
+        .unwrap();
+        assert!(plain.claim_fields.is_empty() && plain.group_roles.is_empty());
+        assert_eq!(plain.role_from_groups(Role::of(80), Some(&[])), None);
+    }
+
+    #[test]
+    fn a_group_cannot_give_the_admin_role_or_nonsense() {
+        let build = |group_roles: &str| {
+            OAuthProvider::from_attrs(&attrs(json!({
+                "name": "corp", "label": "Corp", "preset": "google", "client_id": "id",
+                "group_roles": group_roles,
+            })))
+        };
+        for bad in ["admins=1", "x=0", "x=101", "x=staff", "no-equals", "=30"] {
+            assert!(build(bad).is_err(), "{bad}");
+        }
+        assert!(build("x=2").is_ok());
+        assert!(
+            OAuthProvider::from_attrs(&attrs(json!({
+                "name": "corp", "label": "Corp", "preset": "google", "client_id": "id",
+                "claim_fields": "name",
+            })))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn groups_set_the_role_but_never_lower_one_the_mapping_does_not_manage() {
+        let provider = mapped("apps-plus=30\nstaff=40");
+        let groups = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        let role = |current: u8, names: Option<&[&str]>| {
+            let names = names.map(groups);
+            provider.role_from_groups(Role::of(current), names.as_deref())
+        };
+        // The most privileged matching group wins; Keycloak's paths match.
+        assert_eq!(role(80, Some(&["staff", "/apps-plus"])), Some(Role::of(30)));
+        assert_eq!(role(80, Some(&["/staff"])), Some(Role::of(40)));
+        assert_eq!(role(40, Some(&["staff"])), None, "already there");
+        // Out of the group: back to the new-user role, from a mapped role.
+        assert_eq!(role(30, Some(&["staff"])), Some(Role::of(40)));
+        assert_eq!(role(30, Some(&[])), Some(Role::of(80)));
+        // No claim at all (the mapper is off): nothing changes.
+        assert_eq!(role(30, None), None);
+        // A role the mapping does not list is never lowered, only raised.
+        assert_eq!(role(10, Some(&["staff"])), None);
+        assert_eq!(role(10, Some(&[])), None);
+        assert_eq!(role(1, Some(&["apps-plus"])), None, "an administrator");
+        assert_eq!(role(90, Some(&["staff"])), Some(Role::of(40)));
+        assert_eq!(role(90, Some(&["other"])), None);
     }
 }

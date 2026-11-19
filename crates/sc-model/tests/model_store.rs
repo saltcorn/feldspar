@@ -20,9 +20,9 @@ use sc_model::{
     ModelInstance, ModelProvider, ModelProviderKind, ModelRegistry, Models, NamedDataset,
     OutcomeSpec, ParameterBlock, ParameterRow, Prediction, RESTARTED, Split, active_model_instance,
     bootstrap_model_instances, bootstrap_models, clone_model, delete_model, delete_model_instance,
-    list_model_instances, list_models, load_model, load_model_by_name, model_view_state,
-    models_for_table, numeric_column_field, patch_model_view_state, reap_fitting_instances,
-    require_model, save_model, save_model_instance,
+    list_model_instances, list_models, load_model, load_model_by_name, model_names_for_table,
+    model_view_state, models_for_table, numeric_column_field, patch_model_view_state,
+    reap_fitting_instances, require_model, save_model, save_model_instance,
 };
 use sc_query::{Assignment, Expr, Statement, Update, Value};
 use sc_test_harness::TestDb;
@@ -161,6 +161,45 @@ async fn the_table_column_is_derived_so_the_models_on_a_table_can_be_asked_for()
     assert_eq!(on_houses.len(), 1);
     assert_eq!(on_houses[0].table(), "houses");
     assert!(models_for_table(&cat, "books").await?.is_empty());
+    Ok(())
+}
+
+/// The trigger editor's `fit_model` picker asks only for the names of a table's
+/// models, and gets them even when a dataset is unreadable to this build — one
+/// saved by a newer build, with an operation this one does not know. Loading
+/// the models resolves every dataset and refuses; the names must not, or the
+/// editor of every trigger on a table fails ("Could not load the actions and
+/// tables").
+#[tokio::test]
+async fn model_names_for_a_table_do_not_read_the_datasets() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = setup(&db).await?;
+    let reg = registry()?;
+    save_model(&cat, &reg, &house_prices(), None).await?;
+
+    let unknown = json!([{ "id": "p", "kind": "model_predictions", "model": "elsewhere" }]);
+    let update = Update::new(
+        sc_dataset::DATASETS_TABLE,
+        vec![Assignment::new(
+            sc_dataset::COL_OPERATIONS.to_owned(),
+            Expr::Lit(Value::Json(unknown)),
+        )],
+    );
+    cat.primary(sc_catalog::Unchecked::system("test"))
+        .query(&Statement::from(update))
+        .await?;
+
+    let err = models_for_table(&cat, "houses")
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(err.contains("model_predictions"), "{err}");
+    assert_eq!(
+        model_names_for_table(&cat, "houses").await?,
+        vec!["house prices"]
+    );
+    assert!(model_names_for_table(&cat, "books").await?.is_empty());
     Ok(())
 }
 

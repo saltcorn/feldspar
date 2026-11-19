@@ -1366,6 +1366,10 @@ pub(crate) async fn create_application(
     // the result columns the database reported rather than the empty
     // list the caller sent.
     let mut created = application_from_body(AppId::new(), &body)?;
+    // A slot not naming its readers is its uploader's (UP1).
+    if let Some(Json::Array(sent)) = body.get("uploads") {
+        sc_app::fill_read_roles(&mut created.uploads, sent, &[]);
+    }
     check_app_subdomain(&apps, &created.subdomain)?;
     framable_by_the_admin(&mut created, &body, &apps);
     // A store setting that asked for a new local store gets one
@@ -1447,6 +1451,11 @@ pub(crate) async fn update_application(
     // The id is the path's, not the body's — the row's identity is not
     // something a payload gets to reassign.
     let mut updated = application_from_body(id, &body)?;
+    // A slot not naming its readers keeps the stored ones, so a client that
+    // predates `read_role` does not widen a slot it sends back (UP1).
+    if let Some(Json::Array(sent)) = body.get("uploads") {
+        sc_app::fill_read_roles(&mut updated.uploads, sent, &stored.uploads);
+    }
     check_app_subdomain(&apps, &updated.subdomain)?;
     merge_framework_secrets(&stored, &mut updated);
     framable_by_the_admin(&mut updated, &body, &apps);

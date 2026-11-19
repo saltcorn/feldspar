@@ -1087,7 +1087,7 @@
   "Restore version {version}? It is saved as a new version.": "要还原版本 {version} 吗？它将另存为新版本。",
   "Restoring…": "正在恢复…",
   "Result": "结果",
-  "Resumable (tus) uploads to {route}. Files go to the uploader's folder, readable only by them and admins. Empty size: server limit. Empty types: any. The hook, a code query, is called first with the file's name, size and type, and may refuse it or choose the path.": "可续传（tus）上传到 {route}。文件存入上传者的文件夹，只有本人和管理员可读。大小留空：服务器限制。类型留空：任意类型。钩子是一个代码查询，会先以文件的名称、大小和类型调用，可拒绝上传或选择路径。",
+  "Resumable (tus) uploads to {route}. A file belongs to its uploader. Readers: who else may read it; the folder's readers means everyone the store's and folder's access lets in, at every static directory (or Saltcorn UI /files/serve) that serves the folder. Empty size: server limit. Empty types: any. The hook, a code query, is called first with the file's name, size and type, and may refuse it, choose the path, or narrow the readers.": "可续传（tus）上传到 {route}。文件归上传者所有。读者：还有谁可以读取它；“文件夹的读者”指存储和文件夹的访问权限允许的所有人，经由任何提供该文件夹的静态目录（或 Saltcorn UI 的 /files/serve）。大小留空：服务器限制。类型留空：任意类型。钩子是一个代码查询，会先以文件的名称、大小和类型调用，可拒绝上传、选择路径或缩小读者范围。",
   "Retention": "保留期",
   "Retention (days)": "保留期（天）",
   "Retry from `{step}`": "从 `{step}` 重试",
@@ -1813,5 +1813,9 @@
   "Could not save the settings.": "无法保存设置。",
   "Could not load the settings.": "无法加载设置。",
   "The admin UI will be served on the subdomain {subdomain} from now on. This page waits for the new address to answer, then takes you there.": "从现在起，管理界面将在子域名 {subdomain} 上提供。此页面会等待新地址响应，然后带您前往。",
-  "The admin UI will be served on the base domain from now on. This page waits for the new address to answer, then takes you there.": "从现在起，管理界面将在基础域名上提供。此页面会等待新地址响应，然后带您前往。"
+  "The admin UI will be served on the base domain from now on. This page waits for the new address to answer, then takes you there.": "从现在起，管理界面将在基础域名上提供。此页面会等待新地址响应，然后带您前往。",
+  "Readers": "读者",
+  "Uploader and admins": "上传者和管理员",
+  "Uploader and {role}": "上传者和 {role}",
+  "The folder's readers": "文件夹的读者"
 }

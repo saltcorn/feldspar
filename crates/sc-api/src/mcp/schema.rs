@@ -15,6 +15,7 @@
 //! key its fields declare** — no `id` is invented (GOALS), so a model that wants
 //! one says `primary_key: true` on a field, exactly as an admin ticks the box.
 
+use crate::access_summary::RoleName;
 use crate::schema_edit::{
     self, ApplyOptions, FieldSettings, FieldSpec, Grants, Operation, TableSettings,
 };
@@ -60,7 +61,8 @@ impl AdminTool for DescribeSchema {
     }
 
     async fn call(&self, ctx: &ToolContext<'_>, _grants: &Grants, args: &Json) -> Result<Json> {
-        describe(ctx.catalog, args)
+        let roles = crate::access_summary::load_roles(ctx.catalog).await;
+        describe(ctx.catalog, args, &roles)
     }
 }
 
@@ -125,7 +127,7 @@ fn describe_parameters() -> Json {
     })
 }
 
-fn describe(catalog: &Catalog, args: &Json) -> Result<Json> {
+fn describe(catalog: &Catalog, args: &Json, roles: &[RoleName]) -> Result<Json> {
     let args = super::arguments(args, &[ARG_TABLE])?;
     let only = args
         .get(ARG_TABLE)
@@ -149,7 +151,7 @@ fn describe(catalog: &Catalog, args: &Json) -> Result<Json> {
     let described: Vec<Json> = tables
         .iter()
         .filter(|t| only.is_none_or(|name| t.name == name))
-        .map(|t| describe_table(t, &tables, rls_available))
+        .map(|t| describe_table(t, &tables, rls_available, roles))
         .collect();
     Ok(json!({
         "tables": described,
@@ -168,7 +170,7 @@ fn user_tables(catalog: &Catalog) -> Vec<Table> {
         .collect()
 }
 
-fn describe_table(table: &Table, all: &[Table], rls_available: bool) -> Json {
+fn describe_table(table: &Table, all: &[Table], rls_available: bool, roles: &[RoleName]) -> Json {
     // The formula **source**, not merely whether one is in effect: a tool that
     // may write the formula and can only read a boolean has no way to edit one
     // except by overwriting it blind. When the stored formula stopped validating
@@ -236,6 +238,10 @@ fn describe_table(table: &Table, all: &[Table], rls_available: bool) -> Json {
         "ownership_formula": formula,
         "ownership_error": table.ownership_error,
         "rls_enabled": table.rls_enabled,
+        // The four settings above in words, with this deployment's role names:
+        // a floor and a formula combine with OR, which the numbers alone do
+        // not say (§7.3).
+        "access_summary": crate::access_summary::summarise(table, roles),
         // Beside `rls_enabled`, because without it the model proposes RLS to a
         // database that will refuse it, once per conversation.
         "rls_available": rls_available,
@@ -344,7 +350,7 @@ fn describe_field(table: &Table, field: &sc_catalog::DataField) -> Json {
             out.insert(ARG_FILE_ON_CONFLICT.to_owned(), json!(on_conflict.as_str()));
         }
         DataFieldKind::Secret => {
-            out.insert("secret".to_owned(), json!(true));
+            out.insert(ARG_SECRET.to_owned(), json!(true));
         }
         DataFieldKind::Plain => {}
     }
@@ -367,6 +373,8 @@ const ARG_FILE_MIME: &str = "file_mime";
 const ARG_FILE_ON_DELETE: &str = "on_delete";
 /// What an upload into a file field does when the name is taken.
 const ARG_FILE_ON_CONFLICT: &str = "on_conflict";
+/// Makes a field a secret: stored encrypted, never read back by a client.
+const ARG_SECRET: &str = "secret";
 /// A field's type settings (`options`, `max_length`, …).
 const ARG_ATTRIBUTES: &str = "attributes";
 /// What `add_constraint` adds and `drop_constraint` drops.
@@ -394,8 +402,12 @@ fn edit_description(grants: &Grants, rls_available: bool) -> String {
     // security does. The reply an agent gets is `sc_query::rls_refusal`'s.
     let access = "You may set a table's access rules (`min_role_read`, `min_role_write`, \
                   `ownership_formula`) and turn row-level security on (`rls_enabled: true`). \
+                  A row is reachable when the caller's role meets the floor **or** the \
+                  formula holds, so a formula only matters for roles below the floor. \
                   These change what every other user of this deployment can reach, so say \
-                  plainly what you are about to do before you do it. **Once a table has \
+                  plainly what you are about to do before you do it, and send a change to \
+                  them as a `dry_run` first: the result restates the rules in words, \
+                  dry run or not, for you to check against what was asked. **Once a table has \
                   row-level security, its access rules are a person's**: changing its floors, \
                   its formula or `rls_enabled`, or dropping it, is refused — tell the user what \
                   change you need and why, and they make it in the admin UI. Do not ask for \
@@ -425,7 +437,11 @@ fn edit_description(grants: &Grants, rls_available: bool) -> String {
          primary key and must not be given. A file field (an image, a document) is \
          `{ARG_FILE_STORE}: <file store name>` with no `type`: the column holds the \
          file's path in that store, and the app uploads and serves the file \
-         through the store, so do not keep file contents in a `bytes` column.\n\n\
+         through the store, so do not keep file contents in a `bytes` column. A \
+         credential the app must keep (a password for another service, an API key, \
+         a token) is `{ARG_SECRET}: true` with no `type`: it is stored encrypted, \
+         every read by a client shows a placeholder, and only server-side code \
+         reads the value. A field cannot become a secret or stop being one later.\n\n\
          Rules the database keeps for you: `unique: true` makes one field unique \
          (on `alter_field` too; `unique: false` drops that rule again); \
          `add_constraint` with `constraint: {{type: \"unique\", fields: [a, b]}}` makes \
@@ -602,8 +618,10 @@ fn edit_parameters() -> Json {
                             "type": "integer",
                             "description":
                                 "Least-privileged role that may read the table's \
-                                 rows, 1 (admin) to 100 (anyone). Needs the \
-                                 access-rules permission.",
+                                 rows, 1 (admin) to 100 (anyone): every role with \
+                                 this number or a lower one (more privileged) reads \
+                                 **every** row, whatever the ownership formula says. \
+                                 Needs the access-rules permission.",
                             "minimum": 1,
                             "maximum": 100,
                         },
@@ -611,16 +629,24 @@ fn edit_parameters() -> Json {
                             "type": "integer",
                             "description":
                                 "Least-privileged role that may write the table's \
-                                 rows. Needs the access-rules permission.",
+                                 rows: every role with this number or a lower one \
+                                 inserts, updates and deletes **every** row, whatever \
+                                 the ownership formula says. Needs the access-rules \
+                                 permission.",
                             "minimum": 1,
                             "maximum": 100,
                         },
                         "ownership_formula": {
                             "type": "string",
                             "description":
-                                "A JavaScript expression deciding which rows a \
-                                 caller owns, e.g. `owner === user.id`. Empty \
-                                 clears it. Needs the access-rules permission.",
+                                "A JavaScript expression granting rows to the \
+                                 roles that do **not** meet a floor, e.g. `owner === \
+                                 user.id`. It adds access and never limits it: a \
+                                 role that meets the floor reaches every row anyway. \
+                                 So to limit signed-in users to their own rows, set \
+                                 the floors to a role more privileged than theirs \
+                                 (`1`) as well. Empty clears it. Needs the \
+                                 access-rules permission.",
                         },
                         "rls_enabled": {
                             "type": "boolean",
@@ -679,6 +705,7 @@ fn edit_parameters() -> Json {
         "additionalProperties": false,
     });
     add_file_properties(&mut parameters);
+    add_secret_property(&mut parameters);
     add_default_property(&mut parameters);
     add_attributes_property(&mut parameters);
     add_constraint_property(&mut parameters);
@@ -730,6 +757,26 @@ fn add_constraint_property(parameters: &mut Json) {
         },
         "additionalProperties": false,
     });
+}
+
+/// The `secret` property, on an operation and on a `create_table` field alike —
+/// added after the fact for the reason [`add_file_properties`] is.
+fn add_secret_property(parameters: &mut Json) {
+    let schema = json!({
+        "type": "boolean",
+        "description":
+            "Make this a secret field (`add_field`, fields of `create_table`): a \
+             credential such as a password for another service, an API key or a \
+             token. Give no `type`. Its value is stored encrypted; every read by a \
+             client (REST, MCP, exports, views) shows a placeholder, and a write \
+             that sends the placeholder back keeps the value. Only server-side code \
+             (code actions, triggers) reads it. It cannot be a key, unique, \
+             filtered, sorted, used in a formula or given a default, and an \
+             existing field cannot become a secret or stop being one.",
+    });
+    let item = &mut parameters["properties"][ARG_OPERATIONS]["items"];
+    item["properties"][ARG_SECRET] = schema.clone();
+    item["properties"]["fields"]["items"]["properties"][ARG_SECRET] = schema;
 }
 
 /// The `default` property, on an operation and on a `create_table` field alike —
@@ -845,7 +892,8 @@ async fn edit(catalog: &Catalog, grants: &Grants, args: &Json) -> Result<Json> {
     let mut operations = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
         operations.push(
-            complete_file_alter(catalog, item)
+            refuse_unsecret(catalog, item)
+                .and_then(|()| complete_file_alter(catalog, item))
                 .and_then(|item| parse_operation(&item))
                 .map_err(|e| Error::invalid(format!("operation {index}: {e}")))?,
         );
@@ -870,6 +918,7 @@ async fn edit(catalog: &Catalog, grants: &Grants, args: &Json) -> Result<Json> {
     )
     .await?;
     let mut notes = applied.notes.clone();
+    notes.extend(applied.access.iter().cloned());
     notes.extend(rebuild_notes(&applied.applications));
     Ok(json!({
         "applied": !applied.dry_run,
@@ -1089,6 +1138,7 @@ const FIELD_SETTINGS: &[&str] = &[
     ARG_FILE_MIME,
     ARG_FILE_ON_DELETE,
     ARG_FILE_ON_CONFLICT,
+    ARG_SECRET,
 ];
 
 /// The settings operation `op` reads, besides `op` and `table`; `None` for an
@@ -1470,6 +1520,37 @@ fn file_choice<T: Default>(
     }
 }
 
+/// Refuse `secret: false` on an `alter_field` of a field that is a secret, rather
+/// than read it as "no change": its column holds encrypted values, so it cannot
+/// stop being one.
+fn refuse_unsecret(catalog: &Catalog, item: &Json) -> Result<()> {
+    let Some(obj) = item.as_object() else {
+        return Ok(());
+    };
+    if obj.get("op").and_then(Json::as_str) != Some("alter_field")
+        || obj.get(ARG_SECRET) != Some(&json!(false))
+    {
+        return Ok(());
+    }
+    let (Some(table), Some(field)) = (
+        obj.get("table").and_then(Json::as_str).map(str::trim),
+        obj.get("field").and_then(Json::as_str).map(str::trim),
+    ) else {
+        return Ok(());
+    };
+    if catalog
+        .get(table)?
+        .is_some_and(|t| t.field(field).is_some_and(|f| f.is_secret()))
+    {
+        return Err(Error::invalid(format!(
+            "`{table}.{field}` cannot stop being a secret: the values already in its \
+             column were stored encrypted. Add a new field instead, and copy the values \
+             across"
+        )));
+    }
+    Ok(())
+}
+
 /// An `alter_field` that changes a file field's settings without restating
 /// `file_store`, completed from the field as it is: the file settings it does
 /// not mention keep their current values. Anything else is left as it came.
@@ -1528,9 +1609,10 @@ fn complete_file_alter(catalog: &Catalog, item: &Json) -> Result<Json> {
 }
 
 /// A field's kind from the flat item: `references` makes it a foreign key,
-/// `expression` a calculated field and `file_store` a file field, and more than
-/// one of them is a contradiction worth naming rather than resolving by
-/// precedence.
+/// `expression` a calculated field, `file_store` a file field and `secret: true`
+/// a secret, and more than one of them is a contradiction worth naming rather
+/// than resolving by precedence. `secret: false` says nothing about the kind:
+/// see [`refuse_unsecret`] for the one place it means something.
 fn field_kind(obj: &Map<String, Json>) -> Result<Option<DataFieldKind>> {
     let references = obj
         .optional_string("references")?
@@ -1541,6 +1623,16 @@ fn field_kind(obj: &Map<String, Json>) -> Result<Option<DataFieldKind>> {
     let file_store = obj
         .optional_string(ARG_FILE_STORE)?
         .filter(|s| !s.trim().is_empty());
+    let secret = obj.optional_bool(ARG_SECRET)?.unwrap_or(false);
+    if secret {
+        if references.is_some() || expression.is_some() || file_store.is_some() {
+            return Err(Error::invalid(
+                "a field is one of a reference, a calculated expression, a file or a \
+                 secret, not several",
+            ));
+        }
+        return Ok(Some(DataFieldKind::Secret));
+    }
     if obj.get("type").and_then(Json::as_str).map(str::trim) == Some("file") {
         return Err(Error::invalid(format!(
             "`file` is not a type; a file field is one with `{ARG_FILE_STORE}` naming \
@@ -1653,6 +1745,45 @@ mod tests {
             "file_store": "media", "references": "clients",
         });
         assert!(parse_operation(&both).is_err());
+    }
+
+    #[test]
+    fn a_secret_field_is_secret_true_and_not_also_another_kind() {
+        let item = json!({
+            "op": "add_field", "table": "accounts", "field": "password", "secret": true,
+        });
+        let Operation::AddField { field, .. } = parse_operation(&item).unwrap() else {
+            panic!("an add_field");
+        };
+        assert!(field.type_name.is_empty());
+        assert_eq!(field.kind, DataFieldKind::Secret);
+
+        let off = json!({
+            "op": "add_field", "table": "accounts", "field": "note", "type": "text",
+            "secret": false,
+        });
+        let Operation::AddField { field, .. } = parse_operation(&off).unwrap() else {
+            panic!("an add_field");
+        };
+        assert_eq!(field.kind, DataFieldKind::Plain);
+
+        for other in [
+            json!({ "references": "users" }),
+            json!({ "expression": "1" }),
+            json!({ "file_store": "media" }),
+        ] {
+            let mut item = item.clone();
+            item.as_object_mut()
+                .unwrap()
+                .extend(other.as_object().unwrap().clone());
+            let err = parse_operation(&item).unwrap_err().to_string();
+            assert!(err.contains("not several"), "{err}");
+        }
+        let err = parse_operation(&json!({
+            "op": "add_field", "table": "accounts", "field": "password", "secret": "yes",
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains("secret"), "{err}");
     }
 
     #[test]
@@ -1909,7 +2040,7 @@ mod tests {
                 },
             ),
         ];
-        let out = describe_table(&table, std::slice::from_ref(&table), true);
+        let out = describe_table(&table, std::slice::from_ref(&table), true, &[]);
         assert_eq!(out["fields"][0]["unique"], json!(true), "{out}");
         assert_eq!(out["fields"][1]["unique"], json!(false), "{out}");
         assert_eq!(out["constraints"][1]["fields"], json!(["a", "b"]));

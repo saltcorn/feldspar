@@ -88,7 +88,10 @@ mod deno {
             .unwrap_or_else(|| panic!("{url}"));
         assert_eq!(begun["expires_in"], json!(600));
         let flow = flows().take(id).expect("the flow is kept");
-        assert_eq!(flow.module, names[0]);
+        assert_eq!(
+            flow.asker,
+            sc_module::consent::Asker::Module(names[0].to_string())
+        );
         assert_eq!(flow.user, OWNER, "only the caller may finish it");
         assert_eq!(
             flow.authorization_url,

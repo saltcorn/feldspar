@@ -22,6 +22,7 @@ import { api, errorMessage } from "../api";
 import { navigate } from "../App";
 import type { ListWorkflowRunsResponse } from "../client";
 import { IconArrowLeft } from "../icons";
+import { triggerCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader, StatusBadge, type Tone } from "../layout";
 import { T, useT } from "../i18n";
 
@@ -98,8 +99,9 @@ export function WorkflowRuns({ triggerId }: { triggerId: string }) {
   return (
     <>
       <PageHeader
-        pretitle="Workflow"
-        title={name ? `${name} · runs` : "Runs"}
+        crumbs={triggerCrumbs(t, triggerId, name || null)}
+        title={t("Runs")}
+        docTitle={name ? `${name} · ${t("Runs")}` : t("Runs")}
         actions={
           <>
             <Button variant="outline-secondary" onClick={() => navigate("/triggers")}>

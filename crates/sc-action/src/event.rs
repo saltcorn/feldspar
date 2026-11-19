@@ -292,8 +292,11 @@ impl Event {
 
     /// The **`login`** event: a caller authenticated successfully.
     ///
-    /// The user *is* the event — there is no row and no payload — so this is
-    /// [`caller`](Event::caller) under a name that says which occurrence it is.
+    /// The user *is* the event — there is no row, and no payload unless the
+    /// sign-in has something to add (the router sets it: `guest_session` for a
+    /// guest who signed in, `{ provider, claims }` for an identity provider's
+    /// sign-in) — so this is [`caller`](Event::caller) under a name that says
+    /// which occurrence it is.
     /// Fired for an admin login and for an application's own, because both are
     /// "someone signed in" and a trigger that records logins must see both.
     pub fn login(role: Role, user: Json) -> Event {

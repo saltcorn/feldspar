@@ -467,6 +467,11 @@ async fn admin_file_and_backup_routes_are_nothing_on_an_application_host() -> sc
             "GET",
             "/api/model-instances/00000000-0000-0000-0000-000000000001/progress",
         ),
+        (
+            "GET",
+            "/api/checklists/00000000-0000-0000-0000-000000000001/run/live",
+        ),
+        ("GET", "/api/checklist-runs/live"),
     ] {
         let (status, _, _) = app.raw(method, path, None).await;
         assert_eq!(

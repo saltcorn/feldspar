@@ -671,6 +671,13 @@ pub struct Applied {
     /// Things the caller has to be told in words, because they are not visible
     /// in the schema afterwards — chiefly that a table stopped enforcing RLS.
     pub notes: Vec<String>,
+    /// What the access rules of each table the batch created, or whose access
+    /// rules it set, mean once it is done — said in words with the deployment's
+    /// role names ([`crate::access_summary`]), one paragraph per table.
+    ///
+    /// Separate from [`notes`](Applied::notes) because it is for an agent's
+    /// `edit_schema`: the admin UI shows the rules it was just editing.
+    pub access: Vec<String>,
     /// The mounted applications this batch re-projected, each named once
     /// however many of its tables the batch touched (§13.6).
     ///
@@ -730,6 +737,7 @@ pub async fn apply(
     // schema the batch *ends* with (§7.3, Phase 8).
     let model_notes = plan.validate_deferred(catalog).await?;
     plan.applied.notes.extend(model_notes);
+    plan.summarise_access(catalog).await;
     let steps = plan.steps(catalog)?;
 
     if options.dry_run {
@@ -1067,6 +1075,10 @@ struct Plan {
     was_rls: BTreeMap<String, bool>,
     /// Tables whose policies must be re-emitted or dropped at the end.
     rls_dirty: BTreeSet<String>,
+    /// Tables created, or whose floors, formula or RLS switch a setting named,
+    /// in the order the batch first did so — the ones [`Applied::access`]
+    /// describes.
+    access_described: Vec<String>,
     /// Which tables had the change-log trigger (sync or history on) *before*
     /// the batch.
     was_logged: BTreeSet<String>,
@@ -1135,6 +1147,7 @@ impl Plan {
             metas: Vec::new(),
             table_metas: BTreeMap::new(),
             rls_dirty: BTreeSet::new(),
+            access_described: Vec::new(),
             dropped: BTreeSet::new(),
             deferred_calc: Vec::new(),
             deferred_constraints: Vec::new(),
@@ -1370,6 +1383,7 @@ impl Plan {
             self.projection.insert(table);
         }
         self.applied.tables_created.push(name.to_owned());
+        self.describe_access(name);
         self.changes
             .push(SchemaChanged::TableCreated(name.to_owned()));
         Ok(())
@@ -1520,6 +1534,13 @@ impl Plan {
 
         if settings.touches_access() || access_moved {
             self.rls_dirty.insert(table.to_owned());
+        }
+        if settings.min_role_read.is_some()
+            || settings.min_role_write.is_some()
+            || settings.ownership_formula.is_some()
+            || settings.rls_enabled.is_some()
+        {
+            self.describe_access(table);
         }
         self.metas.push(MetaWrite {
             index,
@@ -2325,6 +2346,7 @@ impl Plan {
         self.projection.remove(table);
         self.dropped.insert(table.to_owned());
         self.rls_dirty.remove(table);
+        self.access_described.retain(|t| t != table);
         // Dropping the table drops its trigger.
         self.change_log_dirty.remove(table);
         self.table_metas.remove(table);
@@ -2932,6 +2954,30 @@ impl Plan {
     }
 
     // --- end of batch ---------------------------------------------------------
+
+    /// Mark `table`'s access rules as ones the result restates.
+    fn describe_access(&mut self, table: &str) {
+        if !self.access_described.iter().any(|t| t == table) {
+            self.access_described.push(table.to_owned());
+        }
+    }
+
+    /// Fill [`Applied::access`] from the schema the batch ends with — so a dry
+    /// run says what the rules *would* mean, which is when changing them is
+    /// still free (once RLS is on, they are a person's).
+    async fn summarise_access(&mut self, catalog: &Catalog) {
+        if self.access_described.is_empty() {
+            return;
+        }
+        let roles = crate::access_summary::load_roles(catalog).await;
+        for name in &self.access_described {
+            if let Some(table) = self.projection.get(name) {
+                self.applied
+                    .access
+                    .push(crate::access_summary::summarise(table, &roles));
+            }
+        }
+    }
 
     /// Everything that can only be checked once every operation has been read:
     /// the calculated-field expressions and the ownership formulas, both against
