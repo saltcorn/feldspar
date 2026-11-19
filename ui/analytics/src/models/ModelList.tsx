@@ -16,6 +16,7 @@ import Form from "react-bootstrap/Form";
 import Modal from "react-bootstrap/Modal";
 import Table from "react-bootstrap/Table";
 
+import { AddButton } from "../AddButton";
 import { api, errorMessage } from "../api";
 import type { ModelUsageResponse } from "../client";
 import { T, useT } from "../i18n";
@@ -125,12 +126,9 @@ export function ModelList() {
   return (
     <section className="mb-5">
       <div className="d-flex align-items-center gap-2 mb-3">
-        <h2 className="h3 mb-0">
+        <h2 className="h3 mb-0 me-auto">
           <T text="Models" />
         </h2>
-        <Button size="sm" className="ms-auto" onClick={() => pane.go({ name: "newModel", dataset: null })}>
-          <T text="New model" />
-        </Button>
         <Button
           size="sm"
           variant="outline-primary"
@@ -141,6 +139,7 @@ export function ModelList() {
           <T text="Compare" />
           {ticked.length > 0 && ` (${ticked.length})`}
         </Button>
+        <AddButton label={t("New model")} onClick={() => pane.go({ name: "newModel", dataset: null })} />
       </div>
       {error && (
         <Alert variant="danger" dismissible onClose={() => setError(null)}>

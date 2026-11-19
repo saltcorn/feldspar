@@ -2,7 +2,8 @@
 // (analytics TODO A1.15, A1.21).
 //
 // Every workspace, most recently used first, each opened, renamed or deleted
-// from its row; and a new one made by name and kind, the kinds not here yet
+// from its row; and a new one made by name and kind (the heading's "+ New
+// workspace" button opens a dialog asking for both), the kinds not here yet
 // listed and disabled with the milestone that brings them. In a self-serve
 // application (A9.3) the server lists its own and the kinds it opens; a
 // workspace is renamed, shared and deleted by its owner, and new ones are made
@@ -11,11 +12,11 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import Alert from "react-bootstrap/Alert";
 import Button from "react-bootstrap/Button";
-import Card from "react-bootstrap/Card";
 import Form from "react-bootstrap/Form";
 import Modal from "react-bootstrap/Modal";
 import Table from "react-bootstrap/Table";
 
+import { AddButton } from "../AddButton";
 import { api, errorMessage } from "../api";
 import type { ListWorkspacesResponse } from "../client";
 import { T, useT } from "../i18n";
@@ -35,8 +36,7 @@ export function WorkspaceList() {
   const [kinds, setKinds] = useState<KindItem[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [name, setName] = useState("");
-  const [kind, setKind] = useState("");
+  const [creating, setCreating] = useState(false);
   const [renaming, setRenaming] = useState<WorkspaceItem | null>(null);
   const [deleting, setDeleting] = useState<WorkspaceItem | null>(null);
 
@@ -44,7 +44,6 @@ export function WorkspaceList() {
     try {
       const [k, w] = await Promise.all([api.listWorkspaceKinds(), api.listWorkspaces()]);
       setKinds(k);
-      setKind((current) => current || firstAvailable(k));
       setWorkspaces(w);
     } catch (err) {
       setError(errorMessage(err, t("Could not load the workspaces.")));
@@ -55,67 +54,27 @@ export function WorkspaceList() {
     void load();
   }, [load]);
 
-  const create = async (e: FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    try {
-      const made = await api.createWorkspace({ name: name.trim(), kind });
-      pane.go({ name: "workspace", id: made.id });
-    } catch (err) {
-      setError(errorMessage(err, t("Could not create the workspace.")));
-    }
-  };
-
-  const noneHere = kinds.length > 0 && firstAvailable(kinds) === "";
-
   return (
     <section className="mb-5">
-      <h2 className="h3 mb-3">
-        <T text="Workspaces" />
-      </h2>
+      <div className="d-flex align-items-center gap-2 mb-3">
+        <h2 className="h3 mb-0 me-auto">
+          <T text="Workspaces" />
+        </h2>
+        {mayCreate && (
+          <AddButton
+            label={t("New workspace")}
+            onClick={() => setCreating(true)}
+          />
+        )}
+      </div>
       {error && (
         <Alert variant="danger" onClose={() => setError(null)} dismissible>
           {error}
         </Alert>
       )}
 
-      {mayCreate && (
-        <Card className="mb-4">
-          <Card.Body>
-            <Form onSubmit={create} className="d-flex gap-2 flex-wrap align-items-end">
-              <Form.Group controlId="workspace-name">
-                <Form.Label>
-                  <T text="New workspace" />
-                </Form.Label>
-                <Form.Control
-                  value={name}
-                  placeholder={t("Houses data")}
-                  onChange={(e) => setName(e.target.value)}
-                />
-              </Form.Group>
-              <Form.Group controlId="workspace-kind">
-                <Form.Label>
-                  <T text="Kind" />
-                </Form.Label>
-                <Form.Select value={kind} onChange={(e) => setKind(e.target.value)}>
-                  {kindOptions(kinds, t).map((option) => (
-                    <option key={option.value} value={option.value} disabled={option.disabled}>
-                      {option.label}
-                    </option>
-                  ))}
-                </Form.Select>
-              </Form.Group>
-              <Button type="submit" disabled={name.trim() === "" || kind === ""}>
-                <T text="Create" />
-              </Button>
-            </Form>
-            {noneHere && (
-              <Form.Text muted>
-                <T text="No kind of workspace can be created yet: each arrives with the milestone it names." />
-              </Form.Text>
-            )}
-          </Card.Body>
-        </Card>
+      {creating && (
+        <NewWorkspaceDialog kinds={kinds} onClose={() => setCreating(false)} />
       )}
 
       {workspaces && workspaces.length === 0 && (
@@ -225,6 +184,78 @@ export function WorkspaceList() {
         </Modal.Footer>
       </Modal>
     </section>
+  );
+}
+
+/** A new workspace: its name and its kind, asked for in a dialog; made, it opens. */
+function NewWorkspaceDialog({ kinds, onClose }: { kinds: KindItem[]; onClose: () => void }) {
+  const { t } = useT();
+  const pane = usePane();
+  const [name, setName] = useState("");
+  const [kind, setKind] = useState(() => firstAvailable(kinds));
+  const [error, setError] = useState<string | null>(null);
+  const noneHere = kinds.length > 0 && firstAvailable(kinds) === "";
+
+  const create = async (e: FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    try {
+      const made = await api.createWorkspace({ name: name.trim(), kind });
+      pane.go({ name: "workspace", id: made.id });
+    } catch (err) {
+      setError(errorMessage(err, t("Could not create the workspace.")));
+    }
+  };
+
+  return (
+    <Modal show onHide={onClose}>
+      <Form onSubmit={create}>
+        <Modal.Header closeButton>
+          <Modal.Title>
+            <T text="New workspace" />
+          </Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          {error && <Alert variant="danger">{error}</Alert>}
+          <Form.Group controlId="workspace-name" className="mb-3">
+            <Form.Label>
+              <T text="Name" />
+            </Form.Label>
+            <Form.Control
+              autoFocus
+              value={name}
+              placeholder={t("Houses data")}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </Form.Group>
+          <Form.Group controlId="workspace-kind">
+            <Form.Label>
+              <T text="Kind" />
+            </Form.Label>
+            <Form.Select value={kind} onChange={(e) => setKind(e.target.value)}>
+              {kindOptions(kinds, t).map((option) => (
+                <option key={option.value} value={option.value} disabled={option.disabled}>
+                  {option.label}
+                </option>
+              ))}
+            </Form.Select>
+          </Form.Group>
+          {noneHere && (
+            <Form.Text muted>
+              <T text="No kind of workspace can be created yet: each arrives with the milestone it names." />
+            </Form.Text>
+          )}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={onClose}>
+            <T text="Cancel" />
+          </Button>
+          <Button type="submit" disabled={name.trim() === "" || kind === ""}>
+            <T text="Create" />
+          </Button>
+        </Modal.Footer>
+      </Form>
+    </Modal>
   );
 }
 
