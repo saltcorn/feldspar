@@ -26,7 +26,8 @@ export function ShareSelect({
   /** What is shared, for the control's accessible name. */
   label: string;
   onShare: (role: number | null) => Promise<void>;
-  /** As wide as its container, rather than as its widest choice. */
+  /** Full size and as wide as its container, like a form's own fields, rather
+   * than small and as wide as its widest choice. */
   wide?: boolean;
 }) {
   const { t } = useT();
@@ -35,7 +36,7 @@ export function ShareSelect({
   const choices = shareableRoles(roles);
   return (
     <Form.Select
-      size="sm"
+      size={wide ? undefined : "sm"}
       className={wide ? "w-100" : "d-inline-block w-auto"}
       aria-label={t("Share {name} with", { name: label })}
       disabled={busy}
