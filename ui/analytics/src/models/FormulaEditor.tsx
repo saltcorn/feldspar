@@ -20,14 +20,12 @@
 // here. A fit that misses the cache shows its Compiling stage, as any Stan
 // fit does.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import Alert from "react-bootstrap/Alert";
 import Badge from "react-bootstrap/Badge";
 import Button from "react-bootstrap/Button";
 import Card from "react-bootstrap/Card";
-import Col from "react-bootstrap/Col";
 import Form from "react-bootstrap/Form";
-import Row from "react-bootstrap/Row";
 import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
@@ -264,12 +262,43 @@ function FormulaField({
   );
 }
 
+/** One part of the formula's half of the form, as its frame is handed it:
+ * the model editor draws each as a numbered section of its setup column, and
+ * anything else as a card. */
+export type FormulaFrame = {
+  part: "formula" | "priors" | "data";
+  title: ReactNode;
+  /** Beside the title: a count, a badge. */
+  aside?: ReactNode;
+  /** The body runs to the frame's edges (a table). */
+  flush?: boolean;
+  /** Something is wrong in this part. */
+  problem?: boolean;
+  children: ReactNode;
+};
+
+/** The default frame: a card. */
+function cardFrame({ title, aside, flush, children }: FormulaFrame): ReactNode {
+  return (
+    <Card className="mb-3">
+      <Card.Header className="d-flex align-items-center gap-2">
+        {title}
+        {aside && <span className="ms-auto">{aside}</span>}
+      </Card.Header>
+      <Card.Body className={flush ? "p-0" : undefined}>{children}</Card.Body>
+    </Card>
+  );
+}
+
 export function FormulaSection({
   config,
   setConfig,
   modelBody,
   savedId,
   onConverted,
+  frame = cardFrame,
+  between,
+  onCheck,
 }: {
   /** The form's settings, as text. */
   config: Record<string, string>;
@@ -280,6 +309,13 @@ export function FormulaSection({
   savedId?: string | null;
   /** Open the Stan model a conversion made. */
   onConverted?: (id: string) => void;
+  /** How each part is framed. Called, not rendered as a component, so the
+   * formula's editor is not remounted when the caller's function changes. */
+  frame?: (part: FormulaFrame) => ReactNode;
+  /** Drawn between the priors and the data (the model editor's sampler). */
+  between?: ReactNode;
+  /** The latest check of the formula, as it changes. */
+  onCheck?: (check: FormulaCheck | null) => void;
 }) {
   const { t } = useT();
   const formula = config.formula ?? "";
@@ -376,13 +412,28 @@ export function FormulaSection({
   const families = check?.completions.families ?? [family];
 
   const editRows = (next: PriorRow[]) => setConfig("priors", writeRows(next));
+  const latestOnCheck = useRef(onCheck);
+  latestOnCheck.current = onCheck;
+  useEffect(() => latestOnCheck.current?.(check), [check]);
+  const problemCount =
+    errors.length + (check?.problems?.length ?? 0) + (checkError ? 1 : 0);
+  const unmatchedCount = table?.unmatched.length ?? 0;
   const highlighted = (r: TableRow) => moved?.rows.some((m) => sameTarget(m, r)) ?? false;
 
   return (
     <>
-      <Card className="mb-3">
-        <Card.Header><T text="Formula" /></Card.Header>
-        <Card.Body>
+      {frame({
+        part: "formula",
+        title: <T text="Formula" />,
+        problem: problemCount > 0,
+        aside:
+          problemCount > 0 ? (
+            <span className="badge bg-red-lt">
+              {problemCount === 1 ? t("1 problem") : t("{count} problems", { count: problemCount })}
+            </span>
+          ) : undefined,
+        children: (
+        <>
           <FormulaField
             value={formula}
             onChange={(text) => setConfig("formula", text)}
@@ -424,60 +475,61 @@ export function FormulaSection({
             </Alert>
           )}
 
-          <Row className="mt-3">
-            <Col md={4}>
-              <Form.Group controlId="formula-family" className="mb-2">
-                <Form.Label><T text="Family" /></Form.Label>
-                <Form.Select value={family} onChange={(e) => setConfig("family", e.target.value)}>
-                  {families.map((f) => (
-                    <option key={f} value={f}>{f}</option>
+          <div className="an-formula-opts mt-3">
+            <Form.Group controlId="formula-family">
+              <Form.Label><T text="Family" /></Form.Label>
+              <Form.Select value={family} onChange={(e) => setConfig("family", e.target.value)}>
+                {families.map((f) => (
+                  <option key={f} value={f}>{f}</option>
+                ))}
+              </Form.Select>
+            </Form.Group>
+            {Object.entries(familyLinks).map(([dpar, choices]) => (
+              <Form.Group key={dpar} controlId={`formula-link-${dpar}`}>
+                <Form.Label>{t("Link · {dpar}", { dpar })}</Form.Label>
+                <Form.Select
+                  value={links[dpar] ?? ""}
+                  onChange={(e) => setConfig("links", writeLinks({ ...links, [dpar]: e.target.value }))}
+                >
+                  <option value="">{t("{link} (default)", { link: choices[0] })}</option>
+                  {choices.slice(1).map((l) => (
+                    <option key={l} value={l}>{l}</option>
                   ))}
                 </Form.Select>
               </Form.Group>
-              <Form.Check
-                id="formula-center"
-                className="mb-2"
-                label={t("Centre the predictors")}
-                checked={center}
-                onChange={(e) => setConfig("center", e.target.checked ? "true" : "false")}
-              />
-            </Col>
-            <Col md={8}>
-              <Form.Label><T text="Links" /></Form.Label>
-              <div className="d-flex flex-wrap gap-2">
-                {Object.entries(familyLinks).map(([dpar, choices]) => (
-                  <Form.Group key={dpar} controlId={`formula-link-${dpar}`}>
-                    <Form.Label className="small text-muted font-monospace mb-0">{dpar}</Form.Label>
-                    <Form.Select
-                      size="sm"
-                      value={links[dpar] ?? ""}
-                      onChange={(e) =>
-                        setConfig("links", writeLinks({ ...links, [dpar]: e.target.value }))
-                      }
-                    >
-                      <option value="">{t("{link} (default)", { link: choices[0] })}</option>
-                      {choices.slice(1).map((l) => (
-                        <option key={l} value={l}>{l}</option>
-                      ))}
-                    </Form.Select>
-                  </Form.Group>
-                ))}
-              </div>
-            </Col>
-          </Row>
-        </Card.Body>
-      </Card>
+            ))}
+          </div>
+          <Form.Check
+            id="formula-center"
+            className="mt-2"
+            label={t("Centre the predictors")}
+            checked={center}
+            onChange={(e) => setConfig("center", e.target.checked ? "true" : "false")}
+          />
+          <Form.Text muted className="d-block">
+            <T text="The intercept is still reported on the data's own scale." />
+          </Form.Text>
+        </>
+        ),
+      })}
 
-      <Card className="mb-3">
-        <Card.Header className="d-flex align-items-center gap-2">
-          <T text="Priors" />
-          {shown && !shown.from_data && (
-            <span className="text-muted small">
-              <T text="— the defaults computed from the data show their rule until Preview data reads it." />
-            </span>
+      {frame({
+        part: "priors",
+        title: <T text="Priors" />,
+        flush: true,
+        problem: unmatchedCount > 0,
+        aside: table ? (
+          <span className="text-muted small">
+            {t("{count} parameters · {set} set by you", { count: table.rows.length, set: rows.length })}
+          </span>
+        ) : undefined,
+        children: (
+        <>
+          {shown && !shown.from_data && table && (
+            <p className="text-muted small mx-3 mt-2 mb-0">
+              <T text="The defaults computed from the data show their rule until Preview data reads it." />
+            </p>
           )}
-        </Card.Header>
-        <Card.Body className="p-0">
           {table ? (
             <PriorTable
               table={table.rows}
@@ -492,8 +544,8 @@ export function FormulaSection({
             </p>
           )}
           {table && table.unmatched.length > 0 && (
-            <div className="m-3">
-              <h5 className="h6"><T text="Not matched by the formula" /></h5>
+            <div className="an-unmatched m-3">
+              <h5 className="h6">{t("Not matched by the formula ({count})", { count: table.unmatched.length })}</h5>
               <p className="text-muted small">
                 <T text="These rows target nothing the formula has now. They are kept, never dropped — a fit is refused until each is deleted or pointed at a current parameter." />
               </p>
@@ -522,22 +574,23 @@ export function FormulaSection({
               ))}
             </div>
           )}
-        </Card.Body>
-      </Card>
+        </>
+        ),
+      })}
 
-      <Card className="mb-3">
-        <Card.Header className="d-flex align-items-center gap-2">
-          <T text="Data" />
-          <Button
-            size="sm"
-            variant="outline-primary"
-            className="ms-auto"
-            disabled={previewing}
-            onClick={() => void previewData()}
-          >
+      {between}
+
+      {frame({
+        part: "data",
+        title: <T text="Data binding & Stan program" />,
+        flush: true,
+        aside: (
+          <Button size="sm" variant="outline-primary" disabled={previewing} onClick={() => void previewData()}>
             {previewing ? <T text="Reading…" /> : <T text="Preview data" />}
           </Button>
-        </Card.Header>
+        ),
+        children: (
+        <>
         {preview && (
           <>
             {preview.variables.length > 0 && (
@@ -564,7 +617,7 @@ export function FormulaSection({
             <PreviewReport preview={preview} />
           </>
         )}
-        <Card.Body className="py-2">
+        <div className="px-3 py-2">
           <details>
             <summary className="small"><T text="How the formula's data is bound" /></summary>
             <pre className="small mb-0 mt-2">{JSON.stringify(check?.data ?? null, null, 2)}</pre>
@@ -579,8 +632,10 @@ export function FormulaSection({
             </pre>
           </details>
           {savedId && <ConvertToStan modelId={savedId} onConverted={onConverted} />}
-        </Card.Body>
-      </Card>
+        </div>
+        </>
+        ),
+      })}
     </>
   );
 }

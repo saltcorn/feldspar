@@ -50,7 +50,8 @@ import {
 import { includeParam, moreOutputs, readOutputs, shownOutputs, type ModelOutput } from "./outputs";
 import { PosteriorInstance } from "./PosteriorInstance";
 
-type Tab = "report" | "posterior" | "try";
+export type ReportTab = "report" | "posterior" | "try";
+type Tab = ReportTab;
 
 export function FitReportModal({
   model,
@@ -61,6 +62,7 @@ export function FitReportModal({
   onPlots,
   onChanged,
   onClose,
+  initialTab = "report",
 }: {
   model: ModelItem;
   /** The fit to report on. */
@@ -73,6 +75,8 @@ export function FitReportModal({
   /** The fit changed here — written back, its report saved: the list again. */
   onChanged: () => void;
   onClose: () => void;
+  /** The tab it opens on: a card's "Try a row" or "Open posterior". */
+  initialTab?: ReportTab;
 }) {
   const { t } = useT();
   const { application } = useShell();
@@ -80,7 +84,7 @@ export function FitReportModal({
   const [instance, setInstance] = useState<InstanceDetail | null>(null);
   const [outputs, setOutputs] = useState<ModelOutput[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("report");
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);

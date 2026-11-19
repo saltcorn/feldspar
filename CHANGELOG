@@ -2,6 +2,59 @@
 
 Changes in reverse chronological order.
 
+## Analytics model editor: the workbench layout (design A1)
+
+The model editor (`ui/analytics/src/models/ModelEditor.tsx`) is laid out as the A1 "Workbench"
+designs in `docs/`: a setup column beside the fits, which are now cards.
+
+- **The bar** along the top holds the model's name (edited in place), the outcome badge, its
+  `predict("…")` call, whether it is saved, **▶ Fit** and a "⋯" menu (description, save now). When
+  something stops a fit, Fit is disabled and the reason is shown under it: no name, no dataset or
+  provider, an unmatched prior, a split that does not sum to 1, an empty tuning list.
+- **Autosave.** An existing model is saved 1.2 s after the last edit, and the bar says "All changes
+  saved", "Unsaved changes", "Saving…" or "Not saved". Loading the model does not count as an
+  edit. The autosave does not move prior calls pasted into a formula into the prior table; a commit
+  of the field or a Fit still does. A new model is created with **Create model** or by its first Fit.
+- **A banner** says when the dataset has changed since the active fit, with **Refit now**.
+- **Setup** is a column of numbered sections: Data, Algorithm, Features, Tuning and Split. For a
+  formula (`bayesian_regression`) model they are Data, Algorithm, Formula, Priors and Sampler, with
+  "Data binding & Stan program" folded under them. For a hand-written Stan model they are Data,
+  Algorithm, Program and data, and Sampler. Changes in the sections:
+  - The dataset picker has a compact mode (`DatasetPicker compact`) with the preview folded away.
+  - Settings and tuning boxes sit as many abreast as fit.
+  - Features are behind **Choose…**.
+  - Tuning shows the number of combinations. A box that differs from the active fit says
+    "Was … in fit #n", and the section is tinted. A list with no validation rows offers
+    **Use 10% for validation**.
+  - The split is drawn as a bar.
+  - The sampler shows its first four settings and puts the rest under "Advanced".
+  - `FormulaSection` takes a `frame` (how each part is drawn), a `between` slot and `onCheck`. The
+    Formula section shows a problem count and the Priors section shows "N parameters · M set by you".
+- **The fits** are cards that keep the table's columns: Fit (`#n`, numbered by start time, oldest
+  #1), Status, Result, Hyperparameters, Report and Actions. For a posterior, Result is **Trust** and
+  Hyperparameters is **Sampler**. A card's caret opens it in place (`FitCard.tsx`) to show:
+  - About this fit.
+  - Errors by split, or for a posterior the sampler checks against the host's thresholds.
+  - The warnings.
+  - For a posterior, its first table output (population-level effects).
+  - Its first three plots.
+  - Buttons: More plots, Try a row, Full report, and for a posterior Open posterior, Write back… and
+    Download run.
+  - "Save as report" / "Save as another report", which saves the report under its default name.
+
+  "+ Create report" in the Report column does the same for a closed card. The full report is still
+  the modal; it can now open on a given tab (`initialTab`). A running fit shows its progress in its
+  card and opens when it finishes. Only the six newest fits are listed until "Show N older fits" is
+  clicked.
+- **Narrow.** The editor sizes itself with a container query, so it adapts in half of a split view
+  as well as in a narrow window. Below 62rem the columns become **Setup** and **Fits** tabs, each
+  setup section folds to a one-line summary, and a card's hyperparameters and report link drop to a
+  second line.
+
+The pure parts are in `models/fitCard.ts` and tested in `fitCard.test.ts`: fit numbering, errors
+by split, posterior checks and the trust verdict, the split bar, "use 10% for validation", and
+tuning boxes compared with a fit.
+
 ## Analytics UI: a reload always serves the latest build
 
 The Analytics UI's document (`index.html`) is now sent `Cache-Control: no-store` instead of

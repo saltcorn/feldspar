@@ -41,6 +41,7 @@ export function DatasetPicker({
   back,
   onCopied,
   beforeEdit,
+  compact = false,
 }: {
   /** The chosen dataset's id; empty for none yet. */
   value: string;
@@ -59,6 +60,9 @@ export function DatasetPicker({
    * the model, so what is on its form is what it comes back to. A rejection
    * stays on the page. */
   beforeEdit?: () => Promise<void>;
+  /** The model editor's setup column: the picker full width, its links and
+   * facts on one line under it, the preview folded away. */
+  compact?: boolean;
 }) {
   const { t } = useT();
   const pane = usePane();
@@ -104,6 +108,111 @@ export function DatasetPicker({
       cancelled = true;
     };
   }, [value, preview]);
+
+  const editLink = (label: ReactNode) => (
+    <a
+      href={pane.href({ name: "dataset", id: value, back })}
+      onClick={(e) => {
+        if (!beforeEdit) return;
+        e.preventDefault();
+        void beforeEdit()
+          .then(() => pane.go({ name: "dataset", id: value, back }))
+          .catch(() => undefined);
+      }}
+    >
+      {label}
+    </a>
+  );
+
+  const previewTable = rows && (
+    <div className="table-responsive">
+      <Table size="sm" className="table-vcenter">
+        <thead>
+          <tr>
+            {rows.columns.map((column) => (
+              <th key={column.name}>
+                {column.name}
+                <div className="text-muted fw-normal small">{column.type}</div>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.rows.map((row, index) => (
+            <tr key={index}>
+              {rows.columns.map((column) => (
+                <td key={column.name} className="text-nowrap">
+                  {cellText((row as Record<string, unknown>)[column.name])}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </Table>
+    </div>
+  );
+
+  if (compact) {
+    const columns = rows?.columns.length ?? (Array.isArray(chosen?.columns) ? chosen.columns.length : null);
+    return (
+      <>
+        <Form.Group className="mb-2" controlId={`${idPrefix}-dataset`}>
+          <div className="d-flex align-items-baseline">
+            <Form.Label>
+              <T text="Dataset" />
+            </Form.Label>
+            {value !== "" && <span className="ms-auto small">{editLink(<>{t("Edit dataset")} ↗</>)}</span>}
+          </div>
+          <Form.Select value={value} onChange={(e) => onChange(e.target.value)}>
+            {value === "" && <option value="">{t("(choose a dataset)")}</option>}
+            {value !== "" && !chosen && <option value={value}>{t("{id} (missing)", { id: value })}</option>}
+            {datasets.map((item) => (
+              <option key={item.id} value={item.id}>
+                {datasetOptionLabel(item)}
+              </option>
+            ))}
+          </Form.Select>
+          <div className="d-flex flex-wrap gap-2 small text-secondary mt-1">
+            {value !== "" && columns !== null && (
+              <span>
+                {t("{count} columns", { count: columns })}
+                {rows?.primary_key ? ` · ${t("split by {column}", { column: rows.primary_key })}` : ""}
+              </span>
+            )}
+            <span className="ms-auto d-flex gap-2">
+              <a href={pane.href({ name: "newDataset", table: null })}>
+                <T text="New" />
+              </a>
+              {value !== "" && onCopied && (
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void copy();
+                  }}
+                >
+                  <T text="Use a copy" />
+                </a>
+              )}
+            </span>
+          </div>
+        </Form.Group>
+        {copyError && <Alert variant="danger">{copyError}</Alert>}
+        {chosen?.error && <Alert variant="warning">{chosen.error}</Alert>}
+        {preview && value !== "" && (
+          <details className="an-wb-details">
+            <summary>
+              <T text="Preview first rows" />
+            </summary>
+            {previewError && <Alert variant="warning">{previewError}</Alert>}
+            {rows?.split_error && <Alert variant="warning">{rows.split_error}</Alert>}
+            {previewTable}
+            {rows && previewNote && <p className="text-muted small mb-0">{previewNote(rows)}</p>}
+          </details>
+        )}
+      </>
+    );
+  }
 
   return (
     <>
@@ -163,31 +272,7 @@ export function DatasetPicker({
           {rows && (
             <>
               {rows.split_error && <Alert variant="warning">{rows.split_error}</Alert>}
-              <div className="table-responsive">
-                <Table size="sm" className="table-vcenter">
-                  <thead>
-                    <tr>
-                      {rows.columns.map((column) => (
-                        <th key={column.name}>
-                          {column.name}
-                          <div className="text-muted fw-normal small">{column.type}</div>
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.rows.map((row, index) => (
-                      <tr key={index}>
-                        {rows.columns.map((column) => (
-                          <td key={column.name} className="text-nowrap">
-                            {cellText((row as Record<string, unknown>)[column.name])}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </Table>
-              </div>
+              {previewTable}
               {previewNote && <p className="text-muted small mb-0">{previewNote(rows)}</p>}
             </>
           )}
