@@ -1045,6 +1045,47 @@ pub(crate) async fn fit_progress(
     )
 }
 
+/// `GET /api/workspaces/{id}/session/live`: a notebook's session socket
+/// (analytics TODO A10.6). Admin only, decided before the upgrade as the
+/// fit's progress socket's is.
+pub(crate) async fn notebook_session(
+    State(state): State<AppState>,
+    admin: AdminSession,
+    headers: axum::http::HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    MaybeUpgrade(ws): MaybeUpgrade,
+) -> Response {
+    if !upgrade_origin_allowed(&headers) {
+        return upgrade_origin_refused();
+    }
+    let Ok(id) = id.parse::<uuid::Uuid>() else {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "the workspace id in the path is not a uuid",
+        );
+    };
+    let Some(catalog) = state.apps.catalog().cloned() else {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this server has no catalog, so it has no notebooks",
+        );
+    };
+    let Some(ws) = ws else {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "this path is a WebSocket: connect to it with `ws:`/`wss:` rather than fetching it",
+        );
+    };
+    let user = admin.user().id().to_string();
+    crate::notebook_api::session_upgrade(
+        ws,
+        catalog,
+        sc_analytics::WorkspaceId(id),
+        user,
+        admin.watch(state.sessions.clone()),
+    )
+}
+
 /// `GET /api/checklists/{id}/run/live`: run a checklist, its progress pushed
 /// as it goes (TODO-checklists C5.1). Admin only, decided before the upgrade
 /// as the fit's progress socket's is; everything after it is a frame

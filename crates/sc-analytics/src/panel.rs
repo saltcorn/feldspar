@@ -354,10 +354,15 @@ impl SimulationPanel {
 /// panel goes that is not one is reported by [`check_state`], and skipped
 /// here.
 pub fn panels_in_state(kind: WorkspaceKind, state: &Json) -> Vec<Panel> {
-    panel_slots(kind, state)
+    let mut panels: Vec<Panel> = panel_slots(kind, state)
         .into_iter()
         .filter_map(|v| Panel::from_json(v).ok())
-        .collect()
+        .collect();
+    // What a notebook's dataset outputs read is read as a panel's is.
+    if kind == WorkspaceKind::Notebook {
+        panels.extend(crate::notebook::dataset_output_panels(state));
+    }
+    panels
 }
 
 /// The JSON values in the places `kind` keeps its panels.

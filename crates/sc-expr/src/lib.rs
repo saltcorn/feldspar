@@ -50,6 +50,7 @@ mod geo;
 pub mod html;
 #[cfg(feature = "eval")]
 mod normalise;
+mod notebook_cell;
 mod request;
 mod rewrite;
 mod shape;
@@ -86,6 +87,7 @@ pub use eval::DenoEvaluator;
 pub use eval::{FormulaCall, JsEvaluator};
 pub use formula::Formula;
 pub use geo::{GEO, GEO_FUNCTIONS, GeoFunction, GeoResult, geo_function};
+pub use notebook_cell::notebook_cell;
 pub use request::{
     MAX_REQUEST_KEY_BYTES, MAX_REQUEST_KEYS, REQUEST_GUC_PREFIX, RequestUses, RequestValues,
     check_request_uses, is_request_key, request_guc,

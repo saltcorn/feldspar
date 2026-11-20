@@ -859,22 +859,22 @@ notebook reopens with its outputs without running anything.
 
 ## Phase 2 — Running cells
 
-- [ ] A10.3 Notebook sessions in `sc-analytics` (or `sc-api`): one per open notebook and user,
+- [x] A10.3 Notebook sessions in `sc-analytics` (or `sc-api`): one per open notebook and user,
       holding a JavaScript context or Python globals between cells; restart; an idle timeout
       and a limit on sessions; each cell run with the code body's timeout and call budget.
       Sessions are a service on the `Catalog` and torn down with it (the CLAUDE.md teardown
       rule; extend `catalog_teardown.rs`). Tests: a global defined by one cell is read by the
       next; restart clears it; a runaway cell is stopped and the session still runs the next.
-- [ ] A10.4 The `nb` surface, written once as a plan answered by one host and given a
+- [x] A10.4 The `nb` surface, written once as a plan answered by one host and given a
       JavaScript and a Python prelude in the way `db` is: `dataset` (the operations of A1–A5
       as a fluent chain), `plot`, `table`, `test`, `card`, `map`, `fit` (with progress pushed
       to the browser, and the fit's outputs as A3.1's panels), `show`, and the cell's last
       value as its output. Errors carry the cell's line. Tests in both languages.
-- [ ] A10.5 LLM prompt cells: an agent (`sc-agent`) with the `nb` functions as tools, the
+- [x] A10.5 LLM prompt cells: an agent (`sc-agent`) with the `nb` functions as tools, the
       notebook's earlier cells and the shapes of the datasets they name as context, and the
       default LLM provider (L.3). The calls it made are stored with the cell and replayed on a
       re-run; **Regenerate** calls the LLM again. Tests with a scripted LLM provider.
-- [ ] A10.6 `sc-api` endpoints: run a cell, run all, interrupt, restart, and the session's
+- [x] A10.6 `sc-api` endpoints: run a cell, run all, interrupt, restart, and the session's
       status, pushed to the browser as fit progress is. Admin only; an Analytics application
       refuses the notebook kind with a sentence (Python has no sandbox, §15.2). Regenerate the
       clients. Tests in `sc-server`.

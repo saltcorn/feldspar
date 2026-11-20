@@ -23,6 +23,7 @@
 //! | `panel` | `panel` — a panel (A4.2), dragged like any other |
 //! | `text` | `text` — what the cell printed |
 //! | `value` | `value` — the cell's last value, when it is not a panel, as JSON |
+//! | `dataset` | `data`, `columns`, `rows`, `total` — a dataset the cell showed (A10.4): what it reads and its first rows |
 //! | `error` | `message`, `line`? — why the cell stopped, and the line it stopped on |
 //! | `calls` | `calls` — an LLM prompt cell's recorded calls, each `{ function, arguments }` |
 //!
@@ -38,7 +39,8 @@ use sc_error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
-use crate::panel::{MAX_TEXT, Panel};
+use crate::panel::{MAX_TEXT, Panel, PanelBody};
+use crate::plot::{Cell as TableCell, DataRef, TableSpec};
 
 /// The most cells a notebook holds.
 pub const MAX_CELLS: usize = 500;
@@ -48,6 +50,9 @@ pub const MAX_SOURCE: usize = 100_000;
 pub const MAX_OUTPUTS: usize = 50;
 /// The most calls an LLM prompt cell records.
 pub const MAX_CALLS: usize = 100;
+
+/// The most rows a dataset output keeps.
+pub const MAX_DATASET_ROWS: usize = 100;
 
 /// What a notebook's code cells are written in, chosen when it is created.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -191,6 +196,23 @@ pub enum Output {
     Calls {
         /// The calls.
         calls: Vec<RecordedCall>,
+        /// The prompt they were made for: a cell whose prompt has changed
+        /// since asks the LLM again rather than replaying them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
+    },
+    /// A dataset the cell showed: what it reads — a non-persisted dataset
+    /// (A10.2) or a stored one — and its first rows as they were when it ran.
+    Dataset {
+        /// What it reads.
+        data: DataRef,
+        /// Its columns' names.
+        columns: Vec<String>,
+        /// Its first rows, each in column order.
+        #[serde(default)]
+        rows: Vec<Vec<Json>>,
+        /// How many rows it had.
+        total: u64,
     },
 }
 
@@ -298,11 +320,19 @@ impl NotebookState {
                 "is an LLM prompt's calls, in a {} notebook",
                 self.language.label()
             )),
-            Output::Calls { calls } if calls.len() > MAX_CALLS => {
+            Output::Calls { calls, .. } if calls.len() > MAX_CALLS => {
                 Err(format!("records more than {MAX_CALLS} calls"))
             }
-            Output::Calls { calls } if calls.iter().any(|c| c.function.trim().is_empty()) => {
+            Output::Calls { calls, .. } if calls.iter().any(|c| c.function.trim().is_empty()) => {
                 Err("records a call without the function it called".into())
+            }
+            Output::Dataset { rows, .. } if rows.len() > MAX_DATASET_ROWS => Err(format!(
+                "is a dataset keeping more than {MAX_DATASET_ROWS} rows"
+            )),
+            Output::Dataset { rows, columns, .. }
+                if rows.iter().any(|r| r.len() != columns.len()) =>
+            {
+                Err("is a dataset with a row that is not one value per column".into())
             }
             _ => Ok(()),
         }
@@ -332,6 +362,37 @@ pub(crate) fn panel_slots(state: &Json) -> Vec<&Json> {
 /// Refuse a saved state that changes a notebook's language: the code in its
 /// cells is written in it. A stored state without one (none can be made, but
 /// a restore brings what it brings) may be given one.
+/// The panels standing for what a notebook's dataset outputs read: a count of
+/// each one's rows, so the usage index, an application's reach and **Save as
+/// dataset** find what those outputs read as they find a panel's.
+pub(crate) fn dataset_output_panels(state: &Json) -> Vec<Panel> {
+    state
+        .get("cells")
+        .and_then(Json::as_array)
+        .map(|cells| {
+            cells
+                .iter()
+                .filter_map(|c| c.get("outputs").and_then(Json::as_array))
+                .flatten()
+                .filter(|o| o.get("kind").and_then(Json::as_str) == Some("dataset"))
+                .filter_map(|o| serde_json::from_value::<DataRef>(o.get("data")?.clone()).ok())
+                .map(|data| {
+                    Panel::new(PanelBody::SummaryTable {
+                        spec: TableSpec {
+                            data,
+                            fold: None,
+                            rows: Vec::new(),
+                            columns: Vec::new(),
+                            cells: vec![TableCell::count()],
+                            totals: false,
+                        },
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub fn check_language_kept(old: &Json, new: &Json) -> Result<()> {
     let language = |s: &Json| s.get("language").and_then(Json::as_str).map(str::to_owned);
     match (language(old), language(new)) {

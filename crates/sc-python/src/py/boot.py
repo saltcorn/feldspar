@@ -155,6 +155,43 @@ def compile_body(source, filename):
     return compile(module, filename, "exec")
 
 
+def compile_cell(source, filename):
+    """Compile a notebook **cell**: module-level code, run in a session's own
+    globals, whose last statement — when it is an expression — is its value.
+
+    Answers ``(code, last)``: ``last`` is the expression compiled to be
+    evaluated after ``code``, or ``None``. Every line stays where the author
+    put it, and the source is registered under ``filename`` for tracebacks, as
+    a body's is.
+    """
+    tree = ast.parse(source, filename=filename, mode="exec")
+    last = None
+    if tree.body and isinstance(tree.body[-1], ast.Expr):
+        expr = ast.Expression(body=tree.body.pop().value)
+        last = compile(expr, filename, "eval")
+    linecache.cache[filename] = (
+        len(source),
+        None,
+        source.splitlines(keepends=True),
+        filename,
+    )
+    return compile(tree, filename, "exec"), last
+
+
+def execute_cell(code, last, scope):
+    """Run a compiled cell in ``scope`` and answer its value, or ``None``.
+
+    A session's own runner — ``__session_cell__`` in its globals — is asked
+    instead when it has one, so what a cell's value *becomes* is the session's
+    business and not this module's.
+    """
+    runner = scope.get("__session_cell__")
+    if runner is not None:
+        return runner(code, last)
+    exec(code, scope)
+    return None if last is None else eval(last, scope)
+
+
 def forget_source(filename):
     """Drop a body's source from ``linecache`` when its code object is evicted."""
     linecache.cache.pop(filename, None)

@@ -11661,6 +11661,29 @@ non-persisted dataset (A10.2, `{ "kind": "inline", "definition" }`). It is read 
 dataset is, and it is readable where the caller could have made it, or in a fixed application
 exactly as a shown workspace carries it.
 
+**Running a notebook** (A10.3–A10.6; `sc-server`'s `notebook.rs`, `notebook_llm.rs` and
+`notebook_api.rs`): admin only, on the admin host. One **session** per notebook and administrator
+keeps what one cell defines for the next. A JavaScript session has an isolate of its own (a
+one-worker `CodeRuntime`), and `sc_expr::notebook_cell` rewrites each cell so its top-level
+declarations land on that isolate's `globalThis`. A Python session has its own globals in
+`sc-python`'s interpreter (`PythonRuntime::run_cell`). An LLM prompt has no session state. A cell
+runs with a code body's bounds and a 30 s clock. The sessions are a typed extension on the catalog,
+at most 16, ended when idle for 30 minutes, and torn down with the catalog.
+
+A cell's `nb` (`sc-analytics`'s `nb.rs`, with a JavaScript and a Python prelude) sends
+`{ op: "nb", what }` plans over its own `db`. They make non-persisted datasets from a chain
+(`nb.dataset(name).filter(…)…`, whose id is derived from its content), panels (`plot`, `table`,
+`test`, `card`, `map`, `markdown`, each drawn once on the server so an error is refused at its
+line) and fits (`nb.fit`, which waits for the fit job). What a cell shows, prints and ends with
+comes back as one envelope and becomes its outputs, including a `dataset` output.
+
+An LLM prompt cell is answered by an `sc-agent` run whose one trait's tools are the same plans.
+The calls that worked are recorded in the cell with the prompt, and replayed without the LLM until
+it is regenerated or the prompt changes. The endpoints are `runNotebookCell`, `runNotebook`,
+`interruptNotebook`, `restartNotebook` and `getNotebookSession`, plus a status socket at
+`/api/workspaces/{id}/session/live`. A run stores the cell's outputs in the state as it is when
+the run ends.
+
 **The bundle** (`ui/analytics`): React, TypeScript and react-bootstrap over the generated client,
 like the admin SPA, but a bundle of its own, so that an Analytics application can serve it
 without the admin shell (§14.9). On the admin host it is served under `/analytics/` in the way

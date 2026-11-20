@@ -215,6 +215,7 @@ pub fn admin_handlers_with(
 
     // --- the Analytics UI -----------------------------
     crate::analytics::register(&mut reg, catalog.clone());
+    crate::notebook_api::register(&mut reg, catalog.clone(), apps.clone());
     crate::public_datasets::register(&mut reg, catalog.clone(), fetch);
     // --- the home page's entities list ----------------------------------------
     crate::entities::register(&mut reg, catalog.clone(), apps.clone());

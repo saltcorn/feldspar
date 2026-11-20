@@ -548,6 +548,12 @@ export type SaveWorkspaceStateRequest = { state: unknown };
 export type SaveWorkspaceStateResponse = { id: string; name: string; kind: string; state: unknown; created_by?: string | null; updated_at: string; share_role?: number | null; application?: string | null; may_change: boolean };
 export type SaveInlineDatasetRequest = { dataset: string; name: string };
 export type SaveInlineDatasetResponse = { dataset: { dataset: unknown; report: { base: unknown; operations: Array<unknown>; tables: unknown; children: unknown } }; workspace: { id: string; name: string; kind: string; state: unknown; created_by?: string | null; updated_at: string; share_role?: number | null; application?: string | null; may_change: boolean } };
+export type RunNotebookCellRequest = { source?: string | null; regenerate?: boolean | null };
+export type RunNotebookCellResponse = { cell: unknown; session: { state: string; language?: string | null; cell?: string | null; runs: number; started?: string | null; fit?: string | null } };
+export type RunNotebookResponse = { cells: Array<unknown>; session: { state: string; language?: string | null; cell?: string | null; runs: number; started?: string | null; fit?: string | null } };
+export type InterruptNotebookResponse = { state: string; language?: string | null; cell?: string | null; runs: number; started?: string | null; fit?: string | null };
+export type RestartNotebookResponse = { state: string; language?: string | null; cell?: string | null; runs: number; started?: string | null; fit?: string | null };
+export type GetNotebookSessionResponse = { state: string; language?: string | null; cell?: string | null; runs: number; started?: string | null; fit?: string | null };
 
 /** An external identity provider this application offers (Settings →
  * Authentication). */
@@ -948,6 +954,11 @@ export interface ApiClient {
   shareWorkspace(id: string, body: ShareWorkspaceRequest): Promise<ShareWorkspaceResponse>;
   saveWorkspaceState(id: string, body: SaveWorkspaceStateRequest): Promise<SaveWorkspaceStateResponse>;
   saveInlineDataset(id: string, body: SaveInlineDatasetRequest): Promise<SaveInlineDatasetResponse>;
+  runNotebookCell(id: string, cell: string, body: RunNotebookCellRequest): Promise<RunNotebookCellResponse>;
+  runNotebook(id: string): Promise<RunNotebookResponse>;
+  interruptNotebook(id: string): Promise<InterruptNotebookResponse>;
+  restartNotebook(id: string): Promise<RestartNotebookResponse>;
+  getNotebookSession(id: string): Promise<GetNotebookSessionResponse>;
   deleteWorkspace(id: string): Promise<void>;
 }
 
@@ -4127,6 +4138,47 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("saveInlineDataset", res);
       return (await res.json()) as SaveInlineDatasetResponse;
+    },
+    async runNotebookCell(id, cell, body) {
+      const res = await doFetch(`${baseUrl}/api/workspaces/${encodeURIComponent(id)}/cells/${encodeURIComponent(cell)}/run`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("runNotebookCell", res);
+      return (await res.json()) as RunNotebookCellResponse;
+    },
+    async runNotebook(id) {
+      const res = await doFetch(`${baseUrl}/api/workspaces/${encodeURIComponent(id)}/run-all`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("runNotebook", res);
+      return (await res.json()) as RunNotebookResponse;
+    },
+    async interruptNotebook(id) {
+      const res = await doFetch(`${baseUrl}/api/workspaces/${encodeURIComponent(id)}/interrupt`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("interruptNotebook", res);
+      return (await res.json()) as InterruptNotebookResponse;
+    },
+    async restartNotebook(id) {
+      const res = await doFetch(`${baseUrl}/api/workspaces/${encodeURIComponent(id)}/restart`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("restartNotebook", res);
+      return (await res.json()) as RestartNotebookResponse;
+    },
+    async getNotebookSession(id) {
+      const res = await doFetch(`${baseUrl}/api/workspaces/${encodeURIComponent(id)}/session`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getNotebookSession", res);
+      return (await res.json()) as GetNotebookSessionResponse;
     },
     async deleteWorkspace(id) {
       const res = await doFetch(`${baseUrl}/api/workspaces/${encodeURIComponent(id)}`, {

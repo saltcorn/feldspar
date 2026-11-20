@@ -238,6 +238,14 @@ pub const RAW_ROUTES: &[RawRoute] = &[
         auth: RouteAuth::AdminSession,
         route: || get(crate::router::fit_progress),
     },
+    // A notebook's session, its status pushed as it changes (analytics TODO
+    // A10.6). An upgrade for the reason a fit's progress socket is.
+    RawRoute {
+        path: crate::notebook_api::NOTEBOOK_SESSION_ROUTE,
+        methods: GET,
+        auth: RouteAuth::AdminSession,
+        route: || get(crate::router::notebook_session),
+    },
     // A checklist run, its progress pushed as it goes (TODO-checklists
     // C5.1): the run *is* the socket, so the progress comes from the node
     // running it. An upgrade for the reason the Observe socket's is.

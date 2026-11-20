@@ -658,6 +658,67 @@ impl PythonRuntime {
         }
     }
 
+    /// Run one **notebook cell** in the session `session` (analytics TODO
+    /// A10.3): a body whose globals outlive it, so what one cell defines the
+    /// next one reads. `setup` is run in them once, when the session is first
+    /// used; a cell then answers what its `__session_cell__(code, last)`
+    /// answers, if `setup` defined one, and otherwise its last expression's
+    /// value. Every bound a body has, a cell has.
+    pub async fn run_cell(&self, session: &str, setup: &str, call: CodeCall<'_>) -> Result<Json> {
+        #[cfg(feature = "python-host")]
+        {
+            self.admit()?;
+            let hosts = call.hosts();
+            let budgets = bridge::Budgets {
+                calls: call.max_calls,
+                fetches: call.max_fetches,
+                file_ops: call.max_file_ops,
+                trigger_runs: call.max_trigger_runs,
+                module_calls: call.max_module_calls,
+                publishes: sc_expr::MAX_LIVE_PUBLISHES,
+            };
+            let timeout = call
+                .timeout
+                .unwrap_or(self.default_timeout)
+                .min(sc_expr::MAX_CODE_TIMEOUT);
+            self.inner
+                .run(
+                    runtime::Run {
+                        task: runtime::Task::Cell {
+                            session: session.to_owned(),
+                            setup: setup.to_owned(),
+                            code: call.code,
+                            bindings: call.bindings,
+                        },
+                        hosts,
+                        budgets,
+                        timeout,
+                    },
+                    &self.env,
+                )
+                .await
+        }
+        #[cfg(not(feature = "python-host"))]
+        {
+            let _ = (session, setup, call);
+            Err(not_built())
+        }
+    }
+
+    /// Forget the session `session`'s globals — a notebook restarted, or idle
+    /// too long. Answers whether there was one. Never starts the interpreter.
+    pub fn end_session(&self, session: &str) -> bool {
+        #[cfg(feature = "python-host")]
+        {
+            interp::started().is_some() && interp::end_session(session)
+        }
+        #[cfg(not(feature = "python-host"))]
+        {
+            let _ = session;
+            false
+        }
+    }
+
     /// Ask one thing of a **plugin module** — the seam under
     /// [`pymodule::PyModuleHost`], and the reason this is not a second runtime.
     ///

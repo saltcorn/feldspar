@@ -69,8 +69,15 @@ async fn a_server_test(teardown: bool) -> Result<(Weak<Catalog>, Weak<dyn sc_exp
     let request = Request::get("/api/auth/status")
         .body(Body::empty())
         .map_err(|e| sc_error::Error::msg(e.to_string()))?;
-    let _ = router.oneshot(request).await;
+    let _ = router.clone().oneshot(request).await;
     let _ = catalog.formula_evaluator();
+    // A notebook cell run, so a session — an isolate of its own — is alive
+    // on the catalog when it is torn down.
+    run_a_notebook_cell(&router).await;
+    assert!(
+        catalog.extension::<sc_server::NotebookSessions>().is_some(),
+        "the cell started the notebook sessions"
+    );
     if teardown {
         // What the hook will run; once more when the test ends is harmless.
         catalog.teardown();
@@ -78,8 +85,78 @@ async fn a_server_test(teardown: bool) -> Result<(Weak<Catalog>, Weak<dyn sc_exp
             catalog.extension::<sc_stream::StreamRegistry>().is_none(),
             "teardown empties the extensions with the other services"
         );
+        assert!(
+            catalog.extension::<sc_server::NotebookSessions>().is_none(),
+            "and the notebook sessions with them"
+        );
     }
     Ok((Arc::downgrade(&catalog), weak_evaluator))
+}
+
+/// Sign in as the first user, create a JavaScript notebook and run its cell.
+async fn run_a_notebook_cell(router: &axum::Router) {
+    let mut cookies: Vec<(String, String)> = Vec::new();
+    let mut send = async |method: &str, path: &str, body: serde_json::Value| {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(axum::http::header::CONTENT_TYPE, "application/json");
+        if !cookies.is_empty() {
+            let jar: Vec<String> = cookies.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            builder = builder.header(axum::http::header::COOKIE, jar.join("; "));
+        }
+        if let Some((_, csrf)) = cookies.iter().find(|(k, _)| k == sc_api::auth::CSRF_COOKIE) {
+            builder = builder.header(sc_api::auth::CSRF_HEADER, csrf.clone());
+        }
+        let request = builder.body(Body::from(body.to_string())).unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        for raw in response.headers().get_all(axum::http::header::SET_COOKIE) {
+            if let Some((name, value)) = raw
+                .to_str()
+                .unwrap_or("")
+                .split(';')
+                .next()
+                .and_then(|c| c.split_once('='))
+            {
+                cookies.retain(|(k, _)| k != name);
+                cookies.push((name.to_owned(), value.to_owned()));
+            }
+        }
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        assert!(status.is_success(), "{method} {path}: {status} {value}");
+        value
+    };
+    send("GET", "/api/auth/status", serde_json::Value::Null).await;
+    send(
+        "POST",
+        "/api/first-user",
+        serde_json::json!({ "email": "admin@example.com", "password": "hunter2pass" }),
+    )
+    .await;
+    let notebook = send(
+        "POST",
+        "/api/workspaces",
+        serde_json::json!({ "name": "N", "kind": "notebook", "state": {
+            "language": "javascript",
+            "cells": [{ "id": "a", "kind": "code", "source": "const n = 41;\nn + 1" }] } }),
+    )
+    .await;
+    let id = notebook["id"].as_str().unwrap().to_owned();
+    let ran = send(
+        "POST",
+        &format!("/api/workspaces/{id}/cells/a/run"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(
+        ran["cell"]["outputs"][0]["value"],
+        serde_json::json!(42),
+        "{ran}"
+    );
 }
 
 /// Run one test on its own runtime, as `#[tokio::test]` does, and report what

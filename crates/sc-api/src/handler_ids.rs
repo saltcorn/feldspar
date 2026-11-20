@@ -480,6 +480,11 @@ pub const SHARE_WORKSPACE: HandlerId<AnalyticsUi> = HandlerId::new("shareWorkspa
 pub const SAVE_WORKSPACE_STATE: HandlerId<AnalyticsUi> = HandlerId::new("saveWorkspaceState");
 pub const DELETE_WORKSPACE: HandlerId<AnalyticsUi> = HandlerId::new("deleteWorkspace");
 pub const SAVE_INLINE_DATASET: HandlerId<AnalyticsUi> = HandlerId::new("saveInlineDataset");
+pub const RUN_NOTEBOOK_CELL: HandlerId<AdminOnly> = HandlerId::new("runNotebookCell");
+pub const RUN_NOTEBOOK: HandlerId<AdminOnly> = HandlerId::new("runNotebook");
+pub const INTERRUPT_NOTEBOOK: HandlerId<AdminOnly> = HandlerId::new("interruptNotebook");
+pub const RESTART_NOTEBOOK: HandlerId<AdminOnly> = HandlerId::new("restartNotebook");
+pub const GET_NOTEBOOK_SESSION: HandlerId<AdminOnly> = HandlerId::new("getNotebookSession");
 
 // --- Handlers reached by a raw route rather than a typed endpoint ---
 //

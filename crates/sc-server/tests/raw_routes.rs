@@ -45,6 +45,7 @@ const EXPECTED: &[(&str, &[&str], RouteAuth)] = &[
     ("/admin/agent-chat", &["GET"], AdminSession),
     ("/api/streams/{id}/observe", &["GET"], AdminSession),
     ("/api/model-instances/{id}/progress", &["GET"], AdminSession),
+    ("/api/workspaces/{id}/session/live", &["GET"], AdminSession),
     ("/mcp", &["POST"], McpToken),
     ("/ide/mcp-proxy/{server}", &["*"], TerminalToken),
     ("/build-agent/heartbeat", &["POST"], BuildHostToken),

@@ -40,6 +40,8 @@ mod agent_interaction;
 mod analytics_api;
 #[path = "analytics_apps.rs"]
 mod analytics_apps;
+#[path = "analytics_notebook.rs"]
+mod analytics_notebook;
 #[path = "analytics_done.rs"]
 mod analytics_done;
 #[path = "analytics_plots.rs"]

@@ -670,57 +670,19 @@ pub(crate) fn run_body(
     Python::attach(|py| {
         let (code, filename) = compiled(py, source)?;
         let scope = PyDict::new(py);
-        let bind = |name: &str, value: Bound<'_, PyAny>| -> Result<()> {
-            scope.set_item(name, value).map_err(|e| py_error(py, &e))
-        };
         // Not `__main__`: a body that inspects `__name__` should see something
         // that says what it is.
-        bind(
-            "__name__",
-            pyo3::types::PyString::new(py, "<body>").into_any(),
-        )?;
+        scope
+            .set_item("__name__", pyo3::types::PyString::new(py, "<body>"))
+            .map_err(|e| py_error(py, &e))?;
         // The import gate (§1). Bound here rather than left to `exec`, which
         // would fill in the real one: a run's globals carry a **copy** of
         // `builtins` whose `__import__` is the gate's, so a body's own import
         // statement is checked and an import inside a library it called — which
         // reads its own module globals — is not. Per run, so a body that writes
         // into its builtins has not written into the next body's.
-        let gate = gate_module(py).map_err(|e| py_error(py, &e))?;
-        let builtins = gate
-            .getattr("new_builtins")
-            .and_then(|f| f.call0())
-            .map_err(|e| py_error(py, &e))?;
-        bind("__builtins__", builtins)?;
-        for (name, value) in bindings {
-            let value = convert::from_json(py, value).map_err(|e| py_error(py, &e))?;
-            bind(name, value)?;
-        }
-        // Presence is scope: a surface this run was not given is not bound at
-        // all, so reaching it is a `NameError` naming it rather than a call that
-        // fails somewhere else later.
-        let surfaces = bridge::surfaces();
-        let sc = py.import("__sc").map_err(|e| py_error(py, &e))?;
-        for (name, surface) in bridge::BOUND_NAMES {
-            if surfaces.holds(surface) {
-                let function = sc.getattr(name).map_err(|e| py_error(py, &e))?;
-                bind(name, function)?;
-            }
-        }
-        // And the surfaces themselves, over those same functions: `db`, `fetch`,
-        // `fs`, `trigger` and `modfn` are what an author writes, and the bridge
-        // function under each is what the plan crosses on.
-        let package = package(py).map_err(|e| py_error(py, &e))?;
-        for (name, surface) in SURFACES {
-            // `models`, `llm` and `oauth` are sugar, not capabilities: a caller that
-            // bound the name keeps it, as a JavaScript body's does.
-            if matches!(name, "models" | "llm" | "oauth") && bindings.contains_key(name) {
-                continue;
-            }
-            if surfaces.holds(surface) {
-                let handle = package.getattr(name).map_err(|e| py_error(py, &e))?;
-                bind(name, handle)?;
-            }
-        }
+        bind_builtins(py, &scope)?;
+        bind_run(py, &scope, bindings)?;
         let boot = boot_module(py).map_err(|e| py_error(py, &e))?;
         let outcome = boot
             .getattr("execute")
@@ -734,6 +696,160 @@ pub(crate) fn run_body(
             Err(error) => Err(body_error(py, &error, &filename, timeout)),
         }
     })
+}
+
+/// A fresh copy of the gate's `builtins` as `scope`'s `__builtins__`.
+fn bind_builtins(py: Python<'_>, scope: &Bound<'_, PyDict>) -> Result<()> {
+    let gate = gate_module(py).map_err(|e| py_error(py, &e))?;
+    let builtins = gate
+        .getattr("new_builtins")
+        .and_then(|f| f.call0())
+        .map_err(|e| py_error(py, &e))?;
+    scope
+        .set_item("__builtins__", builtins)
+        .map_err(|e| py_error(py, &e))
+}
+
+/// What one run binds in its globals: its bindings, the bridge functions of
+/// the surfaces it has, and the surfaces themselves.
+fn bind_run(
+    py: Python<'_>,
+    scope: &Bound<'_, PyDict>,
+    bindings: &BTreeMap<String, Json>,
+) -> Result<()> {
+    let bind = |name: &str, value: Bound<'_, PyAny>| -> Result<()> {
+        scope.set_item(name, value).map_err(|e| py_error(py, &e))
+    };
+    for (name, value) in bindings {
+        let value = convert::from_json(py, value).map_err(|e| py_error(py, &e))?;
+        bind(name, value)?;
+    }
+    // Presence is scope: a surface this run was not given is not bound at
+    // all, so reaching it is a `NameError` naming it rather than a call that
+    // fails somewhere else later.
+    let surfaces = bridge::surfaces();
+    let sc = py.import("__sc").map_err(|e| py_error(py, &e))?;
+    for (name, surface) in bridge::BOUND_NAMES {
+        if surfaces.holds(surface) {
+            let function = sc.getattr(name).map_err(|e| py_error(py, &e))?;
+            bind(name, function)?;
+        }
+    }
+    // And the surfaces themselves, over those same functions: `db`, `fetch`,
+    // `fs`, `trigger` and `modfn` are what an author writes, and the bridge
+    // function under each is what the plan crosses on.
+    let package = package(py).map_err(|e| py_error(py, &e))?;
+    for (name, surface) in SURFACES {
+        // `models`, `llm` and `oauth` are sugar, not capabilities: a caller that
+        // bound the name keeps it, as a JavaScript body's does.
+        if matches!(name, "models" | "llm" | "oauth") && bindings.contains_key(name) {
+            continue;
+        }
+        if surfaces.holds(surface) {
+            let handle = package.getattr(name).map_err(|e| py_error(py, &e))?;
+            bind(name, handle)?;
+        }
+    }
+    Ok(())
+}
+
+/// A notebook session's globals (analytics TODO A10.3), by the session's key:
+/// what one cell defines, the next one reads.
+static SESSIONS: LazyLock<Mutex<HashMap<String, Py<PyDict>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn sessions() -> Result<std::sync::MutexGuard<'static, HashMap<String, Py<PyDict>>>> {
+    SESSIONS
+        .lock()
+        .map_err(|_| Error::msg("the Python sessions are poisoned"))
+}
+
+/// The pseudo-filename a session's cells are compiled under: one per session,
+/// so its `linecache` entry is replaced by each cell rather than kept forever.
+fn cell_filename(session: &str) -> String {
+    format!("<cell {session}>")
+}
+
+/// Run one **notebook cell** in the session `session`'s globals, made — and
+/// `setup` run in them — the first time the session is used.
+///
+/// The globals outlive the run, which is the point: a cell's `d = …` is the
+/// next cell's `d`. Everything else is a body's — the gate's builtins, this
+/// run's bindings and surfaces (bound again each run, since they are the
+/// run's), its deadline and its budgets. What the cell answers is
+/// `__session_cell__(code, last)`'s, when `setup` defined one, and otherwise
+/// its last expression's value.
+pub(crate) fn run_cell(
+    session: &str,
+    setup: &str,
+    source: &str,
+    bindings: &BTreeMap<String, Json>,
+    state: RunState,
+) -> Result<Json> {
+    let timeout = state.timeout;
+    let _entered = bridge::Enter::new(state);
+    let filename = cell_filename(session);
+    Python::attach(|py| {
+        let existing = sessions()?.get(session).map(|s| s.clone_ref(py));
+        let scope = match existing {
+            Some(scope) => scope.into_bound(py),
+            None => {
+                let scope = PyDict::new(py);
+                scope
+                    .set_item("__name__", pyo3::types::PyString::new(py, "<notebook>"))
+                    .map_err(|e| py_error(py, &e))?;
+                bind_builtins(py, &scope)?;
+                bind_run(py, &scope, bindings)?;
+                let code = std::ffi::CString::new(setup)
+                    .map_err(|_| Error::msg("a session's setup has a NUL byte"))?;
+                py.run(code.as_c_str(), Some(&scope), None)
+                    .map_err(|e| py_error(py, &e))?;
+                sessions()?.insert(session.to_owned(), scope.clone().unbind());
+                scope
+            }
+        };
+        bind_run(py, &scope, bindings)?;
+        let boot = boot_module(py).map_err(|e| py_error(py, &e))?;
+        let compiled = boot
+            .getattr("compile_cell")
+            .and_then(|f| f.call1((source, filename.as_str())))
+            .map_err(|e| syntax_error(py, &e, &filename))?;
+        let (code, last): (Bound<'_, PyAny>, Bound<'_, PyAny>) =
+            compiled.extract().map_err(|e| py_error(py, &e))?;
+        let outcome = boot
+            .getattr("execute_cell")
+            .and_then(|f| f.call1((code, last, &scope)));
+        match outcome {
+            Ok(value) => convert::to_json(&value, "result").map_err(|e| {
+                Error::invalid(format!(
+                    "this Python cell answered a value with no JSON form: {e}"
+                ))
+            }),
+            Err(error) => Err(body_error(py, &error, &filename, timeout)),
+        }
+    })
+}
+
+/// Forget the session `session`'s globals: a restarted notebook, or one that
+/// idled out. Answers whether there was one.
+pub(crate) fn end_session(session: &str) -> bool {
+    let Ok(mut all) = sessions() else {
+        return false;
+    };
+    let Some(scope) = all.remove(session) else {
+        return false;
+    };
+    drop(all);
+    let filename = cell_filename(session);
+    Python::attach(|py| {
+        if let Ok(boot) = boot_module(py) {
+            let _ = boot
+                .getattr("forget_source")
+                .and_then(|f| f.call1((filename.as_str(),)));
+        }
+        drop(scope);
+    });
+    true
 }
 
 /// Ask one thing of a **plugin module**, on this thread, with the run's state

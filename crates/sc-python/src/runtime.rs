@@ -144,6 +144,13 @@ pub(crate) enum Task {
     /// One op of the **plugin module** host: a load, an action, a function, or
     /// one of a table provider's six.
     Plugin { op: &'static str, payload: Json },
+    /// A notebook cell, in its session's globals (analytics TODO A10.3).
+    Cell {
+        session: String,
+        setup: String,
+        code: String,
+        bindings: BTreeMap<String, Json>,
+    },
 }
 
 /// One run, as the caller hands it over: what to do, what it may reach, what it
@@ -521,6 +528,12 @@ fn thread_loop(inbox: &Receiver<Job>, mine: &Sender<Job>, owner: &Weak<Inner>) {
         let outcome = match &task {
             Task::Body { code, bindings } => interp::run_body(code, bindings, state),
             Task::Plugin { op, payload } => interp::run_plugin(op, payload, state),
+            Task::Cell {
+                session,
+                setup,
+                code,
+                bindings,
+            } => interp::run_cell(session, setup, code, bindings, state),
         };
         // An async exception fired at a body that had already finished would
         // otherwise be delivered to whatever ran next on this thread.

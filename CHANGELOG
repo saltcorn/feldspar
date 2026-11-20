@@ -2,6 +2,75 @@
 
 Changes in reverse chronological order.
 
+## Analytics A10 phase 2: running a notebook's cells
+
+The second phase of milestone A10 (TODO-analytics.md): a notebook's cells now run on the server,
+through the API. The browser still shows "This kind of workspace is not here yet" for a notebook
+until A10.7, which builds the workspace on these endpoints.
+
+- **A10.3, sessions** (`crates/sc-server/src/notebook.rs`). A session is Jupyter's kernel: one per
+  notebook and administrator, kept until **Restart**, 30 idle minutes, or the notebook is deleted.
+  At most 16 at once; past that the one idle longest is ended, and a new one is refused only when
+  every session is running a cell.
+  - **JavaScript:** each session has an isolate of its own (a one-worker `CodeRuntime`), so its
+    `globalThis` is the session's. `sc_expr::notebook_cell` rewrites a cell, by span, so that its
+    top-level declarations (destructuring, functions and classes included) are copied onto
+    `globalThis` when it ends. It also records each statement's line for errors, and makes the
+    last expression the cell's value.
+  - **Python:** `PythonRuntime::run_cell` keeps a globals dict per session in `sc-python`.
+    `boot.compile_cell` splits off the last expression to evaluate, and `end_session` forgets
+    the dict. The binding of a run's surfaces is now shared by bodies and cells
+    (`bind_builtins`, `bind_run`).
+  - **Bounds:** each cell has a code body's bounds (call budget, JS slice, heap) and a 30 s wall
+    clock. A runaway cell is stopped and the session runs the next one, keeping what earlier
+    cells defined.
+  - **Teardown:** the sessions are a typed extension on the catalog (`NotebookSessions`), so
+    `Catalog::teardown` ends them. `catalog_teardown.rs` now runs a notebook cell before checking
+    that the catalog is freed.
+- **A10.4, the `nb` surface** (`crates/sc-analytics/src/nb.rs`, `nb/nb.js`, `nb/nb.py`). It is
+  written once as `{ op: "nb", what }` plans sent over the cell's own `db`, so `nb` calls count
+  against the same call budget. Each language has a prelude run once per session.
+  - **Datasets:** `nb.dataset(name).filter(…).mutate(…).select(…).sort(…).aggregate(by,
+    summaries).limit(n).sample(n).then(kind, params)` crosses as a base and its steps, and becomes
+    a non-persisted dataset. Its id is derived from its content, so the same chain is the same
+    dataset in every run. After **Save as dataset**, the chain refers to the stored dataset.
+  - **Panels:** `nb.plot(spec)` takes a full plot spec or a short one (`{ data, mark, x, y, … }`,
+    with `histogram`, `boxplot`, `density` and `smooth`). There are also `nb.table`, `nb.test`,
+    `nb.card` (over a stored dataset), `nb.map` and `nb.markdown`. Each panel is drawn once when it
+    is made, so a misspelt column is refused with the plot's own sentence on the line it came
+    from.
+  - **Data and fits:** `d.rows()` and `d.columns()` read a dataset. `nb.fit(model)` starts a fit
+    and waits for it, naming it in the session's status meanwhile, and answers a handle whose
+    `output(name)` is a panel.
+  - **Outputs:** `nb.show(…)`, `console.log` / `print`, and the cell's last value become outputs,
+    in order. A new `dataset` output keeps a shown dataset's reference and first rows. It counts
+    in the usage index and in an application's reach, and Save as dataset finds it.
+  - Values a cell keeps send through the cell running now, so a dataset made in one cell is read
+    in the next.
+- **A10.5, LLM prompt cells** (`crates/sc-server/src/notebook_llm.rs`). An in-memory `sc-agent`
+  agent answers the prompt, using the default LLM provider. Its one trait's tools are the `nb`
+  functions: `columns`, `rows`, `plot`, `table`, `test`, `card`, `markdown` and `show_dataset`.
+  - **Context:** it is told the earlier cells and the datasets and tables with their columns.
+  - **Recording:** each call that worked is recorded in the cell's `calls` output, with the
+    prompt and the final answer (as `say`).
+  - **Replay:** running the cell again replays the calls without the LLM. `regenerate`, or a
+    changed prompt, asks again. The `calls` output gained an optional `prompt`.
+- **A10.6, endpoints** (admin only; `client.ts` regenerated in all four UIs):
+  - `runNotebookCell` (`POST /api/workspaces/{id}/cells/{cell}/run`, with an optional `source`
+    and `regenerate`) and `runNotebook` (`…/run-all`, in order, stopping at the first error).
+    Both store the outputs and the `run` in the notebook's state as it is when the run ends.
+  - `interruptNotebook`, `restartNotebook` and `getNotebookSession`.
+  - The session's status is pushed on the WebSocket `GET /api/workspaces/{id}/session/live`.
+  - Analytics applications still refuse the notebook kind.
+- **Tests:**
+  - `notebook_cell` unit tests (`sc-expr`), `python_sessions.rs` (`sc-python`, `python-host`),
+    and `nb.rs` unit tests (`sc-analytics`).
+  - `analytics_notebook.rs` (`sc-server`) runs the Try it in JavaScript through the API, and in
+    Python under the `python` feature: the table's rows, the bar chart from the cell above, a
+    typo on its line, a runaway cell, a fit, the usage index, Save as dataset, Run all, Restart
+    and Interrupt. It also answers an LLM prompt with a scripted provider and replays it
+    without calling the provider again.
+
 ## Analytics A10 phase 1: the notebook's state and non-persisted datasets
 
 The first phase of milestone A10 (TODO-analytics.md), the Notebook workspace. Nothing runs cells

@@ -1050,11 +1050,120 @@ pub(crate) fn register(set: &mut EndpointSet) {
         ])),
     );
 
+    // --- the notebook's session (A10.3–A10.6) ------------------------------------
+    //
+    // Admin only, on the admin host: a cell is code run on the server, and an
+    // Analytics application refuses the notebook kind (Python has no sandbox,
+    // §15.2). One session per notebook and administrator holds the globals a
+    // cell leaves for the next; the first run starts it, **Restart** ends it,
+    // and it ends by itself when idle. A run stores the cell's outputs and its
+    // run in the notebook's state and answers the cell as it now is. The
+    // session's status is also **pushed**: `GET /api/workspaces/{id}/session/live`
+    // is a WebSocket, beside this set for the reason a fit's progress socket is,
+    // sending the status below whenever it changes (a fit a cell is waiting
+    // for named in `fit`, whose own progress socket the browser can open).
+
+    // Run one code cell: its `source` as sent (and stored with the cell), or
+    // as stored. An LLM prompt cell replays the calls it recorded unless
+    // `regenerate` asks the LLM again.
+    set.register(
+        Endpoint::new(
+            ids::RUN_NOTEBOOK_CELL,
+            Method::Post,
+            api()
+                .lit("workspaces")
+                .param("id", ValueType::Uuid)
+                .lit("cells")
+                .param("cell", ValueType::Text)
+                .lit("run"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("source", TypeSchema::optional(TypeSchema::text())),
+            StructField::new("regenerate", TypeSchema::optional(TypeSchema::bool())),
+        ]))
+        .output(TypeSchema::struct_of([
+            // `{ id, kind, source, outputs, run }`, as the state keeps it.
+            StructField::new("cell", TypeSchema::json()),
+            StructField::new("session", notebook_session_schema()),
+        ])),
+    );
+
+    // Run every code cell in order, stopping at the first that fails.
+    set.register(
+        Endpoint::new(
+            ids::RUN_NOTEBOOK,
+            Method::Post,
+            api()
+                .lit("workspaces")
+                .param("id", ValueType::Uuid)
+                .lit("run-all"),
+        )
+        .output(TypeSchema::struct_of([
+            StructField::new("cells", TypeSchema::array(TypeSchema::json())),
+            StructField::new("session", notebook_session_schema()),
+        ])),
+    );
+
+    // Stop the cell that is running: it ends with an error output saying so,
+    // and the session keeps what the cells before it defined.
+    set.register(
+        Endpoint::new(
+            ids::INTERRUPT_NOTEBOOK,
+            Method::Post,
+            api()
+                .lit("workspaces")
+                .param("id", ValueType::Uuid)
+                .lit("interrupt"),
+        )
+        .output(notebook_session_schema()),
+    );
+
+    // End the session: what the cells defined is gone, and the next run
+    // starts a new one.
+    set.register(
+        Endpoint::new(
+            ids::RESTART_NOTEBOOK,
+            Method::Post,
+            api()
+                .lit("workspaces")
+                .param("id", ValueType::Uuid)
+                .lit("restart"),
+        )
+        .output(notebook_session_schema()),
+    );
+
+    set.register(
+        Endpoint::new(
+            ids::GET_NOTEBOOK_SESSION,
+            Method::Get,
+            api()
+                .lit("workspaces")
+                .param("id", ValueType::Uuid)
+                .lit("session"),
+        )
+        .output(notebook_session_schema()),
+    );
+
     set.register(Endpoint::new(
         ids::DELETE_WORKSPACE,
         Method::Delete,
         api().lit("workspaces").param("id", ValueType::Uuid),
     ));
+}
+
+/// A notebook's session: `state` is `none` (no session: nothing defined),
+/// `idle` or `running`; `cell` the cell running; `runs` how many cells this
+/// session has run (a cell's `run.count` is the session's count at its run);
+/// `fit` the fit a running cell is waiting for.
+fn notebook_session_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("state", TypeSchema::text()),
+        StructField::new("language", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("cell", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("runs", TypeSchema::int()),
+        StructField::new("started", TypeSchema::optional(TypeSchema::timestamp())),
+        StructField::new("fit", TypeSchema::optional(TypeSchema::uuid())),
+    ])
 }
 
 /// A stored dataset as a list shows it.

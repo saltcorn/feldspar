@@ -1438,6 +1438,10 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                         "there is no workspace with id {id}"
                     )));
                 }
+                // A deleted notebook's sessions end with it (A10.3).
+                if let Some(sessions) = catalog.extension::<crate::notebook::NotebookSessions>() {
+                    sessions.forget(id);
+                }
                 Ok(HandlerResponse::ok(json!({ "deleted": true })))
             }
         }

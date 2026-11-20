@@ -80,6 +80,9 @@ mod mcp;
 mod mcp_proxy;
 mod mcp_servers;
 mod models;
+mod notebook;
+mod notebook_api;
+mod notebook_llm;
 mod module_routes;
 mod modules;
 mod notices;
@@ -112,6 +115,9 @@ mod uploads;
 mod webhooks;
 mod ws;
 
+/// The notebook sessions a catalog carries (analytics TODO A10.3), named for
+/// the teardown test.
+pub use notebook::{NotebookSessions, SessionStatus};
 pub use admin_host::{AdminHost, HANDOFF_ROUTE, HANDOFF_TTL};
 pub use agents::{AgentServices, install_agents, install_agents_on};
 pub use analytics_app::{ANALYTICS_FRAMEWORK_ENABLED, install_analytics_framework};

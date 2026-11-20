@@ -83,3 +83,7 @@ mod python_triggers;
 #[cfg(not(feature = "python-host"))]
 #[path = "without_python.rs"]
 mod without_python;
+
+#[cfg(feature = "python-host")]
+#[path = "python_sessions.rs"]
+mod python_sessions;

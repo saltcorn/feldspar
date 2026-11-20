@@ -32,6 +32,7 @@ pub mod crossfilter;
 pub mod demo;
 pub mod layer;
 pub mod map;
+pub mod nb;
 pub mod model_outputs;
 pub mod notebook;
 pub mod panel;
