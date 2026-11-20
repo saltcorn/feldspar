@@ -38,7 +38,8 @@ use std::sync::Arc;
 
 use sc_catalog::Catalog;
 use sc_dataset::{
-    Caller, ColType, Grain, Options, Reader, Schema, StageColumn, StageShape, compile, scramble,
+    Caller, ColType, DatasetDef, Grain, Options, Reader, Schema, StageColumn, StageShape, compile,
+    scramble,
 };
 use sc_db::{ColumnDef, DatabaseDriver, Row, SchemaChange};
 use sc_error::{Error, Result};
@@ -299,38 +300,11 @@ pub(crate) async fn plot_rows_in(
                     "the dataset this plot reads is gone; pick another",
                 )));
             };
-            let def = scope.extend(&def);
-            let schema = Schema::of_catalog(catalog)?;
-            let mut library = sc_dataset::load_library(catalog).await?;
-            sc_dataset::load_models(catalog, &mut library).await;
-            let compiled = compile(&schema, &library, &def, Options::default());
-            let stage = match compiled.last() {
-                Ok(stage) => stage,
-                Err(e) => {
-                    return Ok(Err(Error::invalid(
-                        filter_failure(&schema, &library, &def).unwrap_or_else(|| {
-                            format!("the dataset `{}` does not read: {}", def.name, e.message())
-                        }),
-                    )));
-                }
-            };
-            // A scored dataset (A7.7): its rows are computed in memory.
-            if stage.tail().is_some() {
-                return tail_rows(catalog, caller, stage).await;
-            }
-            Ok(match stage.unordered_query() {
-                Ok(query) => Ok(PlotRows {
-                    query,
-                    shape: stage.shape(),
-                    db: RowsDb::Primary(Reader::new(catalog, caller)?),
-                }),
-                Err(e) => Err(Error::invalid(format!(
-                    "the dataset `{}` does not read: {}",
-                    def.name,
-                    e.message()
-                ))),
-            })
+            dataset_rows(catalog, caller, &scope.extend(&def)).await
         }
+        // A non-persisted dataset (A10.2) is read as a stored one is. No
+        // dashboard condition names it, so none reaches it.
+        DataRef::Inline { definition } => dataset_rows(catalog, caller, definition).await,
         // A fit's outputs are its model's, and models are the admin's: rows a
         // fit read on the server's authority are not narrowed to a caller's.
         DataRef::FitOutput { .. } if !caller.is_admin() => Ok(Err(Error::invalid(
@@ -350,6 +324,45 @@ pub(crate) async fn plot_rows_in(
             Ok(Ok(fit_output_rows(&data).await?))
         }
     }
+}
+
+/// The rows of the dataset `def` after its last operation, read as `caller`,
+/// or the sentence saying why there are none.
+async fn dataset_rows(
+    catalog: &Catalog,
+    caller: &Caller,
+    def: &DatasetDef,
+) -> Result<Result<PlotRows>> {
+    let schema = Schema::of_catalog(catalog)?;
+    let mut library = sc_dataset::load_library(catalog).await?;
+    sc_dataset::load_models(catalog, &mut library).await;
+    let compiled = compile(&schema, &library, def, Options::default());
+    let stage = match compiled.last() {
+        Ok(stage) => stage,
+        Err(e) => {
+            return Ok(Err(Error::invalid(
+                filter_failure(&schema, &library, def).unwrap_or_else(|| {
+                    format!("the dataset `{}` does not read: {}", def.name, e.message())
+                }),
+            )));
+        }
+    };
+    // A scored dataset (A7.7): its rows are computed in memory.
+    if stage.tail().is_some() {
+        return tail_rows(catalog, caller, stage).await;
+    }
+    Ok(match stage.unordered_query() {
+        Ok(query) => Ok(PlotRows {
+            query,
+            shape: stage.shape(),
+            db: RowsDb::Primary(Reader::new(catalog, caller)?),
+        }),
+        Err(e) => Err(Error::invalid(format!(
+            "the dataset `{}` does not read: {}",
+            def.name,
+            e.message()
+        ))),
+    })
 }
 
 /// The table a fit's output data, or a scored dataset's rows, are loaded

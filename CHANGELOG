@@ -2,6 +2,47 @@
 
 Changes in reverse chronological order.
 
+## Analytics A10 phase 1: the notebook's state and non-persisted datasets
+
+The first phase of milestone A10 (TODO-analytics.md), the Notebook workspace. Nothing runs cells
+yet (that is phase 2), and the browser still shows "This kind of workspace is not here yet" for a
+notebook until A10.7.
+
+- **A10.1, the notebook's state** (`crates/sc-analytics/src/notebook.rs`): `{ language, cells }`. The
+  `language` is `javascript`, `python` or `llm`, chosen when the notebook is created and never
+  changed: a save that changes it is refused. Each cell is `{ id, kind: text | code, source,
+  outputs, run }`. An output is a `panel`, printed `text`, a `value`, an `error` with its line, or
+  an LLM cell's recorded `calls` (only in an `llm` notebook). The state is checked on save: unique
+  cell ids, at most 500 cells of 100 kB, at most 50 outputs per cell, and no outputs on a text
+  cell. The panels in outputs are where the usage index looks (`panel_slots`), so a notebook is
+  found by the delete warnings like a report or a dashboard.
+- **The notebook kind is no longer refused.** `createWorkspace` needs `state.language` for a
+  notebook. Analytics applications cannot open one: self-serve `workspace_kinds` refuses
+  `notebook`, and a fixed application cannot show one (`WorkspaceKind::not_in_applications`). A
+  notebook runs code on the server, and a Python cell has no sandbox.
+- **A10.2, non-persisted datasets.** A plot's, a summary table's or a test's data may be
+  `{ "kind": "inline", "definition": <DatasetDef> }` (`DataRef::Inline`): a dataset carried in the
+  spec rather than stored. It is compiled and read exactly as a stored one, as the caller
+  (`plot_rows_in`). It travels with a panel when the panel is dragged. No dashboard condition
+  reaches it.
+  - **Authority:** the admin reads any inline dataset. A fixed application reads only the ones its
+    shown workspaces carry, exactly as they carry them (`AppScope::inline`). Anything else counts
+    as a new dataset: it needs the Dataset editor, a base the caller may build on, and joined or
+    appended datasets they can see. This is checked by `renderPlot`, `renderTable`, `runTests`
+    and `renderPanel`.
+  - **Usage index:** it counts the stored datasets and tables an inline dataset is built on, so a
+    base's delete warning (`datasetUsage`) lists the notebook. `UsageIndex::table` answers for
+    tables. A panel whose inline dataset's base is gone says so instead of failing.
+  - **Save as dataset:** `POST /api/workspaces/{id}/save-dataset` (`saveInlineDataset`; admin
+    only, like the notebook) stores the inline dataset under its own id and a name, as the
+    caller's. It then points the workspace's references to it at the stored one
+    (`panel::save_inline_dataset`). `client.ts` is regenerated in all four UIs.
+- Tests: `notebook.rs` unit tests; `crates/sc-analytics/tests/notebooks.rs`, which draws an
+  inline dataset on Postgres and SQLite, checks the notebook in the usage index and runs Save as
+  dataset; and `a_notebooks_inline_datasets_are_drawn_found_and_saved` (`analytics_api.rs`) and
+  `a_fixed_application_reads_the_inline_datasets_it_shows_and_no_others` (`analytics_apps.rs`).
+  The tests that expected the notebook to be refused now expect every kind to be available.
+
 ## Admin UI: the Analytics sidebar entry opens in a new tab
 
 The Analytics UI is an application of its own, so its sidebar entry now opens it in a new tab

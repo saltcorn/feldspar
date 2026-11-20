@@ -305,9 +305,8 @@ async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
     let (mut client, _db) = setup().await?;
 
     // 1. The front page: only the demo's datasets (A2.15) and no workspaces
-    // yet, and every kind of workspace listed with the milestone that brings
-    // it — every kind but those here now: the Data explorer, the Report, the
-    // Map, the Dashboard and the Simulation.
+    // yet, and every kind of workspace listed — all of them here since the
+    // notebook arrived with A10.
     let listed = client.ok("GET", "/api/datasets", None).await;
     let mut names: Vec<&str> = listed
         .as_array()
@@ -324,11 +323,7 @@ async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
             .as_array()
             .unwrap()
             .iter()
-            .filter(
-                |k| !["data_explorer", "report", "map", "dashboard", "simulation"]
-                    .contains(&k["kind"].as_str().unwrap_or(""))
-            )
-            .all(|k| k["available"] == json!(false) && k["arrives_in"].is_string()),
+            .all(|k| k["available"] == json!(true) && k["arrives_in"].is_null()),
         "{kinds}"
     );
 

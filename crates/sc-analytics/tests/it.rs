@@ -31,3 +31,6 @@ mod cards;
 
 #[path = "crossfilter.rs"]
 mod crossfilter;
+
+#[path = "notebooks.rs"]
+mod notebooks;

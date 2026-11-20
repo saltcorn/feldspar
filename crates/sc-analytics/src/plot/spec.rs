@@ -25,13 +25,13 @@
 
 use std::collections::BTreeMap;
 
-use sc_dataset::DatasetId;
+use sc_dataset::{DatasetDef, DatasetId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use uuid::Uuid;
 
 /// Where a plot's rows come from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DataRef {
     /// The rows of a stored dataset after its last operation.
@@ -49,6 +49,41 @@ pub enum DataRef {
         /// The output data's name (`rows`, `draws`, or a provider's own).
         name: String,
     },
+    /// A **non-persisted dataset** (analytics TODO A10.2): a definition
+    /// carried in the spec rather than stored in `_fd_datasets` — what a
+    /// notebook's `nb.dataset(…)` makes. It is compiled and read exactly as a
+    /// stored one is, as the caller, and travels with the panel when the panel
+    /// is dragged. Its `id` is its identity within the notebook, never a stored
+    /// dataset's; **Save as dataset** stores it under that id.
+    Inline {
+        /// The definition.
+        definition: Box<DatasetDef>,
+    },
+}
+
+impl DataRef {
+    /// A non-persisted dataset.
+    pub fn inline(definition: DatasetDef) -> DataRef {
+        DataRef::Inline {
+            definition: Box::new(definition),
+        }
+    }
+
+    /// The stored dataset it reads, if it reads one by id.
+    pub fn dataset(&self) -> Option<DatasetId> {
+        match self {
+            DataRef::Dataset { dataset } => Some(*dataset),
+            DataRef::FitOutput { .. } | DataRef::Inline { .. } => None,
+        }
+    }
+
+    /// The definition it carries, if it is a non-persisted dataset.
+    pub fn definition(&self) -> Option<&DatasetDef> {
+        match self {
+            DataRef::Inline { definition } => Some(definition),
+            DataRef::Dataset { .. } | DataRef::FitOutput { .. } => None,
+        }
+    }
 }
 
 /// A plot.

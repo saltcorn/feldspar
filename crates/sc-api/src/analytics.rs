@@ -1027,6 +1027,29 @@ pub(crate) fn register(set: &mut EndpointSet) {
         .output(workspace_schema()),
     );
 
+    // **Save as dataset** (A10.2): store one of the workspace's non-persisted
+    // datasets — a notebook's `nb.dataset(…)` — under a name, as the caller's,
+    // and point the workspace's panels at the stored one.
+    set.register(
+        Endpoint::new(
+            ids::SAVE_INLINE_DATASET,
+            Method::Post,
+            api()
+                .lit("workspaces")
+                .param("id", ValueType::Uuid)
+                .lit("save-dataset"),
+        )
+        .input(TypeSchema::struct_of([
+            // The non-persisted dataset's id, which the stored one keeps.
+            StructField::new("dataset", TypeSchema::uuid()),
+            StructField::new("name", TypeSchema::text()),
+        ]))
+        .output(TypeSchema::struct_of([
+            StructField::new("dataset", dataset_detail_schema()),
+            StructField::new("workspace", workspace_schema()),
+        ])),
+    );
+
     set.register(Endpoint::new(
         ids::DELETE_WORKSPACE,
         Method::Delete,

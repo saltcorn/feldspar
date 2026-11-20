@@ -11650,11 +11650,16 @@ at the fit's output data, each drawn by `render_plot` unless it is optional and 
 `dataset_changed` — beside the model endpoints of §14.2 (`cloneModel`, `patchModelViewState`,
 `cancelModelFit`, `listModelInstances`) and the fit's progress socket; and workspaces
 (`listWorkspaceKinds`, `listWorkspaces`, `getWorkspace`, `createWorkspace`, `updateWorkspace`,
-`shareWorkspace`, `saveWorkspaceState`, `deleteWorkspace`); the shell (A9.3): `analyticsShell`; panels (A4.2): `renderPanel`, with a dashboard's conditions as `filters` (A6.4, §14.8); map layers (A5.5,
+`shareWorkspace`, `saveWorkspaceState`, `deleteWorkspace`, and A10.2's `saveInlineDataset`, which
+stores a non-persisted dataset a workspace's panels carry under a name); the shell (A9.3): `analyticsShell`; panels (A4.2): `renderPanel`, with a dashboard's conditions as `filters` (A6.4, §14.8); map layers (A5.5,
 §14.6): `layerData`, `layerTile`; maps (A5.6–A5.7, §14.6): `mapSettings`, `suggestMap`,
 `renderMap`; and the Map workspace (A5.8–A5.13, §14.7): `layerRows`, `selectFeatures`,
 `saveSelection`, `allowMapHost`, `listMapTools`, `runMapTool`. `saveWorkspaceState` checks a
-report's document and a map's spec (`check_state`) before it stores it.
+report's document, a map's spec and a notebook's cells (`check_state`) before it stores it, and
+refuses a change to a notebook's language. A plot's, a table's or a test's data may be a
+non-persisted dataset (A10.2, `{ "kind": "inline", "definition" }`). It is read as a stored
+dataset is, and it is readable where the caller could have made it, or in a fixed application
+exactly as a shown workspace carries it.
 
 **The bundle** (`ui/analytics`): React, TypeScript and react-bootstrap over the generated client,
 like the admin SPA, but a bundle of its own, so that an Analytics application can serve it

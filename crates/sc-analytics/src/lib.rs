@@ -10,7 +10,8 @@
 //! selection ([`selection`], A5.10) and toolbox ([`tools`], A5.12); a
 //! dashboard's stat cards ([`card`], A6.2) and cross-filtering
 //! ([`crossfilter`], A6.3–A6.6); the Simulation workspace's profiler and
-//! scenario comparison ([`simulate`], A7.4–A7.5); the Analytics UI as an application framework
+//! scenario comparison ([`simulate`], A7.4–A7.5); the Notebook workspace's state ([`notebook`],
+//! A10.1); the Analytics UI as an application framework
 //! ([`app`], A9); the A/B tests workspace over the Astro module's tables ([`ab`],
 //! TODO-astro W3.6); and the demo data ([`demo`]). Datasets are not here: they are `sc-dataset`'s, because models
 //! read them too.
@@ -32,6 +33,7 @@ pub mod demo;
 pub mod layer;
 pub mod map;
 pub mod model_outputs;
+pub mod notebook;
 pub mod panel;
 pub mod plot;
 pub mod selection;

@@ -39,7 +39,7 @@ use serde::Serialize;
 use serde_json::{Value as Json, json};
 use uuid::Uuid;
 
-use crate::panel::workspace_datasets;
+use crate::panel::{workspace_datasets, workspace_inline_datasets};
 use crate::workspace::{Workspace, WorkspaceId, WorkspaceKind, list_workspaces, load_workspace};
 
 /// The registered name of the framework.
@@ -200,10 +200,10 @@ impl AnalyticsConfig {
                     e.message_and_causes()
                 ))
             })?;
-            if !kind.in_applications() {
+            if let Some(why) = kind.not_in_applications() {
                 return Err(refuse(format!(
-                    "`{CFG_WORKSPACE_KINDS}`: a {} workspace predicts with models, which are the \
-                     admin's alone, so an application cannot open one",
+                    "`{CFG_WORKSPACE_KINDS}`: a {} workspace {why}, so an application cannot open \
+                     one",
                     kind.label()
                 )));
             }
@@ -287,6 +287,17 @@ pub async fn resolve_workspaces(catalog: &Catalog, refs: &[String]) -> Result<Ve
         ws.kind
             .check_available()
             .map_err(|e| refuse(e.message_and_causes()))?;
+        // A fixed application shows a simulation, whose panels then say that
+        // models are the unrestricted UI's; a notebook it cannot show at all,
+        // since showing one is running its code.
+        if ws.kind == WorkspaceKind::Notebook
+            && let Some(why) = ws.kind.not_in_applications()
+        {
+            return Err(refuse(format!(
+                "the workspace `{}` is a notebook, which {why}",
+                ws.name
+            )));
+        }
         if !out.iter().any(|w| w.id == ws.id) {
             out.push(ws);
         }
@@ -309,6 +320,9 @@ pub struct AppScope {
     pub shown: Vec<Workspace>,
     /// Fixed mode: the datasets they read.
     pub datasets: BTreeSet<DatasetId>,
+    /// Fixed mode: the non-persisted datasets their panels carry (A10.2),
+    /// each readable exactly as it is there.
+    pub inline: Vec<DatasetDef>,
 }
 
 impl AppScope {
@@ -327,6 +341,12 @@ impl AppScope {
             Mode::SelfServe => Vec::new(),
         };
         let datasets = shown.iter().flat_map(workspace_datasets).collect();
+        let mut inline: Vec<DatasetDef> = Vec::new();
+        for def in shown.iter().flat_map(workspace_inline_datasets) {
+            if !inline.contains(&def) {
+                inline.push(def);
+            }
+        }
         Ok(AppScope {
             app,
             name: name.to_owned(),
@@ -334,6 +354,7 @@ impl AppScope {
             tables: tables.into_iter().collect(),
             shown,
             datasets,
+            inline,
         })
     }
 
@@ -373,6 +394,15 @@ impl AppScope {
                     && root_table(library, def).is_some_and(|t| self.tables.contains(&t))
             }
         }
+    }
+
+    /// Whether a non-persisted dataset (A10.2) may be read here as it is,
+    /// without the checks a new dataset's base has: in fixed mode, one the
+    /// shown workspaces' panels carry, exactly. In self-serve mode none is —
+    /// it is a new dataset, which needs the Dataset editor and a base the
+    /// caller may build on, as `sc-server` checks.
+    pub fn shows_inline(&self, def: &DatasetDef) -> bool {
+        self.config.mode == Mode::Fixed && self.inline.contains(def)
     }
 
     /// Refuse, unless datasets may be created and edited here.
@@ -552,7 +582,7 @@ mod tests {
         );
         refused(
             json!({ "mode": "self_serve", "workspace_kinds": ["notebook"] }),
-            "a later milestone",
+            "a Python cell has no sandbox",
         );
         refused(
             json!({ "mode": "self_serve", "workspace_kinds": [] }),
@@ -600,6 +630,7 @@ mod tests {
             tables: BTreeSet::from(["houses".to_owned(), "neighbourhoods".to_owned()]),
             shown: Vec::new(),
             datasets: BTreeSet::new(),
+            inline: Vec::new(),
         }
     }
 

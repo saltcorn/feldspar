@@ -479,6 +479,7 @@ pub const UPDATE_WORKSPACE: HandlerId<AnalyticsUi> = HandlerId::new("updateWorks
 pub const SHARE_WORKSPACE: HandlerId<AnalyticsUi> = HandlerId::new("shareWorkspace");
 pub const SAVE_WORKSPACE_STATE: HandlerId<AnalyticsUi> = HandlerId::new("saveWorkspaceState");
 pub const DELETE_WORKSPACE: HandlerId<AnalyticsUi> = HandlerId::new("deleteWorkspace");
+pub const SAVE_INLINE_DATASET: HandlerId<AnalyticsUi> = HandlerId::new("saveInlineDataset");
 
 // --- Handlers reached by a raw route rather than a typed endpoint ---
 //

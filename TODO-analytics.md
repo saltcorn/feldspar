@@ -844,13 +844,13 @@ notebook reopens with its outputs without running anything.
 
 ## Phase 1 — The notebook model
 
-- [ ] A10.1 The Notebook state in `sc-analytics`: `{ language, cells }`, each cell
+- [x] A10.1 The Notebook state in `sc-analytics`: `{ language, cells }`, each cell
       `{ id, kind: text | code, source, outputs, run }` with `language` fixed at creation
       (`javascript`, `python` or `llm`); outputs are panels (A4.2's kinds), text, errors with a
       line, and an LLM cell's recorded calls. Validation of the state, the usage index covering
       the panels in outputs (`panels_of` today returns none for the notebook), and the
       notebook kind no longer refused. Tests.
-- [ ] A10.2 Non-persisted datasets: a panel's data reference may carry an inline
+- [x] A10.2 Non-persisted datasets: a panel's data reference may carry an inline
       `DatasetDef` instead of an id, compiled and read exactly as a named one is, with the
       caller's authority (A9.1). The usage index reports the tables and named datasets an inline
       definition is based on. **Save as dataset** turns an inline definition into a named one.

@@ -46,7 +46,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use sc_catalog::Catalog;
-use sc_dataset::{Caller, DatasetId};
+use sc_dataset::{Base, Caller, DatasetDef, DatasetId, Other};
 use sc_error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
@@ -210,10 +210,7 @@ impl Panel {
             .body
             .data()
             .into_iter()
-            .filter_map(|d| match d {
-                DataRef::Dataset { dataset } => Some(*dataset),
-                DataRef::FitOutput { .. } => None,
-            })
+            .filter_map(DataRef::dataset)
             .collect();
         match &self.body {
             PanelBody::Map { spec } => out.extend(spec.layers.iter().map(|l| l.dataset)),
@@ -225,6 +222,37 @@ impl Panel {
         out
     }
 
+    /// The non-persisted datasets it carries (A10.2): a notebook's
+    /// `nb.dataset(…)`s, read where the panel is.
+    pub fn inline_datasets(&self) -> Vec<&DatasetDef> {
+        self.body
+            .data()
+            .into_iter()
+            .filter_map(DataRef::definition)
+            .collect()
+    }
+
+    /// The stored datasets and the tables its non-persisted datasets are
+    /// built on — a base, and what a Join or a Union names — which the usage
+    /// index counts as used by the panel, though the panel reads them only
+    /// through the definition it carries.
+    pub fn inline_bases(&self) -> (BTreeSet<DatasetId>, BTreeSet<String>) {
+        let mut datasets = BTreeSet::new();
+        let mut tables = BTreeSet::new();
+        for def in self.inline_datasets() {
+            datasets.extend(def.dependencies());
+            if let Base::Table { table } = &def.base {
+                tables.insert(table.clone());
+            }
+            for op in &def.operations {
+                if let Some(Other::Table { table }) = op.op.other() {
+                    tables.insert(table.clone());
+                }
+            }
+        }
+        (datasets, tables)
+    }
+
     /// The fits it reads: a fit's output data under a plot, or a fit's table.
     pub fn fits(&self) -> BTreeSet<Uuid> {
         let mut fits: BTreeSet<Uuid> = self
@@ -233,7 +261,7 @@ impl Panel {
             .into_iter()
             .filter_map(|d| match d {
                 DataRef::FitOutput { instance, .. } => Some(*instance),
-                DataRef::Dataset { .. } => None,
+                DataRef::Dataset { .. } | DataRef::Inline { .. } => None,
             })
             .collect();
         match &self.body {
@@ -320,7 +348,8 @@ impl SimulationPanel {
 
 /// The panels in a workspace's state, by where its kind keeps them: a report's
 /// are the `panel` of each of its `blocks` whose `kind` is `panel` (A4.3–A4.4),
-/// a dashboard's the `panel` of each of its `tiles`.
+/// a dashboard's the `panel` of each of its `tiles`, a notebook's the `panel`
+/// of each of its cells' outputs whose `kind` is `panel` (A10.1).
 /// The kinds that hold no panels yet answer none. Anything in the place a
 /// panel goes that is not one is reported by [`check_state`], and skipped
 /// here.
@@ -350,10 +379,8 @@ fn panel_slots(kind: WorkspaceKind, state: &Json) -> Vec<&Json> {
             .and_then(Json::as_array)
             .map(|tiles| tiles.iter().filter_map(|t| t.get("panel")).collect())
             .unwrap_or_default(),
-        WorkspaceKind::DataExplorer
-        | WorkspaceKind::Notebook
-        | WorkspaceKind::Map
-        | WorkspaceKind::Simulation => vec![],
+        WorkspaceKind::Notebook => crate::notebook::panel_slots(state),
+        WorkspaceKind::DataExplorer | WorkspaceKind::Map | WorkspaceKind::Simulation => vec![],
     }
 }
 
@@ -372,6 +399,9 @@ pub fn check_state(kind: WorkspaceKind, state: &Json) -> Result<()> {
         WorkspaceKind::Map => crate::map::spec_of_state(state)?.check(true)?,
         WorkspaceKind::Simulation => {
             crate::simulate::SimulationState::from_json(state)?;
+        }
+        WorkspaceKind::Notebook => {
+            crate::notebook::NotebookState::from_json(state)?;
         }
         _ => {}
     }
@@ -620,6 +650,95 @@ pub fn workspace_datasets(ws: &Workspace) -> BTreeSet<DatasetId> {
     out
 }
 
+/// The non-persisted datasets a workspace's panels carry (A10.2): what an
+/// Analytics application in fixed mode lets its users read beside
+/// [`workspace_datasets`] — each exactly as it is there, not what it is built
+/// on.
+pub fn workspace_inline_datasets(ws: &Workspace) -> Vec<DatasetDef> {
+    let mut out: Vec<DatasetDef> = Vec::new();
+    for panel in panels_in_state(ws.kind, &ws.state) {
+        for def in panel.inline_datasets() {
+            if !out.contains(def) {
+                out.push(def.clone());
+            }
+        }
+    }
+    out
+}
+
+// --- save as dataset ---------------------------------------------------------
+
+/// The non-persisted dataset `id` in a workspace's panels, the first of its
+/// copies, if there is one.
+pub fn find_inline_dataset(ws: &Workspace, id: DatasetId) -> Option<DatasetDef> {
+    panels_in_state(ws.kind, &ws.state)
+        .iter()
+        .flat_map(Panel::inline_datasets)
+        .find(|d| d.id == id)
+        .cloned()
+}
+
+/// `state` with every reference to the non-persisted dataset `id` — a data
+/// reference `{ kind: "inline", definition }` whose definition has that id —
+/// replaced by a reference to the stored dataset of the same id, answering
+/// how many were replaced. What **Save as dataset** does to the workspace
+/// once the definition is stored.
+pub fn name_inline_dataset(state: &mut Json, id: DatasetId) -> usize {
+    match state {
+        Json::Object(fields) => {
+            let is_it = fields.get("kind").and_then(Json::as_str) == Some("inline")
+                && fields
+                    .get("definition")
+                    .and_then(|d| d.get("id"))
+                    .and_then(Json::as_str)
+                    .and_then(|s| s.parse::<DatasetId>().ok())
+                    == Some(id);
+            if is_it {
+                *state = serde_json::json!({ "kind": "dataset", "dataset": id });
+                return 1;
+            }
+            fields
+                .values_mut()
+                .map(|v| name_inline_dataset(v, id))
+                .sum()
+        }
+        Json::Array(items) => items.iter_mut().map(|v| name_inline_dataset(v, id)).sum(),
+        _ => 0,
+    }
+}
+
+/// **Save as dataset** (A10.2): store the non-persisted dataset `id` of the
+/// workspace `ws` as a named dataset — under its own id, called `name` — and
+/// point the workspace's references to it at the stored one. Answers the
+/// stored definition and the workspace as it now is. Refused when the
+/// workspace has no such dataset, and by the store for a name already taken;
+/// whose the new dataset is, is the caller's to record.
+pub async fn save_inline_dataset(
+    catalog: &Catalog,
+    ws: WorkspaceId,
+    id: DatasetId,
+    name: &str,
+) -> Result<(DatasetDef, Workspace)> {
+    let workspace = crate::workspace::require_workspace(catalog, ws).await?;
+    let mut def = find_inline_dataset(&workspace, id).ok_or_else(|| {
+        Error::not_found(format!(
+            "the workspace `{}` has no dataset {id} of its own to save",
+            workspace.name
+        ))
+    })?;
+    if sc_dataset::load_dataset(catalog, id).await?.is_some() {
+        return Err(Error::invalid(format!(
+            "the dataset {id} has been saved already"
+        )));
+    }
+    def.name = name.trim().to_owned();
+    sc_dataset::save_dataset(catalog, &def).await?;
+    let mut state = workspace.state.clone();
+    name_inline_dataset(&mut state, id);
+    let workspace = crate::workspace::save_workspace_state(catalog, ws, state).await?;
+    Ok((def, workspace))
+}
+
 // --- the usage index -------------------------------------------------------------
 
 /// A workspace that uses a dataset or a fit.
@@ -637,7 +756,9 @@ pub struct WorkspaceUse {
 }
 
 /// What uses what: for each dataset and each fit, the workspaces whose state
-/// reads it, through a panel or (the explorer) directly. Built from the stored
+/// reads it, through a panel or (the explorer) directly — a dataset a
+/// panel's non-persisted dataset is built on included — and for each table,
+/// the workspaces with a non-persisted dataset built on it. Built from the stored
 /// states when it is asked, so it is never out of date; there are a handful of
 /// workspaces, not thousands.
 #[derive(Debug, Clone, Default)]
@@ -645,6 +766,7 @@ pub struct UsageIndex {
     datasets: BTreeMap<DatasetId, Vec<WorkspaceUse>>,
     fits: BTreeMap<Uuid, Vec<WorkspaceUse>>,
     models: BTreeMap<Uuid, Vec<WorkspaceUse>>,
+    tables: BTreeMap<String, Vec<WorkspaceUse>>,
 }
 
 impl UsageIndex {
@@ -661,6 +783,7 @@ impl UsageIndex {
             let mut datasets: BTreeMap<DatasetId, usize> = BTreeMap::new();
             let mut fits: BTreeMap<Uuid, usize> = BTreeMap::new();
             let mut models: BTreeMap<Uuid, usize> = BTreeMap::new();
+            let mut tables: BTreeMap<String, usize> = BTreeMap::new();
             for (d, n) in state_datasets(ws.kind, &ws.state) {
                 *datasets.entry(d).or_default() += n;
             }
@@ -676,6 +799,15 @@ impl UsageIndex {
                 }
                 for m in panel.models() {
                     *models.entry(m).or_default() += 1;
+                }
+                // What a non-persisted dataset is built on (A10.2): the
+                // delete warning of a base lists the notebook that uses it.
+                let (bases, based_on) = panel.inline_bases();
+                for d in bases {
+                    *datasets.entry(d).or_default() += 1;
+                }
+                for t in based_on {
+                    *tables.entry(t).or_default() += 1;
                 }
             }
             let entry = |panels: usize| WorkspaceUse {
@@ -693,12 +825,16 @@ impl UsageIndex {
             for (m, n) in models {
                 index.models.entry(m).or_default().push(entry(n));
             }
+            for (t, n) in tables {
+                index.tables.entry(t).or_default().push(entry(n));
+            }
         }
         for uses in index
             .datasets
             .values_mut()
             .chain(index.fits.values_mut())
             .chain(index.models.values_mut())
+            .chain(index.tables.values_mut())
         {
             uses.sort_by(|a, b| a.name.cmp(&b.name));
         }
@@ -708,6 +844,13 @@ impl UsageIndex {
     /// The workspaces that use the dataset.
     pub fn dataset(&self, id: DatasetId) -> &[WorkspaceUse] {
         self.datasets.get(&id).map_or(&[], Vec::as_slice)
+    }
+
+    /// The workspaces with a non-persisted dataset built on the table
+    /// `name` (A10.2). A stored dataset's own table is that dataset's
+    /// business, not the index's.
+    pub fn table(&self, name: &str) -> &[WorkspaceUse] {
+        self.tables.get(name).map_or(&[], Vec::as_slice)
     }
 
     /// The workspaces that use any of these fits — a model's, for its delete
@@ -816,6 +959,13 @@ pub async fn missing_reference(catalog: &Catalog, panel: &Panel) -> Result<Optio
         if sc_dataset::load_dataset(catalog, id).await?.is_none() {
             return Ok(Some(
                 "The dataset this panel shows has been deleted.".to_owned(),
+            ));
+        }
+    }
+    for id in panel.inline_bases().0 {
+        if sc_dataset::load_dataset(catalog, id).await?.is_none() {
+            return Ok(Some(
+                "A dataset this panel's data is built on has been deleted.".to_owned(),
             ));
         }
     }

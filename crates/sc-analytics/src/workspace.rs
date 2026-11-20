@@ -1,4 +1,4 @@
-//! Workspaces (analytics TODO A1.12, A1.21, A3.0, A4.2, A5.8, A6.1, A7.6): the six kinds of the goals
+//! Workspaces (analytics TODO A1.12, A1.21, A3.0, A4.2, A5.8, A6.1, A7.6, A10.1): the six kinds of the goals
 //! document, and the `_fd_workspaces` table that keeps each one's state.
 //!
 //! A workspace is a name, a kind and a **state** — JSON owned by the kind's
@@ -105,24 +105,39 @@ impl WorkspaceKind {
     }
 
     /// The milestone that brings it, when it is not here yet (`None` when it
-    /// is). The notebook is not scheduled. The report arrived with A4.3, as
-    /// the first place panels are dropped, the map with A5.8, the dashboard
-    /// with A6.1 and the simulation with A7.6.
+    /// is). Every kind is here: the report arrived with A4.3, as the first
+    /// place panels are dropped, the map with A5.8, the dashboard with A6.1,
+    /// the simulation with A7.6 and the notebook with A10.1. Kept, with the
+    /// create dialog's "not yet available", for the next kind.
     pub fn arrives_in(self) -> Option<&'static str> {
         match self {
             WorkspaceKind::DataExplorer
             | WorkspaceKind::Report
             | WorkspaceKind::Map
             | WorkspaceKind::Dashboard
-            | WorkspaceKind::Simulation => None,
-            WorkspaceKind::Notebook => Some("a later milestone"),
+            | WorkspaceKind::Simulation
+            | WorkspaceKind::Notebook => None,
         }
     }
 
-    /// Whether an Analytics application (A9) may open it. A simulation
-    /// predicts with a model, and models are the admin's alone.
+    /// Whether an Analytics application (A9) may open it, or why not. A
+    /// simulation predicts with a model, and models are the admin's alone; a
+    /// notebook runs code on the server, and a Python cell has no sandbox.
     pub fn in_applications(self) -> bool {
-        !matches!(self, WorkspaceKind::Simulation)
+        self.not_in_applications().is_none()
+    }
+
+    /// Why an Analytics application may not open it, as the end of a
+    /// sentence beginning "a … workspace", or `None` when it may.
+    pub fn not_in_applications(self) -> Option<&'static str> {
+        match self {
+            WorkspaceKind::Simulation => Some("predicts with models, which are the admin's alone"),
+            WorkspaceKind::Notebook => Some(
+                "runs code on the server, which only the admin may, since a Python cell has no \
+                 sandbox",
+            ),
+            _ => None,
+        }
     }
 
     /// Whether a workspace of this kind can be created and opened.
@@ -353,6 +368,9 @@ pub async fn save_workspace_state(
     }
     let workspace = require_workspace(catalog, id).await?;
     crate::panel::check_state(workspace.kind, &state)?;
+    if workspace.kind == WorkspaceKind::Notebook {
+        crate::notebook::check_language_kept(&workspace.state, &state)?;
+    }
     update(
         catalog,
         id,
@@ -506,7 +524,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_six_kinds_parse_and_all_but_the_notebook_are_here() {
+    fn all_six_kinds_parse_and_are_here() {
         for kind in WorkspaceKind::ALL {
             assert_eq!(WorkspaceKind::parse(kind.as_str()).expect("parses"), kind);
         }
@@ -522,6 +540,7 @@ mod tests {
                 WorkspaceKind::Map,
                 WorkspaceKind::Dashboard,
                 WorkspaceKind::Simulation,
+                WorkspaceKind::Notebook,
             ]
         );
         WorkspaceKind::DataExplorer.check_available().expect("A2");
@@ -529,11 +548,9 @@ mod tests {
         WorkspaceKind::Map.check_available().expect("A5");
         WorkspaceKind::Dashboard.check_available().expect("A6");
         WorkspaceKind::Simulation.check_available().expect("A7");
-        let err = WorkspaceKind::Notebook
-            .check_available()
-            .expect_err("later");
-        assert!(err.to_string().contains("a later milestone"), "{err}");
+        WorkspaceKind::Notebook.check_available().expect("A10");
         assert!(!WorkspaceKind::Simulation.in_applications());
+        assert!(!WorkspaceKind::Notebook.in_applications());
         assert!(WorkspaceKind::Dashboard.in_applications());
         // The Dataset editor and the model editor are not kinds of workspace.
         assert!(WorkspaceKind::parse("dataset_editor").is_err());

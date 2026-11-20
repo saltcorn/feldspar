@@ -125,6 +125,35 @@ impl Access {
         Ok(())
     }
 
+    /// Refuse unless the caller may read the non-persisted dataset `def`
+    /// (A10.2), which a panel carries rather than names. The admin reads any.
+    /// A fixed application reads one its shown workspaces carry, exactly as
+    /// they carry it. Otherwise it is a new dataset, read only where one
+    /// could be made: the Dataset editor, a base the caller may build on, and
+    /// every dataset it joins or appends one they see.
+    async fn check_inline(&self, catalog: &Catalog, def: &DatasetDef) -> Result<()> {
+        match &self.app {
+            None if self.caller.is_admin() => Ok(()),
+            Some(app) if app.shows_inline(def) => Ok(()),
+            _ => {
+                self.check_editor()?;
+                self.check_base(catalog, &def.base).await?;
+                self.check_datasets(catalog, def.dependencies()).await
+            }
+        }
+    }
+
+    /// Refuse unless the caller may read what a plot's, a table's or a
+    /// test's data names: a stored dataset they see, or a non-persisted one
+    /// they may read.
+    async fn check_data(&self, catalog: &Catalog, data: &plot::DataRef) -> Result<()> {
+        self.check_datasets(catalog, data.dataset()).await?;
+        match data.definition() {
+            Some(def) => self.check_inline(catalog, def).await,
+            None => Ok(()),
+        }
+    }
+
     /// Refuse unless datasets may be created and changed here.
     fn check_editor(&self) -> Result<()> {
         match &self.app {
@@ -626,9 +655,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                 )
                 .map_err(|e| Error::invalid(format!("`spec` is not a plot spec: {e}")))?;
                 let access = Access::of(&ctx);
-                access
-                    .check_datasets(&catalog, data_datasets(&spec.data))
-                    .await?;
+                access.check_data(&catalog, &spec.data).await?;
                 let rendered = plot::render_plot(&catalog, &access.caller, &spec).await?;
                 Ok(HandlerResponse::ok(
                     serde_json::to_value(rendered).map_err(|e| {
@@ -652,9 +679,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                 )
                 .map_err(|e| Error::invalid(format!("`spec` is not a summary table: {e}")))?;
                 let access = Access::of(&ctx);
-                access
-                    .check_datasets(&catalog, data_datasets(&spec.data))
-                    .await?;
+                access.check_data(&catalog, &spec.data).await?;
                 let rendered = plot::render_table(&catalog, &access.caller, &spec).await?;
                 Ok(HandlerResponse::ok(
                     serde_json::to_value(rendered).map_err(|e| {
@@ -678,9 +703,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                 )
                 .map_err(|e| Error::invalid(format!("`spec` is not a set of test roles: {e}")))?;
                 let access = Access::of(&ctx);
-                access
-                    .check_datasets(&catalog, data_datasets(&spec.data))
-                    .await?;
+                access.check_data(&catalog, &spec.data).await?;
                 let answer = stats::run_tests(&catalog, &access.caller, &spec).await?;
                 Ok(HandlerResponse::ok(serde_json::to_value(answer).map_err(
                     |e| Error::serde(format!("a test's results do not serialise: {e}")),
@@ -1090,6 +1113,9 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                     .chain(filters.iter().map(|c| c.dataset))
                     .collect();
                 access.check_datasets(&catalog, read).await?;
+                for def in panel.inline_datasets() {
+                    access.check_inline(&catalog, def).await?;
+                }
                 let rendered = sc_analytics::panel::render_panel_in(
                     &catalog,
                     &access.caller,
@@ -1268,6 +1294,10 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                 if let Some(state) = ctx.body.get("state").filter(|s| !s.is_null()) {
                     sc_analytics::check_new_state(kind, state)?;
                     ws.state = state.clone();
+                } else if kind == WorkspaceKind::Notebook {
+                    // A notebook's language is chosen when it is created
+                    // (A10.1): its state says it from the start.
+                    sc_analytics::check_new_state(kind, &ws.state)?;
                 }
                 // The fit this is the report of: recorded on the fit, so its row
                 // in the model editor links here. Looked up first, so a wrong id
@@ -1354,6 +1384,42 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                 access.check_change_workspace(&ws)?;
                 let ws = sc_analytics::save_workspace_state(&catalog, ws.id, state).await?;
                 Ok(HandlerResponse::ok(access.workspace_json(&ws)))
+            }
+        }
+    });
+
+    // **Save as dataset** (A10.2): a non-persisted dataset of the workspace
+    // stored under a name, the caller's, and the workspace pointed at it.
+    reg.handle(sc_api::handler_ids::SAVE_INLINE_DATASET, {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let access = Access::of(&ctx);
+                let ws = access.workspace(&catalog, workspace_id(&ctx)?).await?;
+                access.check_change_workspace(&ws)?;
+                let raw = ctx.body.string_arg("dataset")?;
+                let id: DatasetId = raw
+                    .parse()
+                    .map_err(|_| Error::invalid(format!("`{raw}` is not a dataset's id")))?;
+                let name = ctx.body.string_arg("name")?;
+                let def = sc_analytics::panel::find_inline_dataset(&ws, id).ok_or_else(|| {
+                    Error::not_found(format!(
+                        "the workspace `{}` has no dataset {id} of its own to save",
+                        ws.name
+                    ))
+                })?;
+                access.check_editor()?;
+                access.check_base(&catalog, &def.base).await?;
+                access.check_datasets(&catalog, def.dependencies()).await?;
+                let (def, ws) =
+                    sc_analytics::panel::save_inline_dataset(&catalog, ws.id, id, &name).await?;
+                owned_by_caller(&catalog, &access, def.id).await?;
+                Ok(HandlerResponse::ok(json!({
+                    "dataset": detail(&catalog, &access, &def).await?,
+                    "workspace": access.workspace_json(&ws),
+                }))
+                .with_status(201))
             }
         }
     });
@@ -1487,14 +1553,6 @@ fn share_role(body: &Json) -> Result<Option<Role>> {
             .ok_or_else(|| {
                 Error::invalid(format!("`share_role` is a role from 1 to 100, not {value}"))
             }),
-    }
-}
-
-/// The dataset a plot's, a table's or a test's data reads, if it reads one.
-fn data_datasets(data: &plot::DataRef) -> Option<DatasetId> {
-    match data {
-        plot::DataRef::Dataset { dataset } => Some(*dataset),
-        plot::DataRef::FitOutput { .. } => None,
     }
 }
 

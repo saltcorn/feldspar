@@ -926,3 +926,163 @@ async fn row_level_security_decides_inside_a_transaction_that_carries_the_caller
     std::fs::remove_dir_all(bundle).ok();
     Ok(())
 }
+
+/// A fixed application reads the non-persisted datasets (A10.2) its shown
+/// workspaces' panels carry, exactly as they carry them, and no other; and it
+/// cannot show a notebook, which runs code.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn a_fixed_application_reads_the_inline_datasets_it_shows_and_no_others()
+-> sc_error::Result<()> {
+    let (mut admin, router, _db, bundle) = setup().await?;
+    let houses = admin
+        .ok(
+            "POST",
+            "/api/datasets",
+            Some(on_table("All houses", "houses", json!([]))),
+        )
+        .await;
+    let houses_id = houses["dataset"]["id"].as_str().unwrap().to_owned();
+    let inline = |operations: Value| {
+        json!({ "kind": "inline", "definition": {
+            "id": "6f0c1d8e-7b0a-4a8e-9a43-2f1f6c1d0b11", "name": "d",
+            "base": { "kind": "dataset", "dataset": houses_id },
+            "operations": operations,
+        } })
+    };
+    let counted = |data: Value| {
+        panel(
+            "summary_table",
+            json!({ "spec": { "data": data, "cells": [{ "function": "count" }],
+                              "totals": false } }),
+        )
+    };
+    let shown = counted(inline(json!([op(
+        "f",
+        "filter",
+        json!({ "formula": "id > 0" })
+    )])));
+    let brief = admin
+        .ok(
+            "POST",
+            "/api/workspaces",
+            Some(json!({ "name": "Brief", "kind": "report",
+                         "state": { "blocks": [{ "id": "a", "kind": "panel", "panel": shown }] } })),
+        )
+        .await;
+    let brief_id = brief["id"].as_str().unwrap().to_owned();
+    admin
+        .ok(
+            "POST",
+            "/api/workspaces",
+            Some(json!({ "name": "Scratch", "kind": "notebook",
+                         "state": { "language": "javascript" } })),
+        )
+        .await;
+
+    // A notebook is not shown, however the application is set up.
+    let (_, why) = admin
+        .refused(
+            "POST",
+            "/api/applications",
+            Some(application(
+                "brief",
+                json!({ "mode": "fixed", "min_role": 40, "workspaces": ["Scratch"] }),
+                &[],
+            )),
+        )
+        .await;
+    assert!(why.contains("is a notebook"), "{why}");
+    let (_, why) = admin
+        .refused(
+            "POST",
+            "/api/applications",
+            Some(application(
+                "brief",
+                json!({ "mode": "self_serve", "min_role": 40, "workspace_kinds": ["notebook"] }),
+                &["houses"],
+            )),
+        )
+        .await;
+    assert!(why.contains("no sandbox"), "{why}");
+    admin
+        .ok(
+            "POST",
+            "/api/applications",
+            Some(application(
+                "brief",
+                json!({ "mode": "fixed", "min_role": 40, "workspaces": ["Brief"] }),
+                &[],
+            )),
+        )
+        .await;
+
+    let mut sam = Client::new(&router, "brief.example.com");
+    sam.sign_in(SAM).await;
+    let opened = sam
+        .ok("GET", &format!("/api/workspaces/{brief_id}"), None)
+        .await;
+    let block = opened["state"]["blocks"][0]["panel"].clone();
+    // The report's panel draws Sam's four houses, read as Sam.
+    let drawn = sam
+        .ok(
+            "POST",
+            "/api/panels/render",
+            Some(json!({ "panel": block })),
+        )
+        .await;
+    assert_eq!(drawn["table"]["total"], json!(4), "{drawn}");
+    // Its spec alone, too.
+    let drawn = sam
+        .ok(
+            "POST",
+            "/api/plots/table",
+            Some(json!({ "spec": block["content"]["spec"] })),
+        )
+        .await;
+    assert_eq!(drawn["total"], json!(4), "{drawn}");
+
+    // The same definition with other operations, or another on a table the
+    // application does not read, is a new dataset, which cannot be made here.
+    let joined = counted(inline(json!([op(
+        "j",
+        "join",
+        json!({ "with": { "kind": "table", "table": "incidents" },
+                "kind": "left", "on": [{ "left": "id", "right": "id" }] })
+    )])));
+    let on_table = counted(json!({ "kind": "inline", "definition": {
+        "id": "0d6a4a51-1d55-4c1a-8f1e-8c0e2f4b9a77", "name": "e",
+        "base": { "kind": "table", "table": "neighbourhoods" }, "operations": [],
+    } }));
+    for crafted in [joined, on_table] {
+        let (code, why) = sam
+            .refused(
+                "POST",
+                "/api/panels/render",
+                Some(json!({ "panel": crafted })),
+            )
+            .await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED, "{why}");
+        assert!(why.contains("cannot be created"), "{why}");
+        let (code, _) = sam
+            .refused(
+                "POST",
+                "/api/plots/table",
+                Some(json!({ "spec": crafted["content"]["spec"] })),
+            )
+            .await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
+    }
+    // Nor saved as a dataset: that is the admin's.
+    let (code, _) = sam
+        .refused(
+            "POST",
+            &format!("/api/workspaces/{brief_id}/save-dataset"),
+            Some(json!({ "dataset": "6f0c1d8e-7b0a-4a8e-9a43-2f1f6c1d0b11", "name": "Mine" })),
+        )
+        .await;
+    assert!(code.is_client_error());
+
+    std::fs::remove_dir_all(bundle).ok();
+    Ok(())
+}

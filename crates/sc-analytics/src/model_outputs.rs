@@ -297,7 +297,7 @@ fn number(x: f64) -> Json {
 pub fn spec_instance(spec: &PlotSpec) -> Option<Uuid> {
     match &spec.data {
         DataRef::FitOutput { instance, .. } => Some(*instance),
-        DataRef::Dataset { .. } => None,
+        DataRef::Dataset { .. } | DataRef::Inline { .. } => None,
     }
 }
 

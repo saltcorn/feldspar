@@ -425,8 +425,8 @@ async fn datasets_are_created_read_edited_and_deleted_through_the_api() -> sc_er
 async fn workspaces_are_listed_renamed_saved_and_deleted() -> sc_error::Result<()> {
     let (mut client, db) = setup().await?;
 
-    // Six kinds, of which A2's Data explorer, A4's Report and A5's Map are
-    // here; the Dataset editor and the model editor are not kinds of workspace.
+    // Six kinds, all here since A10's notebook; the Dataset editor and the
+    // model editor are not kinds of workspace.
     let kinds = client.ok("GET", "/api/workspace-kinds", None).await;
     let kinds = kinds.as_array().unwrap();
     assert_eq!(kinds.len(), 6);
@@ -434,16 +434,18 @@ async fn workspaces_are_listed_renamed_saved_and_deleted() -> sc_error::Result<(
         .iter()
         .filter(|k| k["available"] == json!(true))
         .collect();
-    assert_eq!(here.len(), 5);
+    assert_eq!(here.len(), 6);
     assert_eq!(here[0]["kind"], json!("data_explorer"));
     assert_eq!(here[1]["kind"], json!("report"));
     assert_eq!(here[2]["kind"], json!("map"));
     assert_eq!(here[3]["kind"], json!("dashboard"));
     assert_eq!(here[4]["kind"], json!("simulation"));
+    assert_eq!(here[5]["kind"], json!("notebook"));
     assert_eq!(here[0]["arrives_in"], Value::Null);
     assert!(!kinds.iter().any(|k| k["kind"] == "dataset_editor"));
     assert!(!kinds.iter().any(|k| k["kind"] == "model_fit"));
 
+    // A notebook's language is chosen when it is created.
     let err = client
         .refused(
             "POST",
@@ -451,7 +453,7 @@ async fn workspaces_are_listed_renamed_saved_and_deleted() -> sc_error::Result<(
             Some(json!({ "name": "Draft", "kind": "notebook" })),
         )
         .await;
-    assert!(err.contains("a later milestone"), "{err}");
+    assert!(err.contains("chosen when it is created"), "{err}");
     // Models open in the model editor, not in a workspace.
     let err = client
         .refused(
@@ -1241,5 +1243,129 @@ async fn panels_render_live_and_the_usage_index_finds_what_they_read() -> sc_err
         drawn["error"],
         json!("The model fit this panel shows has been deleted.")
     );
+    Ok(())
+}
+
+/// A notebook (A10.1–A10.2) through the API: created with its language, its
+/// outputs' panels drawn from a dataset they carry, found by the base's
+/// delete warning, and **Save as dataset**.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn a_notebooks_inline_datasets_are_drawn_found_and_saved() -> sc_error::Result<()> {
+    let (mut client, _db) = setup().await?;
+    let dataset = client
+        .ok("POST", "/api/datasets", Some(prices("prices")))
+        .await;
+    let dataset_id = dataset["dataset"]["id"].as_str().unwrap().to_owned();
+
+    let notebook = client
+        .ok(
+            "POST",
+            "/api/workspaces",
+            Some(json!({ "name": "Dear houses", "kind": "notebook",
+                         "state": { "language": "python", "cells": [] } })),
+        )
+        .await;
+    let id = notebook["id"].as_str().unwrap().to_owned();
+    assert_eq!(notebook["state"]["language"], json!("python"));
+
+    // `nb.dataset("prices").filter("price > 100000")`, carried by the plot.
+    let inline_id = uuid::Uuid::new_v4();
+    let data = json!({ "kind": "inline", "definition": {
+        "id": inline_id, "name": "d",
+        "base": { "kind": "dataset", "dataset": dataset_id },
+        "operations": [op("f", "filter", json!({ "formula": "price > 100000" }))],
+    } });
+    let plot = panel(
+        "plot",
+        json!({ "spec": { "data": data, "layers": [{ "mark": "point", "encoding": {
+            "x": { "field": "area" }, "y": { "field": "price" } } }] } }),
+    );
+    let drawn = client
+        .ok("POST", "/api/panels/render", Some(json!({ "panel": plot })))
+        .await;
+    // Prices are 1000 × (50 + i) + 20000 × (1 + i % 5): above 100000 for
+    // all but the smallest houses.
+    let dear = (1..=60)
+        .filter(|i| 1000 * (50 + i) + 20000 * (1 + (i % 5)) > 100_000)
+        .count();
+    assert_eq!(drawn["plot"]["layers"][0]["total"], json!(dear), "{drawn}");
+    // So is the plot itself, as the explorer asks for it.
+    let drawn = client
+        .ok(
+            "POST",
+            "/api/plots/render",
+            Some(json!({ "spec": plot["content"]["spec"] })),
+        )
+        .await;
+    assert_eq!(drawn["layers"][0]["total"], json!(dear), "{drawn}");
+
+    let state = json!({ "language": "python", "cells": [
+        { "id": "a", "kind": "code", "source": "nb.plot(d, …)",
+          "outputs": [{ "kind": "panel", "panel": plot }] } ] });
+    client
+        .ok(
+            "PUT",
+            &format!("/api/workspaces/{id}/state"),
+            Some(json!({ "state": state })),
+        )
+        .await;
+    let mut javascript = state.clone();
+    javascript["language"] = json!("javascript");
+    let err = client
+        .refused(
+            "PUT",
+            &format!("/api/workspaces/{id}/state"),
+            Some(json!({ "state": javascript })),
+        )
+        .await;
+    assert!(err.contains("this one is `python`"), "{err}");
+
+    // The base's delete warning lists the notebook.
+    let usage = client
+        .ok("GET", &format!("/api/datasets/{dataset_id}/usage"), None)
+        .await;
+    assert_eq!(usage["workspaces"][0]["id"], json!(id), "{usage}");
+    assert_eq!(usage["workspaces"][0]["kind"], json!("notebook"));
+
+    // Save as dataset: a stored dataset under the same id, and the notebook
+    // pointed at it.
+    let err = client
+        .refused(
+            "POST",
+            &format!("/api/workspaces/{id}/save-dataset"),
+            Some(json!({ "dataset": inline_id, "name": "prices" })),
+        )
+        .await;
+    assert!(err.contains("already exists"), "{err}");
+    let saved = client
+        .ok(
+            "POST",
+            &format!("/api/workspaces/{id}/save-dataset"),
+            Some(json!({ "dataset": inline_id, "name": "Dear prices" })),
+        )
+        .await;
+    assert_eq!(
+        saved["dataset"]["dataset"]["id"],
+        json!(inline_id),
+        "{saved}"
+    );
+    assert_eq!(saved["dataset"]["dataset"]["name"], json!("Dear prices"));
+    assert_eq!(
+        saved["workspace"]["state"]["cells"][0]["outputs"][0]["panel"]["content"]["spec"]["data"],
+        json!({ "kind": "dataset", "dataset": inline_id })
+    );
+    let usage = client
+        .ok("GET", &format!("/api/datasets/{inline_id}/usage"), None)
+        .await;
+    assert_eq!(usage["workspaces"][0]["id"], json!(id), "{usage}");
+    let err = client
+        .refused(
+            "POST",
+            &format!("/api/workspaces/{id}/save-dataset"),
+            Some(json!({ "dataset": inline_id, "name": "Again" })),
+        )
+        .await;
+    assert!(err.contains("no dataset"), "{err}");
     Ok(())
 }

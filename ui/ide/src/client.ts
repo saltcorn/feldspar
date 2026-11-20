@@ -546,6 +546,8 @@ export type ShareWorkspaceRequest = { share_role?: number | null };
 export type ShareWorkspaceResponse = { id: string; name: string; kind: string; state: unknown; created_by?: string | null; updated_at: string; share_role?: number | null; application?: string | null; may_change: boolean };
 export type SaveWorkspaceStateRequest = { state: unknown };
 export type SaveWorkspaceStateResponse = { id: string; name: string; kind: string; state: unknown; created_by?: string | null; updated_at: string; share_role?: number | null; application?: string | null; may_change: boolean };
+export type SaveInlineDatasetRequest = { dataset: string; name: string };
+export type SaveInlineDatasetResponse = { dataset: { dataset: unknown; report: { base: unknown; operations: Array<unknown>; tables: unknown; children: unknown } }; workspace: { id: string; name: string; kind: string; state: unknown; created_by?: string | null; updated_at: string; share_role?: number | null; application?: string | null; may_change: boolean } };
 
 /** An external identity provider this application offers (Settings →
  * Authentication). */
@@ -945,6 +947,7 @@ export interface ApiClient {
   updateWorkspace(id: string, body: UpdateWorkspaceRequest): Promise<UpdateWorkspaceResponse>;
   shareWorkspace(id: string, body: ShareWorkspaceRequest): Promise<ShareWorkspaceResponse>;
   saveWorkspaceState(id: string, body: SaveWorkspaceStateRequest): Promise<SaveWorkspaceStateResponse>;
+  saveInlineDataset(id: string, body: SaveInlineDatasetRequest): Promise<SaveInlineDatasetResponse>;
   deleteWorkspace(id: string): Promise<void>;
 }
 
@@ -4115,6 +4118,15 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("saveWorkspaceState", res);
       return (await res.json()) as SaveWorkspaceStateResponse;
+    },
+    async saveInlineDataset(id, body) {
+      const res = await doFetch(`${baseUrl}/api/workspaces/${encodeURIComponent(id)}/save-dataset`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("saveInlineDataset", res);
+      return (await res.json()) as SaveInlineDatasetResponse;
     },
     async deleteWorkspace(id) {
       const res = await doFetch(`${baseUrl}/api/workspaces/${encodeURIComponent(id)}`, {
