@@ -1,13 +1,14 @@
 //! `feldspar demo analytics` (analytics TODO A1.18, A2.15, A5.14): the demo's
 //! tables and datasets, the same rows on every run and on both backends, and
 //! nothing touched without `--replace`; the map demo's districts and incidents
-//! where the database has PostGIS, and a sentence where it has not.
+//! where the database has PostGIS, and a sentence where it has not; and a
+//! notebook in each language (A10.9), kept on a second run.
 
 use std::sync::Arc;
 
 use sc_analytics::demo::{
     DEMO_DATASETS, DEMO_DISTRICTS, DEMO_EVENTS, DEMO_EXTENT, DEMO_HOUSES, DEMO_INCIDENTS,
-    DEMO_MAP_DATASETS, DEMO_PATIENTS, demo_analytics,
+    DEMO_MAP_DATASETS, DEMO_NOTEBOOKS, DEMO_PATIENTS, demo_analytics,
 };
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
@@ -151,6 +152,29 @@ async fn the_demo(cat: &Catalog, backend: &str) -> Result<(Vec<String>, Vec<Stri
         }
     }
 
+    // A notebook in each language, the admin's, not yet run, and a state
+    // the API would take.
+    assert_eq!(report.notebooks, DEMO_NOTEBOOKS.map(str::to_owned).to_vec());
+    assert!(report.kept_notebooks.is_empty());
+    let workspaces = sc_analytics::list_workspaces(cat).await?;
+    for (name, language) in DEMO_NOTEBOOKS.iter().zip(["javascript", "python", "llm"]) {
+        let notebook = workspaces
+            .iter()
+            .find(|w| w.name == *name)
+            .unwrap_or_else(|| panic!("{backend}: no notebook `{name}`"));
+        assert_eq!(notebook.kind, sc_analytics::WorkspaceKind::Notebook);
+        assert_eq!(notebook.created_by, None);
+        assert_eq!(notebook.state["language"], language);
+        sc_analytics::check_new_state(notebook.kind, &notebook.state)?;
+        let cells = notebook.state["cells"].as_array().expect("cells");
+        assert!(
+            cells
+                .iter()
+                .any(|c| c["kind"] == "code" && c.get("outputs").is_none()),
+            "{backend}: {name}"
+        );
+    }
+
     // Keys and types as the models tutorial has them.
     let houses_table = cat.require("houses")?;
     let is_key =
@@ -178,6 +202,12 @@ async fn the_demo(cat: &Catalog, backend: &str) -> Result<(Vec<String>, Vec<Stri
     assert_eq!(again.replaced.len(), 6);
     assert!(again.datasets.is_empty());
     assert_eq!(again.kept, DEMO_DATASETS.map(str::to_owned).to_vec());
+    assert!(again.notebooks.is_empty());
+    assert_eq!(
+        again.kept_notebooks,
+        DEMO_NOTEBOOKS.map(str::to_owned).to_vec()
+    );
+    assert_eq!(sc_analytics::list_workspaces(cat).await?.len(), 3);
     assert_eq!(
         houses(cat).await?,
         before,

@@ -5,7 +5,8 @@ use sc_cli::connect_catalog;
 use sc_error::Result;
 
 /// `feldspar demo analytics [--replace] [database flags]`: the Analytics UI's
-/// demo tables and datasets (analytics TODO A1.18, A2.15, A5.14).
+/// demo tables, datasets and notebooks (analytics TODO A1.18, A2.15,
+/// A5.14, A10.9).
 pub(crate) async fn demo_command(args: &[String]) -> Result<()> {
     let (db, rest) = DbConfig::extract(args)?;
     let parsed = sc_cli::demo::DemoArgs::parse(&rest)?;
@@ -25,6 +26,12 @@ pub(crate) async fn demo_command(args: &[String]) -> Result<()> {
     }
     for name in &report.kept {
         println!("kept the dataset {name}, which was already there");
+    }
+    for name in &report.notebooks {
+        println!("made the notebook {name}");
+    }
+    for name in &report.kept_notebooks {
+        println!("kept the notebook {name}, which was already there");
     }
     if let Some(reason) = &report.skipped {
         println!("{reason} (docs/OPERATIONS.md §10 says how to install PostGIS)");

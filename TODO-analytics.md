@@ -821,14 +821,16 @@ notebook reopens with its outputs without running anything.
 **Try it.** After `feldspar demo analytics --replace`:
 1. Create a *Notebook* workspace, language *JavaScript*. Add a text cell with a heading and a
    paragraph of Markdown.
-2. Add a code cell: `const d = nb.dataset("houses").filter("price > 100000")
-   .aggregate(["neighbourhood"], { mean_price: "mean(price)", n: "count()" })`, then
-   `nb.table(d)`. Run it with Shift+Enter: the summary table appears below the cell.
-3. In the next cell, `nb.plot({ data: d, mark: "bar", x: "neighbourhood", y: "mean_price" })`:
+2. Add a code cell: `const d = nb.dataset("Houses").filter("price > 100000")
+   .mutate({ hood: "neighbourhoodⱵname" })
+   .aggregate(["hood"], { mean_price: "mean(price)", n: "count()" })`, then `d`. Run it with
+   Shift+Enter: the dataset's rows, one per neighbourhood, appear below the cell. (The demo's
+   notebooks, A10.9, hold these cells.)
+3. In the next cell, `nb.plot({ data: d, mark: "bar", x: "hood", y: "mean_price" })`:
    a bar chart, which uses `d` from the cell above. A typo in a column name gives the plot
    spec's own sentence under the cell, with the line it came from.
 4. `const fit = await nb.fit("House prices")` shows fit progress under the cell, then the
-   model's coefficient table. `nb.show(fit.output("residuals"))` adds the residual plot.
+   model's coefficient table. `fit.output("residuals_fitted")` adds the residual plot.
 5. Drag the bar chart into the report from A4: the report's copy is a panel like any other, and
    its dataset (non-persisted in the notebook) travels with it inside the spec.
 6. **Save as dataset** on `d`'s output: it becomes a named dataset, opens in the Dataset editor,
@@ -892,10 +894,10 @@ notebook reopens with its outputs without running anything.
 
 ## Phase 4 — Demo, documentation, definition of done
 
-- [ ] A10.9 A demo notebook in each language created by `feldspar demo analytics`.
+- [x] A10.9 A demo notebook in each language created by `feldspar demo analytics`.
       `TECHNICAL_DESIGN.md` (the notebook state, sessions, the `nb` surface, LLM cells, inline
       datasets); `tutorial-analytics.md` part 10.
-- [ ] A10.10 Definition of done: an `sc-server` test that creates a JavaScript and a Python
+- [x] A10.10 Definition of done: an `sc-server` test that creates a JavaScript and a Python
       notebook through the API, runs the Try it's cells, checks the table's rows and the plot's
       bins, fits the model, and finds the notebook in the usage index; an LLM notebook with a
       scripted provider, re-run without calling it. Walk the Try it by hand.

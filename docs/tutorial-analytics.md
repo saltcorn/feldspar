@@ -22,6 +22,8 @@ models, draw maps and write reports. Its design is in
   dashboard they can use but not change, or a small Analytics UI of their own over the tables
   you pick, each reading only the rows their permissions allow. (Part 8, spatial statistics,
   comes with its milestone.)
+- **Part 10 — Notebooks:** cells of JavaScript, Python or LLM prompts that make datasets, plots,
+  tables and fits, whose outputs are panels like any other.
 
 You need a server and an admin login. Nothing else: the data comes from a command.
 
@@ -1116,3 +1118,188 @@ could not filter would show what the person may not read.
 - **Things have owners.** Datasets and workspaces belong to whoever made them. They can be shared
   with a role, and only their owner and the admin change them.
 
+---
+
+## Part 10 — Notebooks
+
+A **notebook** is a list of cells, each Markdown text or code, run one at a time with each output
+drawn under its cell. Its **language** is chosen when it is made and never changes:
+
+- **JavaScript** or **Python**, run on the server, on the runtimes code bodies use;
+- **LLM prompt**, where each cell is a question that an agent answers by calling the notebook's
+  functions.
+
+Whatever the language, a cell has the same functions, under `nb`. `nb.dataset(…)` makes a
+dataset, and `nb.plot`, `nb.table`, `nb.test` and `nb.card` make panels. `nb.fit(…)` fits a
+model, and `nb.show(…)` shows something. A cell also has `db` and `models`, as a code body has.
+
+Notebooks are the admin's. A notebook runs code on the server, and Python there has no sandbox
+(TECHNICAL_DESIGN.md §15.2), so an Analytics application (part 9) never offers them.
+
+### Step 1 — The demo's notebooks
+
+`feldspar demo analytics` made three notebooks: `Houses notebook (JavaScript)`, `(Python)` and
+`(LLM prompts)`. Open the JavaScript one from the front page. Above the cells:
+
+- the language;
+- **Run all**, **Interrupt** and **Restart**;
+- the session's state, *No session: nothing is defined yet*.
+
+A text cell shows its Markdown; double-click it to edit. Each code cell has a toolbar:
+
+- ▶ runs it;
+- a select switches it between code and text;
+- ↑ and ↓ move it, + adds a cell after it, and ✕ deletes it.
+
+The **+ Code** and **+ Text** buttons at the bottom add a cell at the end.
+
+### Step 2 — A dataset
+
+Click into the first code cell and press **Shift+Enter**. It runs, and the cursor moves to the
+next cell:
+
+```js
+const d = nb.dataset("Houses")
+  .filter("price > 100000")
+  .mutate({ hood: "neighbourhoodⱵname" })
+  .aggregate(["hood"], { mean_price: "mean(price)", n: "count()" });
+d
+```
+
+`nb.dataset("Houses")` starts from the demo's `Houses` dataset; the name of a table works too.
+Each step adds an operation, as the Dataset editor's operations of part 1 do:
+
+- the Filter keeps the 170 houses that sold, all for more than 100,000;
+- the Calculated column gives each house its neighbourhood's name;
+- the Aggregate makes a row per neighbourhood.
+
+The cell ends with `d`, so `d` is its output: a table of its first rows, *5 of 5 rows*, from
+Harbour at 329,459 over 37 houses to Northgate at 299,171 over 35. Beside the cell, `[1]` says it
+was the session's first run.
+
+`d` is not saved anywhere. It is a **non-persisted dataset**: its definition lives in the
+notebook, in the output, until you save it (step 5).
+
+While you type, the editor completes:
+
+- `nb.` with the notebook's functions;
+- `db.` with `table`, `sql` and the tables;
+- the inside of `nb.dataset("` with the datasets' and the tables' names;
+- a dot after a dataset with its operations;
+- the inside of any other string with the columns of the datasets the cell names.
+
+### Step 3 — A plot from the cell above
+
+Run the second cell:
+
+```js
+nb.plot({ data: d, mark: "bar", x: "hood", y: "mean_price" })
+```
+
+A bar chart, one bar per neighbourhood. `d` is the one the cell above defined: what a cell
+defines stays in the notebook's **session** for the cells after it. `nb.plot` takes the plot spec
+the Data explorer makes, written by hand. `x` and `y` are the shortcut for the encodings of one
+layer.
+
+Change `hood` to `hod` and run the cell again. Under it: *Line 1: … `hod` …*, in the plot spec's
+own words, and line 1 is marked in red in the editor. Change it back.
+
+### Step 4 — A fit
+
+The cell after the *A model* heading fits the model `House prices` of part 3:
+
+```js
+const fit = await nb.fit("House prices");
+nb.show(fit.output("coefficients"));
+fit.output("residuals_fitted")
+```
+
+If you have not made that model, it says so: *there is no model called `House prices`, and there
+are no models*. Make it as part 3 does, and run the cell again. While it fits, the model
+editor's progress card shows under the cell. Then come the coefficient table and the residuals
+against fitted values. A fit's outputs are the model editor's, by name, and an unknown name
+lists the ones there are.
+
+`await` waits for the fit. In Python, `nb.fit(…)` simply returns when it is done.
+
+### Step 5 — Outputs are panels
+
+A plot, a table, a test or a fit's output under a cell is a panel, with the grip that panels
+have in the Data explorer. Open a report beside the notebook with **Split**, and drag the bar
+chart into it. The report's copy is a panel like any other. Its dataset, `d`, travels inside its
+spec, so the report draws it with the notebook closed or deleted.
+
+`d`'s output has two buttons:
+
+- **Save as dataset** asks for a name. Call it `Mean price by neighbourhood`. The dataset is
+  stored and opens in the Dataset editor beside the notebook, with its Filter, Calculated column
+  and Aggregate as operations you can edit. The notebook's outputs now refer to the stored
+  dataset. Run the cell again and it finds the stored one: the same definition is the same
+  dataset.
+- **Open in explorer** opens a Data explorer on it. An explorer reads only stored datasets, so
+  one that is not stored is saved first.
+
+### Step 6 — Sessions
+
+Close the notebook and open it again. Every output is there, without running anything, because
+outputs are stored with the cells. While the session lives, they are as they were.
+
+Press **Restart** and confirm. Everything the cells defined is forgotten, and each output is
+marked *Not run in this session*. Press **Run all** to run every code cell in order. It stops at
+the first cell that fails, so a cell after a mistake never runs with a stale `d`.
+
+A session ends after 30 minutes without a run. A cell may run for 30 seconds. A cell that would
+run for ever, `while (true) {}`, is stopped then, or by **Interrupt** before that; the session
+carries on, and `d` is still there.
+
+### Step 7 — Python
+
+Open `Houses notebook (Python)`. It has the same cells, in Python:
+
+```python
+d = (nb.dataset("Houses")
+     .filter("price > 100000")
+     .mutate(hood="neighbourhoodⱵname")
+     .aggregate(["hood"], mean_price="mean(price)", n="count()"))
+d
+```
+
+and `nb.plot(data=d, mark="bar", x="hood", y="mean_price")`. The functions are the same, with
+keyword arguments where JavaScript takes an object, and snake case where a name has two words.
+**Run all** gives the same rows, the same bars and the same fit.
+
+Python cells need a `feldspar` built with Python (`cargo build -p sc-cli --features python`,
+TECHNICAL_DESIGN.md §15). Without it, a Python cell says so.
+
+### Step 8 — LLM prompts
+
+Open `Houses notebook (LLM prompts)`. Its one cell is a prompt:
+
+> A box plot of price by neighbourhood in the dataset Houses, with the right test.
+
+Run it. Without an LLM provider, the cell says *there is no LLM provider to answer this prompt:
+add one in Settings → LLM*. With one, an agent answers. It looks at the data, calls `nb.plot`
+and `nb.test` as a code cell would, and says what it found. The cell shows the plot and the test,
+its answer, and, folded below them, **the calls it made**.
+
+Run the cell again: the same outputs come back at once, without asking the LLM. The calls were
+recorded, and a run replays them. **Regenerate** asks the LLM again. So does editing the
+prompt.
+
+### Step 9 — A notebook of your own
+
+On the front page, **New workspace**, choose *Notebook*, and the **Language** select appears.
+Choose one; it cannot be changed later. An empty notebook has **+ Code** and **+ Text** to
+start.
+
+### What to remember
+
+- **A notebook is cells, in one language.** JavaScript, Python, or prompts an agent answers with
+  the same functions.
+- **A session keeps what cells define.** It lasts until **Restart** or 30 idle minutes. Outputs
+  are stored, so a reopened notebook shows them, marked when they are older than the session.
+- **`nb.dataset(…)` makes a dataset that is not saved.** It travels with its outputs, even when
+  dragged into a report. **Save as dataset** stores it.
+- **Outputs are panels.** They are dragged, rendered and listed by the usage index like any
+  other. A notebook that reads `Houses` is in `Houses`' delete warning.
+- **An LLM cell is answered once.** Its calls are kept and replayed; **Regenerate** asks again.

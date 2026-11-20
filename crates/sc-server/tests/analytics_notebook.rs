@@ -3,6 +3,14 @@
 //! surface in JavaScript and Python, restart, interrupt and a runaway cell,
 //! a fit, Save as dataset, the usage index — and an LLM prompt cell answered
 //! by a scripted provider, replayed without it.
+//!
+//! **A10.10**, the milestone's definition of done, over `feldspar demo
+//! analytics` (A10.9): the demo's JavaScript and Python notebooks run all,
+//! stopping at the fit while part 3's `House prices` is not there; `d`'s rows
+//! and the bars checked against the means and counts SQL makes from the same
+//! houses; the model made and the fit's coefficients and residual plot drawn;
+//! the notebook in `Houses`' usage; the outputs stored. And the demo's LLM
+//! notebook answered by a scripted provider, then replayed without it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -147,10 +155,25 @@ async fn setup(models: Option<FakeModels>) -> sc_error::Result<(Client, TestDb)>
         .batch_execute(SCHEMA)
         .await
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    serve(db, models, false).await
+}
+
+/// A server over `db` with the admin logged in; after `feldspar demo
+/// analytics` when `demo`.
+async fn serve(
+    db: TestDb,
+    models: Option<FakeModels>,
+    demo: bool,
+) -> sc_error::Result<(Client, TestDb)> {
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
     db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
+    if demo {
+        sc_catalog::bootstrap_table_meta(&catalog).await?;
+        sc_catalog::bootstrap_field_meta(&catalog).await?;
+        sc_analytics::demo::demo_analytics(&catalog, false).await?;
+    }
     let mut agents = sc_server::install_agents(&catalog).await?;
     if let Some(models) = models {
         agents = agents.with_providers(Arc::new(models));
@@ -538,5 +561,263 @@ async fn an_llm_prompt_is_answered_with_the_nb_tools_and_replayed_without_the_ll
         .await;
     assert_eq!(kinds(&regenerated), kinds(&cell));
     assert_eq!(provider.requests().len(), asked * 2);
+    Ok(())
+}
+
+// --- A10.10: the Try it over the demo's own notebooks ----------------------
+
+/// The mean price and the count of the houses over 100,000 in each
+/// neighbourhood, by its name: what the demo notebooks' table must say,
+/// counted here in SQL from the rows.
+async fn expected_means(db: &TestDb) -> sc_error::Result<Vec<(String, f64, i64)>> {
+    let rows = db
+        .client()
+        .await?
+        .query(
+            "SELECT n.name, avg(h.price), count(*) FROM houses h \
+             JOIN neighbourhoods n ON n.id = h.neighbourhood \
+             WHERE h.price > 100000 GROUP BY n.name ORDER BY n.name",
+            &[],
+        )
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            (
+                r.get::<_, String>(0),
+                r.get::<_, f64>(1),
+                r.get::<_, i64>(2),
+            )
+        })
+        .collect())
+}
+
+/// The demo notebook called `name`, by id.
+async fn demo_notebook(client: &mut Client, name: &str) -> String {
+    let listed = client.ok("GET", "/api/workspaces", None).await;
+    let found = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["name"] == json!(name))
+        .unwrap_or_else(|| panic!("no notebook `{name}` in {listed}"));
+    assert_eq!(found["kind"], json!("notebook"));
+    found["id"].as_str().unwrap().to_owned()
+}
+
+/// The model `House prices` of the tutorial's part 3: a linear regression of
+/// `price` on `area` and the neighbourhood's name over the houses sold.
+async fn house_prices(client: &mut Client) {
+    let dataset = client
+        .ok(
+            "POST",
+            "/api/datasets",
+            Some(json!({
+                "name": "Price, area and neighbourhood",
+                "base": { "kind": "table", "table": "houses" },
+                "operations": [
+                    { "id": "f", "enabled": true, "kind": "filter",
+                      "params": { "formula": "sold === true" } },
+                    { "id": "c", "enabled": true, "kind": "calculated",
+                      "params": { "name": "neighbourhood_name", "formula": "neighbourhoodⱵname" } },
+                    { "id": "s", "enabled": true, "kind": "select", "params": { "columns": [
+                        { "column": "price" }, { "column": "area" },
+                        { "column": "neighbourhood_name" }] } }],
+            })),
+        )
+        .await;
+    client
+        .ok(
+            "POST",
+            "/api/models",
+            Some(json!({
+                "name": "House prices",
+                "provider": "linear_regression",
+                "dataset": { "dataset_id": dataset["dataset"]["id"] },
+                "configuration": { "label": "price" },
+                "split": { "train": 0.8, "validation": 0.0, "test": 0.2, "seed": 7 },
+            })),
+        )
+        .await;
+}
+
+/// The column `name`'s index in `columns`: a drawn layer's, named by
+/// channel, or a dataset output's.
+fn column(columns: &Value, name: &str) -> usize {
+    columns
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|c| c == name)
+        .unwrap_or_else(|| panic!("no column `{name}` in {columns}"))
+}
+
+async fn the_demo_try_it(notebook: &str) -> sc_error::Result<()> {
+    let (mut client, db) = serve(TestDb::new().await?, None, true).await?;
+    let expected = expected_means(&db).await?;
+    assert_eq!(expected.len(), 5, "the demo's five neighbourhoods");
+    let id = demo_notebook(&mut client, notebook).await;
+
+    // Before part 3's model is made, Run all stops at the fit, with a sentence
+    // naming it; the table and the plot before it ran.
+    let all = client
+        .ok("POST", &format!("/api/workspaces/{id}/run-all"), None)
+        .await;
+    let cells = all["cells"].as_array().unwrap();
+    let ran: Vec<&str> = cells.iter().map(|c| c["id"].as_str().unwrap()).collect();
+    assert_eq!(ran, ["summary", "plot", "fit"], "{all}");
+    assert_eq!(kinds(&cells[2]), ["error"], "{all}");
+    let message = cells[2]["outputs"][0]["message"].as_str().unwrap();
+    assert!(message.contains("House prices"), "{message}");
+
+    // `d`, shown: a row per neighbourhood, each with the mean and the count
+    // SQL makes from the same rows.
+    assert_eq!(kinds(&cells[0]), ["dataset"], "{all}");
+    let shown = &cells[0]["outputs"][0];
+    assert_eq!(shown["total"], json!(5), "{shown}");
+    assert_eq!(shown["data"]["kind"], json!("inline"), "{shown}");
+    let at = |name: &str| column(&shown["columns"], name);
+    let (hood, mean, n) = (at("hood"), at("mean_price"), at("n"));
+    let mut rows: Vec<(String, f64, i64)> = shown["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r[hood].as_str().unwrap().to_owned(),
+                r[mean].as_f64().unwrap(),
+                r[n].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(rows.len(), expected.len(), "{shown}");
+    for (got, want) in rows.iter().zip(&expected) {
+        assert_eq!((&got.0, got.2), (&want.0, want.2));
+        assert!((got.1 - want.1).abs() < 1e-6, "{got:?} against {want:?}");
+    }
+
+    // The bar chart, from `d` of the cell above: a bar per neighbourhood,
+    // each as high as its mean.
+    assert_eq!(kinds(&cells[1]), ["panel:plot"], "{all}");
+    let drawn = client.render(&cells[1]["outputs"][0]["panel"]).await;
+    let layer = &drawn["plot"]["layers"][0];
+    let (x, y) = (
+        column(&layer["columns"], "x"),
+        column(&layer["columns"], "y"),
+    );
+    let mut bars: Vec<(String, f64)> = layer["rows"]
+        .as_array()
+        .expect("bars")
+        .iter()
+        .map(|r| (r[x].as_str().unwrap().to_owned(), r[y].as_f64().unwrap()))
+        .collect();
+    bars.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(bars.len(), expected.len(), "{drawn}");
+    for ((hood, mean), (name, want, _)) in bars.iter().zip(&expected) {
+        assert_eq!(hood, name);
+        assert!((mean - want).abs() < 1e-6, "{hood}: {mean} against {want}");
+    }
+
+    // Part 3's model made, the fit runs: its coefficients and its residuals.
+    house_prices(&mut client).await;
+    let fit = client.run(&id, "fit").await;
+    assert_eq!(kinds(&fit), ["panel:fit_table", "panel:plot"], "{fit}");
+    let drawn = client.render(&fit["outputs"][0]["panel"]).await;
+    assert!(
+        drawn["output"]["table"]["rows"]
+            .as_array()
+            .is_some_and(|r| r.len() >= 5),
+        "an intercept, the area and the neighbourhoods: {drawn}"
+    );
+    let drawn = client.render(&fit["outputs"][1]["panel"]).await;
+    assert!(
+        drawn["plot"]["layers"][0]["rows"]
+            .as_array()
+            .is_some_and(|r| r.len() > 100),
+        "a point per house sold: {drawn}"
+    );
+
+    // The notebook in the usage index: the demo's `Houses`, which its cells
+    // are built on, lists it for the delete warning.
+    let houses = client.ok("GET", "/api/datasets", None).await;
+    let houses = houses
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == json!("Houses"))
+        .expect("the demo's Houses")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let usage = client
+        .ok("GET", &format!("/api/datasets/{houses}/usage"), None)
+        .await;
+    assert!(
+        usage["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|u| u["id"] == json!(id) && u["kind"] == json!("notebook")),
+        "{usage}"
+    );
+
+    // Reopened, every output is there, without running anything.
+    let ws = client
+        .ok("GET", &format!("/api/workspaces/{id}"), None)
+        .await;
+    let stored: Vec<usize> = ws["state"]["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["kind"] == json!("code"))
+        .map(|c| c["outputs"].as_array().map_or(0, Vec::len))
+        .collect();
+    assert_eq!(stored, [1, 1, 2], "{ws}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_demo_javascript_notebook_runs_the_try_it() -> sc_error::Result<()> {
+    the_demo_try_it(sc_analytics::demo::DEMO_NOTEBOOKS[0]).await
+}
+
+#[cfg(feature = "python")]
+#[tokio::test]
+async fn the_demo_python_notebook_runs_the_try_it() -> sc_error::Result<()> {
+    the_demo_try_it(sc_analytics::demo::DEMO_NOTEBOOKS[1]).await
+}
+
+/// The demo's LLM notebook, answered by a scripted provider, and replayed
+/// without it.
+#[tokio::test]
+async fn the_demo_llm_notebook_is_answered_and_replayed() -> sc_error::Result<()> {
+    let provider = Arc::new(FakeProvider::new([
+        Reply::calls(
+            "plot",
+            json!({ "spec": { "data": "Houses", "mark": "boxplot", "x": "neighbourhood", "y": "price" } }),
+        ),
+        Reply::calls(
+            "test",
+            json!({ "data": "Houses", "spec": { "y": "price", "x": "neighbourhood" } }),
+        ),
+        Reply::says("Prices differ between the neighbourhoods."),
+    ]));
+    let models = FakeModels::new().role(ModelRole::Executor, Arc::clone(&provider));
+    let (mut client, _db) = serve(TestDb::new().await?, Some(models), true).await?;
+    let id = demo_notebook(&mut client, sc_analytics::demo::DEMO_NOTEBOOKS[2]).await;
+    let cell = client.run(&id, "ask").await;
+    assert_eq!(
+        kinds(&cell),
+        ["panel:plot", "panel:test_result", "text", "calls"],
+        "{cell}"
+    );
+    let asked = provider.requests().len();
+    let again = client.run(&id, "ask").await;
+    assert_eq!(kinds(&again), kinds(&cell), "{again}");
+    assert_eq!(provider.requests().len(), asked, "replayed without the LLM");
+    let drawn = client.render(&again["outputs"][1]["panel"]).await;
+    assert!(drawn["tests"].is_object(), "{drawn}");
     Ok(())
 }

@@ -85,6 +85,9 @@
 //! application, and sharing with another `staff` user. Then an ownership
 //! formula gives `staff` the newer houses only, and every count, box and test
 //! in both applications is of those rows, against the admin's 200.
+//!
+//! **A10** (analytics TODO A10.10): the Notebook's Try it is
+//! `analytics_notebook.rs`'s, over the same demo.
 #![allow(
     clippy::cast_possible_truncation,
     reason = "test code: casts over test data whose range the test chose"
@@ -304,9 +307,9 @@ fn f(v: &Value) -> Option<f64> {
 async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
     let (mut client, _db) = setup().await?;
 
-    // 1. The front page: only the demo's datasets (A2.15) and no workspaces
-    // yet, and every kind of workspace listed — all of them here since the
-    // notebook arrived with A10.
+    // 1. The front page: only the demo's datasets (A2.15), no workspaces
+    // yet but the demo's notebooks (A10.9), and every kind of workspace
+    // listed — all of them here since the notebook arrived with A10.
     let listed = client.ok("GET", "/api/datasets", None).await;
     let mut names: Vec<&str> = listed
         .as_array()
@@ -316,7 +319,20 @@ async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
         .collect();
     names.sort_unstable();
     assert_eq!(names, ["Events", "Houses", "Measurements"]);
-    assert_eq!(client.ok("GET", "/api/workspaces", None).await, json!([]));
+    let workspaces = client.ok("GET", "/api/workspaces", None).await;
+    let mut notebooks: Vec<(&str, &str)> = workspaces
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| (w["name"].as_str().unwrap(), w["kind"].as_str().unwrap()))
+        .collect();
+    notebooks.sort_unstable();
+    let mut demo: Vec<(&str, &str)> = sc_analytics::demo::DEMO_NOTEBOOKS
+        .iter()
+        .map(|n| (*n, "notebook"))
+        .collect();
+    demo.sort_unstable();
+    assert_eq!(notebooks, demo);
     let kinds = client.ok("GET", "/api/workspace-kinds", None).await;
     assert!(
         kinds

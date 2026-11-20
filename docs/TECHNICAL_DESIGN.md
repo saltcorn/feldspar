@@ -11632,8 +11632,8 @@ reads. Split view (A4) holds either editor or a workspace on each side.
 `updated_at`, and since A9 `share_role` and `application`, §14.9). `kind` is one of the six of the goals document (Data explorer, Report, Map,
 Dashboard, Simulation, Notebook). The store keeps any kind; `createWorkspace`
 refuses one whose milestone has not arrived, naming it ("arrives with milestone A2"), and
-`listWorkspaceKinds` says which are here so the create dialog lists the rest disabled — since
-A7.6, the Notebook. `state` is JSON owned by the kind — an explorer's is its dataset and
+`listWorkspaceKinds` says which are here so the create dialog lists the rest disabled. Since
+A10 every kind is here. `state` is JSON owned by the kind — an explorer's is its dataset and
 drop zones — saved as it changes (`saveWorkspaceState`) and restored when the workspace is
 opened.
 
@@ -11660,6 +11660,16 @@ refuses a change to a notebook's language. A plot's, a table's or a test's data 
 non-persisted dataset (A10.2, `{ "kind": "inline", "definition" }`). It is read as a stored
 dataset is, and it is readable where the caller could have made it, or in a fixed application
 exactly as a shown workspace carries it.
+
+**The notebook's state** (A10.1; `sc-analytics`'s `notebook.rs`) is `{ language, cells }`. The
+language is `javascript`, `python` or `llm`, fixed when the notebook is created. Each cell is
+`{ id, kind: text | code, source, outputs, run }`: a text cell is Markdown, and a code cell keeps
+what its last run made, with `run` its count in the session and when it ran. An output is a
+panel (A4.2's kinds, so the usage index and a drag read it as any other panel), printed text, a
+value, a dataset with its first rows, an error with the line it stopped on, or an LLM cell's
+recorded calls. The bounds are 500 cells, 100 kB of source and 50 outputs a cell. Outputs are
+stored, so a notebook reopens with them without running anything. `feldspar demo analytics`
+makes one notebook in each language (A10.9), not yet run, over the demo's `Houses`.
 
 **Running a notebook** (A10.3–A10.6; `sc-server`'s `notebook.rs`, `notebook_llm.rs` and
 `notebook_api.rs`): admin only, on the admin host. One **session** per notebook and administrator

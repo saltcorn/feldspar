@@ -44,6 +44,14 @@
 //! ([`DemoReport::skipped`]). Two more datasets, `Districts` and `Incidents`,
 //! come with them.
 //!
+//! **Notebooks** (A10.9): one in each language — `Houses notebook
+//! (JavaScript)`, `(Python)` and `(LLM prompts)` — holding the Analytics UI
+//! tutorial's part 10 cells, not yet run: the `Houses` dataset's mean price
+//! by neighbourhood, a dataset of its own shown with its rows, a bar chart of it, and a fit of the model
+//! `House prices` of part 3 (which says there is no such model until it is
+//! made); the LLM notebook holds one prompt. A workspace of that name is kept
+//! as it is, as a dataset is, and the report says so.
+//!
 //! **Nothing is touched without `--replace`.** A database that already has one
 //! of the demo's tables is refused, naming it: they are ordinary tables, and
 //! one of them may be the admin's own. With `--replace`, they are dropped and
@@ -56,7 +64,10 @@ use sc_db::ColumnGenerator;
 use sc_error::{Context, Error, Result};
 use sc_query::{Expr, Insert, Statement, Value};
 use sc_types::{BasicType, GeometryKind, TypeRef};
-use serde_json::json;
+use serde_json::{Value as Json, json};
+
+use crate::notebook::NotebookLanguage;
+use crate::workspace::{Workspace, WorkspaceKind};
 
 /// The tables the demo makes, in the order they are made (a key's target
 /// first).
@@ -71,6 +82,14 @@ pub const DEMO_TABLES: [&str; 6] = [
 
 /// The datasets the demo makes, each on the table of the same name.
 pub const DEMO_DATASETS: [&str; 3] = ["Houses", "Measurements", "Events"];
+
+/// The notebooks the demo makes (A10.9), one in each language, in
+/// [`NotebookLanguage::ALL`]'s order.
+pub const DEMO_NOTEBOOKS: [&str; 3] = [
+    "Houses notebook (JavaScript)",
+    "Houses notebook (Python)",
+    "Houses notebook (LLM prompts)",
+];
 
 /// The map demo's tables (A5), made only where the database has PostGIS.
 pub const DEMO_MAP_TABLES: [&str; 2] = ["districts", "incidents"];
@@ -111,6 +130,10 @@ pub struct DemoReport {
     pub datasets: Vec<String>,
     /// The datasets that were there already and were left as they are.
     pub kept: Vec<String>,
+    /// The notebooks made (A10.9).
+    pub notebooks: Vec<String>,
+    /// The notebooks that were there already and were left as they are.
+    pub kept_notebooks: Vec<String>,
     /// Why the map demo's tables were not made, when they were not: the
     /// database has no PostGIS.
     pub skipped: Option<String>,
@@ -399,12 +422,15 @@ pub async fn demo_analytics(catalog: &Catalog, replace: bool) -> Result<DemoRepo
     };
     catalog.reload().await?;
     let (datasets, kept) = datasets(catalog, skipped.is_none()).await?;
+    let (notebooks, kept_notebooks) = notebooks(catalog).await?;
 
     Ok(DemoReport {
         tables,
         replaced: present,
         datasets,
         kept,
+        notebooks,
+        kept_notebooks,
         skipped,
     })
 }
@@ -807,6 +833,119 @@ async fn datasets(catalog: &Catalog, map: bool) -> Result<(Vec<String>, Vec<Stri
         }
     }
     Ok((made, kept))
+}
+
+/// The demo's notebooks, each made unless a notebook of its name is there.
+/// They are the admin's (no owner), as every thing the demo makes is.
+async fn notebooks(catalog: &Catalog) -> Result<(Vec<String>, Vec<String>)> {
+    crate::workspace::bootstrap_workspaces(catalog).await?;
+    let there: Vec<Workspace> = crate::workspace::list_workspaces(catalog).await?;
+    let (mut made, mut kept) = (Vec::new(), Vec::new());
+    for (name, language) in DEMO_NOTEBOOKS.iter().zip(NotebookLanguage::ALL) {
+        if there.iter().any(|w| {
+            w.kind == WorkspaceKind::Notebook && w.application.is_none() && w.name == *name
+        }) {
+            kept.push((*name).to_owned());
+            continue;
+        }
+        let mut workspace = Workspace::new(*name, WorkspaceKind::Notebook, None);
+        workspace.state = demo_notebook(language);
+        crate::workspace::check_new_state(WorkspaceKind::Notebook, &workspace.state)?;
+        crate::workspace::create_workspace(catalog, &workspace)
+            .await
+            .with_context(|| format!("making the notebook `{name}`"))?;
+        made.push((*name).to_owned());
+    }
+    Ok((made, kept))
+}
+
+/// A demo notebook's state: the tutorial's part 10 cells in `language`,
+/// with no outputs yet.
+pub fn demo_notebook(language: NotebookLanguage) -> Json {
+    let text = |id: &str, source: &str| json!({ "id": id, "kind": "text", "source": source });
+    let code = |id: &str, source: &str| json!({ "id": id, "kind": "code", "source": source });
+    let intro = |how: &str| {
+        text(
+            "intro",
+            &format!(
+                "# Houses, in a notebook\n\n\
+                 The demo's houses, explored in {how} \
+                 (`docs/tutorial-analytics.md`, part 10). Run a cell with **Shift+Enter**, \
+                 or every cell with **Run all**. What a cell defines — `d` below — is there \
+                 for the cells after it, until the session is restarted."
+            ),
+        )
+    };
+    let model = text(
+        "model",
+        "## A model\n\n\
+         The next cell fits `House prices`, the linear regression of part 3 of the tutorial, \
+         and shows its coefficients and residuals. Until that model is made, it says there \
+         is no such model.",
+    );
+    let cells = match language {
+        NotebookLanguage::Javascript => vec![
+            intro("JavaScript"),
+            code(
+                "summary",
+                "// The houses that sold for over 100,000: their mean price, by neighbourhood.\n\
+                 const d = nb.dataset(\"Houses\")\n  \
+                 .filter(\"price > 100000\")\n  \
+                 .mutate({ hood: \"neighbourhoodⱵname\" })\n  \
+                 .aggregate([\"hood\"], { mean_price: \"mean(price)\", n: \"count()\" });\n\
+                 d",
+            ),
+            code(
+                "plot",
+                "nb.plot({ data: d, mark: \"bar\", x: \"hood\", y: \"mean_price\" })",
+            ),
+            model,
+            code(
+                "fit",
+                "const fit = await nb.fit(\"House prices\");\n\
+                 nb.show(fit.output(\"coefficients\"));\n\
+                 fit.output(\"residuals_fitted\")",
+            ),
+        ],
+        NotebookLanguage::Python => vec![
+            intro("Python"),
+            code(
+                "summary",
+                "# The houses that sold for over 100,000: their mean price, by neighbourhood.\n\
+                 d = (nb.dataset(\"Houses\")\n     \
+                 .filter(\"price > 100000\")\n     \
+                 .mutate(hood=\"neighbourhoodⱵname\")\n     \
+                 .aggregate([\"hood\"], mean_price=\"mean(price)\", n=\"count()\"))\n\
+                 d",
+            ),
+            code(
+                "plot",
+                "nb.plot(data=d, mark=\"bar\", x=\"hood\", y=\"mean_price\")",
+            ),
+            model,
+            code(
+                "fit",
+                "fit = nb.fit(\"House prices\")\n\
+                 nb.show(fit.output(\"coefficients\"))\n\
+                 fit.output(\"residuals_fitted\")",
+            ),
+        ],
+        NotebookLanguage::Llm => vec![
+            text(
+                "intro",
+                "# Houses, asked\n\n\
+                 Each code cell here is a prompt, answered by an agent that calls the \
+                 notebook's functions; it needs an LLM provider. The calls it made are kept \
+                 with the cell, so running it again replays them without asking the LLM — \
+                 **Regenerate** asks again (`docs/tutorial-analytics.md`, part 10).",
+            ),
+            code(
+                "ask",
+                "A box plot of price by neighbourhood in the dataset Houses, with the right test.",
+            ),
+        ],
+    };
+    json!({ "language": language.as_str(), "cells": cells })
 }
 
 /// Insert `rows` into `table`, a hundred at a time.

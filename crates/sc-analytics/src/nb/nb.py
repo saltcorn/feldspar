@@ -95,7 +95,7 @@ class Panel:
 
 
 class Fit:
-    """A model's fit, finished: ``fit.output("residuals")`` is a panel."""
+    """A model's fit, finished: ``fit.output("residuals_fitted")`` is a panel."""
 
     def __init__(self, got):
         self._got = got

@@ -2,6 +2,62 @@
 
 Changes in reverse chronological order.
 
+## Analytics A10 phase 4: the demo's notebooks, the tutorial, definition of done
+
+The last phase of milestone A10 (TODO-analytics.md), which is now complete.
+
+- **Demo notebooks (A10.9):** `feldspar demo analytics` also makes three notebooks, one per
+  language: `Houses notebook (JavaScript)`, `(Python)` and `(LLM prompts)`.
+  - They hold tutorial part 10's cells, not yet run: `d`, the demo's `Houses` dataset by
+    neighbourhood (mean price and count); a bar chart of `d`; and a fit of `House prices`, the
+    model of part 3, showing its coefficients and residual plot. The LLM notebook holds one
+    prompt.
+  - They are the admin's, like everything the demo makes. A notebook of the same name that is
+    already there is kept, as a dataset is.
+  - `DemoReport` gains `notebooks` and `kept_notebooks`, and the command prints them.
+    `sc_analytics::demo::demo_notebook(language)` is the state each starts with.
+  - Running the fit cell before the model exists says *there is no model called `House
+    prices`*, so Run all stops there until part 3 is done.
+- **Tutorial (A10.9):** `docs/tutorial-analytics.md` part 10, *Notebooks*, covers:
+  - the demo's notebooks, a dataset from a chain, a plot from the cell above, and an error on
+    its line;
+  - a fit, dragging an output into a report, Save as dataset and Open in explorer;
+  - sessions (reopen, Restart, Run all, Interrupt and the limits), Python, LLM prompts with
+    replay and Regenerate, and a notebook of your own.
+- **Design (A10.9):** `TECHNICAL_DESIGN.md` gains a paragraph on the notebook's stored state
+  and the demo's notebooks. It no longer says the create dialog lists the Notebook disabled.
+- **Definition of done (A10.10):** new tests in `sc-server`'s `analytics_notebook.rs` run over
+  the demo, not the hand-made schema:
+  - The JavaScript and Python demo notebooks run all, stopping at the fit before the model
+    exists.
+  - `d`'s five rows and the five bars are checked against means and counts SQL computes from
+    the same houses.
+  - Once `House prices` is made, the fit draws a coefficient table with at least five terms and
+    a residual plot with a point per training house.
+  - The notebook is listed in `Houses`' usage, and its outputs are stored.
+  - The demo's LLM notebook is answered by a scripted provider, then replayed without it.
+  - The A1 Try it now expects the three demo notebooks on the front page.
+  - `sc-cli`'s demo test checks that the notebooks are made on Postgres and SQLite with states
+    the API accepts, and kept on `--replace`.
+- **Fixes and corrections:**
+  - A linear regression's residual plot is the output `residuals_fitted`, not `residuals`. The
+    Try it and `nb.py`'s docstring are corrected; `fit.output` already listed the right names.
+  - The Try it's cells now match the demo's. They start from `Houses` and give each house its
+    neighbourhood's name with `.mutate` before aggregating, so the bars are named rather than
+    numbered. The table cell ends with `d`, so step 6 has a dataset output to save.
+    `nb.table(d)` over an aggregate summarised it again ("mean of mean_price", and a "mean of
+    n" total).
+- **Walked by hand** in Chromium on a scratch database after `feldspar demo analytics`:
+  - the three notebooks on the front page;
+  - Run all in JavaScript stopping at the fit, then the fit's progress, coefficients and
+    residuals once the model was made;
+  - the same in Python;
+  - the LLM notebook's no-provider sentence;
+  - Save as dataset opening `Mean price by neighbourhood` in the Dataset editor;
+  - Restart marking every output not run in this session.
+
+  Not walked: an LLM notebook with a real provider.
+
 ## Analytics A10 phase 3: the Notebook workspace
 
 The third phase of milestone A10 (TODO-analytics.md): a notebook now opens in the Analytics UI
