@@ -1,4 +1,4 @@
-# Saltcorn v2 — The Analytics UI (milestones A1–A9)
+# Saltcorn v2 — The Analytics UI (milestones A1–A10)
 
 Ordered, checkable task list for implementing [docs/analytics-ui-goals.md](./docs/analytics-ui-goals.md)
 (**the goals document** below). Earlier lists are archived in [docs/TODO-mvp.md](./docs/TODO-mvp.md)
@@ -7,7 +7,8 @@ recently: models without actions of their own). The models this builds on are
 [docs/TECHNICAL_DESIGN.md](./docs/TECHNICAL_DESIGN.md) §14.2.
 
 The nine milestones are the goals document's milestones 1–9, prefixed **A** so they are not
-confused with the post-MVP milestone numbers. Tasks are numbered within their milestone (A1.1,
+confused with the post-MVP milestone numbers. A10, the notebook, is this plan's own addition:
+the goals document describes the Notebook workspace but does not schedule it. Tasks are numbered within their milestone (A1.1,
 A1.2, …) and grouped in phases. Work through them in order: a milestone assumes every earlier
 one is done.
 
@@ -795,6 +796,112 @@ second list in the framework's settings (see the CHANGELOG).
 
 ---
 
+# A10 — The notebook
+
+The Notebook workspace (goals document, "Workspaces"): a Jupyter-style document of text, code
+and output cells, whose language — JavaScript, Python or LLM prompts — is chosen when the
+notebook is created. Its functions create panels, non-persisted datasets and model fits, and its
+outputs are panels that can be dragged like any other. The goals document's milestones do not
+schedule it; it comes after A9 because it builds on A4's drag and drop and A9's authority, and
+needs nothing from A7 or A8 (it uses their features where they exist).
+
+**The design in one paragraph.** Cells run on the server, on the runtimes code bodies already
+use: a JavaScript cell on the `run_js_code` isolate, a Python cell on `sc-python`'s interpreter.
+An open notebook has a **session** (the kernel): the globals one cell defines are seen by the
+next, until the session is restarted or idles out. Besides `db` and `models`, a cell has a
+notebook surface, `nb`, whose functions are the same in both languages (snake case in Python):
+`nb.dataset(…)` builds a dataset definition that lives in the notebook rather than in
+`_fd_datasets`; `nb.plot(spec)`, `nb.table(…)`, `nb.test(…)` and `nb.card(…)` return panels;
+`nb.fit(model, …)` fits through the existing fit job; `nb.show(…)` and the cell's last value
+become its output. An LLM prompt cell is answered by an agent whose tools are these functions;
+the calls it made are recorded in the cell as code, so re-running the cell replays them without
+the LLM unless the user asks it to regenerate. Outputs are stored in the workspace's state, so a
+notebook reopens with its outputs without running anything.
+
+**Try it.** After `feldspar demo analytics --replace`:
+1. Create a *Notebook* workspace, language *JavaScript*. Add a text cell with a heading and a
+   paragraph of Markdown.
+2. Add a code cell: `const d = nb.dataset("houses").filter("price > 100000")
+   .aggregate(["neighbourhood"], { mean_price: "mean(price)", n: "count()" })`, then
+   `nb.table(d)`. Run it with Shift+Enter: the summary table appears below the cell.
+3. In the next cell, `nb.plot({ data: d, mark: "bar", x: "neighbourhood", y: "mean_price" })`:
+   a bar chart, which uses `d` from the cell above. A typo in a column name gives the plot
+   spec's own sentence under the cell, with the line it came from.
+4. `const fit = await nb.fit("House prices")` shows fit progress under the cell, then the
+   model's coefficient table. `nb.show(fit.output("residuals"))` adds the residual plot.
+5. Drag the bar chart into the report from A4: the report's copy is a panel like any other, and
+   its dataset (non-persisted in the notebook) travels with it inside the spec.
+6. **Save as dataset** on `d`'s output: it becomes a named dataset, opens in the Dataset editor,
+   and the cell now refers to it by name.
+7. Close the workspace and reopen it: every output is there, and the cells are marked as not
+   run in this session. **Run all** re-runs them in order. **Restart** clears the session.
+8. Create a second notebook, language *Python*, and do steps 2–3 in Python
+   (`d = nb.dataset("houses").filter(...)`).
+9. With an LLM provider configured, create a third notebook, language *LLM prompt*, and ask
+   "a box plot of price by neighbourhood, with the right test". The cell shows the plot and the
+   test, and below them the calls the agent made. Re-run it: the same output, without calling
+   the LLM. **Regenerate** asks the LLM again.
+
+## Phase 1 — The notebook model
+
+- [ ] A10.1 The Notebook state in `sc-analytics`: `{ language, cells }`, each cell
+      `{ id, kind: text | code, source, outputs, run }` with `language` fixed at creation
+      (`javascript`, `python` or `llm`); outputs are panels (A4.2's kinds), text, errors with a
+      line, and an LLM cell's recorded calls. Validation of the state, the usage index covering
+      the panels in outputs (`panels_of` today returns none for the notebook), and the
+      notebook kind no longer refused. Tests.
+- [ ] A10.2 Non-persisted datasets: a panel's data reference may carry an inline
+      `DatasetDef` instead of an id, compiled and read exactly as a named one is, with the
+      caller's authority (A9.1). The usage index reports the tables and named datasets an inline
+      definition is based on. **Save as dataset** turns an inline definition into a named one.
+      Tests: an inline dataset renders a plot on both drivers; a named base's delete warning
+      lists the notebook.
+
+## Phase 2 — Running cells
+
+- [ ] A10.3 Notebook sessions in `sc-analytics` (or `sc-api`): one per open notebook and user,
+      holding a JavaScript context or Python globals between cells; restart; an idle timeout
+      and a limit on sessions; each cell run with the code body's timeout and call budget.
+      Sessions are a service on the `Catalog` and torn down with it (the CLAUDE.md teardown
+      rule; extend `catalog_teardown.rs`). Tests: a global defined by one cell is read by the
+      next; restart clears it; a runaway cell is stopped and the session still runs the next.
+- [ ] A10.4 The `nb` surface, written once as a plan answered by one host and given a
+      JavaScript and a Python prelude in the way `db` is: `dataset` (the operations of A1–A5
+      as a fluent chain), `plot`, `table`, `test`, `card`, `map`, `fit` (with progress pushed
+      to the browser, and the fit's outputs as A3.1's panels), `show`, and the cell's last
+      value as its output. Errors carry the cell's line. Tests in both languages.
+- [ ] A10.5 LLM prompt cells: an agent (`sc-agent`) with the `nb` functions as tools, the
+      notebook's earlier cells and the shapes of the datasets they name as context, and the
+      default LLM provider (L.3). The calls it made are stored with the cell and replayed on a
+      re-run; **Regenerate** calls the LLM again. Tests with a scripted LLM provider.
+- [ ] A10.6 `sc-api` endpoints: run a cell, run all, interrupt, restart, and the session's
+      status, pushed to the browser as fit progress is. Admin only; an Analytics application
+      refuses the notebook kind with a sentence (Python has no sandbox, §15.2). Regenerate the
+      clients. Tests in `sc-server`.
+
+## Phase 3 — The workspace
+
+- [ ] A10.7 The Notebook workspace in `ui/analytics`: cells added, moved, deleted and switched
+      between text and code; the code editor of A3.6 with completions for `nb`, `db`, the
+      dataset and column names; Shift+Enter to run, **Run all**, **Interrupt**, **Restart**;
+      outputs rendered by the panel renderers, with "not run in this session" and error
+      states. State saved as the other workspaces save it. Tests (vitest).
+- [ ] A10.8 Outputs as drag sources (A4.3): a panel output dragged into a report or dashboard
+      is a copy, carrying its inline dataset. **Save as dataset** and **Open in explorer** on a
+      dataset output. Tests.
+
+## Phase 4 — Demo, documentation, definition of done
+
+- [ ] A10.9 A demo notebook in each language created by `feldspar demo analytics`.
+      `TECHNICAL_DESIGN.md` (the notebook state, sessions, the `nb` surface, LLM cells, inline
+      datasets); `tutorial-analytics.md` part 10.
+- [ ] A10.10 Definition of done: an `sc-server` test that creates a JavaScript and a Python
+      notebook through the API, runs the Try it's cells, checks the table's rows and the plot's
+      bins, fits the model, and finds the notebook in the usage index; an LLM notebook with a
+      scripted provider, re-run without calling it. Walk the Try it by hand.
+
+---
+
 # React Native: Android APK build targets (branch `react-native-plugin`)
 
 Outside the analytics milestones. See CHANGELOG for what each item covers.
@@ -850,9 +957,6 @@ The goals document describes these, but its milestones do not schedule them. The
 here, without checkboxes, so that they are not lost and not picked up by accident. Say where
 they go before starting them.
 
-- **The Notebook workspace** (goals document, "Workspaces"): JavaScript, Python and LLM prompt
-  cells whose functions create panels, fit models and create non-persisted datasets. It could
-  follow A4, since its outputs are panels that need drag and drop.
 - **The Bayesian workflow** (goals document, "Bayesian workflow"): the structured model
   builder generating Stan; prior-only runs and prior predictive checks; the `y_rep` and
   `log_lik` conventions; diagnostics with suggested remedies; the staged fit area; fake-data
