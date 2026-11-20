@@ -106,3 +106,10 @@ export function progressSocketUrl(instance: string, location: Pick<Location, "pr
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   return `${scheme}//${location.host}/api/model-instances/${encodeURIComponent(instance)}/progress`;
 }
+
+/** The address of a notebook's session socket (`GET /api/workspaces/{id}/session/live`,
+ * analytics TODO A10.6): the session's status, sent whenever it changes. */
+export function sessionSocketUrl(workspace: string, location: Pick<Location, "protocol" | "host">): string {
+  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  return `${scheme}//${location.host}/api/workspaces/${encodeURIComponent(workspace)}/session/live`;
+}

@@ -40,6 +40,11 @@ const SimulationWorkspace = lazy(() =>
   import("../simulation/SimulationWorkspace").then((m) => ({ default: m.SimulationWorkspace })),
 );
 
+/** The Notebook, loaded when one opens: its cells' editor is Monaco's. */
+const NotebookWorkspace = lazy(() =>
+  import("../notebook/NotebookWorkspace").then((m) => ({ default: m.NotebookWorkspace })),
+);
+
 /** How long after the last change the state is saved. */
 const SAVE_DELAY_MS = 600;
 
@@ -55,6 +60,11 @@ export type WorkspaceProps = {
   /** Whether the person may not change it (A9.4): a kind that can, hides
    * what would change it. Nothing is saved either way. */
   readOnly?: boolean;
+  /** The workspace's id: what a notebook's runs name it by. */
+  id?: string;
+  /** Save what is pending now, before something the server does with the
+   * stored state — a notebook's run reads its cells from it. */
+  flush?: () => Promise<void>;
 };
 
 export function WorkspaceFrame({ id }: { id: string }) {
@@ -115,6 +125,7 @@ export function WorkspaceFrame({ id }: { id: string }) {
     },
     [saver, readOnly],
   );
+  const flush = useCallback(() => saver.flush(), [saver]);
   // A fixed application showing one workspace has no list to go back to.
   const alone = application?.mode === "fixed" && application.workspaces.length === 1;
 
@@ -156,6 +167,8 @@ export function WorkspaceFrame({ id }: { id: string }) {
       <div className="flex-grow-1" style={{ minHeight: 0 }}>
         <KindScreen
           kind={workspace.kind}
+          id={id}
+          flush={flush}
           name={workspace.name}
           state={state}
           setState={setState}
@@ -168,13 +181,14 @@ export function WorkspaceFrame({ id }: { id: string }) {
 
 /** The kind's screen, handed the state and its setter. Each kind's arrives with
  * its milestone: A2's Data explorer first, then A4's Report, A5's Map, A6's
- * Dashboard and A7's Simulation. */
+ * Dashboard, A7's Simulation and A10's Notebook. */
 const SCREENS: Record<string, typeof DataExplorer> = {
   data_explorer: DataExplorer,
   report: ReportWorkspace,
   map: MapWorkspace,
   dashboard: DashboardWorkspace,
   simulation: SimulationWorkspace,
+  notebook: NotebookWorkspace,
 };
 
 function KindScreen({ kind, ...props }: WorkspaceProps & { kind: string }) {

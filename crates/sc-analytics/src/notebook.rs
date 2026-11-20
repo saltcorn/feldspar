@@ -359,9 +359,6 @@ pub(crate) fn panel_slots(state: &Json) -> Vec<&Json> {
         .unwrap_or_default()
 }
 
-/// Refuse a saved state that changes a notebook's language: the code in its
-/// cells is written in it. A stored state without one (none can be made, but
-/// a restore brings what it brings) may be given one.
 /// The panels standing for what a notebook's dataset outputs read: a count of
 /// each one's rows, so the usage index, an application's reach and **Save as
 /// dataset** find what those outputs read as they find a panel's.
@@ -393,6 +390,9 @@ pub(crate) fn dataset_output_panels(state: &Json) -> Vec<Panel> {
         .unwrap_or_default()
 }
 
+/// Refuse a saved state that changes a notebook's language: the code in its
+/// cells is written in it. A stored state without one (none can be made, but
+/// a restore brings what it brings) may be given one.
 pub fn check_language_kept(old: &Json, new: &Json) -> Result<()> {
     let language = |s: &Json| s.get("language").and_then(Json::as_str).map(str::to_owned);
     match (language(old), language(new)) {

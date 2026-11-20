@@ -881,12 +881,12 @@ notebook reopens with its outputs without running anything.
 
 ## Phase 3 — The workspace
 
-- [ ] A10.7 The Notebook workspace in `ui/analytics`: cells added, moved, deleted and switched
+- [x] A10.7 The Notebook workspace in `ui/analytics`: cells added, moved, deleted and switched
       between text and code; the code editor of A3.6 with completions for `nb`, `db`, the
       dataset and column names; Shift+Enter to run, **Run all**, **Interrupt**, **Restart**;
       outputs rendered by the panel renderers, with "not run in this session" and error
       states. State saved as the other workspaces save it. Tests (vitest).
-- [ ] A10.8 Outputs as drag sources (A4.3): a panel output dragged into a report or dashboard
+- [x] A10.8 Outputs as drag sources (A4.3): a panel output dragged into a report or dashboard
       is a copy, carrying its inline dataset. **Save as dataset** and **Open in explorer** on a
       dataset output. Tests.
 

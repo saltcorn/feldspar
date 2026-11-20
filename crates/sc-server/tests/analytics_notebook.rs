@@ -256,7 +256,10 @@ fn try_it(language: &str) -> Vec<(&'static str, &'static str)> {
                 "fit",
                 "const fit = await nb.fit(\"House prices\");\nnb.show(fit.output(\"coefficients\"));\nfit",
             ),
-            ("rows", "(await d.rows()).rows.length"),
+            ("rows", "(await d.rows()).length"),
+            // A dataset is not a thenable: shown, or a cell's value, it is
+            // not waited for forever.
+            ("show", "nb.show(d);\nd"),
         ],
         _ => vec![
             (
@@ -280,7 +283,8 @@ fn try_it(language: &str) -> Vec<(&'static str, &'static str)> {
                 "fit",
                 "fit = nb.fit(\"House prices\")\nnb.show(fit.output(\"coefficients\"))\nfit",
             ),
-            ("rows", "len(d.rows()[\"rows\"])"),
+            ("rows", "len(d.rows())"),
+            ("show", "nb.show(d)\nd"),
         ],
     }
 }
@@ -345,6 +349,9 @@ async fn the_try_it(language: &str) -> sc_error::Result<()> {
     );
     let rows = client.run(&id, "rows").await;
     assert_eq!(rows["outputs"][0]["value"], json!(2), "{rows}");
+    let show = client.run(&id, "show").await;
+    assert_eq!(kinds(&show), ["dataset", "dataset"], "{show}");
+    assert_eq!(show["outputs"][0]["total"], json!(2), "{show}");
 
     // The outputs are stored: the notebook reopens with them.
     let ws = client

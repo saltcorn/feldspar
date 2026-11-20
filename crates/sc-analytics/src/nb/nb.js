@@ -49,9 +49,14 @@
     }
     limit(n) { return this.step("limit", [n]); }
     sample(n, seed) { return this.step("sample", seed === undefined ? [n] : [n, seed]); }
-    then(kind, params) { return this.step("then", [kind, params]); }
+    // Any other operation, by its kind. Not `then`, which would make a dataset
+    // a thenable: `await d`, or `nb.show(d)`, would wait for it forever.
+    operation(kind, params) { return this.step("then", [kind, params]); }
     named(name) { return new Dataset(this.base, this.steps, String(name)); }
-    rows(limit) { return send("rows", { data: lower(this), limit: limit === undefined ? null : limit }); }
+    // The rows, as `db`'s are; the answer also has the columns and the total.
+    rows(limit) {
+      return send("rows", { data: lower(this), limit: limit === undefined ? null : limit }).then((a) => a.rows);
+    }
     columns() { return send("columns", { data: lower(this) }); }
     toJSON() { return { __nb: "dataset", base: this.base, steps: this.steps, name: this.name || null }; }
   }

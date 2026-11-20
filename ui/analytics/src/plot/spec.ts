@@ -111,11 +111,18 @@ export type Fold = {
 /** A line at a fixed value of X or Y. */
 export type Reference = { channel: "x" | "y"; value: number | string; label?: string };
 
-/** Where a plot's rows come from: a dataset's last stage, or a fit's output
- * data (analytics TODO A3.1), read from the instance rather than through SQL. */
+/** Where a plot's rows come from: a dataset's last stage, a fit's output
+ * data (analytics TODO A3.1), read from the instance rather than through SQL,
+ * or a non-persisted dataset's definition carried in the spec (A10.2) — what
+ * a notebook's `nb.dataset(…)` makes. */
 export type DataRef =
   | { kind: "dataset"; dataset: string }
-  | { kind: "fit_output"; instance: string; name: string };
+  | { kind: "fit_output"; instance: string; name: string }
+  | { kind: "inline"; definition: InlineDataset };
+
+/** A non-persisted dataset's definition: a stored dataset's shape, with an
+ * id no stored dataset has (until **Save as dataset** stores it under it). */
+export type InlineDataset = { id: string; name: string; description?: string; base: unknown; operations?: unknown[] };
 
 /** A plot. */
 export type PlotSpec = {

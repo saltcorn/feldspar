@@ -2428,3 +2428,98 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* --- the Notebook (analytics TODO A10.7) ------------------------------------ */
+
+.an-nb-cells {
+  max-width: 72rem;
+}
+
+.an-nb-cell {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.an-nb-gutter {
+  flex: 0 0 3rem;
+  text-align: right;
+  padding-top: 1.6rem;
+}
+
+.an-nb-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.an-nb-cell-tools {
+  min-height: 1.6rem;
+  opacity: 0.55;
+}
+
+.an-nb-cell:hover .an-nb-cell-tools,
+.an-nb-cell:focus-within .an-nb-cell-tools {
+  opacity: 1;
+}
+
+.an-nb-kind {
+  padding-top: 0;
+  padding-bottom: 0;
+  font-size: 0.75rem;
+}
+
+.an-nb-editor {
+  min-height: 3rem;
+  border: 1px solid var(--tblr-border-color);
+  border-radius: var(--tblr-border-radius);
+}
+
+.an-nb-failed .an-nb-editor {
+  border-color: var(--tblr-danger);
+}
+
+.an-nb-error-line {
+  background: rgba(var(--tblr-danger-rgb, 214, 57, 57), 0.12);
+}
+
+.an-nb-error-gutter {
+  border-left: 3px solid var(--tblr-danger);
+}
+
+.an-nb-markdown {
+  padding: 0.25rem 0.5rem;
+  min-height: 1.5rem;
+  cursor: text;
+}
+
+.an-nb-outputs {
+  margin-top: 0.5rem;
+}
+
+.an-nb-stale > .an-nb-output {
+  opacity: 0.7;
+}
+
+.an-nb-output + .an-nb-output {
+  margin-top: 0.5rem;
+}
+
+.an-nb-print,
+.an-nb-value {
+  white-space: pre-wrap;
+  padding: 0.25rem 0.5rem;
+  /* Both set: Tabler's `pre` is light text on a dark ground. */
+  color: var(--tblr-body-color);
+  background: var(--tblr-bg-surface-secondary, rgba(0, 0, 0, 0.03));
+  border-radius: var(--tblr-border-radius);
+}
+
+.an-nb-rows {
+  max-height: 20rem;
+  overflow: auto;
+}
+
+.an-nb-calls pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+}

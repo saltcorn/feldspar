@@ -11684,6 +11684,16 @@ it is regenerated or the prompt changes. The endpoints are `runNotebookCell`, `r
 `/api/workspaces/{id}/session/live`. A run stores the cell's outputs in the state as it is when
 the run ends.
 
+The workspace (A10.7–A10.8; `ui/analytics/src/notebook/`) edits the cells and saves the state as
+every workspace does. Before a run it saves what is pending, because the server runs the cell as
+it is stored. It then takes only the outputs and the run from the answer, keeping what was typed
+meanwhile. The session's status comes over its socket (polled if the socket does not open). A
+cell whose run is older than the session's start is marked "not run in this session". Cells are
+edited in A3.6's Monaco, with completions for `nb`, `db`, the dataset and table names, and the
+columns of the datasets a cell names. A panel output is a drag source like any other, carrying its
+inline dataset. A dataset output offers **Save as dataset** and **Open in explorer**. The
+explorer reads only stored datasets, so an inline one is saved first.
+
 **The bundle** (`ui/analytics`): React, TypeScript and react-bootstrap over the generated client,
 like the admin SPA, but a bundle of its own, so that an Analytics application can serve it
 without the admin shell (§14.9). On the admin host it is served under `/analytics/` in the way

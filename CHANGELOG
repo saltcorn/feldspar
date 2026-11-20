@@ -2,6 +2,65 @@
 
 Changes in reverse chronological order.
 
+## Analytics A10 phase 3: the Notebook workspace
+
+The third phase of milestone A10 (TODO-analytics.md): a notebook now opens in the Analytics UI
+(`ui/analytics/src/notebook/`) on the phase 2 endpoints, in place of "This kind of workspace is
+not here yet".
+
+- **Creating one:** the new-workspace dialog asks a notebook's language (JavaScript, Python or
+  LLM prompt) and creates it with `{ language, cells: [] }`.
+- **A10.7, cells:**
+  - **Editing:** cells are added (after any cell, or at the end), moved up and down, deleted, and
+    switched between text and code. A cell switched to text loses its outputs, which the server
+    refuses on a text cell. Text cells show their Markdown; double-click to edit, Shift+Enter to
+    show it again.
+  - **The editor:** code cells use A3.6's Monaco (`CellEditor.tsx`), sized to the code, with
+    JavaScript or Python highlighting. It completes `nb.`'s functions (spelled for the language),
+    `db.`'s functions and the tables, dataset and table names inside `nb.dataset("`, a dataset's
+    chain methods after a dot, and, inside a string, the columns of the datasets the cell names.
+    If Monaco does not load, the cell is a text area.
+  - **Running:** Shift+Enter runs the cell and moves to the next one, adding a cell at the end;
+    ▶ runs it in place. **Run all**, **Interrupt** and **Restart** are on the toolbar. A run first
+    saves what is pending, since the server runs the cell as it is stored, then takes only the
+    outputs and the run from the answer (`withRun`), so typing during a run is kept.
+  - **Status:** comes from the session socket, falling back to polling. A cell shows `[n]`, `[*]`
+    while running and `[…]` while waiting. A running fit shows the model editor's progress card
+    under its cell. Outputs from before the session started are marked "not run in this session".
+    An error shows its line, and that line is highlighted in the editor.
+  - **Outputs:** drawn by the panel renderers. Printed text and values are shown as preformatted
+    text, a dataset as its first rows, and an LLM cell's recorded calls in a collapsible list. An
+    LLM cell has **Regenerate**, and its answer is shown as Markdown.
+  - **Read-only:** a notebook shared read-only shows everything with no controls.
+- **A10.8, outputs as drag sources:**
+  - **Panels:** every panel output has the drag handle. A drop is a copy that carries its
+    non-persisted dataset inside its spec; the TypeScript `DataRef` now has the `inline` kind.
+  - **Save as dataset:** a dataset output asks for a name, stores the dataset, points the
+    notebook's references at the stored one (`nameInline`, as the server's `name_inline_dataset`
+    does), and opens it in the Dataset editor beside the notebook.
+  - **Open in explorer:** opens a Data explorer on the dataset beside the notebook. The explorer
+    reads only stored datasets, so an inline dataset is saved first.
+- **Workspace frame:** passes a kind's screen the workspace id and a `flush` that saves what is
+  pending.
+- **Tests:** `notebook/state.test.ts` covers editing, merging a run, the session's frames, "not run
+  in this session", Save as dataset's rewrite, the drag copy and completions.
+  `NotebookWorkspace.test.tsx` covers a reopened notebook's outputs, counts, error line and
+  controls, and a read-only notebook.
+- **Fixed in phase 2's `nb`**, found by walking the Try it in a browser:
+  - **`.then(kind, params)` is now `.operation(kind, params)`**, in JavaScript and Python. The old
+    name made a dataset a thenable, so `nb.show(d)`, or a cell ending in `d`, waited forever for
+    it to settle. The step crosses as `then` as before, so a chain's content id is unchanged.
+  - **`d.rows()` answers the rows**, as `db`'s does, not `{ columns, rows, total }`.
+  - `analytics_notebook.rs` covers both, in both languages.
+- **The walk** (scratch database, `feldspar demo analytics`, headless Chromium): JavaScript and
+  Python notebooks ran the Try it's table, bar chart and typo. The bar chart was dragged into a
+  report, and **Save as dataset** and **Open in explorer** were used on a dataset output. An LLM
+  notebook with no provider showed its sentence. Restart and reopening marked the outputs, and
+  **Run all** stopped at the failing cell. The fit (step 4) and an LLM notebook with a provider
+  configured were not walked; the scripted-provider test covers the replay.
+- Also moved a doc comment in `sc-analytics/src/notebook.rs` that phase 2 had left above the wrong
+  function.
+
 ## Analytics A10 phase 2: running a notebook's cells
 
 The second phase of milestone A10 (TODO-analytics.md): a notebook's cells now run on the server,
@@ -31,7 +90,7 @@ until A10.7, which builds the workspace on these endpoints.
   written once as `{ op: "nb", what }` plans sent over the cell's own `db`, so `nb` calls count
   against the same call budget. Each language has a prelude run once per session.
   - **Datasets:** `nb.dataset(name).filter(…).mutate(…).select(…).sort(…).aggregate(by,
-    summaries).limit(n).sample(n).then(kind, params)` crosses as a base and its steps, and becomes
+    summaries).limit(n).sample(n).operation(kind, params)` crosses as a base and its steps, and becomes
     a non-persisted dataset. Its id is derived from its content, so the same chain is the same
     dataset in every run. After **Save as dataset**, the chain refers to the stored dataset.
   - **Panels:** `nb.plot(spec)` takes a full plot spec or a short one (`{ data, mark, x, y, … }`,

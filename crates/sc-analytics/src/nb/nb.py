@@ -61,14 +61,14 @@ class Dataset:
     def sample(self, n, seed=None):
         return self._step("sample", n) if seed is None else self._step("sample", n, seed)
 
-    def then(self, kind, params):
+    def operation(self, kind, params):
         return self._step("then", kind, params)
 
     def named(self, name):
         return Dataset(self._base, self._steps, str(name))
 
     def rows(self, limit=None):
-        return nb._send("rows", data=self, limit=limit)
+        return nb._send("rows", data=self, limit=limit)["rows"]
 
     def columns(self):
         return nb._send("columns", data=self)

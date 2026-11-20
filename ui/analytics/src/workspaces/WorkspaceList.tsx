@@ -24,6 +24,7 @@ import { usePane } from "../panes";
 import { workspaceKindName } from "../labels";
 import { ShareSelect } from "../share";
 import { useShell } from "../shell";
+import type { Language } from "../notebook/state";
 import { firstAvailable, kindOptions, type KindItem } from "./kinds";
 
 type WorkspaceItem = ListWorkspacesResponse[number];
@@ -195,6 +196,8 @@ function NewWorkspaceDialog({ kinds, onClose }: { kinds: KindItem[]; onClose: ()
   const pane = usePane();
   const [name, setName] = useState("");
   const [kind, setKind] = useState(() => firstAvailable(kinds));
+  // A notebook's language is chosen now and never changed (A10.1).
+  const [language, setLanguage] = useState<Language>("javascript");
   const [error, setError] = useState<string | null>(null);
   const noneHere = kinds.length > 0 && firstAvailable(kinds) === "";
 
@@ -202,7 +205,11 @@ function NewWorkspaceDialog({ kinds, onClose }: { kinds: KindItem[]; onClose: ()
     e.preventDefault();
     setError(null);
     try {
-      const made = await api.createWorkspace({ name: name.trim(), kind });
+      const made = await api.createWorkspace(
+        kind === "notebook"
+          ? { name: name.trim(), kind, state: { language, cells: [] } }
+          : { name: name.trim(), kind },
+      );
       pane.go({ name: "workspace", id: made.id });
     } catch (err) {
       setError(errorMessage(err, t("Could not create the workspace.")));
@@ -242,6 +249,21 @@ function NewWorkspaceDialog({ kinds, onClose }: { kinds: KindItem[]; onClose: ()
               ))}
             </Form.Select>
           </Form.Group>
+          {kind === "notebook" && (
+            <Form.Group controlId="workspace-language" className="mt-3">
+              <Form.Label>
+                <T text="Language" />
+              </Form.Label>
+              <Form.Select value={language} onChange={(e) => setLanguage(e.target.value as Language)}>
+                <option value="javascript">JavaScript</option>
+                <option value="python">Python</option>
+                <option value="llm">{t("LLM prompt")}</option>
+              </Form.Select>
+              <Form.Text muted>
+                <T text="What its code cells are written in: chosen now, and kept." />
+              </Form.Text>
+            </Form.Group>
+          )}
           {noneHere && (
             <Form.Text muted>
               <T text="No kind of workspace is available yet." />
