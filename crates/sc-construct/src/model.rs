@@ -138,6 +138,9 @@ pub struct Task {
     /// `{"kind": "table", "name": "contacts"}` or `{"kind": "query", "name": "countContacts"}`.
     /// Taken from what the tools reported during the task's runs.
     pub created: Vec<serde_json::Value>,
+    /// The feedback it was planned for (AC9), or `None` for a task of the
+    /// phase's own plan.
+    pub feedback: Option<Uuid>,
 }
 
 impl Task {
@@ -155,6 +158,7 @@ impl Task {
             runs: Vec::new(),
             summary: None,
             created: Vec::new(),
+            feedback: None,
         }
     }
 }
@@ -223,6 +227,26 @@ pub struct Question {
 pub struct QuestionAnswer {
     pub question: Uuid,
     pub text: String,
+}
+
+/// Feedback on what a phase built (TODO-app-constructor AC9). Once the admin
+/// approves it, the construction agent turns it into requirements, kept here,
+/// and follow-up tasks after the phase's own, which name it
+/// ([`Task::feedback`]); its status then follows from those tasks, as a
+/// phase's does.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Feedback {
+    pub id: Uuid,
+    pub construction: Uuid,
+    pub phase: Uuid,
+    pub position: f64,
+    pub title: String,
+    pub description: String,
+    /// What the feedback asks of the phase, as the agent wrote it; empty until
+    /// it is planned.
+    pub requirements: Vec<Requirement>,
+    /// The run that planned it last; `None` until the admin approves it.
+    pub run: Option<Uuid>,
 }
 
 /// A phase's status, from its tasks: none is unplanned, any running is

@@ -171,6 +171,12 @@ pub const ASK_CONSTRUCTION_QUESTIONS: HandlerId<AdminOnly> =
     HandlerId::new("askConstructionQuestions");
 pub const ANSWER_CONSTRUCTION_QUESTIONS: HandlerId<AdminOnly> =
     HandlerId::new("answerConstructionQuestions");
+pub const GIVE_CONSTRUCTION_FEEDBACK: HandlerId<AdminOnly> =
+    HandlerId::new("giveConstructionFeedback");
+pub const PLAN_CONSTRUCTION_FEEDBACK: HandlerId<AdminOnly> =
+    HandlerId::new("planConstructionFeedback");
+pub const DELETE_CONSTRUCTION_FEEDBACK: HandlerId<AdminOnly> =
+    HandlerId::new("deleteConstructionFeedback");
 pub const SAVE_PHASES: HandlerId<AdminOnly> = HandlerId::new("savePhases");
 pub const RUN_CONSTRUCTION: HandlerId<AdminOnly> = HandlerId::new("runConstruction");
 pub const PLAN_PHASE_TASKS: HandlerId<AdminOnly> = HandlerId::new("planPhaseTasks");

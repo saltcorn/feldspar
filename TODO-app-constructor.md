@@ -218,11 +218,42 @@ specification leaves open, and the answers go with it to every run. Optional.
 
 ---
 
+## AC9 — Feedback on a built phase
+
+v1's feedback tab, per phase first: someone says what should change in what a phase built; once
+the admin approves it, the construction agent plans it as requirements and follow-up tasks on
+that phase.
+
+- [x] AC9.1 `_fd_construction_feedback` (bootstrap, additive): construction, phase, position,
+  title, description, the requirements the agent made of it, the run that planned it.
+  `_fd_construction_tasks.feedback` (nullable) names the feedback a follow-up task is for.
+  Deleted with the construction.
+- [x] AC9.2 `plan_feedback` (`app_constructor`): one to ten requirements and one to five
+  follow-up tasks, appended after the phase's own as `todo`. Once per feedback; only on a phase
+  with a task done and none failed.
+- [x] AC9.3 `giveConstructionFeedback` (`POST …/construction/feedback`, 201) only records the
+  feedback, `given`, at any time, even while the construction runs.
+  `planConstructionFeedback` approves it: starts the run that plans it, told the phase as built
+  (each task's brief, summary and what it created); or plans again one whose planning left it
+  without tasks. `deleteConstructionFeedback` declines given feedback, or deletes approved
+  feedback with its tasks until one has run. Planning, and deleting approved feedback, are
+  refused while the construction runs or the agent is busy.
+- [x] AC9.4 Plan & build: a fifth tab, **Feedback**, open once a phase has built something: the
+  form (phase, title, what should change) and the feedback given, newest first, with its
+  requirements, its tasks' states, Approve and Decline while it awaits approval, then Run,
+  Plan again and Delete. A phase's page offers "Give
+  feedback"; follow-up tasks are marked "From feedback".
+- [x] AC9.5 Tests: the store (only a built phase, planned once, tasks after the phase's own and
+  reached by the runner first, deleted until one has run); the API flow with a scripted model
+  (given without a run, declined, approved, an empty run leaves it open with the error,
+  planned again, deleted); the screen's rules and the card.
+
 ## Later (not planned yet)
 
 From v1, once AC1–AC5 work:
 - web research for the specification (the questions are AC8);
-- a feedback tab whose items become requirements and then tasks;
+- feedback on the whole application, and from the application's own pages by its users, not
+  only admins (AC9 is per phase; giving feedback starts nothing, so it is ready for that);
 - self-healing: a failed checklist or runtime error becomes a fix task;
 - checklists generated from requirements, as the acceptance test of each phase;
 - `module` tasks (install a module);

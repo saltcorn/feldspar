@@ -2,6 +2,23 @@
 
 Changes in reverse chronological order.
 
+## Plan & build: feedback on what a phase built
+
+Plan & build has a fifth tab, Feedback. Once a phase has built something, say what should
+change in it: pick the phase, give a title and describe what you saw and what you expected.
+Feedback can be given at any time, even while the construction runs, and waits for approval.
+Decline it, or approve it: the construction agent then reads the phase as it was built (each task's brief, what it did and what it
+made) and plans your feedback as requirements and one to five follow-up tasks after the phase's
+own. They wait for you: review them on the phase's page, where they are marked "From feedback",
+and run them. The feedback list shows each item's requirements and the state of its tasks, and
+offers Approve and Decline while it waits, then Run, Plan again when its planning failed, and
+Delete until one of its tasks has run. A
+phase's page has "Give feedback" too. Before, the only way to change a built phase was a new
+construction or the builder agent's own chat, without the plan knowing.
+
+Also fixed: the screen could show a run of the construction agent as finished without the error
+it ended with, when the run failed at once.
+
 ## Plan & build: the construction agent asks before it draws
 
 The Specification step now has two ways on: "Continue to research", or "Plan phases" straight

@@ -17,6 +17,8 @@
 //! - `save_tasks` plans the tasks of one phase ([`sc_construct::save_tasks`],
 //!   AC3.1). The runner asks for it when it reaches the phase, so the tasks are
 //!   written against what the earlier phases actually made.
+//! - `plan_feedback` turns the admin's feedback on a built phase into
+//!   requirements and follow-up tasks after the phase's own (AC9).
 //!
 //! The session header carries the specification and the current phases, so a
 //! conversation with the agent starts from the plan as it stands.
@@ -51,11 +53,16 @@ pub const TOOL_SAVE_MOCKUPS: &str = "save_mockups";
 /// Asks the admin clarifying questions about the specification (AC8).
 pub const TOOL_ASK_QUESTIONS: &str = "ask_questions";
 
+/// Plans the admin's feedback on a phase as requirements and follow-up tasks
+/// (AC9).
+pub const TOOL_PLAN_FEEDBACK: &str = "plan_feedback";
+
 const ARG_PHASES: &str = "phases";
 const ARG_PHASE: &str = "phase";
 const ARG_TASKS: &str = "tasks";
 const ARG_MOCKUPS: &str = "mockups";
 const ARG_QUESTIONS: &str = "questions";
+const ARG_FEEDBACK: &str = "feedback";
 
 /// The planning tools of one application's construction.
 pub struct AppConstructor;
@@ -99,7 +106,13 @@ const PROMPT: &str = "You plan the construction of an application in phases. A p
      every field a person would see or enter, since the data model is built from them. \
      Make the mockups differ in layout and navigation, not only in colour, and say in each \
      one's rationale what sets it apart. When a mockup has been chosen, the phases and their \
-     tasks follow it: its screens are the features, and its fields are the data model.";
+     tasks follow it: its screens are the features, and its fields are the data model.\n\n\
+     Once a phase is built, the admin may give feedback on it, and you are asked to plan it \
+     with `plan_feedback`: the requirements the feedback adds to the phase, each one sentence \
+     on what must change, and the follow-up tasks that meet them, after the phase's own. A \
+     follow-up task changes what exists: its brief names the tables, queries, screens or \
+     code it changes and how. Plan only what the feedback asks, in as few tasks as the \
+     tasks above.";
 
 fn configured(config: &Attrs) -> Result<String> {
     match config_str(config, CFG_CONSTRUCTED_APPLICATION) {
@@ -170,15 +183,6 @@ impl AgentTrait for AppConstructor {
             .into_iter()
             .filter(|spec| DATA_MODEL_TOOLS.contains(&spec.name.as_str()))
             .collect();
-        let requirement = json!({
-            "type": "object",
-            "properties": {
-                "text": { "type": "string" },
-                "priority": { "type": "string", "enum": ["must", "should", "could"] },
-            },
-            "required": ["text", "priority"],
-            "additionalProperties": false,
-        });
         vec![
             ToolSpec::new(
                 TOOL_SAVE_PHASES,
@@ -197,7 +201,7 @@ impl AgentTrait for AppConstructor {
                                     "id": { "type": "string", "description": "An existing phase's id" },
                                     "title": { "type": "string" },
                                     "description": { "type": "string" },
-                                    "requirements": { "type": "array", "items": requirement },
+                                    "requirements": { "type": "array", "items": requirement_item() },
                                 },
                                 "required": ["title", "description", "requirements"],
                                 "additionalProperties": false,
@@ -216,27 +220,7 @@ impl AgentTrait for AppConstructor {
                     "type": "object",
                     "properties": {
                         ARG_PHASE: { "type": "string", "description": "The phase's id" },
-                        ARG_TASKS: {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "kind": { "type": "string", "enum": ["data_model", "feature"] },
-                                    "title": { "type": "string" },
-                                    "brief": {
-                                        "type": "string",
-                                        "description": "What to make; all the task's agent reads"
-                                    },
-                                    "depends_on": {
-                                        "type": "array",
-                                        "items": { "type": "integer", "minimum": 1 },
-                                        "description": "Earlier tasks of this list, by number"
-                                    },
-                                },
-                                "required": ["kind", "title", "brief"],
-                                "additionalProperties": false,
-                            },
-                        },
+                        ARG_TASKS: { "type": "array", "items": task_item() },
                     },
                     "required": [ARG_PHASE, ARG_TASKS],
                     "additionalProperties": false,
@@ -245,6 +229,7 @@ impl AgentTrait for AppConstructor {
         ]
         .into_iter()
         .chain(research_tools())
+        .chain([feedback_tool()])
         .chain(data_model)
         .collect()
     }
@@ -275,6 +260,9 @@ impl AgentTrait for AppConstructor {
         }
         if tool == TOOL_ASK_QUESTIONS {
             return ask_questions(ctx.catalog, &app, args).await;
+        }
+        if tool == TOOL_PLAN_FEEDBACK {
+            return plan_feedback(ctx.catalog, &app, args).await;
         }
         let phases = sc_construct::parse_phases(args.get(ARG_PHASES).unwrap_or(&Json::Null))?;
         let saved = sc_construct::save_phases(ctx.catalog, app.id.0, &phases).await?;
@@ -333,6 +321,91 @@ impl AgentTrait for AppConstructor {
             sc_construct::phase_list(&phases)
         )))
     }
+}
+
+/// One requirement as `save_phases` and `plan_feedback` take it.
+fn requirement_item() -> Json {
+    json!({
+        "type": "object",
+        "properties": {
+            "text": { "type": "string" },
+            "priority": { "type": "string", "enum": ["must", "should", "could"] },
+        },
+        "required": ["text", "priority"],
+        "additionalProperties": false,
+    })
+}
+
+/// One task as `save_tasks` and `plan_feedback` take it.
+fn task_item() -> Json {
+    json!({
+        "type": "object",
+        "properties": {
+            "kind": { "type": "string", "enum": ["data_model", "feature"] },
+            "title": { "type": "string" },
+            "brief": {
+                "type": "string",
+                "description": "What to make; all the task's agent reads"
+            },
+            "depends_on": {
+                "type": "array",
+                "items": { "type": "integer", "minimum": 1 },
+                "description": "Earlier tasks of this list, by number"
+            },
+        },
+        "required": ["kind", "title", "brief"],
+        "additionalProperties": false,
+    })
+}
+
+/// `plan_feedback` (AC9): the admin's feedback on a built phase, as the
+/// requirements it adds and the follow-up tasks that meet them.
+fn feedback_tool() -> ToolSpec {
+    ToolSpec::new(
+        TOOL_PLAN_FEEDBACK,
+        "Plan the admin's feedback on a built phase: the requirements it adds to the phase, \
+     and the follow-up tasks that meet them, which come after the phase's own tasks. Once \
+     per feedback. The tasks wait for the admin to review and run them.",
+        json!({
+            "type": "object",
+            "properties": {
+                ARG_FEEDBACK: { "type": "string", "description": "The feedback's id" },
+                "requirements": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": sc_construct::feedback::MAX_FEEDBACK_REQUIREMENTS,
+                    "items": requirement_item(),
+                },
+                ARG_TASKS: {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": sc_construct::MAX_FEEDBACK_TASKS,
+                    "items": task_item(),
+                    "description": "`depends_on` numbers tasks of this list only",
+                },
+            },
+            "required": [ARG_FEEDBACK, "requirements", ARG_TASKS],
+            "additionalProperties": false,
+        }),
+    )
+}
+
+/// `plan_feedback`: save the feedback's plan and answer its tasks.
+async fn plan_feedback(catalog: &Catalog, app: &Application, args: &Json) -> Result<Json> {
+    let feedback = args
+        .get(ARG_FEEDBACK)
+        .and_then(Json::as_str)
+        .and_then(|raw| uuid::Uuid::parse_str(raw).ok())
+        .ok_or_else(|| Error::invalid(format!("`{ARG_FEEDBACK}` must be the feedback's id")))?;
+    let plan = sc_construct::parse_feedback_plan(args)?;
+    let saved = sc_construct::plan_feedback(catalog, app.id.0, feedback, &plan).await?;
+    Ok(Json::String(format!(
+        "Planned the feedback: {} requirement(s), and {} follow-up task(s) for the admin to \
+         review and run:\n\n{}",
+        plan.requirements.len(),
+        saved.len(),
+        sc_construct::task_list(&saved)
+    )))
 }
 
 /// The tools that come before the phases (AC7, AC8): asking the admin

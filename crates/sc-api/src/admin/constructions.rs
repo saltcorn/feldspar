@@ -1,5 +1,5 @@
 //! The admin API's endpoints: the App Constructor (TODO-app-constructor AC1.3,
-//! AC2.2, AC2.3, AC3.4, AC7, AC8).
+//! AC2.2, AC2.3, AC3.4, AC7, AC8, AC9).
 //!
 //! An application has one construction at most, so a construction is
 //! addressed by its application's id. Their handlers are registered by
@@ -67,6 +67,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     );
     register_questions(set);
     register_mockups(set);
+    register_feedback(set);
     // Replaces the phases, in order; the validation the agent's `save_phases`
     // goes through. A phase named by `id` is updated in place, and one with
     // tasks that the list leaves out is kept.
@@ -198,6 +199,56 @@ fn register_questions(set: &mut EndpointSet) {
     );
 }
 
+/// The feedback's endpoints (AC9).
+fn register_feedback(set: &mut EndpointSet) {
+    // Gives feedback on a phase that has built something (201). It is only
+    // recorded, `given`, until approved with `planConstructionFeedback`; so it
+    // can be given while the construction runs.
+    set.register(
+        Endpoint::new(
+            ids::GIVE_CONSTRUCTION_FEEDBACK,
+            Method::Post,
+            construction_path().lit("feedback"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("phase", TypeSchema::uuid()),
+            StructField::new("title", TypeSchema::text()),
+            StructField::new("description", TypeSchema::text()),
+        ]))
+        .output(construction_schema()),
+    );
+    // Approves a feedback: starts the run that plans it, answering at once
+    // (202) with the feedback `planning`. The run adds its requirements and
+    // follow-up tasks after the phase's own, which wait as `todo` for the
+    // admin to run. Also plans again a feedback whose planning ended without
+    // tasks, e.g. failed. Refused while the construction runs. Poll
+    // `getConstruction` until it is planned.
+    set.register(
+        Endpoint::new(
+            ids::PLAN_CONSTRUCTION_FEEDBACK,
+            Method::Post,
+            construction_path()
+                .lit("feedback")
+                .param("feedback", ValueType::Uuid)
+                .lit("plan"),
+        )
+        .output(construction_schema()),
+    );
+    // Deletes (or declines) a feedback with its follow-up tasks; refused once
+    // one of them has started, and for approved feedback while the
+    // construction runs.
+    set.register(
+        Endpoint::new(
+            ids::DELETE_CONSTRUCTION_FEEDBACK,
+            Method::Delete,
+            construction_path()
+                .lit("feedback")
+                .param("feedback", ValueType::Uuid),
+        )
+        .output(construction_schema()),
+    );
+}
+
 /// The mockups' endpoints (AC7).
 fn register_mockups(set: &mut EndpointSet) {
     // Starts the run that proposes mockups (AC7), answering at once (202) with
@@ -304,6 +355,8 @@ fn construction_schema() -> TypeSchema {
         ),
         // Every round's mockups, oldest first.
         StructField::new("mockups", TypeSchema::array(mockup_schema())),
+        // The admin's feedback on the phases, in the order it was given.
+        StructField::new("feedback", TypeSchema::array(feedback_schema())),
         StructField::new("updated_at", TypeSchema::optional(TypeSchema::timestamp())),
         StructField::new("phases", TypeSchema::array(phase_schema())),
     ]))
@@ -341,6 +394,25 @@ fn mockup_schema() -> TypeSchema {
     ])
 }
 
+fn feedback_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::uuid()),
+        StructField::new("phase", TypeSchema::uuid()),
+        StructField::new("title", TypeSchema::text()),
+        StructField::new("description", TypeSchema::text()),
+        // What it adds to the phase; empty until planned.
+        StructField::new("requirements", TypeSchema::array(requirement_schema())),
+        // The run that planned it last; absent until approved.
+        StructField::new("run", TypeSchema::optional(TypeSchema::uuid())),
+        // Whether that run is being driven now.
+        StructField::new("planning", TypeSchema::bool()),
+        // given (not approved yet) | open (approved, no tasks yet) | planned |
+        // running | failed | done: from its tasks once approved, which are its
+        // phase's with `feedback` set to its id.
+        StructField::new("status", TypeSchema::text()),
+    ])
+}
+
 fn requirement_schema() -> TypeSchema {
     TypeSchema::struct_of([
         StructField::new("text", TypeSchema::text()),
@@ -362,5 +434,7 @@ fn task_schema() -> TypeSchema {
         StructField::new("runs", TypeSchema::array(TypeSchema::uuid())),
         StructField::new("summary", TypeSchema::optional(TypeSchema::text())),
         StructField::new("created", TypeSchema::array(TypeSchema::json())),
+        // The feedback it was planned for; absent for the phase's own tasks.
+        StructField::new("feedback", TypeSchema::optional(TypeSchema::uuid())),
     ])
 }

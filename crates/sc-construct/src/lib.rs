@@ -13,6 +13,8 @@
 //!   which the admin may choose.
 //! - [`questions`] — what the agent asks about the specification first, and
 //!   the admin's answers.
+//! - [`feedback`] — the admin's feedback on what a phase built, planned as
+//!   requirements and follow-up tasks.
 
 /// This crate's own tables' access to the primary database
 /// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
@@ -21,6 +23,7 @@
 pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
     sc_catalog::Unchecked::system("sc-construct: the construction store");
 
+pub mod feedback;
 pub mod mockups;
 pub mod model;
 pub mod plan;
@@ -28,15 +31,20 @@ pub mod questions;
 pub mod store;
 pub mod tasks;
 
+pub use feedback::{
+    FEEDBACK_TABLE, FeedbackPlan, MAX_FEEDBACK_TASKS, add_feedback, delete_feedback, feedback_of,
+    feedback_tasks, parse_feedback_plan, plan_feedback, require_feedback, require_feedback_phase,
+    set_feedback_run,
+};
 pub use mockups::{
     DEFAULT_MOCKUPS, MAX_MOCKUPS, MOCKUPS_TABLE, MockupInput, choose_mockup, chosen_mockup,
     latest_round, mockup_text, mockups_of, parse_mockups, save_mockups, screen_file,
     set_mockup_feedback,
 };
 pub use model::{
-    Construction, ConstructionStatus, Mockup, MockupFeedback, MockupScreen, MockupStatus, Phase,
-    PhaseStatus, PhaseWithTasks, Priority, Question, QuestionAnswer, Requirement, Task, TaskKind,
-    TaskStatus, phase_status,
+    Construction, ConstructionStatus, Feedback, Mockup, MockupFeedback, MockupScreen, MockupStatus,
+    Phase, PhaseStatus, PhaseWithTasks, Priority, Question, QuestionAnswer, Requirement, Task,
+    TaskKind, TaskStatus, phase_status,
 };
 pub use plan::{MAX_PHASES, PhaseInput, SavedPhases, parse_phases, phase_list, save_phases};
 pub use questions::{

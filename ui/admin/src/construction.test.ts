@@ -24,6 +24,11 @@ import {
   blankConstruction,
   constructPath,
   constructRoute,
+  feedbackPath,
+  feedbackPhases,
+  feedbackDeletable,
+  feedbackEditable,
+  agentBusy,
   createdEntity,
   dependencyTitles,
   landingTab,
@@ -102,6 +107,7 @@ function construction(status: string, extra: Partial<Construction> = {}): Constr
     asking: false,
     questions: [],
     mockups: [],
+    feedback: [],
     updated_at: null,
     phases: [],
     ...extra,
@@ -356,6 +362,9 @@ describe("what the buttons call", () => {
       chooseMockup: answer("chooseMockup"),
       askConstructionQuestions: answer("askConstructionQuestions"),
       answerConstructionQuestions: answer("answerConstructionQuestions"),
+      giveConstructionFeedback: answer("giveConstructionFeedback"),
+      planConstructionFeedback: answer("planConstructionFeedback"),
+      deleteConstructionFeedback: answer("deleteConstructionFeedback"),
       getMockupScreens: vi.fn(async (...args: unknown[]) => {
         calls.push(["getMockupScreens", ...args]);
         return [];
@@ -432,17 +441,28 @@ describe("a phase's own page", () => {
       appId: "a1",
       tab: null,
       phaseId: null,
+      feedbackPhase: null,
     });
     expect(constructRoute("/applications/a1/construct/phases")).toEqual({
       appId: "a1",
       tab: "phases",
       phaseId: null,
+      feedbackPhase: null,
     });
     expect(constructRoute(phasePath("a1", "p 1"))).toEqual({
       appId: "a1",
       tab: null,
       phaseId: "p 1",
+      feedbackPhase: null,
     });
+    // The Feedback tab, with the phase new feedback is for.
+    expect(constructRoute(feedbackPath("a1"))).toEqual({
+      appId: "a1",
+      tab: "feedback",
+      phaseId: null,
+      feedbackPhase: null,
+    });
+    expect(constructRoute(feedbackPath("a1", "p 1"))?.feedbackPhase).toBe("p 1");
     expect(constructRoute("/applications/a1/construct/other")).toBeNull();
     expect(constructRoute("/applications/a1/tables")).toBeNull();
   });
@@ -664,6 +684,9 @@ describe("the mockups", () => {
       chooseMockup: answer("chooseMockup"),
       askConstructionQuestions: answer("askConstructionQuestions"),
       answerConstructionQuestions: answer("answerConstructionQuestions"),
+      giveConstructionFeedback: answer("giveConstructionFeedback"),
+      planConstructionFeedback: answer("planConstructionFeedback"),
+      deleteConstructionFeedback: answer("deleteConstructionFeedback"),
       getMockupScreens: vi.fn(async (...args: unknown[]) => {
         calls.push(["getMockupScreens", ...args]);
         return [];
@@ -780,6 +803,9 @@ describe("the clarifying questions", () => {
       chooseMockup: answer("chooseMockup"),
       askConstructionQuestions: answer("askConstructionQuestions"),
       answerConstructionQuestions: answer("answerConstructionQuestions"),
+      giveConstructionFeedback: answer("giveConstructionFeedback"),
+      planConstructionFeedback: answer("planConstructionFeedback"),
+      deleteConstructionFeedback: answer("deleteConstructionFeedback"),
       getMockupScreens: vi.fn(async () => []),
     };
     const buttons = constructionCalls(client, "a1");
@@ -790,5 +816,50 @@ describe("the clarifying questions", () => {
       ["askConstructionQuestions", "a1"],
       ["answerConstructionQuestions", "a1", { answers: [{ question: "q1", text: "Sales" }] }],
     ]);
+  });
+});
+
+describe("the feedback on the phases", () => {
+  const built = (status: string, extra: Partial<ConstructionTask> = {}) =>
+    phase("p1", [task("done", { id: "t1" }), task(status, { id: "t2", ...extra })], "planned");
+  const given = (extra: Partial<Construction["feedback"][number]> = {}) => ({
+    id: "f1",
+    phase: "p1",
+    title: "Sorting",
+    description: "Sort by name",
+    requirements: [],
+    run: "r1",
+    planning: false,
+    status: "planned",
+    ...extra,
+  });
+
+  it("is given on a phase that built something and has no failed task", () => {
+    expect(feedbackPhases(construction("planned", { phases: [phase("p1")] }))).toEqual([]);
+    expect(
+      feedbackPhases(construction("done", { phases: [built("todo")] })).map((p) => p.id),
+    ).toEqual(["p1"]);
+    expect(feedbackPhases(construction("failed", { phases: [built("failed")] }))).toEqual([]);
+    // Its tab opens with it.
+    expect(tabOpen(construction("planned", { phases: [phase("p1")] }), "feedback")).toBe(false);
+    expect(tabOpen(construction("done", { phases: [built("todo")] }), "feedback")).toBe(true);
+  });
+
+  it("keeps the agent busy while it is planned, and waits for the screen", () => {
+    const planning = construction("done", { feedback: [given({ planning: true })] });
+    expect(agentBusy(planning)).toBe(true);
+    expect(shouldPoll(planning)).toBe(true);
+    expect(feedbackEditable(planning)).toBe(false);
+    expect(feedbackEditable(construction("running"))).toBe(false);
+    expect(feedbackEditable(construction("done"))).toBe(true);
+  });
+
+  it("is deleted with its tasks only until one has run", () => {
+    const f = given();
+    const waiting = construction("done", { phases: [built("todo", { feedback: "f1" })] });
+    expect(feedbackDeletable(waiting, f)).toBe(true);
+    const ran = construction("done", { phases: [built("done", { feedback: "f1" })] });
+    expect(feedbackDeletable(ran, f)).toBe(false);
+    expect(feedbackDeletable(waiting, { ...f, planning: true })).toBe(false);
   });
 });

@@ -491,12 +491,13 @@ async fn the_construction_agent_is_offered_only_the_tools_a_construction_needs()
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     assert_eq!(planned(&mut admin, &path).await["status"], json!("planned"));
 
-    // The data-model tools and its own four, nothing else, and none of the
+    // The data-model tools and its own five, nothing else, and none of the
     // copilot's playbook for delegating code.
     let mut expected: Vec<String> = sc_agent_builtins::DATA_MODEL_TOOLS
         .iter()
         .chain(&[
             sc_agent_builtins::TOOL_ASK_QUESTIONS,
+            sc_agent_builtins::TOOL_PLAN_FEEDBACK,
             sc_agent_builtins::TOOL_SAVE_MOCKUPS,
             sc_agent_builtins::TOOL_SAVE_PHASES,
             sc_agent_builtins::TOOL_SAVE_TASKS,
@@ -1821,6 +1822,179 @@ async fn a_phase_is_planned_on_its_own_then_again_with_a_note_and_runs_when_aske
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(body.to_string().contains("has started"), "{body}");
+    assert_eq!(model.remaining(), 0);
+    Ok(())
+}
+
+// --- feedback (AC9) -----------------------------------------------------------
+
+/// Poll the construction until no feedback is being planned.
+async fn feedback_planned(admin: &mut Client, path: &str) -> Value {
+    for _ in 0..200 {
+        let (status, read) = admin.send("GET", path, None).await;
+        assert_eq!(status, StatusCode::OK, "{read}");
+        let planning = read["feedback"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["planning"] == json!(true));
+        if !planning {
+            return read;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("the feedback run did not finish");
+}
+
+#[tokio::test]
+async fn feedback_on_a_built_phase_is_planned_as_follow_up_tasks() -> sc_error::Result<()> {
+    let tmp = TempDir::new("feedback");
+    let mut c = constructing(&tmp, &["Contacts", "Reports"]).await?;
+    planned_tasks(&c, 0, &[(TaskKind::Feature, "Contact list")]).await;
+    let first = Uuid::parse_str(&c.phases[0]).unwrap();
+    let mut built = sc_construct::tasks_of_phase(&c.catalog, first)
+        .await?
+        .remove(0);
+    built.status = TaskStatus::Done;
+    built.summary = Some("Made the contact list at /contacts.".to_owned());
+    sc_construct::update_task(&c.catalog, &built).await?;
+    let feedback_path = format!("{}/feedback", c.path);
+
+    // Only on a phase that built something.
+    let (status, body) = c
+        .admin
+        .send(
+            "POST",
+            &feedback_path,
+            Some(json!({ "phase": c.phases[1], "title": "Charts", "description": "Add charts" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.to_string().contains("has not built anything"),
+        "{body}"
+    );
+
+    // Giving it only records it: no run until it is approved.
+    let idle = Arc::new(FakeProvider::new([]));
+    c.switch.set(idle.clone());
+    let give = |title: &str| {
+        json!({
+            "phase": c.phases[0],
+            "title": title,
+            "description": "Sort the contacts by name.",
+        })
+    };
+    let (status, read) = c
+        .admin
+        .send("POST", &feedback_path, Some(give("Sorting")))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{read}");
+    let feedback = read["feedback"][0].clone();
+    assert_eq!(feedback["title"], json!("Sorting"));
+    assert_eq!(feedback["status"], json!("given"), "{read}");
+    assert_eq!(feedback["run"], Value::Null, "{read}");
+    assert_eq!(feedback["planning"], json!(false), "{read}");
+    assert!(idle.requests().is_empty());
+
+    // Declining feedback that is not approved deletes it.
+    let (_, read) = c
+        .admin
+        .send("POST", &feedback_path, Some(give("Colours")))
+        .await;
+    let declined = read["feedback"][1]["id"].as_str().unwrap().to_owned();
+    let (status, read) = c
+        .admin
+        .send("DELETE", &format!("{feedback_path}/{declined}"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{read}");
+    assert_eq!(read["feedback"].as_array().unwrap().len(), 1, "{read}");
+
+    // Approving it starts the run; one that plans nothing leaves the
+    // feedback open, and says so.
+    let id = feedback["id"].as_str().unwrap().to_owned();
+    c.switch
+        .set(Arc::new(FakeProvider::new([Reply::says("Looks fine.")])));
+    let (status, started) = c
+        .admin
+        .send("POST", &format!("{feedback_path}/{id}/plan"), None)
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    let read = feedback_planned(&mut c.admin, &c.path).await;
+    let feedback = read["feedback"][0].clone();
+    assert_eq!(feedback["status"], json!("open"), "{read}");
+    assert!(feedback["run"].is_string(), "{read}");
+    assert!(
+        read["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("without planning the feedback"),
+        "{read}"
+    );
+
+    // Planned again: requirements on the feedback, follow-up tasks after the
+    // phase's own, waiting for the admin.
+    let model = Arc::new(FakeProvider::new([
+        Reply::calls(
+            "plan_feedback",
+            json!({
+                "feedback": id,
+                "requirements": [{ "text": "Contacts are sorted by name", "priority": "must" }],
+                "tasks": [task("feature", "Sort the contact list", &[])],
+            }),
+        ),
+        Reply::says("Planned."),
+    ]));
+    c.switch.set(model.clone());
+    let (status, body) = c
+        .admin
+        .send("POST", &format!("{feedback_path}/{id}/plan"), None)
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let read = feedback_planned(&mut c.admin, &c.path).await;
+    assert_eq!(read["error"], Value::Null, "{read}");
+    let feedback = &read["feedback"][0];
+    assert_eq!(feedback["status"], json!("planned"), "{read}");
+    assert_eq!(
+        feedback["requirements"][0]["text"],
+        json!("Contacts are sorted by name")
+    );
+    let tasks = read["phases"][0]["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 2, "{read}");
+    assert_eq!(tasks[0]["feedback"], Value::Null);
+    assert_eq!(tasks[1]["feedback"], json!(id));
+    assert_eq!(tasks[1]["status"], json!("todo"));
+    assert_eq!(read["phases"][0]["status"], json!("planned"));
+    assert_ne!(
+        read["status"],
+        json!("running"),
+        "nothing runs until the admin starts it"
+    );
+
+    // The run was told the phase as built and the feedback.
+    let asked = format!("{:?}", model.requests()[0]);
+    assert!(
+        asked.contains("Made the contact list at /contacts."),
+        "{asked}"
+    );
+    assert!(asked.contains("Sort the contacts by name."), "{asked}");
+    assert!(asked.contains(&id), "{asked}");
+
+    // Planned once; deleted with its tasks while none has started.
+    let (status, body) = c
+        .admin
+        .send("POST", &format!("{feedback_path}/{id}/plan"), None)
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("planned already"), "{body}");
+    let (status, read) = c
+        .admin
+        .send("DELETE", &format!("{feedback_path}/{id}"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{read}");
+    assert_eq!(read["feedback"], json!([]));
+    assert_eq!(read["phases"][0]["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(read["phases"][0]["status"], json!("done"));
     assert_eq!(model.remaining(), 0);
     Ok(())
 }

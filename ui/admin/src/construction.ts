@@ -1,10 +1,11 @@
 // The Plan & build screen's decisions (TODO-app-constructor AC4), as pure
 // functions so they are tested without a browser.
 //
-// The screen shows one application's construction in four numbered tabs:
+// The screen shows one application's construction in five numbered tabs:
 // the specification, the research (optional: clarifying questions, AC8, and
-// mockups, AC7), the phases, and the progress of their tasks. Which one
-// opens follows from the construction's status. The phases are edited as a
+// mockups, AC7), the phases, the progress of their tasks, and the admin's
+// feedback on what the phases built (AC9). Which one opens follows from the
+// construction's status. The phases are edited as a
 // draft on the screen and saved whole, as the server's `savePhases` takes
 // them.
 
@@ -15,6 +16,7 @@ export type ConstructionPhase = Construction["phases"][number];
 export type ConstructionTask = ConstructionPhase["tasks"][number];
 export type ConstructionMockup = Construction["mockups"][number];
 export type ConstructionQuestion = Construction["questions"][number];
+export type ConstructionFeedback = Construction["feedback"][number];
 
 /** A phase as the admin edits it before saving. */
 export type PhaseDraft = SavePhasesRequest["phases"][number];
@@ -41,11 +43,31 @@ export function phasePath(appId: string, phaseId: string): string {
   return `${phasesPath(appId)}/${encodeURIComponent(phaseId)}`;
 }
 
+/** The construction opened on its Feedback tab, with `phaseId` picked for
+ * new feedback when given. */
+export function feedbackPath(appId: string, phaseId?: string): string {
+  const base = `${constructPath(appId)}/feedback`;
+  return phaseId ? `${base}/${encodeURIComponent(phaseId)}` : base;
+}
+
 /** Where a Plan & build route points: the construction, opened on a tab or on
- * one phase's page. `null` for any other path. */
-export function constructRoute(
-  path: string,
-): { appId: string; tab: "phases" | null; phaseId: string | null } | null {
+ * one phase's page, and the phase new feedback is for. `null` for any other
+ * path. */
+export function constructRoute(path: string): {
+  appId: string;
+  tab: "phases" | "feedback" | null;
+  phaseId: string | null;
+  feedbackPhase: string | null;
+} | null {
+  const feedback = path.match(/^\/applications\/([^/]+)\/construct\/feedback(?:\/([^/]+))?$/);
+  if (feedback) {
+    return {
+      appId: decodeURIComponent(feedback[1]),
+      tab: "feedback",
+      phaseId: null,
+      feedbackPhase: feedback[2] ? decodeURIComponent(feedback[2]) : null,
+    };
+  }
   const match = path.match(/^\/applications\/([^/]+)\/construct(?:\/phases(?:\/([^/]+))?)?$/);
   if (!match) return null;
   const phaseId = match[2] ? decodeURIComponent(match[2]) : null;
@@ -53,6 +75,7 @@ export function constructRoute(
     appId: decodeURIComponent(match[1]),
     tab: path.includes("/construct/phases") && !phaseId ? "phases" : null,
     phaseId,
+    feedbackPhase: null,
   };
 }
 
@@ -102,12 +125,13 @@ export function blankConstruction(appId: string): Construction {
     asking: false,
     questions: [],
     mockups: [],
+    feedback: [],
     phases: [],
   };
 }
 
 /** The screen's tabs, in order; each is one step. */
-export const TABS = ["specification", "research", "phases", "progress"] as const;
+export const TABS = ["specification", "research", "phases", "progress", "feedback"] as const;
 export type Tab = (typeof TABS)[number];
 
 /** The tab the screen opens on: the current step's, except that a build under
@@ -119,7 +143,8 @@ export function landingTab(step: Exclude<Step, "start">): Tab {
 
 /** Whether `tab` can be opened yet: the specification always, the research
  * once there is a specification to research, the phases once they are planned or
- * being planned, the progress once the step is reached. */
+ * being planned, the progress once the step is reached, the feedback once a
+ * phase has built something to give it on. */
 export function tabOpen(construction: Construction, tab: Tab): boolean {
   switch (tab) {
     case "specification":
@@ -135,6 +160,8 @@ export function tabOpen(construction: Construction, tab: Tab): boolean {
       return construction.planning || construction.phases.length > 0;
     case "progress":
       return currentStep(construction) === "progress";
+    case "feedback":
+      return construction.feedback.length > 0 || feedbackPhases(construction).length > 0;
   }
 }
 
@@ -148,16 +175,22 @@ export function started(construction: Construction): boolean {
   return construction.phases.some((p) => p.tasks.some((t) => t.status !== "todo"));
 }
 
-/** Whether the screen should keep reloading: while the construction runs, or
- * its phases are being planned, its mockups proposed or its questions asked. */
-export function shouldPoll(construction: Construction | null): boolean {
+/** Whether the construction agent is busy with a run for the construction:
+ * planning the phases, proposing mockups, asking questions or planning
+ * feedback. One at a time. */
+export function agentBusy(construction: Construction): boolean {
   return (
-    !!construction &&
-    (construction.status === "running" ||
-      construction.planning ||
-      construction.designing ||
-      construction.asking)
+    construction.planning ||
+    construction.designing ||
+    construction.asking ||
+    construction.feedback.some((f) => f.planning)
   );
+}
+
+/** Whether the screen should keep reloading: while the construction runs, or
+ * the construction agent is busy with it. */
+export function shouldPoll(construction: Construction | null): boolean {
+  return !!construction && (construction.status === "running" || agentBusy(construction));
 }
 
 /** Keep `construction` up to date while it runs or is being planned: every
@@ -218,7 +251,7 @@ export function textRows(text: string): number {
 
 /** Whether the phases can be edited now: not while they are planned or run. */
 export function phasesEditable(construction: Construction): boolean {
-  return !construction.planning && construction.status !== "running";
+  return !agentBusy(construction) && construction.status !== "running";
 }
 
 /** Whether `phase`'s tasks can be planned on their own, before a run, as the
@@ -364,11 +397,43 @@ export function revisionFeedback(
  * or chosen, now: not while the agent plans, proposes or asks (one run of it
  * at a time), or the construction runs. */
 export function researchEditable(construction: Construction): boolean {
+  return !agentBusy(construction) && construction.status !== "running";
+}
+
+/** The phases feedback can be given on, as the server's
+ * `giveConstructionFeedback` allows: those that built something (a task
+ * done) and have no failed task, which would stop the runner before the
+ * follow-up tasks. */
+export function feedbackPhases(construction: Construction): ConstructionPhase[] {
+  return construction.phases.filter(
+    (p) => p.tasks.some((t) => t.status === "done") && !p.tasks.some((t) => t.status === "failed"),
+  );
+}
+
+/** The follow-up tasks planned for `feedback`, in order. */
+export function feedbackTasks(
+  construction: Construction,
+  feedback: ConstructionFeedback,
+): ConstructionTask[] {
+  return construction.phases.flatMap((p) => p.tasks.filter((t) => t.feedback === feedback.id));
+}
+
+/** Whether approved feedback can be planned, run or deleted now: not while
+ * the construction runs, nor while the agent is busy with it. Feedback can be
+ * given, and declined before it is approved, at any time. */
+export function feedbackEditable(construction: Construction): boolean {
+  return !agentBusy(construction) && construction.status !== "running";
+}
+
+/** Whether `feedback` can be deleted: none of its tasks has started, since
+ * what ran stays recorded. */
+export function feedbackDeletable(
+  construction: Construction,
+  feedback: ConstructionFeedback,
+): boolean {
   return (
-    !construction.planning &&
-    !construction.designing &&
-    !construction.asking &&
-    construction.status !== "running"
+    !feedback.planning &&
+    feedbackTasks(construction, feedback).every((t) => t.status === "todo" && t.runs.length === 0)
   );
 }
 
@@ -468,6 +533,9 @@ export type ConstructionClient = Pick<
   | "getMockupScreens"
   | "askConstructionQuestions"
   | "answerConstructionQuestions"
+  | "giveConstructionFeedback"
+  | "planConstructionFeedback"
+  | "deleteConstructionFeedback"
 >;
 
 /** What the screen's buttons do, each answering the construction as the
@@ -491,6 +559,13 @@ export function constructionCalls(client: ConstructionClient, appId: string) {
     },
     answerQuestions: (answers: { question: string; text: string }[]) =>
       client.answerConstructionQuestions(appId, { answers }),
+    /** Give feedback on a built phase; it waits for approval. */
+    giveFeedback: (phase: string, title: string, description: string) =>
+      client.giveConstructionFeedback(appId, { phase, title, description }),
+    /** Approve a feedback, which has the agent plan its follow-up tasks; or
+     * plan it again when its planning left it without tasks. */
+    planFeedback: (feedback: string) => client.planConstructionFeedback(appId, feedback),
+    deleteFeedback: (feedback: string) => client.deleteConstructionFeedback(appId, feedback),
     /** Save the specification as it is on the screen, then have `count`
      * mockups proposed from it. */
     proposeMockups: async (specification: string, count: number) => {

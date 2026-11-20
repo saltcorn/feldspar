@@ -178,6 +178,7 @@ pub async fn save_questions(
 
 /// A construction's questions, in order.
 pub async fn questions_of(catalog: &Catalog, construction: Uuid) -> Result<Vec<Question>> {
+    // Should not happen: the server bootstraps the table at startup.
     if !matches!(catalog.get(QUESTIONS_TABLE), Ok(Some(_))) {
         return Ok(Vec::new());
     }

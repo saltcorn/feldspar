@@ -234,6 +234,7 @@ fn mockup_insert(mockup: &Mockup) -> Result<Insert> {
 
 /// A construction's mockups, oldest round first and in order within it.
 pub async fn mockups_of(catalog: &Catalog, construction: Uuid) -> Result<Vec<Mockup>> {
+    // Should not happen: the server bootstraps the table at startup.
     if !matches!(catalog.get(MOCKUPS_TABLE), Ok(Some(_))) {
         return Ok(Vec::new());
     }

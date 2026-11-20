@@ -2823,6 +2823,46 @@ textarea.form-control.phase-description {
   gap: 1rem;
   margin-top: 1rem;
 }
+/* Plan & build's feedback (AC9): what was given on the phases, newest first. */
+.feedback-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.feedback-item + .feedback-item {
+  border-top: 1px solid var(--tblr-border-color);
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+.feedback-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.feedback-description {
+  margin-top: 0.25rem;
+  white-space: pre-wrap;
+}
+.feedback-tasks {
+  margin: 0.5rem 0 0;
+  padding-left: 1.25rem;
+}
+.feedback-tasks li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+.feedback-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.feedback-actions:empty {
+  display: none;
+}
 .research-plan {
   display: flex;
   justify-content: flex-end;

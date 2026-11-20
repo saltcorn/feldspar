@@ -48,6 +48,12 @@ import {
   mockupsWithoutQuestions,
   planningUnresearched,
   planningWithoutMockup,
+  feedbackPath,
+  feedbackPhases,
+  feedbackTasks,
+  feedbackEditable,
+  feedbackDeletable,
+  type ConstructionFeedback,
   type ConstructionMockup,
   type MockupWidth,
   type MockupScreensLoader,
@@ -103,6 +109,7 @@ import {
   IconHelpCircle,
   IconLayoutDashboard,
   IconListCheck,
+  IconMessagePlus,
   IconPlayerPlay,
   IconRefresh,
   IconPlayerStop,
@@ -129,7 +136,10 @@ function statusLabel(t: Translate, status: string): string {
     case "planned":
       return t("Planned");
     case "unplanned":
+    case "open":
       return t("Not planned");
+    case "given":
+      return t("Awaiting approval");
     case "running":
       return t("Running");
     case "stopped":
@@ -156,6 +166,7 @@ function statusTone(status: string): Tone {
     case "running":
       return "blue";
     case "stopped":
+    case "given":
       return "yellow";
     default:
       return "secondary";
@@ -214,6 +225,7 @@ export function StepTabs({
     research: t("Research"),
     phases: t("Phases"),
     progress: t("Progress"),
+    feedback: t("Feedback"),
   };
   const step = currentStep(construction);
   return (
@@ -246,12 +258,15 @@ export function Construct({
   appId,
   tab: opened = null,
   phaseId = null,
+  feedbackPhase = null,
 }: {
   appId: string;
   /** The tab the route names (`/construct/phases`), else the current step's. */
   tab?: Tab | null;
   /** One phase's own page (`/construct/phases/{id}`) instead of the tabs. */
   phaseId?: string | null;
+  /** The phase new feedback is for (`/construct/feedback/{id}`). */
+  feedbackPhase?: string | null;
 }) {
   const { t } = useT();
   const [app, setApp] = useState<AppItem | null>(null);
@@ -481,6 +496,14 @@ export function Construct({
                   <T text="Run" />
                 </Button>
               )}
+              {construction &&
+                phase &&
+                feedbackPhases(construction).some((p) => p.id === phase.id) && (
+                  <Button variant="outline-secondary" href={`#${feedbackPath(appId, phase.id)}`}>
+                    <IconMessagePlus className="icon-2" />
+                    <T text="Give feedback" />
+                  </Button>
+                )}
               {running && (
                 <Button variant="outline-danger" disabled={busy} onClick={stop}>
                   <IconPlayerStop className="icon-2" />
@@ -552,6 +575,7 @@ export function Construct({
         )}
         {construction === undefined && !error && <Spinner animation="border" size="sm" />}
         {confirmation.modal}
+        {confirmedRun.modal}
         {construction === null && app && !constructible(app) && (
           <Alert variant="secondary">
             <T text="Plan & build builds React applications. This application uses another framework." />
@@ -627,6 +651,50 @@ export function Construct({
                 onRun={(until) =>
                   void act(() => calls.run(until), t("Could not run the construction."))
                 }
+              />
+            )}
+            {construction && tab === "feedback" && (
+              <FeedbackCard
+                construction={construction}
+                busy={busy}
+                appId={appId}
+                initialPhase={feedbackPhase}
+                onGive={(phase, title, description) =>
+                  act(
+                    () => calls.giveFeedback(phase, title, description),
+                    t("Could not give the feedback."),
+                  )
+                }
+                onPlan={(feedback) =>
+                  void act(() => calls.planFeedback(feedback.id), t("Could not plan the feedback."))
+                }
+                onDelete={(feedback) =>
+                  confirmation.confirm({
+                    ...(feedback.status === "given"
+                      ? {
+                          title: t("Decline this feedback?"),
+                          body: t("“{title}” is deleted without being planned.", {
+                            title: feedback.title,
+                          }),
+                          confirm: t("Decline the feedback"),
+                        }
+                      : {
+                          title: t("Delete this feedback?"),
+                          body: t(
+                            "“{title}” and its follow-up tasks are deleted. None of them has run, so nothing built is lost.",
+                            { title: feedback.title },
+                          ),
+                          confirm: t("Delete the feedback"),
+                        }),
+                    danger: true,
+                    onConfirm: () =>
+                      void act(
+                        () => calls.deleteFeedback(feedback.id),
+                        t("Could not delete the feedback."),
+                      ),
+                  })
+                }
+                onRun={(phase) => confirmedRun.request(phase)}
               />
             )}
             {construction && tab === "progress" && (
@@ -897,6 +965,260 @@ export function QuestionsCard({
         )}
       </Card.Body>
     </Card>
+  );
+}
+
+/** The feedback step (AC9): give feedback on a phase that built something,
+ * recorded until approved; approving it has the construction agent plan it as
+ * requirements and follow-up tasks on the phase. Below, the feedback given,
+ * newest first, each with its plan and the state of its tasks. The tasks wait
+ * for the admin to run them. */
+export function FeedbackCard({
+  construction,
+  busy,
+  appId,
+  initialPhase,
+  onGive,
+  onPlan,
+  onDelete,
+  onRun,
+}: {
+  construction: Construction;
+  busy: boolean;
+  appId: string;
+  /** The phase picked when the form opens, if it can take feedback. */
+  initialPhase: string | null;
+  /** Give it; answers whether the server took it, so the form clears. */
+  onGive: (phase: string, title: string, description: string) => Promise<boolean>;
+  onPlan: (feedback: ConstructionFeedback) => void;
+  onDelete: (feedback: ConstructionFeedback) => void;
+  onRun: (phase: ConstructionPhase) => void;
+}) {
+  const { t } = useT();
+  const phases = feedbackPhases(construction);
+  const [phase, setPhase] = useState(
+    phases.find((p) => p.id === initialPhase)?.id ?? phases[phases.length - 1]?.id ?? "",
+  );
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const editable = feedbackEditable(construction);
+  const chosen = phases.some((p) => p.id === phase) ? phase : (phases[phases.length - 1]?.id ?? "");
+  const give = () =>
+    void onGive(chosen, title.trim(), description.trim()).then((given) => {
+      if (given) {
+        setTitle("");
+        setDescription("");
+      }
+    });
+  const given = [...construction.feedback].reverse();
+  return (
+    <>
+      <Card className="mb-3">
+        <StepHeader title={t("Give feedback")} />
+        <Card.Body>
+          <p className="text-secondary">
+            <T text="Say what should change in what a phase built. Once approved, the construction agent turns it into requirements and follow-up tasks on that phase, which wait for you to review and run them." />
+          </p>
+          {phases.length === 0 ? (
+            <div className="text-secondary">
+              <T text="Feedback is on what a phase built: run a phase first." />
+            </div>
+          ) : (
+            <>
+              <Form.Group className="mb-3" controlId="feedback-phase">
+                <Form.Label>
+                  <T text="Phase" />
+                </Form.Label>
+                <Form.Select
+                  value={chosen}
+                  disabled={busy}
+                  onChange={(e) => setPhase(e.target.value)}
+                >
+                  {phases.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.title}
+                    </option>
+                  ))}
+                </Form.Select>
+              </Form.Group>
+              <Form.Group className="mb-3" controlId="feedback-title">
+                <Form.Label>
+                  <T text="Title" />
+                </Form.Label>
+                <Form.Control
+                  value={title}
+                  disabled={busy}
+                  placeholder={t("e.g. Sort the contacts by name")}
+                  onChange={(e) => setTitle(e.target.value)}
+                />
+              </Form.Group>
+              <Form.Group className="mb-3" controlId="feedback-description">
+                <Form.Label>
+                  <T text="What should change" />
+                </Form.Label>
+                <Form.Control
+                  as="textarea"
+                  rows={4}
+                  value={description}
+                  disabled={busy}
+                  placeholder={t("What you saw, and what you expected instead.")}
+                  onChange={(e) => setDescription(e.target.value)}
+                />
+              </Form.Group>
+              <div className="d-flex justify-content-end">
+                <Button
+                  variant="primary"
+                  disabled={busy || !title.trim() || !description.trim()}
+                  onClick={give}
+                >
+                  <IconMessagePlus className="icon-2" />
+                  <T text="Give feedback" />
+                </Button>
+              </div>
+            </>
+          )}
+        </Card.Body>
+      </Card>
+      {given.length > 0 && (
+        <Card className="mb-3">
+          <StepHeader title={t("Feedback given")} />
+          <Card.Body>
+            <ul className="feedback-list">
+              {given.map((feedback) => (
+                <FeedbackItem
+                  key={feedback.id}
+                  construction={construction}
+                  feedback={feedback}
+                  appId={appId}
+                  busy={busy}
+                  editable={editable}
+                  onPlan={() => onPlan(feedback)}
+                  onDelete={() => onDelete(feedback)}
+                  onRun={onRun}
+                />
+              ))}
+            </ul>
+          </Card.Body>
+        </Card>
+      )}
+    </>
+  );
+}
+
+/** One feedback: its phase, what was said, what the agent made of it, and
+ * what can be done with it now. */
+function FeedbackItem({
+  construction,
+  feedback,
+  appId,
+  busy,
+  editable,
+  onPlan,
+  onDelete,
+  onRun,
+}: {
+  construction: Construction;
+  feedback: ConstructionFeedback;
+  appId: string;
+  busy: boolean;
+  /** Whether approved feedback can be planned, run or deleted now. */
+  editable: boolean;
+  onPlan: () => void;
+  onDelete: () => void;
+  onRun: (phase: ConstructionPhase) => void;
+}) {
+  const { t } = useT();
+  const phase = construction.phases.find((p) => p.id === feedback.phase);
+  const tasks = feedbackTasks(construction, feedback);
+  // Its planning ended without tasks: the reason is the construction's last
+  // error, unless a run of the tasks has failed or stopped since.
+  const unplanned = feedback.status === "open" && !feedback.planning && !!feedback.run;
+  const reason =
+    unplanned && !["failed", "stopped"].includes(construction.status) ? construction.error : null;
+  return (
+    <li className="feedback-item">
+      <div className="feedback-head">
+        <strong>{feedback.title}</strong>
+        {feedback.planning ? (
+          <StatusBadge tone="blue" className="text-nowrap">
+            <Spinner animation="border" size="sm" className="me-1" />
+            <T text="Planning" />
+          </StatusBadge>
+        ) : (
+          <Status status={feedback.status} />
+        )}
+        {phase && (
+          <a className="text-secondary small" href={`#${phasePath(appId, phase.id)}`}>
+            {t("Phase “{phase}”", { phase: phase.title })}
+          </a>
+        )}
+      </div>
+      <div className="feedback-description">{feedback.description}</div>
+      {unplanned && (
+        <Alert variant="warning" className="mt-2 mb-0">
+          <T text="The construction agent did not plan it." /> {reason}
+        </Alert>
+      )}
+      {feedback.requirements.length > 0 && (
+        <ul className="pd-reqs mt-2">
+          {feedback.requirements.map((req, r) => (
+            <li key={r}>
+              <Priority priority={req.priority} />
+              <span>
+                <InlineCode text={req.text} />
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {tasks.length > 0 && (
+        <ol className="feedback-tasks">
+          {tasks.map((task) => (
+            <li key={task.id}>
+              <InlineCode text={task.title} />
+              <Status status={task.status} />
+            </li>
+          ))}
+        </ol>
+      )}
+      <div className="feedback-actions">
+        {feedback.status === "given" && (
+          <>
+            <Button size="sm" variant="primary" disabled={busy || !editable} onClick={onPlan}>
+              <IconCheck className="icon-2" />
+              <T text="Approve" />
+            </Button>
+            <Button size="sm" variant="outline-danger" disabled={busy} onClick={onDelete}>
+              <IconTrash className="icon-2" />
+              <T text="Decline" />
+            </Button>
+          </>
+        )}
+        {feedback.status === "open" && !feedback.planning && (
+          <Button size="sm" variant="outline-primary" disabled={busy || !editable} onClick={onPlan}>
+            <IconRefresh className="icon-2" />
+            <T text="Plan again" />
+          </Button>
+        )}
+        {feedback.status === "planned" && phase && (
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={busy || !editable}
+            onClick={() => onRun(phase)}
+          >
+            <IconPlayerPlay className="icon-2" />
+            <T text="Run" />
+          </Button>
+        )}
+        {feedback.status !== "given" && feedbackDeletable(construction, feedback) && (
+          <Button size="sm" variant="outline-danger" disabled={busy || !editable} onClick={onDelete}>
+            <IconTrash className="icon-2" />
+            <T text="Delete" />
+          </Button>
+        )}
+      </div>
+    </li>
   );
 }
 
@@ -2177,6 +2499,9 @@ function PhaseTask({
   const brief = task.brief.trim();
   // One line to scan by: what came of it, else what it is to do.
   const gist = firstSentence(summary || brief);
+  const fromFeedback = task.feedback
+    ? construction.feedback.find((f) => f.id === task.feedback)
+    : undefined;
   return (
     <li className={`pd-task build-task-${task.status}`}>
       <div className="pd-task-head">
@@ -2187,6 +2512,11 @@ function PhaseTask({
         <span className="build-task-kind">
           {task.kind === "data_model" ? t("Data model") : t("Feature")}
         </span>
+        {fromFeedback && (
+          <span className="build-task-kind" title={fromFeedback.title}>
+            <T text="From feedback" />
+          </span>
+        )}
         <Status status={task.status} />
         <span className="pd-task-end">
           {task.runs.map((run, r) => (

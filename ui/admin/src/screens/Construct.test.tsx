@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import type { Construction } from "../construction";
 import {
   Construct,
+  FeedbackCard,
   PhaseDetail,
   PhasesCard,
   ProgressCard,
@@ -33,6 +34,7 @@ function construction(status: string, taskStatus: string): Construction {
     asking: false,
     questions: [],
     mockups: [],
+    feedback: [],
     updated_at: null,
     phases: [
       {
@@ -468,3 +470,103 @@ describe("the questions", () => {
     expect(html).toMatch(/<textarea[^>]*disabled/);
   });
 });
+
+describe("the feedback", () => {
+  // Phase p1's task is done: it can take feedback; p2 has built nothing.
+  const built = construction("done", "done");
+  const give = async () => true;
+  const card = (c: Construction, initialPhase: string | null = null) =>
+    renderToStaticMarkup(
+      <FeedbackCard
+        construction={c}
+        busy={false}
+        appId="a1"
+        initialPhase={initialPhase}
+        onGive={give}
+        onPlan={noop}
+        onDelete={noop}
+        onRun={noop}
+      />,
+    );
+  const feedback = {
+    id: "f1",
+    phase: "p1",
+    title: "Sorting",
+    description: "Sort the books by title",
+    requirements: [{ text: "Books are sorted by title", priority: "must" }],
+    run: "r9",
+    planning: false,
+    status: "planned",
+  };
+
+  it("is given on a phase that built something", () => {
+    const html = card(built, "p1");
+    expect(html).toContain("Give feedback");
+    expect(html).toMatch(/<option[^>]*value="p1"[^>]*>Data model<\/option>/);
+    expect(html).not.toContain(">Checkout</option>");
+    expect(html).toMatch(/>Give feedback<\/button>/);
+  });
+
+  it("can be given while the construction runs", () => {
+    const html = card({ ...built, status: "running" }, "p1");
+    expect(html).not.toMatch(/<select[^>]*disabled/);
+  });
+
+  it("waits for approval once given, and can be approved or declined", () => {
+    const given = { ...feedback, run: null, status: "given", requirements: [] };
+    const html = card({ ...built, feedback: [given] });
+    expect(html).toContain("Awaiting approval");
+    expect(html).toMatch(/>Approve<\/button>/);
+    expect(html).toMatch(/>Decline<\/button>/);
+    expect(html).not.toContain("Plan again");
+    expect(html).not.toContain("did not plan it");
+    // Approving starts the agent, not while the construction runs; declining
+    // touches nothing a run uses.
+    const running = card({ ...built, status: "running", feedback: [given] });
+    expect(running).toMatch(/<button[^>]*disabled=""[^>]*>(?:(?!<\/button>).)*Approve<\/button>/);
+    expect(running).not.toMatch(/<button[^>]*disabled=""[^>]*>(?:(?!<\/button>).)*Decline<\/button>/);
+  });
+
+  it("asks for a run first when no phase built anything", () => {
+    const html = card(construction("planned", "todo"));
+    expect(html).toContain("run a phase first");
+    expect(html).not.toContain("<select");
+  });
+
+  it("lists what was given, with its plan and a way to run or delete it", () => {
+    const withTask = {
+      ...built,
+      feedback: [feedback],
+      phases: built.phases.map((p) =>
+        p.id === "p1"
+          ? {
+              ...p,
+              tasks: [
+                ...p.tasks,
+                { ...p.tasks[0], id: "t9", title: "Sort the list", status: "todo", runs: [], feedback: "f1" },
+              ],
+            }
+          : p,
+      ),
+    };
+    const html = card(withTask);
+    expect(html).toContain("Feedback given");
+    expect(html).toContain("Sort the books by title");
+    expect(html).toContain("Books are sorted by title");
+    expect(html).toContain("Sort the list");
+    expect(html).toMatch(/>Run<\/button>/);
+    expect(html).toMatch(/>Delete<\/button>/);
+  });
+
+  it("says when its planning ended without tasks, and offers to plan it again", () => {
+    const html = card({
+      ...built,
+      error: "the construction agent finished without planning the feedback; see its run",
+      feedback: [{ ...feedback, status: "open", requirements: [] }],
+    });
+    expect(html).toContain("did not plan it");
+    expect(html).toContain("finished without planning the feedback");
+    expect(html).toContain("Plan again");
+  });
+});
+

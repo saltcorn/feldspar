@@ -17,6 +17,12 @@
 //! application's source tree, and the phases are then planned to build it.
 //! Optional, both: the phases can be planned without.
 //!
+//! Feedback on a built phase (AC9) comes in two steps. Giving it
+//! (`giveConstructionFeedback`) only records it, at any time, even while the
+//! construction runs. Approving it (`planConstructionFeedback`) is a run of the
+//! same agent, which plans it as requirements and follow-up tasks after the
+//! phase's own; the tasks wait for the admin to run them.
+//!
 //! Running (`runConstruction`) starts the construction's runner
 //! ([`crate::construction_runner`]), a server task that plans each phase's
 //! tasks when it reaches the phase and runs them. `stopConstruction` stops it;
@@ -63,6 +69,8 @@ enum Activity {
     Designing,
     /// Asking clarifying questions (AC8).
     Asking,
+    /// Planning the admin's feedback with this id (AC9).
+    Feedback(uuid::Uuid),
 }
 
 impl Activity {
@@ -72,6 +80,7 @@ impl Activity {
             Activity::Planning => "planning the phases",
             Activity::Designing => "proposing mockups",
             Activity::Asking => "asking its questions",
+            Activity::Feedback(_) => "planning feedback",
         };
         format!("the construction agent is {what}; wait for it to finish")
     }
@@ -87,10 +96,6 @@ fn activity(construction: uuid::Uuid) -> Option<Activity> {
         .unwrap_or_else(PoisonError::into_inner)
         .get(&construction)
         .copied()
-}
-
-fn planning(construction: uuid::Uuid) -> bool {
-    activity(construction) == Some(Activity::Planning)
 }
 
 /// Refuse while the construction agent plans the phases, proposes mockups or
@@ -241,6 +246,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
 
     register_questions(reg, &catalog, &apps);
     register_mockups(reg, &catalog, &apps);
+    register_feedback(reg, &catalog, &apps);
 
     reg.handle(sc_api::handler_ids::SAVE_PHASES, {
         let catalog = catalog.clone();
@@ -281,7 +287,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
     });
 }
 
-/// The mockups' endpoints (AC7): propose or revise them, and choose one.
+/// The clarifying questions' endpoints (AC8): ask them, and answer them.
 fn register_questions(reg: &mut HandlerRegistry, catalog: &Arc<Catalog>, apps: &Arc<AppMounts>) {
     reg.handle(sc_api::handler_ids::ASK_CONSTRUCTION_QUESTIONS, {
         let catalog = catalog.clone();
@@ -329,6 +335,135 @@ fn register_questions(reg: &mut HandlerRegistry, catalog: &Arc<Catalog>, apps: &
             }
         }
     });
+}
+
+/// The feedback's endpoints (AC9): give it on a phase, which only records
+/// it; approve it, which starts the run that plans it (or plans it again);
+/// delete it.
+fn register_feedback(reg: &mut HandlerRegistry, catalog: &Arc<Catalog>, apps: &Arc<AppMounts>) {
+    reg.handle(sc_api::handler_ids::GIVE_CONSTRUCTION_FEEDBACK, {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let app = require_app(&catalog, ctx.path_param("id")?).await?;
+                // Recorded only, so not held back by a run: the runner and the
+                // agent leave feedback that is not approved alone.
+                let construction = store::require_construction(&catalog, app.id.0).await?;
+                let text = |name: &str| {
+                    ctx.body
+                        .get(name)
+                        .and_then(Json::as_str)
+                        .ok_or_else(|| Error::invalid(format!("`{name}` must be text")))
+                };
+                let phase = text("phase").and_then(|raw| {
+                    uuid::Uuid::parse_str(raw).map_err(|_| {
+                        Error::not_found(format!("no phase {raw} in this construction"))
+                    })
+                })?;
+                sc_construct::add_feedback(
+                    &catalog,
+                    app.id.0,
+                    phase,
+                    text("title")?,
+                    text("description")?,
+                )
+                .await?;
+                Ok(
+                    HandlerResponse::ok(construction_json(&catalog, &construction).await?)
+                        .with_status(201),
+                )
+            }
+        }
+    });
+
+    reg.handle(sc_api::handler_ids::PLAN_CONSTRUCTION_FEEDBACK, {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let app = require_app(&catalog, ctx.path_param("id")?).await?;
+                let user = ctx
+                    .user()
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("planning needs a signed-in admin"))?;
+                let construction = require_feedback_idle(&catalog, &app).await?;
+                let feedback =
+                    require_feedback(&catalog, &construction, ctx.path_param("feedback")?).await?;
+                let phases = store::phases_with_tasks(&catalog, construction.id).await?;
+                if !sc_construct::feedback_tasks(&phases, feedback.id).is_empty() {
+                    return Err(Error::invalid(format!(
+                        "the feedback `{}` is planned already; delete it and give it again to \
+                         plan it anew",
+                        feedback.title
+                    )));
+                }
+                let construction = start_feedback(
+                    catalog.clone(),
+                    apps,
+                    &app,
+                    &construction,
+                    console_caller(user),
+                    &feedback,
+                )
+                .await?;
+                Ok(
+                    HandlerResponse::ok(construction_json(&catalog, &construction).await?)
+                        .with_status(202),
+                )
+            }
+        }
+    });
+
+    reg.handle(sc_api::handler_ids::DELETE_CONSTRUCTION_FEEDBACK, {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let app = require_app(&catalog, ctx.path_param("id")?).await?;
+                let construction = store::require_construction(&catalog, app.id.0).await?;
+                let feedback =
+                    require_feedback(&catalog, &construction, ctx.path_param("feedback")?).await?;
+                // Feedback not approved yet has no run and no tasks: declining
+                // it touches nothing a run uses.
+                if feedback.run.is_some() {
+                    require_feedback_idle(&catalog, &app).await?;
+                }
+                sc_construct::delete_feedback(&catalog, app.id.0, feedback.id).await?;
+                Ok(HandlerResponse::ok(
+                    construction_json(&catalog, &construction).await?,
+                ))
+            }
+        }
+    });
+}
+
+/// The construction of `app`, refused unless its approved feedback can change
+/// now: the construction neither runs nor is being run down, and the agent is
+/// free.
+async fn require_feedback_idle(catalog: &Catalog, app: &Application) -> Result<Construction> {
+    let construction = store::require_construction(catalog, app.id.0).await?;
+    require_agent_free(construction.id)?;
+    if construction.status == ConstructionStatus::Running {
+        return Err(Error::invalid(
+            "the construction is running; stop it before you change its feedback",
+        ));
+    }
+    crate::construction_runner::require_idle(construction.id)?;
+    Ok(construction)
+}
+
+/// The feedback `raw` of `construction`, or a not-found error.
+async fn require_feedback(
+    catalog: &Catalog,
+    construction: &Construction,
+    raw: &str,
+) -> Result<sc_construct::Feedback> {
+    let id = uuid::Uuid::parse_str(raw)
+        .map_err(|_| Error::not_found(format!("no feedback {raw} in this construction")))?;
+    sc_construct::require_feedback(catalog, construction.id, id).await
 }
 
 fn register_mockups(reg: &mut HandlerRegistry, catalog: &Arc<Catalog>, apps: &Arc<AppMounts>) {
@@ -762,6 +897,8 @@ enum Purpose {
     /// Ask clarifying questions: it must ask one that is not among `known`,
     /// the questions there were when it started.
     Questions { known: HashSet<uuid::Uuid> },
+    /// Plan the admin's feedback: it must plan tasks for it.
+    Feedback { feedback: uuid::Uuid },
 }
 
 /// Start the run that plans `app`'s phases from its specification, answering
@@ -786,6 +923,9 @@ async fn start_planning(
         chosen.as_ref(),
         replan,
     );
+    // The last run's failure is not this one's. Cleared before the run
+    // starts, as a run that fails at once records its own.
+    store::set_construction_status(&catalog, app.id.0, construction.status, None).await?;
     let run = launch(
         catalog.clone(),
         apps,
@@ -827,6 +967,9 @@ async fn start_designing(
         &mockups,
         note,
     );
+    // The last run's failure is not this one's. Cleared before the run
+    // starts, as a run that fails at once records its own.
+    store::set_construction_status(&catalog, app.id.0, construction.status, None).await?;
     let description = if message.revision {
         format!("Revise the mockups of {}", app.name)
     } else {
@@ -844,8 +987,7 @@ async fn start_designing(
         Purpose::Mockups { round },
     )
     .await?;
-    // The last run's failure is not this one's.
-    store::set_construction_status(&catalog, app.id.0, construction.status, None).await
+    store::require_construction(&catalog, app.id.0).await
 }
 
 /// Start the run that asks the admin clarifying questions about `app`'s
@@ -862,6 +1004,9 @@ async fn start_asking(
     let questions = sc_construct::questions_of(&catalog, construction.id).await?;
     let known = questions.iter().map(|q| q.id).collect();
     let message = questions_message(app, &construction.specification, &questions);
+    // The last run's failure is not this one's. Cleared before the run
+    // starts, as a run that fails at once records its own.
+    store::set_construction_status(&catalog, app.id.0, construction.status, None).await?;
     launch(
         catalog.clone(),
         apps,
@@ -874,8 +1019,107 @@ async fn start_asking(
         Purpose::Questions { known },
     )
     .await?;
-    // The last run's failure is not this one's.
-    store::set_construction_status(&catalog, app.id.0, construction.status, None).await
+    store::require_construction(&catalog, app.id.0).await
+}
+
+/// Start the run that plans the admin's `feedback` on a phase of `app` (AC9),
+/// recording it on the feedback.
+async fn start_feedback(
+    catalog: Arc<Catalog>,
+    apps: Arc<AppMounts>,
+    app: &Application,
+    construction: &Construction,
+    caller: RunCaller,
+    feedback: &sc_construct::Feedback,
+) -> Result<Construction> {
+    let guard = RunGuard::claim(construction.id, Activity::Feedback(feedback.id))?;
+    let phases = store::phases_with_tasks(&catalog, construction.id).await?;
+    let phase = sc_construct::require_feedback_phase(&phases, feedback.phase)?;
+    let message = feedback_message(app, phase, feedback);
+    // The last run's failure is not this one's. Cleared before the run
+    // starts, as a run that fails at once records its own.
+    store::set_construction_status(&catalog, app.id.0, construction.status, None).await?;
+    let run = launch(
+        catalog.clone(),
+        apps,
+        app,
+        construction,
+        caller,
+        message,
+        format!("Plan feedback on {}: {}", app.name, feedback.title),
+        guard,
+        Purpose::Feedback {
+            feedback: feedback.id,
+        },
+    )
+    .await?;
+    sc_construct::set_feedback_run(&catalog, feedback.id, run).await?;
+    store::require_construction(&catalog, app.id.0).await
+}
+
+/// What the feedback run is asked: the phase as planned and as built (each
+/// task with what its run said and made), the admin's feedback on it, and to
+/// plan it with `plan_feedback`.
+fn feedback_message(
+    app: &Application,
+    phase: &PhaseWithTasks,
+    feedback: &sc_construct::Feedback,
+) -> String {
+    let mut built = String::new();
+    for (i, task) in phase.tasks.iter().enumerate() {
+        built.push_str(&format!(
+            "{}. {} [{}, {}]\n   Brief: {}\n",
+            i + 1,
+            task.title,
+            json!(task.kind).as_str().unwrap_or_default(),
+            json!(task.status).as_str().unwrap_or_default(),
+            task.brief.trim()
+        ));
+        if let Some(summary) = task
+            .summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            built.push_str(&format!("   What it did: {summary}\n"));
+        }
+        if !task.created.is_empty() {
+            built.push_str(&format!(
+                "   It created: {}\n",
+                Json::Array(task.created.clone())
+            ));
+        }
+    }
+    let requirements: String = phase
+        .phase
+        .requirements
+        .iter()
+        .map(|r| {
+            format!(
+                "- ({}) {}\n",
+                json!(r.priority).as_str().unwrap_or_default(),
+                r.text
+            )
+        })
+        .collect();
+    format!(
+        "The admin gave feedback on phase `{}` of the `{}` application (subdomain `{}`), \
+         which has been built.\n\n## The phase\n\n{}\n\nRequirements:\n{requirements}\n\
+         Tasks:\n{built}\n## The feedback (id {})\n\n{}\n\n{}\n\n\
+         Look at what exists with `{}` and the application's code where you need to. Then plan \
+         the feedback with `{}`, in one call: the requirements it adds to the phase, and the \
+         follow-up tasks that meet them. Only plan in this conversation: the tasks run when the \
+         admin starts them.",
+        phase.phase.title,
+        app.name,
+        app.subdomain.trim(),
+        phase.phase.description.trim(),
+        feedback.id,
+        feedback.title,
+        feedback.description.trim(),
+        sc_api::mcp::TOOL_DESCRIBE,
+        sc_agent_builtins::TOOL_PLAN_FEEDBACK,
+    )
 }
 
 /// The answered questions of a construction, as the agent is told them.
@@ -982,6 +1226,7 @@ async fn launch(
             Purpose::Phases => "the phases",
             Purpose::Mockups { .. } => "the mockups",
             Purpose::Questions { .. } => "its questions",
+            Purpose::Feedback { .. } => "the feedback's plan",
         };
         let failure = match runner.drive(&mut run).await {
             Ok(Conclusion::Answered { .. }) => match purpose {
@@ -1009,6 +1254,20 @@ async fn launch(
                              its run"
                                 .to_owned(),
                         ),
+                        _ => None,
+                    }
+                }
+                Purpose::Feedback { feedback } => {
+                    match store::phases_with_tasks(&catalog, construction_id).await {
+                        Ok(phases)
+                            if sc_construct::feedback_tasks(&phases, feedback).is_empty() =>
+                        {
+                            Some(
+                                "the construction agent finished without planning the feedback; \
+                                 see its run"
+                                    .to_owned(),
+                            )
+                        }
                         _ => None,
                     }
                 }
@@ -1386,9 +1645,23 @@ fn status_json(construction: &Construction) -> Json {
 }
 
 /// A construction with its phases, each with its status and tasks.
+///
+/// What the agent is busy with is read first, and the construction after it:
+/// a run records its outcome before it stops being busy, so a reader that
+/// sees it finished sees its outcome too. `construction` may have been read
+/// before the run ended, so it is read again.
 async fn construction_json(catalog: &Catalog, construction: &Construction) -> Result<Json> {
+    let busy = activity(construction.id);
+    let construction = &store::load_construction(catalog, construction.application)
+        .await?
+        .unwrap_or_else(|| construction.clone());
+    // The feedback before the phases, as before: feedback planned in between
+    // reads as not planned yet, never as tasks without their feedback.
+    let feedback = sc_construct::feedback_of(catalog, construction.id).await?;
+    let with_tasks = store::phases_with_tasks(catalog, construction.id).await?;
+    let feedback = feedback_json(feedback, &with_tasks, busy);
     let mut phases = Vec::new();
-    for with_tasks in store::phases_with_tasks(catalog, construction.id).await? {
+    for with_tasks in with_tasks {
         let status = with_tasks.status();
         let PhaseWithTasks { phase, tasks } = with_tasks;
         phases.push(json!({
@@ -1404,11 +1677,10 @@ async fn construction_json(catalog: &Catalog, construction: &Construction) -> Re
     out["specification"] = json!(construction.specification);
     out["started_by"] = json!(construction.started_by);
     out["plan_run"] = json!(construction.plan_run);
-    out["planning"] = json!(planning(construction.id));
+    out["planning"] = json!(busy == Some(Activity::Planning));
     out["error"] = json!(construction.error);
     out["until_phase"] = json!(construction.until_phase);
     out["plan_only"] = json!(construction.plan_only);
-    let busy = activity(construction.id);
     out["designing"] = json!(busy == Some(Activity::Designing));
     out["asking"] = json!(busy == Some(Activity::Asking));
     let questions: Vec<Json> = sc_construct::questions_of(catalog, construction.id)
@@ -1435,9 +1707,43 @@ async fn construction_json(catalog: &Catalog, construction: &Construction) -> Re
         })
         .collect();
     out["mockups"] = Json::Array(mockups);
+    out["feedback"] = Json::Array(feedback);
     out["updated_at"] = json!(construction.updated_at.map(|at| at.to_rfc3339()));
     out["phases"] = Json::Array(phases);
     Ok(out)
+}
+
+/// The construction's `feedback`, each with its status: `given` until
+/// approved, then from its tasks among `phases`.
+fn feedback_json(
+    feedback: Vec<sc_construct::Feedback>,
+    phases: &[PhaseWithTasks],
+    busy: Option<Activity>,
+) -> Vec<Json> {
+    feedback
+        .into_iter()
+        .map(|f| {
+            let tasks = sc_construct::feedback_tasks(phases, f.id);
+            // Given, then approved by starting the run that plans it.
+            let status = if tasks.is_empty() && f.run.is_none() {
+                json!("given")
+            } else if tasks.is_empty() {
+                json!("open")
+            } else {
+                json!(sc_construct::phase_status(&tasks))
+            };
+            json!({
+                "id": f.id,
+                "phase": f.phase,
+                "title": f.title,
+                "description": f.description,
+                "requirements": f.requirements,
+                "run": f.run,
+                "planning": busy == Some(Activity::Feedback(f.id)),
+                "status": status,
+            })
+        })
+        .collect()
 }
 
 /// A mockup screen as the construction lists it: its name, and its file under

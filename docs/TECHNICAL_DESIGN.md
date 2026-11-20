@@ -2835,6 +2835,35 @@ erDiagram
     json runs "the run id of each attempt"
     text summary
     json created "the tables it made"
+    uuid feedback "-> _fd_construction_feedback.id: a follow-up task; null for the phase's own"
+  }
+  CONSTRUCTIONMOCKUPS["_fd_construction_mockups"] {
+    uuid id PK
+    uuid construction "-> _fd_constructions.id"
+    int round "1 for the first proposal, one more per revision"
+    float position
+    text title
+    text rationale
+    json screens "[{name, html}]"
+    text status "proposed | chosen; one chosen at most"
+    text feedback "the admin's, for the next round"
+  }
+  CONSTRUCTIONQUESTIONS["_fd_construction_questions"] {
+    uuid id PK
+    uuid construction "-> _fd_constructions.id"
+    float position
+    text question
+    text answer "null while open"
+  }
+  CONSTRUCTIONFEEDBACK["_fd_construction_feedback"] {
+    uuid id PK
+    uuid construction "-> _fd_constructions.id"
+    uuid phase "-> _fd_construction_phases.id: the built phase it is on"
+    float position
+    text title
+    text description
+    json requirements "[{text, priority}]: what the agent made of it"
+    uuid run "the run that planned it last"
   }
   MODELS["_fd_models"] {
     uuid id PK
@@ -3252,6 +3281,10 @@ erDiagram
   APPS ||--o| CONSTRUCTIONS : "application -- deleted with it"
   CONSTRUCTIONS ||--o{ CONSTRUCTIONPHASES : "construction"
   CONSTRUCTIONPHASES ||--o{ CONSTRUCTIONTASKS : "phase"
+  CONSTRUCTIONS ||--o{ CONSTRUCTIONMOCKUPS : "construction"
+  CONSTRUCTIONS ||--o{ CONSTRUCTIONQUESTIONS : "construction"
+  CONSTRUCTIONPHASES ||--o{ CONSTRUCTIONFEEDBACK : "phase"
+  CONSTRUCTIONFEEDBACK ||--o{ CONSTRUCTIONTASKS : "feedback -- its follow-up tasks"
   USERS |o--o{ CHECKLISTS : "run_as -- by value, nullable"
   USERS |o--o{ AGENTMEMORY : "user_id -- by value, nullable"
   RUNS |o--o{ AGENTMEMORY : "run_id -- by value, nullable"
@@ -6239,6 +6272,33 @@ research step without the web searches, which may follow.
 - **On the screen** the questions and the mockups share one optional step, Research, between
   the specification and the phases, numbered in that order. The specification offers only
   "Continue to research" and "Plan phases".
+
+**Feedback on a built phase** (AC9). Once a phase has built something, the admin can say what
+should change, on that phase. This is v1's feedback tab, per phase first: feedback on the whole
+application, and feedback sent from the application's own pages, may follow.
+- **Stored per feedback** in `_fd_construction_feedback` (construction, phase, title,
+  description, and the requirements the agent made of it). A phase takes feedback once a task
+  of it is done and none has failed, which would stop the runner before the follow-up tasks.
+- **Given, then approved.** Giving feedback only records it, so it can be given at any time,
+  even while the construction runs, and later by users other than the admin. The admin
+  approves it by starting the run that plans it, recorded as the feedback's `run`, or declines
+  it, which deletes it.
+- **Planned by a run of the construction agent** (`plan_feedback`, once per feedback): the
+  requirements it adds, kept with the feedback rather than on the phase so a re-plan or an
+  edit of the phases does not lose them, and one to five follow-up tasks. The run is told the
+  phase as built: each task's brief, what its run said and what it created.
+- **Follow-up tasks are the phase's tasks:** appended after its own, naming the feedback
+  (`_fd_construction_tasks.feedback`, a nullable column the bootstrap adds). The runner needs no
+  change: it always works on the earliest phase with unfinished tasks, so it reaches them
+  before anything later. They wait as `todo` until the admin runs them, as a phase's planned
+  tasks do.
+- **Its status:** `given` until approved; then from its tasks, as a phase's: none is open (being
+  planned, or its planning failed; plan it again), then planned, running, failed or done. Feedback is
+  deleted with its tasks until one of them has run.
+- **One run of the agent at a time:** planning feedback is one more activity beside planning,
+  designing and asking. A reader learns a run has ended only after its outcome is recorded:
+  the construction is read after what the agent is busy with, never before, so a run that
+  failed is never shown as finished without its error.
 
 **Two kinds of task, two agents.**
 - A `data_model` task runs the construction's own agent, which has the copilot's tools.

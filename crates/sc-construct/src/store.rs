@@ -6,6 +6,9 @@
 //!   No status column: a phase's status follows from its tasks.
 //! - `_fd_construction_tasks` — a phase's tasks, in `position` order.
 //! - `_fd_construction_mockups` — a construction's mockups ([`crate::mockups`]).
+//! - `_fd_construction_questions` — its clarifying questions ([`crate::questions`]).
+//! - `_fd_construction_feedback` — the admin's feedback on its phases
+//!   ([`crate::feedback`]).
 //!
 //! The tables have no foreign keys (the schema layer renders no `ON DELETE`),
 //! so [`delete_construction`] removes the tasks and phases itself, and the
@@ -87,6 +90,8 @@ fn task_fields() -> Vec<DataField> {
         DataField::plain("runs", BasicType::Json).required(),
         DataField::plain("summary", BasicType::Text),
         DataField::plain("created", BasicType::Json).required(),
+        // The feedback a follow-up task was planned for (AC9).
+        DataField::plain("feedback", BasicType::Uuid),
     ]
 }
 
@@ -109,6 +114,12 @@ pub async fn bootstrap_constructions(catalog: &Catalog) -> Result<()> {
         .bootstrap_table(
             crate::questions::QUESTIONS_TABLE,
             &crate::questions::question_fields(),
+        )
+        .await?;
+    catalog
+        .bootstrap_table(
+            crate::feedback::FEEDBACK_TABLE,
+            &crate::feedback::feedback_fields(),
         )
         .await?;
     Ok(())
@@ -243,17 +254,15 @@ pub async fn save_specification(
     require_construction(catalog, application).await
 }
 
-/// Record `run` as the run planning `application`'s phases, clearing the
-/// error the last one left.
+/// Record `run` as the run planning `application`'s phases. The error the
+/// last run left is cleared before a run starts, not here: the run may have
+/// failed by now, and its error is the one to show.
 pub async fn set_plan_run(catalog: &Catalog, application: Uuid, run: Uuid) -> Result<Construction> {
     let construction = require_construction(catalog, application).await?;
     update_construction(
         catalog,
         construction.id,
-        vec![
-            Assignment::new("plan_run", Expr::Lit(Value::Uuid(run))),
-            Assignment::new("error", Expr::Lit(Value::Null)),
-        ],
+        vec![Assignment::new("plan_run", Expr::Lit(Value::Uuid(run)))],
     )
     .await?;
     require_construction(catalog, application).await
@@ -373,8 +382,8 @@ pub async fn running_constructions(catalog: &Catalog) -> Result<Vec<Construction
         .collect())
 }
 
-/// Delete the construction of `application` with its phases, tasks, mockups and
-/// questions, answering what it was. `None` when it had none.
+/// Delete the construction of `application` with its phases, tasks, mockups,
+/// questions and feedback, answering what it was. `None` when it had none.
 ///
 /// All in one transaction: a failure deletes nothing. The phases are locked
 /// first, so a task being added to one of them is either deleted with it or
@@ -416,6 +425,7 @@ pub async fn delete_construction(
                 for (table, column) in [
                     (crate::mockups::MOCKUPS_TABLE, "construction"),
                     (crate::questions::QUESTIONS_TABLE, "construction"),
+                    (crate::feedback::FEEDBACK_TABLE, "construction"),
                     (PHASES_TABLE, "construction"),
                     (CONSTRUCTIONS_TABLE, "id"),
                 ] {
@@ -629,6 +639,7 @@ pub fn task_insert(task: &Task) -> Result<Insert> {
             "runs",
             "summary",
             "created",
+            "feedback",
         ],
         vec![
             Value::Uuid(task.id),
@@ -642,6 +653,7 @@ pub fn task_insert(task: &Task) -> Result<Insert> {
             Value::Json(to_json(&task.runs)?),
             opt_text_value(task.summary.as_deref()),
             Value::Json(Json::Array(task.created.clone())),
+            task.feedback.map_or(Value::Null, Value::Uuid),
         ],
     ))
 }
@@ -738,6 +750,8 @@ fn task_from_row(row: &Row) -> Result<Task> {
         runs: from_json(row, t, "runs")?,
         summary: opt_text(row, t, "summary")?,
         created: from_json(row, t, "created")?,
+        // Absent (NULL) on tasks written before the column: the phase's own.
+        feedback: opt_uuid(row, t, "feedback")?,
     })
 }
 
@@ -770,7 +784,7 @@ pub(crate) fn req_uuid(row: &Row, table: &str, column: &str) -> Result<Uuid> {
     }
 }
 
-fn opt_uuid(row: &Row, table: &str, column: &str) -> Result<Option<Uuid>> {
+pub(crate) fn opt_uuid(row: &Row, table: &str, column: &str) -> Result<Option<Uuid>> {
     match row.get(column) {
         Some(Value::Uuid(u)) => Ok(Some(*u)),
         Some(Value::Null) | None => Ok(None),

@@ -221,7 +221,7 @@ pub async fn clear_tasks(catalog: &Catalog, application: Uuid, phase: Uuid) -> R
 }
 
 /// Check `inputs` and turn them into tasks of `phase`, numbered in order.
-fn build_tasks(phase: Uuid, inputs: &[TaskInput]) -> Result<Vec<Task>> {
+pub(crate) fn build_tasks(phase: Uuid, inputs: &[TaskInput]) -> Result<Vec<Task>> {
     if inputs.is_empty() {
         return Err(Error::invalid(
             "a phase needs at least one task; the list is empty",
