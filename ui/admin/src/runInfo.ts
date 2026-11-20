@@ -70,6 +70,27 @@ export function totalsLabel(totals: RunTotals): string {
   );
 }
 
+/** A token count, short: 812, 21.4k, 219k, 1.2M. */
+export function compactCount(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 100_000) return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+}
+
+/** How long a run took, from its start to its last change, in the two largest
+ * units: "42 s", "3 min 5 s", "1 h 12 min". Empty when the times do not say. */
+export function elapsedLabel(from: string, to: string): string {
+  const ms = new Date(to).getTime() - new Date(from).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} s`;
+  const min = Math.floor(s / 60);
+  if (min < 60) return s % 60 ? `${min} min ${s % 60} s` : `${min} min`;
+  const h = Math.floor(min / 60);
+  return min % 60 ? `${h} h ${min % 60} min` : `${h} h`;
+}
+
 export type PlanFeature = NonNullable<GetRunResponse["plan"]>["features"][number];
 
 /** A feature's status as a checklist mark and a word, as the planner sees it. */

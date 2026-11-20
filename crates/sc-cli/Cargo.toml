@@ -39,6 +39,7 @@ sc-backup.workspace = true
 sc-expr.workspace = true
 # `feldspar check` (TODO-checklists C1.12), and the checklist tables at bootstrap.
 sc-check.workspace = true
+sc-construct.workspace = true
 sc-api.workspace = true
 sc-auth.workspace = true
 sc-app.workspace = true

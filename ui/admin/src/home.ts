@@ -11,12 +11,15 @@
 import { checklistRunPath } from "./checklists";
 import type {
   GetSystemInfoResponse,
+  ListApplicationsResponse,
   ListBackupSchedulesResponse,
   ListChecklistsResponse,
+  ListConstructionsResponse,
   ListLlmProvidersResponse,
   ListTriggersResponse,
 } from "./client";
 import type { Entity, EntityKind } from "./entities";
+import { constructPath } from "./construction";
 import { format, type Translator } from "./i18n";
 import { usage } from "./systemInfo";
 
@@ -40,6 +43,11 @@ export type AttentionInputs = {
   schedules: ListBackupSchedulesResponse | null;
   checklists: ListChecklistsResponse | null;
   system: GetSystemInfoResponse | null;
+  /** Plan & build's constructions, one per application that has one. */
+  constructions: ListConstructionsResponse | null;
+  /** Only for the applications' names; without it a construction is named by
+   * its application's id. */
+  applications?: ListApplicationsResponse | null;
 };
 
 /** Whether a scheduled backup's latest attempt failed: it has an error and no
@@ -86,6 +94,17 @@ export function attention(inputs: AttentionInputs, t: T = format): AttentionItem
       href: `#${checklistRunPath(run.id, checklist.application)}`,
     });
   }
+  for (const construction of inputs.constructions ?? []) {
+    if (construction.status !== "failed") continue;
+    const app = inputs.applications?.find((a) => a.id === construction.application);
+    items.push({
+      key: `construction:${construction.id}`,
+      tone: "red",
+      title: t("Plan & build of {name} failed", { name: app?.name ?? construction.application }),
+      detail: t("A task failed; retry or skip it to go on."),
+      href: `#${constructPath(construction.application)}`,
+    });
+  }
   const disk = inputs.system?.disk;
   const used = disk ? usage(disk.total_bytes, disk.available_bytes) : null;
   if (disk && used && used.percent >= DISK_WARN_PERCENT) {
@@ -101,7 +120,7 @@ export function attention(inputs: AttentionInputs, t: T = format): AttentionItem
 }
 
 /** One of the checks `attention` runs, named by what it looks at. */
-export type AttentionCheck = "triggers" | "backups" | "checklists" | "disk";
+export type AttentionCheck = "triggers" | "backups" | "checklists" | "constructions" | "disk";
 
 /** The checks that could not run because their list did not load (`null`).
  * Without this, a list that failed would read as "nothing wrong" with it: an
@@ -111,6 +130,7 @@ export function uncheckedChecks(inputs: AttentionInputs): AttentionCheck[] {
   if (inputs.triggers === null) out.push("triggers");
   if (inputs.schedules === null) out.push("backups");
   if (inputs.checklists === null) out.push("checklists");
+  if (inputs.constructions === null) out.push("constructions");
   if (inputs.system === null) out.push("disk");
   return out;
 }
@@ -123,11 +143,25 @@ export function uncheckedMessage(checks: AttentionCheck[], t: T = format): strin
     triggers: t("triggers"),
     backups: t("scheduled backups"),
     checklists: t("checklists"),
+    constructions: t("Plan & build"),
     disk: t("disk space"),
   };
   return t("Could not check {what}: the server did not answer. Reload to try again.", {
     what: checks.map((c) => names[c]).join(", "),
   });
+}
+
+/** A construction's progress as the Applications card shows it beside the
+ * framework: the phase being built while it runs ("phase 2/4"), else nothing.
+ * The phase is the first not done, so it never reads past the last. */
+export function buildingPhase(
+  construction: ListConstructionsResponse[number] | undefined,
+): { phase: number; phases: number } | null {
+  if (!construction || construction.status !== "running" || construction.phases === 0) return null;
+  return {
+    phase: Math.min(construction.phases_done + 1, construction.phases),
+    phases: construction.phases,
+  };
 }
 
 /** How many there are of each kind of entity. A table the installation made

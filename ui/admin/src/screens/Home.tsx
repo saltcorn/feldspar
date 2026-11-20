@@ -15,6 +15,7 @@ import type {
   ListApplicationsResponse,
   ListBackupSchedulesResponse,
   ListChecklistsResponse,
+  ListConstructionsResponse,
   ListLlmProvidersResponse,
   ListTriggersResponse,
   ListUsersResponse,
@@ -27,8 +28,10 @@ import {
   type Entity,
   type EntityKind,
 } from "../entities";
+import { constructPath } from "../construction";
 import {
   attention,
+  buildingPhase,
   entityCounts,
   gettingStarted,
   stillStarting,
@@ -51,6 +54,7 @@ import {
 import { PageBody, PageHeader, StatusBadge } from "../layout";
 import { formatBytes, formatUptime, usage } from "../systemInfo";
 import { createButtons } from "./Entities";
+import { FromDescriptionModal } from "./FromDescription";
 
 /** A list as Home holds it: not yet answered, answered, or refused (`null`). */
 type Loaded<V> = V | null | undefined;
@@ -85,13 +89,19 @@ export function Home() {
   const providers = useLoaded<ListLlmProvidersResponse>(() => api.listLlmProviders());
   const applications = useLoaded<ListApplicationsResponse>(() => api.listApplications());
   const users = useLoaded<ListUsersResponse>(() => api.listUsers());
+  const constructions = useLoaded<ListConstructionsResponse>(() => api.listConstructions());
+  const [fromDescription, setFromDescription] = useState(false);
 
-  const loadingAttention = [triggers, schedules, checklists, system].some((v) => v === undefined);
+  const loadingAttention = [triggers, schedules, checklists, system, constructions].some(
+    (v) => v === undefined,
+  );
   const attentionInputs = {
     triggers: settled(triggers),
     schedules: settled(schedules),
     checklists: settled(checklists),
     system: settled(system),
+    constructions: settled(constructions),
+    applications: settled(applications),
   };
   const problems = attention(attentionInputs, t);
   // Only once every list has answered: before that, `null` means "loading".
@@ -120,6 +130,10 @@ export function Home() {
                   {create.label}
                 </Dropdown.Item>
               ))}
+              <Dropdown.Divider />
+              <Dropdown.Item as="button" onClick={() => setFromDescription(true)}>
+                <T text="Application from a description" />
+              </Dropdown.Item>
             </Dropdown.Menu>
           </Dropdown>
         }
@@ -130,7 +144,12 @@ export function Home() {
           <div className="col-lg-8">
             <div className="d-flex flex-column gap-3 w-100">
               <Attention loading={loadingAttention} items={problems} unchecked={unchecked} />
-              <Applications applications={applications} />
+              <Applications
+                applications={applications}
+                constructions={settled(constructions)}
+                canDescribe={!!providers?.length}
+                onDescribe={() => setFromDescription(true)}
+              />
             </div>
           </div>
           <div className="col-lg-4">
@@ -142,6 +161,9 @@ export function Home() {
           </div>
         </div>
       </PageBody>
+      {fromDescription && providers !== undefined && (
+        <FromDescriptionModal providers={providers} onClose={() => setFromDescription(false)} />
+      )}
     </>
   );
 }
@@ -241,7 +263,18 @@ function Attention({
   );
 }
 
-function Applications({ applications }: { applications: Loaded<ListApplicationsResponse> }) {
+function Applications({
+  applications,
+  constructions,
+  canDescribe,
+  onDescribe,
+}: {
+  applications: Loaded<ListApplicationsResponse>;
+  constructions: ListConstructionsResponse | null;
+  /** Whether an LLM provider exists, so an application can be built from a description. */
+  canDescribe: boolean;
+  onDescribe: () => void;
+}) {
   const { t } = useT();
   return (
     <div className="card">
@@ -262,42 +295,64 @@ function Applications({ applications }: { applications: Loaded<ListApplicationsR
           <p className="text-secondary">
             <T text="An application is what your users see: a site on its own subdomain, made from views and pages or from code." />
           </p>
-          <a href="#/applications/new" className="btn btn-primary">
-            <IconPlus className="icon-2" />
-            <T text="Create application" />
-          </a>
+          <div className="d-flex flex-wrap gap-2">
+            <a href="#/applications/new" className="btn btn-primary">
+              <IconPlus className="icon-2" />
+              <T text="Create application" />
+            </a>
+            {canDescribe && (
+              <button type="button" className="btn btn-outline-primary" onClick={onDescribe}>
+                <IconRobot className="icon-2" />
+                <T text="Application from a description" />
+              </button>
+            )}
+          </div>
         </div>
       ) : (
         <div className="list-group list-group-flush">
-          {applications.map((app) => (
-            <div key={app.id} className="list-group-item">
-              <div className="row align-items-center g-2">
-                <div className="col text-truncate">
-                  <a href={`#/applications/${encodeURIComponent(app.id)}/edit`} className="fw-medium">
-                    {app.name}
-                  </a>
-                  <div className="text-secondary small text-truncate">
-                    {app.description || app.subdomain}
+          {applications.map((app) => {
+            const building = buildingPhase(constructions?.find((c) => c.application === app.id));
+            return (
+              <div key={app.id} className="list-group-item">
+                <div className="row align-items-center g-2">
+                  <div className="col text-truncate">
+                    <a href={`#/applications/${encodeURIComponent(app.id)}/edit`} className="fw-medium">
+                      {app.name}
+                    </a>
+                    <div className="text-secondary small text-truncate">
+                      {app.description || app.subdomain}
+                    </div>
+                  </div>
+                  {building && (
+                    <div className="col-auto">
+                      <a
+                        href={`#${constructPath(app.id)}`}
+                        className="badge bg-blue-lt"
+                        title={t("Plan & build is running")}
+                      >
+                        {t("phase {phase}/{phases}", building)}
+                      </a>
+                    </div>
+                  )}
+                  <div className="col-auto">
+                    <span className="badge bg-secondary-lt">{app.framework.name}</span>
+                  </div>
+                  <div className="col-auto">
+                    <a
+                      href={appUrl(app.subdomain)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="btn btn-sm btn-outline-secondary"
+                      title={t("Open the application in a new tab")}
+                    >
+                      <IconExternalLink className="icon-2" />
+                      <T text="Open" />
+                    </a>
                   </div>
                 </div>
-                <div className="col-auto">
-                  <span className="badge bg-secondary-lt">{app.framework.name}</span>
-                </div>
-                <div className="col-auto">
-                  <a
-                    href={appUrl(app.subdomain)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="btn btn-sm btn-outline-secondary"
-                    title={t("Open the application in a new tab")}
-                  >
-                    <IconExternalLink className="icon-2" />
-                    <T text="Open" />
-                  </a>
-                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

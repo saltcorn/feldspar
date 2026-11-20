@@ -41,7 +41,7 @@
 pub(crate) const ADMIN_TASKS: sc_catalog::Unchecked<'static> = sc_catalog::Unchecked::system(
     "sc-server: an administrator's task on the primary database or a raw file store (clear all, \
          table rename, the user and checklist-user lists, system info, an application's \
-         translation catalogues)",
+         translation catalogues and its chosen mockup's screens)",
 );
 
 mod admin_host;
@@ -63,6 +63,8 @@ mod checklist_live;
 mod checklists;
 mod clear_all;
 mod config;
+mod construction_runner;
+mod constructions;
 mod entities;
 mod file_response;
 mod fit_progress;
@@ -211,6 +213,7 @@ pub use config::{
     DEFAULT_BIND, DEFAULT_HTTPS_PORT, DEFAULT_MAX_UPLOAD_BYTES, LOOPBACK_BASE_DOMAIN, PythonMode,
     ServerConfig, implied_base_domain,
 };
+pub use construction_runner::resume_constructions;
 pub use handler::{
     Admin, AdminSession, AnalyticsCaller, BoxFuture, Caller, Gate, HandlerCtx, HandlerFn,
     HandlerRegistry, HandlerResponse, Who,

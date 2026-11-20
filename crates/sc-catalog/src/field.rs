@@ -199,9 +199,9 @@ impl FileOnConflict {
 impl DataField {
     /// A plain, nullable, non-unique, non-key column of the given name and type —
     /// the base to tweak with the builder methods below.
-    pub fn plain(name: impl Into<String>, type_: TypeRef) -> DataField {
+    pub fn plain(name: impl Into<String>, type_: impl Into<TypeRef>) -> DataField {
         DataField {
-            base: BaseField::new(name, type_),
+            base: BaseField::new(name, type_.into()),
             required: false,
             unique: false,
             primary_key: false,

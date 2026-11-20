@@ -422,10 +422,14 @@ pub fn common_runtime_files(
 /// value the client is generated from makes that class of mismatch unable to
 /// occur, where re-deriving it from the tables only made the two agree *by
 /// coincidence* while they happened to be computed the same way.
+///
+/// The table's own resource model answers it, not an endpoint's name: a custom
+/// query an application calls `listMachines` is no `api.machines.list`, and
+/// taking it for one generated hooks that did not compile.
 pub(super) fn exposed_tables<'a>(tables: &'a [Table], endpoints: &EndpointSet) -> Vec<&'a Table> {
     tables
         .iter()
-        .filter(|t| endpoints.find(&op_name("list", &t.name)).is_some())
+        .filter(|t| has_op(endpoints, "list", &t.name))
         .collect()
 }
 
@@ -3589,8 +3593,22 @@ pub(super) fn shown_fields<'a>(
 
 /// Whether the app's API exposes `op` on `table` — the single question every
 /// "should this be generated?" decision here reduces to.
+///
+/// Asked of the table's resource model, which the client hangs `api.<table>`
+/// off, rather than of the endpoint names: a custom endpoint may be called
+/// `listTasks` without being the table's list.
 pub(super) fn has_op(endpoints: &EndpointSet, op: &str, table: &str) -> bool {
-    endpoints.find(&op_name(op, table)).is_some()
+    let Some(resource) = endpoints.resource(table) else {
+        return false;
+    };
+    let ops = &resource.ops;
+    match op {
+        "list" => ops.list.is_some(),
+        "create" => ops.create.is_some(),
+        "update" => ops.update.is_some(),
+        "delete" => ops.delete.is_some(),
+        _ => false,
+    }
 }
 
 /// A labelled input bound into the create form's state, typed by the column.
@@ -6594,6 +6612,29 @@ export function Board({ id }: { id: number }) {
         // The page for it must not reach for the delete hook either.
         let page = page_tsx(&tables[0], &eps);
         assert!(!page.contains("useDeleteEvents"), "{page}");
+    }
+
+    #[test]
+    fn a_custom_query_named_like_a_table_op_gets_no_table_hooks() {
+        // The table is connected without its row API, and the app has its own
+        // `listMachines` query. That is no `api.machines`, so there are no
+        // hooks, store or page for the table: they would not compile.
+        let mut machines = tasks();
+        machines.name = "machines".to_owned();
+        let tables = [machines];
+        let mut eps = endpoints(&[]);
+        eps.register(sc_api::Endpoint::projected(
+            "listMachines",
+            sc_api::Method::Get,
+            sc_api::PathSpec::root().lit("machines"),
+            sc_api::AuthRequirement::LoggedIn,
+        ));
+        assert!(exposed_tables(&tables, &eps).is_empty());
+        let hooks = hooks_ts(&tables, &eps);
+        assert!(!hooks.contains("MachinesRow"), "{hooks}");
+        assert!(!hooks.contains("useMachines"), "{hooks}");
+        let store = store_ts(&tables, &eps);
+        assert!(!store.contains("machines"), "{store}");
     }
 
     #[test]

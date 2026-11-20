@@ -1012,6 +1012,17 @@ impl AgentLoop {
             Phase::Model | Phase::Tools { .. } => None,
         }
     }
+
+    /// Add `why` to the reason the run ended stuck, when it just did.
+    pub fn explain_stuck(&mut self, why: &str) {
+        if let Phase::Done {
+            conclusion: Conclusion::Stuck { reason },
+        } = &mut self.phase
+        {
+            reason.push_str(": ");
+            reason.push_str(why);
+        }
+    }
 }
 
 #[cfg(test)]

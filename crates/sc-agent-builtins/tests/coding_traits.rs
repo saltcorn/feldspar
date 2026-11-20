@@ -397,6 +397,28 @@ async fn a_search_finds_a_literal_and_a_regex_across_directories() -> Result<()>
 }
 
 #[tokio::test]
+async fn a_search_given_a_file_as_its_dir_says_so() -> Result<()> {
+    let env = Env::new().await?;
+    let dir = env.with_file_store("code", None).await?;
+    env.put(&dir, "src/README.md", "sign-up\n")?;
+    let cfg = at("code", "");
+    let err = call(
+        &env,
+        &cfg,
+        "search_files",
+        json!({"pattern": "sign-up", "dir": "src/README.md"}),
+        &admin(),
+    )
+    .await
+    .expect_err("a file is not a directory");
+    assert!(
+        err.to_string().contains("`src/README.md` is a file"),
+        "{err}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_search_respects_its_bound_and_reports_that_it_did() -> Result<()> {
     let env = Env::new().await?;
     let dir = env.with_file_store("code", None).await?;

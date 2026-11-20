@@ -6,7 +6,9 @@
 // dialog saying at the top where the same thing is done without it:
 //
 //   - **Generative AI** — an LLM provider (the one already there, or a new one
-//     set up in a form here), then an admin copilot on it, and its chat opened.
+//     set up in a form here), then either an admin copilot on it with its chat
+//     opened, or a React application built from a description with the App
+//     Constructor, its Plan & build screen opened.
 //   - **Point and click** — a Saltcorn UI application, selected in the sidebar,
 //     and a pointer to the first table.
 //   - **Write code** — the MCP settings for an outside coding agent, or a React
@@ -16,6 +18,7 @@
 // is the *what* and `effects.ts` the *how*; `script.test.ts` drives it with
 // fakes.
 
+import { constructPath } from "../construction";
 import type { FieldSpec } from "../settings";
 import { ask, finish, flow, form, run, say, t } from "./flow";
 
@@ -39,6 +42,9 @@ export interface OnboardingFx {
   /** An agent with the `admin_copilot` trait on `provider`, made if there is
    * none; answers its name. */
   copilot(provider: string): Promise<string>;
+  /** A React application and its construction on `provider` (the App
+   * Constructor's "Application from a description"); answers its id and name. */
+  constructApplication(app: { name: string; provider: string }): Promise<{ id: string; name: string }>;
   /** Create an application of `framework`; answers its id, name and, for one
    * with a source tree, where its code opens in the IDE. */
   createApplication(app: {
@@ -126,7 +132,7 @@ export const ONBOARDING = flow<OnboardingFx>({
       title: t("Choose an LLM provider"),
       text: t("The admin copilot needs a large language model to talk to. This installation already has one set up: {provider}."),
       options: [
-        { label: t("Use {provider}"), description: t("Start building straight away."), go: "ai-copilot" },
+        { label: t("Use {provider}"), description: t("Start building straight away."), go: "ai-choose" },
         {
           label: t("Set up a new provider"),
           description: t("Connect another API key, or a model server of your own."),
@@ -146,7 +152,7 @@ export const ONBOARDING = flow<OnboardingFx>({
       fields: (ctx, values) => providerFields(backendsOf(ctx), values),
       initial: () => ({ name: "default" }),
       submitLabel: t("Set up provider"),
-      exits: ["ai-copilot"],
+      exits: ["ai-choose"],
       submit: async (values, ctx, fx) => {
         const backends = backendsOf(ctx);
         const backend = values.backend || backends[0]?.name || "";
@@ -162,8 +168,23 @@ export const ONBOARDING = flow<OnboardingFx>({
           config,
           model: (values.model ?? "").trim(),
         });
-        return { go: "ai-copilot", set: { provider: name } };
+        return { go: "ai-choose", set: { provider: name } };
       },
+    }),
+    "ai-choose": ask({
+      title: t("How do you want to start?"),
+      options: [
+        {
+          label: t("Chat with the admin copilot"),
+          description: t("Ask for tables, actions and applications, one request at a time."),
+          go: "ai-copilot",
+        },
+        {
+          label: t("Application from a description"),
+          description: t("Describe a whole application in a few paragraphs. It is planned in phases and built task by task, as a React application."),
+          go: "ai-app",
+        },
+      ],
     }),
     "ai-copilot": run({
       busy: t("Getting the admin copilot ready…"),
@@ -172,6 +193,22 @@ export const ONBOARDING = flow<OnboardingFx>({
         go: finish({ to: "/agents/{agent}/chat" }),
         set: { agent: await fx.copilot(ctx.vars.provider) },
       }),
+    }),
+    "ai-app": form({
+      title: t("Application from a description"),
+      note: t("Outside this guide, this is Create → Application from a description on Home."),
+      text: t("Saltcorn creates a React application and opens Plan & build, where you describe it in a few paragraphs. From that description it plans phases and builds them, one task at a time."),
+      fields: () => APP_FIELDS,
+      initial: () => ({ name: "My application" }),
+      submitLabel: t("Create application"),
+      exits: [],
+      submit: async (values, ctx, fx) => {
+        const app = await fx.constructApplication({
+          name: values.name.trim(),
+          provider: ctx.vars.provider,
+        });
+        return { go: finish({ to: constructPath(app.id) }) };
+      },
     }),
 
     // --- Point and click -------------------------------------------------------

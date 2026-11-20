@@ -64,6 +64,8 @@ sc-log.workspace = true
 # built by the same `sc_app::build_application` the admin's Build button runs, so
 # there is one build path and one set of diagnostics to explain.
 sc-app.workspace = true
+# The App Constructor's tables, which `app_constructor` writes its plan to.
+sc-construct.workspace = true
 # The MCP client the `mcp_server` trait calls a remote server through (AS9.1).
 sc-mcp.workspace = true
 async-trait.workspace = true
