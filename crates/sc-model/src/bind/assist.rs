@@ -357,6 +357,7 @@ pub fn suggest_bindings(interface: &Interface, model: &Model, schema: &SchemaSha
                         Binding::Column { dataset, .. }
                         | Binding::Columns { dataset, .. }
                         | Binding::Design { dataset, .. }
+                        | Binding::Terms { dataset, .. }
                         | Binding::Index { dataset, .. },
                     ) => Some(dataset),
                     _ => None,
@@ -380,7 +381,9 @@ pub fn suggest_bindings(interface: &Interface, model: &Model, schema: &SchemaSha
                 if other.dims.get(1).and_then(|s| s.identifier()) != Some(name) {
                     continue;
                 }
-                if let Some(Binding::Design { .. }) = binding_of(&other.name) {
+                if let Some(Binding::Design { .. } | Binding::Terms { .. }) =
+                    binding_of(&other.name)
+                {
                     proposal = Some((
                         Binding::Width {
                             of: other.name.clone(),

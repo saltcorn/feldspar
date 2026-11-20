@@ -176,9 +176,8 @@ pub use framework::{
     CFG_SOURCE, CFG_STORE, CODE_FRAMEWORK, CodeFramework, Framework, FrameworkInfo, InstallSpec,
     RequestBody, asset_content_type, code_config_spec, config_spec_in, default_csp_in,
     framework_config_spec, framework_default_csp, framework_info_in, framework_known,
-    framework_serves_ui,
-    framework_settings_tabs, registered_framework_info, registered_frameworks, serves_ui_in,
-    validate_config_in, validate_config_structure_in, validate_framework_config,
+    framework_serves_ui, framework_settings_tabs, registered_framework_info, registered_frameworks,
+    serves_ui_in, validate_config_in, validate_config_structure_in, validate_framework_config,
     validate_framework_config_structure,
 };
 pub use i18n::{
@@ -224,9 +223,10 @@ pub use streams::{
 };
 pub use target_ops::{OperationOutcome, run_target_operation};
 pub use uploads::{
-    DEFAULT_SLOT_MIN_ROLE, UPLOAD_SEGMENT, UPLOADS_TABLE, UploadRecord, UploadRoute, UploadSlot,
-    bootstrap_uploads, delete_upload, insert_upload, load_upload, set_upload_ceiling,
-    set_upload_progress, upload_ceiling, upload_ceiling_warnings, upload_exports, upload_path,
-    upload_route, upload_slots_from_json, upload_slots_json, upload_slots_report,
-    uploads_begun_before, validate_upload_slots,
+    DEFAULT_SLOT_MIN_ROLE, DEFAULT_SLOT_READ_ROLE, UPLOAD_SEGMENT, UPLOADS_TABLE, UploadRecord,
+    UploadRoute, UploadSlot, bootstrap_uploads, delete_upload, fill_read_roles, insert_upload,
+    load_upload, set_upload_ceiling, set_upload_progress, upload_ceiling, upload_ceiling_warnings,
+    upload_exports, upload_exposure_warnings, upload_path, upload_route, upload_slot_routes,
+    upload_slots_from_json, upload_slots_json, upload_slots_report, uploads_begun_before,
+    validate_upload_slots,
 };

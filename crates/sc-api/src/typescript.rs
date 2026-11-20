@@ -2040,11 +2040,14 @@ fn emit_query_encoding(out: &mut String, ep: &Endpoint, pad: &str) {
         let name = &p.name;
         if p.map {
             // The caller's own keys, each becoming a pair of its own — a filter
-            // map is `?published=gte.2020-01-01`, not `?filter=…`.
+            // map is `?published=gte.2020-01-01`, not `?filter=…` — and a list
+            // under one key a pair per element, which is how a range is written
+            // (`{ published: ["gte.2020-01-01", "lt.2021-01-01"] }`).
             let _ = writeln!(
                 out,
                 "{pad}for (const [key, value] of Object.entries({base}{name} ?? {{}})) \
-                 search.append(key, String(value));"
+                 for (const v of Array.isArray(value) ? value : [value]) \
+                 if (v !== undefined) search.append(key, String(v));"
             );
         } else if p.repeated {
             let _ = writeln!(
@@ -2075,7 +2078,8 @@ fn query_type(ep: &Endpoint) -> String {
         .iter()
         .map(|p| {
             let ty = if p.map {
-                format!("Record<string, {}>", p.ty.ts_type())
+                let t = p.ty.ts_type();
+                format!("Record<string, {t} | readonly {t}[]>")
             } else if p.repeated {
                 format!("Array<{}>", p.ty.ts_type())
             } else {
@@ -2543,12 +2547,13 @@ impl TableClient<'_> {
                 "/** `\"published.desc\"`, or a precedence list of such keys. */\n  order?: Order<{p}Row>;"
             ),
             "filter" if param.map => format!(
-                "/** One entry per column, e.g. `{{ published: \"gte.2020-01-01\" }}`. */\n  \
+                "/** One entry per column, e.g. `{{ status: \"in.(open,pending)\" }}`, or a list of comparisons that must all hold, e.g. `{{ published: [\"gte.2020-01-01\", \"lt.2021-01-01\"] }}`. */\n  \
                  filter?: Filters<{p}Row>;"
             ),
             other => {
                 let ty = if param.map {
-                    format!("Record<string, {}>", param.ty.ts_type())
+                    let t = param.ty.ts_type();
+                    format!("Record<string, {t} | readonly {t}[]>")
                 } else if param.repeated {
                     format!("Array<{}>", param.ty.ts_type())
                 } else {
@@ -3822,21 +3827,35 @@ export interface LiveChangesStream<Sch extends TableSchema, Key = LiveTopic> {
 
 /**
  * A REST read's `Filters` as the socket's filter object: `{ board: "eq.7" }`
- * is `{ board: { eq: "7" } }`, `in.(1,2)` a list, `is_null.true` a boolean —
- * the same lowering the server gives a query string, so a read and a
- * subscription with one filter are about the same rows.
+ * is `{ board: { eq: "7" } }`, `in.(1,2)` a list, `is_null.true` a boolean,
+ * and a list of comparisons on one column one object of them all
+ * (`{ due: { gte: "2020-01-01", lt: "2021-01-01" } }`) — the same lowering the
+ * server gives a query string, so a read and a subscription with one filter
+ * are about the same rows. The same comparison twice on one column goes in an
+ * `and` of its own, since an object holds one value per key.
  */
-export function whereObject(filters: { readonly [column: string]: string | undefined }): Record<string, unknown> {
+export function whereObject(
+  filters: { readonly [column: string]: string | readonly string[] | undefined },
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const [column, spec] of Object.entries(filters)) {
-    if (spec === undefined) continue;
-    const dot = spec.indexOf(".");
-    if (dot < 0) {
-      throw new Error(`\`${column}: "${spec}"\` is not a filter: a filter is "op.value", e.g. "eq.${spec}"`);
+  const more: Array<Record<string, unknown>> = [];
+  for (const [column, value] of Object.entries(filters)) {
+    if (value === undefined) continue;
+    const specs: readonly string[] = typeof value === "string" ? [value] : value;
+    const ops: Record<string, unknown> = {};
+    for (const spec of specs) {
+      const dot = spec.indexOf(".");
+      if (dot < 0) {
+        throw new Error(`\`${column}: "${spec}"\` is not a filter: a filter is "op.value", e.g. "eq.${spec}"`);
+      }
+      const op = spec.slice(0, dot);
+      const operand = filterOperand(op, spec.slice(dot + 1));
+      if (op in ops) more.push({ [column]: { [op]: operand } });
+      else ops[op] = operand;
     }
-    const op = spec.slice(0, dot);
-    out[column] = { [op]: filterOperand(op, spec.slice(dot + 1)) };
+    if (Object.keys(ops).length > 0) out[column] = ops;
   }
+  if (more.length > 0) out["and"] = more;
   return out;
 }
 
@@ -4222,11 +4241,15 @@ export type FilterOp =
   | "ilike"
   | "is_null";
 
-/** One column's filter: a comparison and its operand, e.g. `gte.2020-01-01`. */
+/** One comparison on a column and its operand, e.g. `gte.2020-01-01` or `in.(open,pending)`. */
 export type FilterValue = `${FilterOp}.${string}`;
 
-/** The filters a read may carry — one per column of the table being read. */
-export type Filters<Row> = Partial<Record<Extract<keyof Row, string>, FilterValue>>;
+/**
+ * The filters a read may carry, keyed by column: one comparison, or a list of
+ * comparisons that must all hold (`["gte.2020-01-01", "lt.2021-01-01"]` is a
+ * range). Every entry is ANDed; several values of one column are `in.(a,b)`.
+ */
+export type Filters<Row> = Partial<Record<Extract<keyof Row, string>, FilterValue | readonly FilterValue[]>>;
 
 /** One `order` key: a column, ascending unless it says otherwise. */
 export type OrderKey<Row> =

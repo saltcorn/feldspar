@@ -64,6 +64,19 @@ describe("whereObject", () => {
     expect(whereObject({ column: "in.()" })).toEqual({ column: { in: [] } });
     expect(() => whereObject({ board: "7" })).toThrow(/eq\.7/);
   });
+
+  it("lowers a list of comparisons on one column to one object of them all", () => {
+    expect(whereObject({ due: ["gte.2020-01-01", "lt.2021-01-01"], board: ["eq.7"] })).toEqual({
+      due: { gte: "2020-01-01", lt: "2021-01-01" },
+      board: { eq: "7" },
+    });
+    // The same comparison twice cannot share an object, so it is ANDed beside it.
+    expect(whereObject({ title: ["ne.a", "ne.b"] })).toEqual({
+      title: { ne: "a" },
+      and: [{ title: { ne: "b" } }],
+    });
+    expect(() => whereObject({ due: ["gte.2020-01-01", "2021"] })).toThrow(/eq\.2021/);
+  });
 });
 
 describe("liveRowsPlan", () => {

@@ -42,6 +42,7 @@ use serde_json::Value as Json;
 use uuid::Uuid;
 
 use crate::model::{Checklist, ChecklistRun, Outcome, RunStatus, SkipReason, Step, StepResult};
+use crate::progress::{self, Event};
 use crate::registry::{
     Capabilities, InsertedRow, Observed, StepContext, StepOutcome, StepRegistry, serves_ui,
 };
@@ -88,6 +89,9 @@ pub struct CheckEnv<'a> {
     /// Where failed browser steps' screenshots are kept; the data directory's
     /// [`SCREENSHOTS_DIR`](crate::screenshots::SCREENSHOTS_DIR) when not given.
     pub screenshots: Option<&'a Path>,
+    /// Where the run reports its progress ([`crate::progress`]), for a
+    /// screen showing it; `None` reports nothing.
+    pub progress: Option<progress::Sink<'a>>,
 }
 
 impl<'a> CheckEnv<'a> {
@@ -102,6 +106,19 @@ impl<'a> CheckEnv<'a> {
             browser: None,
             preview: None,
             screenshots: None,
+            progress: None,
+        }
+    }
+
+    /// Reporting the run's progress to `sink` ([`crate::progress`]).
+    pub fn with_progress(mut self, sink: Option<progress::Sink<'a>>) -> Self {
+        self.progress = sink;
+        self
+    }
+
+    fn report(&self, event: Event) {
+        if let Some(sink) = self.progress {
+            sink(event);
         }
     }
 
@@ -167,11 +184,17 @@ pub async fn run_checklists(
     scope: ChecklistScope,
     trigger: &str,
 ) -> Result<Vec<ChecklistRun>> {
+    let enabled: Vec<Checklist> = store::list_checklists(env.catalog, scope)
+        .await?
+        .into_iter()
+        .filter(|c| c.enabled)
+        .collect();
+    env.report(Event::ChecklistsKnown {
+        total: enabled.len(),
+    });
     let mut runs = Vec::new();
-    for checklist in store::list_checklists(env.catalog, scope).await? {
-        if checklist.enabled {
-            runs.push(run_checklist(env, &checklist, trigger).await?);
-        }
+    for checklist in &enabled {
+        runs.push(run_checklist(env, checklist, trigger).await?);
     }
     Ok(runs)
 }
@@ -202,9 +225,15 @@ pub async fn run_checklist(
         message: None,
         outbox: Vec::new(),
     };
+    env.report(Event::ChecklistStarted {
+        name: checklist.name.clone(),
+    });
     match prepare(env, checklist).await {
         Err(e) => run.message = Some(sc_error::format_chain(&e)),
         Ok(prepared) => {
+            env.report(Event::StepsKnown {
+                total: prepared.steps.len(),
+            });
             // Everything the run does — its steps, the triggers they fire, its
             // browser's requests, its clean-up — is on its behalf: what it
             // would send is kept here instead (C4.1).
@@ -219,6 +248,7 @@ pub async fn run_checklist(
     }
     run.finished_at = Utc::now();
     store::insert_run(env.catalog, &run).await?;
+    env.report(Event::ChecklistFinished { run: run.id });
     Ok(run)
 }
 
@@ -299,8 +329,16 @@ async fn execute(
                 Duration::ZERO,
                 Observed::default(),
             ));
+            if let Some(last) = run.steps.last() {
+                env.report(Event::step_finished(last));
+            }
             continue;
         }
+        env.report(Event::StepStarted {
+            index,
+            label: step.draft.label.clone(),
+            type_: step.draft.type_.clone(),
+        });
         let started = Instant::now();
         let (outcome, mut observed) = run_step(
             env,
@@ -342,6 +380,7 @@ async fn execute(
                 )),
             }
         }
+        env.report(Event::step_finished(&step_result));
         run.steps.push(step_result);
     }
 

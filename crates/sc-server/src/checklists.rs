@@ -336,7 +336,7 @@ async fn application(catalog: &Catalog, raw: Option<&str>) -> Result<sc_app::App
 /// Run `f` with this server's capabilities: its trigger dispatcher and
 /// evaluator, and the application router and the headless browser where it
 /// has them.
-async fn with_env<'a, T, F, Fut>(
+pub(crate) async fn with_env<'a, T, F, Fut>(
     catalog: &'a Catalog,
     registry: &'a StepRegistry,
     apps: &'a AppMounts,
@@ -448,7 +448,7 @@ fn parse_uuid(raw: &str, what: &str) -> Result<Uuid> {
 }
 
 /// `application=<id>`, `application=none`, or nothing.
-fn scope(application: Option<&str>) -> Result<ChecklistScope> {
+pub(crate) fn scope(application: Option<&str>) -> Result<ChecklistScope> {
     Ok(match application.map(str::trim) {
         None | Some("") => ChecklistScope::All,
         Some("none") => ChecklistScope::DataOnly,

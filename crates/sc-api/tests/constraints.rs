@@ -552,3 +552,72 @@ async fn what_a_constraint_refuses_it_refuses_by_name() -> Result<()> {
     .await?;
     Ok(())
 }
+
+/// What the database refuses without an admin's message (a foreign key to a
+/// row that is not there, a duplicate primary key, a field's own `UNIQUE`, a
+/// `CHECK`) is a 400 in our sentence naming the field: not a 500 carrying the
+/// server's text, in the server's locale, with the table and constraint names.
+#[tokio::test]
+async fn an_unexplained_integrity_violation_is_the_callers_fault_naming_the_field() -> Result<()> {
+    let db = TestDb::new().await?;
+    let catalog = Arc::new(setup(&db).await?);
+    db.on_teardown(catalog.teardown_hook());
+    db.client()
+        .await?
+        .batch_execute(
+            "ALTER TABLE employees ADD UNIQUE (note);
+             ALTER TABLE employees ADD CHECK (salary >= 0);",
+        )
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    catalog.reload().await?;
+    let employees = catalog.require("employees")?;
+    let refused = |row: serde_json::Value| {
+        let catalog = &catalog;
+        let employees = &employees;
+        async move {
+            let err = rows::create_row(
+                catalog,
+                employees,
+                &row,
+                sc_catalog::Unchecked::system("test"),
+            )
+            .await
+            .expect_err("the row breaks a rule");
+            assert!(
+                matches!(err.repr(), sc_error::Repr::Invalid(_)),
+                "a 400, not a 500: {err}"
+            );
+            let said = err.to_string();
+            for leak in ["employees_", "constraint", "sql"] {
+                assert!(!said.contains(leak), "{said}");
+            }
+            said
+        }
+    };
+
+    assert_eq!(
+        refused(json!({ "name": "Ada", "department": 99 })).await,
+        "invalid: department: the referenced row does not exist"
+    );
+    rows::create_row(
+        &catalog,
+        &employees,
+        &json!({ "id": 1, "name": "Ada", "note": "n" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
+    assert_eq!(
+        refused(json!({ "id": 1, "name": "Grace" })).await,
+        "invalid: id: a row with this value already exists"
+    );
+    assert_eq!(
+        refused(json!({ "id": 2, "name": "Grace", "note": "n" })).await,
+        "invalid: note: a row with this value already exists"
+    );
+    assert_eq!(
+        refused(json!({ "id": 3, "name": "Grace", "salary": -1 })).await,
+        "invalid: salary: the value breaks a rule of this table"
+    );
+    Ok(())
+}

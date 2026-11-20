@@ -30,8 +30,8 @@ use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_model::{
     Declaration, DrawSeries, Element, FitContext, FitResult, Frame, Interface, ModelProvider,
-    OutcomeSpec, PosteriorInput, PosteriorMethod, PosteriorResult, PosteriorRun, Prediction,
-    SizeExpr,
+    OutcomeSpec, PosteriorInput, PosteriorMethod, PosteriorPrediction, PosteriorResult,
+    PosteriorRun, Prediction, SizeExpr,
 };
 use sc_server::{
     AppMounts, ModelServices, ServerConfig, StanSettings, admin_handlers, build_router_with_apps,
@@ -347,12 +347,16 @@ async fn setup() -> Result<Server> {
 async fn setup_with(stan: &StanSettings) -> Result<Server> {
     let TestServer { db, catalog, .. } = TestServer::builder().sql(SCHEMA).build().await?;
     sc_auth::bootstrap(&catalog).await?;
+    // For a calculated field that predicts (analytics TODO A7.1).
+    sc_catalog::bootstrap_table_meta(&catalog).await?;
+    sc_catalog::bootstrap_field_meta(&catalog).await?;
     let agents = sc_server::install_agents(&catalog).await?;
     let models = sc_server::install_models_with(&catalog, sc_model::DEFAULT_MAX_ROWS, stan).await?;
     // The sampler joins the registry before the actions are built over it, as
     // a module's provider does on a reload.
     let mut registry = models.base_registry()?;
     registry.register(Arc::new(Sampler))?;
+    registry.register(Arc::new(Predictor))?;
     models.set_registry(Arc::new(registry));
     let dispatcher = install_triggers(&catalog, default_js_evaluator(), &agents, &models).await?;
     // For the workflow that refits and then writes back from a code step;
@@ -1258,4 +1262,481 @@ fn urlencoding(value: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+/// A sampler whose program predicts (Stan TODO §19, analytics TODO A7.1): the
+/// radon interface plus `N_new`, `county_new` and `x_new` for the rows being
+/// predicted, and the generated quantity `y_new[i] = alpha[county_new[i]] +
+/// 0.5 x_new[i]`, computed per draw as standalone generated quantities would
+/// be. Its state keeps `alpha`'s draws, as a raw run keeps the CSVs.
+pub(crate) struct Predictor;
+
+#[async_trait::async_trait]
+impl ModelProvider for Predictor {
+    fn name(&self) -> &str {
+        "predictor"
+    }
+    fn description(&self) -> &str {
+        "a stub posterior whose program predicts the rows of `new`"
+    }
+    fn config_declaration(&self) -> Vec<FormField> {
+        vec![
+            FormField::new(sc_model::BINDINGS_KEY, BasicType::Json),
+            FormField::new(sc_model::DIMENSIONS_KEY, BasicType::Json),
+            FormField::new(sc_model::POLICIES_KEY, BasicType::Json),
+            FormField::new("prediction", BasicType::Text),
+        ]
+    }
+    fn outcome_spec(&self) -> OutcomeSpec {
+        OutcomeSpec::Posterior {
+            prediction: Some("prediction".to_owned()),
+        }
+    }
+    fn uncertainty(&self) -> sc_model::Uncertainty {
+        sc_model::Uncertainty::Distribution
+    }
+    fn binds_data(&self) -> bool {
+        true
+    }
+    async fn fit(&self, _f: &Frame, _c: &Attrs, _h: &Attrs) -> Result<FitResult> {
+        Err(Error::msg("sampled, not fitted"))
+    }
+    async fn predict(&self, _s: &serde_json::Value, _f: &Frame) -> Result<Vec<Prediction>> {
+        Err(Error::msg("predicts through `new`"))
+    }
+    async fn interface(&self, _config: &Attrs) -> Result<Option<Interface>> {
+        let n = || vec![SizeExpr::var("N")];
+        let n_new = || vec![SizeExpr::var("N_new")];
+        Ok(Some(Interface {
+            data: vec![
+                Declaration::new("N", Element::Int, vec![], "int<lower=1>"),
+                Declaration::new("J", Element::Int, vec![], "int<lower=1>"),
+                Declaration::new(
+                    "county",
+                    Element::Int,
+                    n(),
+                    "array[N] int<lower=1, upper=J>",
+                )
+                .bounded(Some("1"), Some("J")),
+                Declaration::new("x", Element::Real, n(), "vector[N]"),
+                Declaration::new("y", Element::Real, n(), "vector[N]"),
+                Declaration::new("N_new", Element::Int, vec![], "int<lower=0>"),
+                Declaration::new(
+                    "county_new",
+                    Element::Int,
+                    n_new(),
+                    "array[N_new] int<lower=1, upper=J>",
+                )
+                .bounded(Some("1"), Some("J")),
+                Declaration::new("x_new", Element::Real, n_new(), "vector[N_new]"),
+            ],
+            parameters: vec![Declaration::new(
+                "alpha",
+                Element::Real,
+                vec![SizeExpr::var("J")],
+                "vector[J]",
+            )],
+            generated: vec![Declaration::new(
+                "y_new",
+                Element::Real,
+                n_new(),
+                "vector[N_new]",
+            )],
+            ..Interface::default()
+        }))
+    }
+    async fn fit_posterior(
+        &self,
+        input: &PosteriorInput,
+        _config: &Attrs,
+        _ctx: &FitContext<'_>,
+    ) -> Result<PosteriorResult> {
+        // The fit sees no rows being predicted.
+        assert_eq!(input.data["N_new"], json!(0), "{}", input.data);
+        assert_eq!(input.data["county_new"], json!([]), "{}", input.data);
+        let j = input.data["J"].as_u64().unwrap_or(0) as usize;
+        let mut normals = Normals(11);
+        let mut draws = Vec::new();
+        let mut alpha = vec![Vec::new(); j];
+        for chain in 1..=CHAINS {
+            for (k, kept) in alpha.iter_mut().enumerate() {
+                let values: Vec<f64> = (0..DRAWS)
+                    .map(|_| (k + 1) as f64 + 0.1 * normals.next())
+                    .collect();
+                kept.extend(values.iter().copied());
+                draws.push(DrawSeries::new("alpha", vec![k + 1], chain, values));
+            }
+            let lp = (0..DRAWS).map(|_| -3.0 + normals.next()).collect();
+            draws.push(DrawSeries::new("lp__", vec![], chain, lp));
+            draws.push(DrawSeries::new(
+                "divergent__",
+                vec![],
+                chain,
+                vec![0.0; DRAWS],
+            ));
+        }
+        Ok(PosteriorResult {
+            state: json!({ "alpha": alpha }),
+            draws,
+            parameters: Vec::new(),
+            run: PosteriorRun {
+                method: PosteriorMethod::Mcmc,
+                ..PosteriorRun::default()
+            },
+        })
+    }
+    async fn predict_posterior(
+        &self,
+        state: &serde_json::Value,
+        request: &PosteriorPrediction,
+    ) -> Result<Vec<Vec<f64>>> {
+        assert_eq!(request.variable, "y_new");
+        assert_eq!(request.data["N_new"], json!(request.rows));
+        let county = request.data["county_new"].as_array().unwrap();
+        let x = request.data["x_new"].as_array().unwrap();
+        Ok((0..request.rows)
+            .map(|i| {
+                let k = county[i].as_u64().unwrap() as usize;
+                let x = x[i].as_f64().unwrap();
+                state["alpha"][k - 1]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|a| a.as_f64().unwrap() + 0.5 * x)
+                    .collect()
+            })
+            .collect())
+    }
+}
+
+/// The radon bindings, and the rows being predicted: their count, their
+/// county as an index into the fit's `counties`, their floor.
+fn predicting_bindings() -> Value {
+    let mut bindings = bound();
+    bindings["N_new"] = json!({ "kind": "count", "dataset": "new" });
+    bindings["county_new"] = json!({ "kind": "index", "dataset": "new", "column": "county",
+                                     "dimension": "counties" });
+    bindings["x_new"] = json!({ "kind": "column", "dataset": "new", "column": "floor" });
+    bindings
+}
+
+/// Analytics TODO A7.1: a posterior predicts new rows through `new` — as
+/// literal rows and as rows of its table through `predictRows`, in a
+/// formula's `predict()` and through a code body's `m.predict` — with a
+/// distribution for each, and a county the fit never saw refused by name.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn a_posterior_predicts_new_rows_through_its_new_dataset() -> Result<()> {
+    let mut server = setup().await?;
+    let client = &mut server.client;
+
+    // `prediction` must name a generated quantity sized by the count of `new`.
+    let mut wrong = radon(
+        "Radon P",
+        predicting_bindings(),
+        json!({ "policies": { "main": { "nulls": "drop" } }, "prediction": "alpha" }),
+    );
+    wrong["provider"] = json!("predictor");
+    let (status, refused) = client.send("POST", "/api/models", Some(wrong)).await;
+    assert!(!status.is_success(), "{refused}");
+    assert!(
+        refused
+            .to_string()
+            .contains("`alpha` is not a generated quantity"),
+        "{refused}"
+    );
+
+    // A binding over `new` is a count, a column, columns or an index.
+    let mut bindings = predicting_bindings();
+    bindings["x_new"] = json!({ "kind": "design", "dataset": "new", "columns": ["floor"] });
+    let mut wrong = radon(
+        "Radon P",
+        bindings,
+        json!({ "policies": { "main": { "nulls": "drop" } }, "prediction": "y_new" }),
+    );
+    wrong["provider"] = json!("predictor");
+    let (status, refused) = client.send("POST", "/api/models", Some(wrong)).await;
+    assert!(!status.is_success(), "{refused}");
+    assert!(
+        refused
+            .to_string()
+            .contains("is bound by `design` over the rows being predicted"),
+        "{refused}"
+    );
+
+    let mut body = radon(
+        "Radon P",
+        predicting_bindings(),
+        json!({ "policies": { "main": { "nulls": "drop" } }, "prediction": "y_new" }),
+    );
+    body["provider"] = json!("predictor");
+    let (id, instance) = fitted(client, body).await;
+    assert_eq!(instance["status"], json!("fitted"), "{instance}");
+    let fit = instance["id"].as_str().unwrap().to_owned();
+    // The fit was bound with no rows being predicted.
+    assert!(
+        instance["binding"]["datasets"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({ "name": "new", "read": 0, "bound": 0 })),
+        "{instance}"
+    );
+    assert_eq!(
+        instance["outcome"]["prediction"],
+        json!("y_new"),
+        "{instance}"
+    );
+    client
+        .ok(
+            "POST",
+            &format!("/api/model-instances/{fit}/activate"),
+            None,
+        )
+        .await;
+
+    // Literal rows: a distribution each, whose value is its mean.
+    let answer = client
+        .ok(
+            "POST",
+            "/api/model-predictions",
+            Some(json!({ "model": id, "rows": [
+                { "county": 27003, "floor": 1.0, "y": null },
+                { "county": 27001, "floor": 0.0, "y": null },
+            ] })),
+        )
+        .await;
+    assert_eq!(answer["outcome"]["prediction"], json!("y_new"), "{answer}");
+    let first = &answer["predictions"][0];
+    assert_eq!(
+        first["prediction"]["prediction"],
+        json!("distribution"),
+        "{answer}"
+    );
+    let mean = first["value"].as_f64().unwrap();
+    assert!((mean - 2.5).abs() < 0.02, "{answer}");
+    let (lower, upper) = (
+        first["prediction"]["lower"].as_f64().unwrap(),
+        first["prediction"]["upper"].as_f64().unwrap(),
+    );
+    assert!(lower < mean && mean < upper, "{answer}");
+    // About 1.645 standard deviations of 0.1 either side.
+    assert!((upper - lower - 0.33).abs() < 0.03, "{answer}");
+    assert_eq!(first["prediction"]["level"], json!(0.9), "{answer}");
+    assert!((answer["predictions"][1]["value"].as_f64().unwrap() - 1.0).abs() < 0.02);
+
+    // Rows of the table, read through the dataset by a filter.
+    let answer = client
+        .ok(
+            "POST",
+            "/api/model-predictions",
+            Some(json!({ "model": id, "filter": "id === 5" })),
+        )
+        .await;
+    assert_eq!(answer["predictions"][0]["key"], json!("int:5"), "{answer}");
+    assert!((answer["predictions"][0]["value"].as_f64().unwrap() - 3.5).abs() < 0.02);
+
+    // A county the fit never saw is refused by name.
+    let (status, refused) = client
+        .send(
+            "POST",
+            "/api/model-predictions",
+            Some(json!({ "model": id, "rows": [{ "county": 27099, "floor": 0.0, "y": null }] })),
+        )
+        .await;
+    assert!(!status.is_success(), "{refused}");
+    let said = refused.to_string();
+    assert!(
+        said.contains("`county` is `27099`") && said.contains("`counties`"),
+        "{said}"
+    );
+
+    // A formula's `predict()`: saved, because the model names a prediction,
+    // and computed after the read.
+    client
+        .ok(
+            "POST",
+            "/api/tables/homes/fields",
+            Some(json!({
+                "name": "predicted_radon",
+                "type": "float8",
+                "kind": { "type": "calc", "expression": "predict(\"Radon P\")" },
+            })),
+        )
+        .await;
+    let mut predicted = Vec::new();
+    for id in [1, 6] {
+        let rows = client
+            .ok("GET", &format!("/api/tables/homes/rows?id=eq.{id}"), None)
+            .await;
+        predicted.push(rows[0]["predicted_radon"].as_f64().unwrap_or(f64::NAN));
+    }
+    let rows = &predicted;
+    // Home 1: Aitkin (1), floor 0. Home 6: Becker (3), floor 0.
+    assert!((predicted[0] - 1.0).abs() < 0.02, "{rows:?}");
+    assert!((predicted[1] - 3.0).abs() < 0.02, "{rows:?}");
+
+    // A code body's handle, with the detail.
+    let code = client
+        .trigger(json!({
+            "name": "predict_radon", "description": "", "when": "none", "channel": null,
+            "only_if": null, "action": "run_js_code",
+            "configuration": { "code": r#"
+                const m = await models.get("Radon P");
+                return await m.predict({ county: 27005, floor: 1, y: null }, { detail: true });
+            "# },
+            "min_role": null, "enabled": true,
+        }))
+        .await;
+    let ran = client.run(&code, json!({})).await;
+    let detail = &ran["result"];
+    assert!(
+        (detail["value"].as_f64().unwrap() - 3.5).abs() < 0.02,
+        "{ran}"
+    );
+    assert!(detail["lower"].as_f64().unwrap() < 3.5, "{ran}");
+    assert!(detail["sd"].as_f64().unwrap() > 0.05, "{ran}");
+    Ok(())
+}
+
+/// Analytics TODO A7.4–A7.5: a posterior that predicts through `new` is
+/// profiled — its inputs are the columns the `new` bindings read, the county
+/// a category because it is an index — and scenarios are compared by their
+/// draws, on one grid. The stub's prediction is `alpha[county] + 0.5 * floor`
+/// with `alpha` near 1, 2 and 3.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn a_posterior_is_profiled_and_its_scenarios_compared_by_their_draws() -> Result<()> {
+    let mut server = setup().await?;
+    let client = &mut server.client;
+    let mut body = radon(
+        "Radon S",
+        predicting_bindings(),
+        json!({ "policies": { "main": { "nulls": "drop" } }, "prediction": "y_new" }),
+    );
+    body["provider"] = json!("predictor");
+    let (id, instance) = fitted(client, body).await;
+    assert_eq!(instance["status"], json!("fitted"), "{instance}");
+
+    // Not active: the newest fitted fit is used.
+    let profile = client
+        .ok(
+            "POST",
+            &format!("/api/models/{id}/profile"),
+            Some(json!({ "values": { "county": 27003 }, "points": 11 })),
+        )
+        .await;
+    assert_eq!(profile["outcome"], json!("posterior"), "{profile}");
+    assert_eq!(profile["fit"]["id"], instance["id"], "{profile}");
+    let inputs = profile["inputs"].as_array().unwrap();
+    let names: Vec<&str> = inputs.iter().map(|i| i["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["county", "floor"], "{profile}");
+    assert_eq!(inputs[0]["kind"], json!("category"), "{profile}");
+    assert_eq!(
+        inputs[0]["levels"],
+        json!([27001, 27003, 27005]),
+        "{profile}"
+    );
+    // The mean of the five known floors.
+    assert_eq!(inputs[1]["kind"], json!("number"), "{profile}");
+    assert!((inputs[1]["typical"].as_f64().unwrap() - 0.4).abs() < 1e-9);
+    assert_eq!(
+        profile["values"],
+        json!({ "county": 27003, "floor": 0.4 }),
+        "{profile}"
+    );
+    let at = |p: &Value| p["value"].as_f64().unwrap();
+    assert!((at(&profile["prediction"]) - 2.2).abs() < 0.02, "{profile}");
+    assert!(
+        profile["prediction"]["lower"].as_f64().unwrap() < at(&profile["prediction"]),
+        "{profile}"
+    );
+    // Along the county, the others fixed; along the floor, a slope of 0.5.
+    let county = &profile["curves"][0];
+    assert_eq!(county["input"], json!("county"));
+    let by_county: Vec<f64> = county["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| at(&p["prediction"]))
+        .collect();
+    for (got, want) in by_county.iter().zip([1.2, 2.2, 3.2]) {
+        assert!((got - want).abs() < 0.02, "{by_county:?}");
+    }
+    let floor = county["points"].as_array().unwrap().len();
+    assert_eq!(floor, 3);
+    let floor = profile["curves"][1]["points"].as_array().unwrap();
+    assert_eq!(floor.len(), 11);
+    assert_eq!(floor[0]["x"], json!(0.0));
+    assert_eq!(floor[10]["x"], json!(1.0));
+    let rise = at(&floor[10]["prediction"]) - at(&floor[0]["prediction"]);
+    assert!((rise - 0.5).abs() < 0.02, "{rise}");
+
+    // Two scenarios, each with its draws and their density on one grid.
+    let compared = client
+        .ok(
+            "POST",
+            &format!("/api/models/{id}/scenarios"),
+            Some(json!({ "scenarios": [
+                { "name": "baseline" },
+                { "name": "Becker, upstairs", "values": { "county": 27005, "floor": 1 } },
+            ] })),
+        )
+        .await;
+    let grid = compared["grid"].as_array().unwrap();
+    assert_eq!(grid.len(), 128, "{compared}");
+    let scenarios = compared["scenarios"].as_array().unwrap();
+    assert_eq!(scenarios[0]["name"], json!("baseline"));
+    assert_eq!(
+        scenarios[0]["values"],
+        json!({ "county": 27001, "floor": 0.4 })
+    );
+    assert!(
+        (at(&scenarios[0]["prediction"]) - 1.2).abs() < 0.02,
+        "{compared}"
+    );
+    assert!(
+        (at(&scenarios[1]["prediction"]) - 3.5).abs() < 0.02,
+        "{compared}"
+    );
+    for s in scenarios {
+        let spread = &s["spread"];
+        assert_eq!(spread["kind"], json!("draws"), "{compared}");
+        let draws = spread["draws"].as_array().unwrap();
+        assert!(!draws.is_empty() && draws.len() <= 1000, "{spread}");
+        assert_eq!(spread["density"].as_array().unwrap().len(), 128);
+    }
+    // The two densities peak at different places on the shared grid.
+    let peak = |s: &Value| {
+        let d = s["spread"]["density"].as_array().unwrap();
+        let i = (0..d.len())
+            .max_by(|a, b| d[*a].as_f64().unwrap().total_cmp(&d[*b].as_f64().unwrap()))
+            .unwrap();
+        grid[i].as_f64().unwrap()
+    };
+    assert!((peak(&scenarios[0]) - 1.2).abs() < 0.2, "{compared}");
+    assert!((peak(&scenarios[1]) - 3.5).abs() < 0.2, "{compared}");
+
+    // An input the model does not read, a county it never saw, and two
+    // scenarios with one name are each refused with a sentence.
+    for (body, says) in [
+        (
+            json!({ "scenarios": [{ "name": "a", "values": { "radon": 1 } }] }),
+            "`radon` is not an input of `Radon S`",
+        ),
+        (
+            json!({ "scenarios": [{ "name": "a", "values": { "county": 27099 } }] }),
+            "`county` is `27099`",
+        ),
+        (
+            json!({ "scenarios": [{ "name": "a" }, { "name": "a" }] }),
+            "two scenarios are called “a”",
+        ),
+    ] {
+        let (status, refused) = client
+            .send("POST", &format!("/api/models/{id}/scenarios"), Some(body))
+            .await;
+        assert!(!status.is_success(), "{refused}");
+        assert!(refused.to_string().contains(says), "{refused}");
+    }
+    Ok(())
 }

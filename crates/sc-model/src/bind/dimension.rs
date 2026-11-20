@@ -30,6 +30,8 @@ pub enum DimensionKind {
     Values,
     /// The steps of a time grid (or of its horizon, for `name.future`).
     TimeGrid,
+    /// A fixed list of labels: a model matrix's column names.
+    Names,
 }
 
 /// One dimension's coordinates: a key and a label per position, in order.
@@ -161,6 +163,50 @@ impl Dimension {
                 labels: labels.map_or(texts, <[String]>::to_vec),
             },
             lookup: Lookup::Text(lookup),
+        }
+    }
+
+    /// A dimension rebuilt from the coordinates a fit stored, so the rows
+    /// being predicted find their positions as the fit's rows did (analytics
+    /// TODO A7.1). `None` for a time grid, whose positions are arithmetic
+    /// the coordinates do not record.
+    pub(crate) fn from_coordinates(coords: &DimensionCoordinates) -> Option<Dimension> {
+        let texts: Vec<String> = match coords.kind {
+            DimensionKind::TimeGrid => return None,
+            DimensionKind::Names => coords.labels.clone(),
+            DimensionKind::Rows | DimensionKind::Values => coords
+                .keys
+                .iter()
+                .map(|k| match k {
+                    Json::String(s) => s.clone(),
+                    other => other.to_string(),
+                })
+                .collect(),
+        };
+        Some(Dimension {
+            coords: coords.clone(),
+            lookup: Lookup::Text(texts.into_iter().enumerate().map(|(i, t)| (t, i)).collect()),
+        })
+    }
+
+    /// A names dimension: one position per label, keyed by the label.
+    pub(crate) fn names(name: &str, dataset: &str, of: &str, labels: &[String]) -> Dimension {
+        Dimension {
+            coords: DimensionCoordinates {
+                name: name.to_owned(),
+                kind: DimensionKind::Names,
+                dataset: dataset.to_owned(),
+                column: Some(of.to_owned()),
+                keys: labels.iter().map(|l| Json::String(l.clone())).collect(),
+                labels: labels.to_vec(),
+            },
+            lookup: Lookup::Text(
+                labels
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| (l.clone(), i))
+                    .collect(),
+            ),
         }
     }
 

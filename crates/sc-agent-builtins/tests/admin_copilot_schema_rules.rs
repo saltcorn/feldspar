@@ -473,3 +473,121 @@ async fn access_rules_are_restated_in_words_on_a_dry_run_and_after_applying() ->
     assert_eq!(notes["access_summary"], json!(said[0]), "{notes}");
     Ok(())
 }
+
+/// A secret field from `edit_schema` (TODO SF1.1, from a user report): made on
+/// `create_table` and `add_field`, read back by `describe_schema` as
+/// `secret: true`, which `alter_field` accepts back, and a value written to it
+/// stored sealed. A field cannot become a secret or stop being one, and a
+/// secret is not also a reference.
+#[tokio::test]
+async fn a_secret_field_is_made_described_and_stored_sealed() -> Result<()> {
+    let env = Env::new().await?;
+    env.catalog
+        .set_secret_key(sc_catalog::SecretKey::generate()?);
+    edit(
+        &env,
+        &edit_grants(),
+        json!([
+            {
+                "op": "create_table", "table": "mail_accounts",
+                "fields": [
+                    {"name": "id", "type": "int", "primary_key": true},
+                    {"name": "login", "type": "text"},
+                    {"name": "imap_password", "secret": true},
+                ],
+            },
+            {"op": "add_field", "table": "mail_accounts", "field": "api_key", "secret": true},
+        ]),
+    )
+    .await?;
+    let table = env.catalog.require("mail_accounts")?;
+    assert!(table.field("imap_password").unwrap().is_secret());
+    assert!(table.field("api_key").unwrap().is_secret());
+    assert!(!table.field("login").unwrap().is_secret());
+
+    let described = describe(&env, "mail_accounts").await?;
+    assert_eq!(
+        field(&described, "api_key")["secret"],
+        json!(true),
+        "{described}"
+    );
+    assert!(
+        field(&described, "login").get("secret").is_none(),
+        "{described}"
+    );
+
+    // What `describe_schema` says, sent back, changes nothing about the kind.
+    edit(
+        &env,
+        &edit_grants(),
+        json!([{
+            "op": "alter_field", "table": "mail_accounts", "field": "api_key",
+            "secret": true, "label": "API key",
+        }]),
+    )
+    .await?;
+    assert!(
+        env.catalog
+            .require("mail_accounts")?
+            .field("api_key")
+            .unwrap()
+            .is_secret()
+    );
+
+    // A value written through the row layer is sealed in its column. (An
+    // agent's row tools leave secrets out.)
+    let table = env.catalog.require("mail_accounts")?;
+    sc_access::rows::create_row(
+        &env.catalog,
+        &table,
+        &json!({ "id": 1, "login": "ada", "imap_password": "hunter2" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
+    let rows = env.rows("mail_accounts").await?;
+    let stored = rows[0]["imap_password"].as_str().unwrap().to_owned();
+    assert!(
+        stored.starts_with(sc_catalog::secrets::ENVELOPE_PREFIX),
+        "{stored}"
+    );
+    assert_eq!(env.catalog.secret_key()?.open(&stored)?, "hunter2");
+
+    for (operations, expected) in [
+        (
+            json!([{"op": "alter_field", "table": "mail_accounts", "field": "login", "secret": true}]),
+            "cannot become a secret",
+        ),
+        (
+            json!([{
+                "op": "alter_field", "table": "mail_accounts", "field": "imap_password",
+                "secret": false,
+            }]),
+            "cannot stop being a secret",
+        ),
+        (
+            json!([{
+                "op": "add_field", "table": "mail_accounts", "field": "owner",
+                "secret": true, "references": "mail_accounts",
+            }]),
+            "not several",
+        ),
+        (
+            json!([{
+                "op": "add_field", "table": "mail_accounts", "field": "token",
+                "secret": true, "unique": true,
+            }]),
+            "cannot be unique",
+        ),
+    ] {
+        let err = edit(&env, &all_grants(), operations)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(expected), "{err}");
+    }
+    let table = env.catalog.require("mail_accounts")?;
+    assert!(!table.field("login").unwrap().is_secret());
+    assert!(table.field("imap_password").unwrap().is_secret());
+    assert!(table.field("token").is_none());
+    Ok(())
+}

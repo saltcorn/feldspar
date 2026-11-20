@@ -252,7 +252,8 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
             async move {
                 let access = Access::of(&ctx);
                 let schema = Schema::of_catalog(&catalog)?;
-                let library = sc_dataset::load_library(&catalog).await?;
+                let mut library = sc_dataset::load_library(&catalog).await?;
+                sc_dataset::load_models(&catalog, &mut library).await;
                 let sharing = sc_dataset::list_dataset_sharing(&catalog).await?;
                 let out: Vec<Json> = library
                     .defs()
@@ -1262,7 +1263,40 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                     app.check_create_workspace(kind)?;
                     ws = ws.in_application(app.app);
                 }
+                // Created with its content (the model editor's "Save as report
+                // workspace"), checked as a saved state is.
+                if let Some(state) = ctx.body.get("state").filter(|s| !s.is_null()) {
+                    sc_analytics::check_new_state(kind, state)?;
+                    ws.state = state.clone();
+                }
+                // The fit this is the report of: recorded on the fit, so its row
+                // in the model editor links here. Looked up first, so a wrong id
+                // creates nothing.
+                let fit = match ctx.body.get("fit").filter(|f| !f.is_null()) {
+                    None => None,
+                    Some(fit) => {
+                        if kind != WorkspaceKind::Report {
+                            return Err(Error::invalid(
+                                "only a report workspace can be the report of a fit",
+                            ));
+                        }
+                        let raw = fit
+                            .as_str()
+                            .ok_or_else(|| Error::invalid("`fit` is a model fit's id"))?;
+                        let id = Uuid::parse_str(raw).map_err(|_| {
+                            Error::invalid(format!("`{raw}` is not a model fit id"))
+                        })?;
+                        Some(
+                            sc_model::require_model_instance(&catalog, sc_model::InstanceId(id))
+                                .await?
+                                .id,
+                        )
+                    }
+                };
                 sc_analytics::create_workspace(&catalog, &ws).await?;
+                if let Some(fit) = fit {
+                    sc_model::set_instance_report(&catalog, fit, Some(ws.id.0)).await?;
+                }
                 let ws = sc_analytics::require_workspace(&catalog, ws.id).await?;
                 Ok(HandlerResponse::ok(access.workspace_json(&ws)).with_status(201))
             }
@@ -1385,6 +1419,7 @@ async fn world(catalog: &Catalog, def: &DatasetDef) -> Result<(Schema, Library)>
     let schema = Schema::of_catalog(catalog)?;
     let mut library = sc_dataset::load_library(catalog).await?;
     library.insert(def.clone());
+    sc_dataset::load_models(catalog, &mut library).await;
     Ok((schema, library))
 }
 

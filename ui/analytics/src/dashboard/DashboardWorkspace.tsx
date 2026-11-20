@@ -477,6 +477,10 @@ export function kindName(kind: PanelKind, t: Translate): string {
       return t("Map");
     case "stat_card":
       return t("Stat card");
+    case "profiler":
+      return t("Profiler");
+    case "scenarios":
+      return t("Scenarios");
     case "custom":
       return t("Panel");
   }

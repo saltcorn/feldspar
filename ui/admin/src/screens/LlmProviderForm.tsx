@@ -43,15 +43,17 @@ import type {
 } from "../client";
 import { navigate } from "../App";
 import { IconArrowLeft } from "../icons";
+import { llmProvidersCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader } from "../layout";
 import { SettingsFields, buildConfig, readConfig } from "../settings";
 import { LlmModels } from "./LlmModels";
-import { T } from "../i18n";
+import { T, useT } from "../i18n";
 
 type BackendInfo = ListLlmProviderBackendsResponse[number];
 type ProviderItem = ListLlmProvidersResponse[number];
 
 export function LlmProviderForm({ providerId }: { providerId?: string }) {
+  const { t } = useT();
   const [backends, setBackends] = useState<BackendInfo[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -145,7 +147,7 @@ export function LlmProviderForm({ providerId }: { providerId?: string }) {
   return (
     <>
       <PageHeader
-        pretitle={<T text="Automation" />}
+        crumbs={llmProvidersCrumbs(t)}
         title={
           fromConfigFile
             ? "LLM provider"

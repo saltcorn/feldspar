@@ -35,6 +35,11 @@ const DashboardWorkspace = lazy(() =>
   import("../dashboard/DashboardWorkspace").then((m) => ({ default: m.DashboardWorkspace })),
 );
 
+/** The Simulation workspace, loaded when one opens. */
+const SimulationWorkspace = lazy(() =>
+  import("../simulation/SimulationWorkspace").then((m) => ({ default: m.SimulationWorkspace })),
+);
+
 /** How long after the last change the state is saved. */
 const SAVE_DELAY_MS = 600;
 
@@ -162,13 +167,14 @@ export function WorkspaceFrame({ id }: { id: string }) {
 }
 
 /** The kind's screen, handed the state and its setter. Each kind's arrives with
- * its milestone: A2's Data explorer first, then A4's Report, A5's Map and A6's
- * Dashboard. */
+ * its milestone: A2's Data explorer first, then A4's Report, A5's Map, A6's
+ * Dashboard and A7's Simulation. */
 const SCREENS: Record<string, typeof DataExplorer> = {
   data_explorer: DataExplorer,
   report: ReportWorkspace,
   map: MapWorkspace,
   dashboard: DashboardWorkspace,
+  simulation: SimulationWorkspace,
 };
 
 function KindScreen({ kind, ...props }: WorkspaceProps & { kind: string }) {

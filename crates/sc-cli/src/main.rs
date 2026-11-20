@@ -24,6 +24,7 @@ use commands::cmdstan::cmdstan_command;
 use commands::config::{get_cfg_command, send_email_command, set_cfg_command};
 use commands::demo::demo_command;
 use commands::i18n::i18n_command;
+use commands::llm::llm_command;
 use commands::mcp_token::mcp_token_command;
 use commands::migrate::migrate_command;
 use commands::module::module_command;
@@ -106,7 +107,8 @@ async fn run(args: &[String]) -> Result<()> {
         Some("send-email") => send_email_command(&args[1..]).await,
         Some("agent") => agent_command(&args[1..]).await,
         Some("i18n") => i18n_command(&args[1..]).await,
-        Some("cmdstan") => cmdstan_command(&args[1..]).await,
+        Some("llm") => llm_command(&args[1..]).await,
+        Some("cmdstan" | "stan") => cmdstan_command(&args[1..]).await,
         Some("python") => python_command(&args[1..]).await,
         Some("demo") => demo_command(&args[1..]).await,
         Some("trigger") => trigger_command(&args[1..]).await,
@@ -193,6 +195,8 @@ fn print_usage() {
     eprintln!(
         "  feldspar mcp-token create --label TEXT --email EMAIL --routes-only [--expires-in-days N]"
     );
+    eprintln!("  feldspar llm list|set-provider|set-model|set-default|test … [database flags]");
+    eprintln!("                      (LLM providers and their models; `feldspar llm` for details)");
     eprintln!("  feldspar trigger approve-system|revoke-system NAME [database flags]");
     eprintln!("                      (approve a trigger's current code to run as system)");
     eprintln!("                      (module routes only, as a user of any role)");
@@ -266,6 +270,9 @@ fn print_usage() {
     eprintln!("  feldspar demo analytics [--replace] [database flags]");
     eprintln!("  feldspar cmdstan status [--cmdstan DIR]");
     eprintln!("  feldspar cmdstan install [--version V] [--dir D] [--jobs J]");
+    eprintln!(
+        "  feldspar cmdstan warm [--cmdstan DIR] [--stan-cache-dir DIR] [--family F]... [--list]"
+    );
     eprintln!(
         "  feldspar python check [--url URL | --offline] [--python-dir PATH] [--python-bin PATH] \
          [--import MODULE]..."

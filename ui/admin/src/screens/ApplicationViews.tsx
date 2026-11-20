@@ -25,6 +25,7 @@ import { navigate } from "../App";
 import { NO_BUILDER, builderPageUrl, openStep, viewLanding, type Landing } from "../builder";
 import { useBuilderAvailable } from "../builderStatus";
 import { IconArrowLeft } from "../icons";
+import { applicationsCrumbs } from "../breadcrumbs";
 import { AlertBody, PageBody, PageHeader, StatusBadge } from "../layout";
 import { pageFormErrors, pageFormOf, savePageBody } from "../pageForm";
 import { RoleSelect } from "../roleSelect";
@@ -272,7 +273,7 @@ export function ApplicationViews({ appId, tab }: { appId: string; tab: "views" |
 
   const header = (
     <PageHeader
-      pretitle="Application"
+      crumbs={applicationsCrumbs(t)}
       title={app?.name ?? "Application"}
       actions={
         <>

@@ -129,7 +129,9 @@
 use sc_types::Role;
 mod files;
 mod history;
+mod llm;
 mod models;
+mod oauth;
 mod plan;
 pub mod schema;
 mod triggers;
@@ -152,6 +154,7 @@ use sc_access::rows;
 use sc_types::value_to_json;
 
 pub use files::{FileStoreHost, MAX_COPY_BYTES, MAX_FILE_BYTES, set_file_limits};
+pub use llm::CODE_MAX_EMBED_INPUTS;
 pub use models::CODE_MAX_DRAWS;
 pub use plan::{AggSpec, Authority, Dir, Op, OrderKey, Plan, Selection, SqlOp, SqlPlan};
 pub use schema::snapshot as schema_snapshot;
@@ -1094,6 +1097,16 @@ impl CodeHost for TableHost<'_> {
         // budget, and a write-back under this run's authority and chain.
         if request.get("op").and_then(Json::as_str) == Some("models") {
             return models::answer(self, request).await;
+        }
+        // The configured LLM providers: a chat answer or embeddings, on the
+        // same budget.
+        if request.get("op").and_then(Json::as_str) == Some("llm") {
+            return llm::answer(self, request).await;
+        }
+        // A user's OAuth tokens for an API (TODO OA1): a consent flow begun,
+        // an access token handed out and renewed when it is due.
+        if request.get("op").and_then(Json::as_str) == Some("oauth") {
+            return oauth::answer(self, request).await;
         }
         // Row history (§14.12): a row's versions read, a deleted row restored,
         // a row put back — through the same reader and reverser as the admin

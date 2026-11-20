@@ -537,6 +537,46 @@ describe("the types the code editor loads", () => {
     );
   });
 
+  it("type `llm.generate` as text, or an answer with `detail`, and `llm.embed` as vectors", () => {
+    expect(
+      check(
+        `const text = (await llm.generate("Hi")).toUpperCase();\n` +
+          `const full = await llm.generate({ messages: [{ role: "user", content: "Hi" }], detail: true });\n` +
+          `const n = full.usage.output_tokens + 1;\n` +
+          `const one = (await llm.embed("x")).map((v) => v * 2);\n` +
+          `const many = (await llm.embed(["a", "b"], { model: "m" }))[0].length;\n` +
+          `const paid = await llm.generate("Hi", { charge: { credits_per_dollar: 100 }, detail: true });\n` +
+          `const left = paid.credits && paid.credits.balance;\n` +
+          `return { text, n, one, many, t: full.text.length, left };`,
+      ),
+    ).toEqual([]);
+    expect(
+      check(`return await llm.generate({ messages: [{ role: "tool", content: "x" }] });`).join(" "),
+    ).toMatch(/tool/);
+    expect(check(`return await llm.chat("x");`).join(" ")).toMatch(/chat/);
+    expect(
+      check(`return await llm.embed("x", { charge: { credits_per_doller: 1 } });`).join(" "),
+    ).toMatch(/credits_per_doller/);
+    // Without `detail` the answer is text, which has no `usage`.
+    expect(check(`return (await llm.generate("Hi")).usage;`).join(" ")).toMatch(/usage/);
+  });
+
+  it("type `oauth.begin` as a url and `oauth.accessToken` as a token, or one with `detail`", () => {
+    const store = `{ table: "connections", id: 1, fields: { access_token: "a", refresh_token: "r" } }`;
+    expect(
+      check(
+        `const { url } = await oauth.begin({ provider: "google", client_id: "c", scope: "s", store: ${store} });\n` +
+          `const token = (await oauth.accessToken({ provider: "google", client_id: "c", store: ${store} })).length;\n` +
+          `const full = await oauth.accessToken({ token_url: "https://t", client_id: "c", store: ${store}, refused: "x", detail: true });\n` +
+          `return { url: url.length, token, renewed: full.refreshed };`,
+      ),
+    ).toEqual([]);
+    expect(
+      check(`return await oauth.begin({ provider: "yahoo", client_id: "c", scope: "s", store: ${store} });`).join(" "),
+    ).toMatch(/yahoo/);
+    expect(check(`return await oauth.refresh({});`).join(" ")).toMatch(/refresh/);
+  });
+
   it("type a model handle from `models.get`, its posterior methods as optional members", () => {
     expect(
       check(

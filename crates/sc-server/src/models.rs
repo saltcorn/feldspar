@@ -344,6 +344,26 @@ impl sc_catalog::ModelHost for ModelServices {
     async fn describe(&self, model: &str) -> Result<sc_catalog::ModelSummary> {
         sc_api::models::describe_model(&self.catalog, &self.registry(), model).await
     }
+
+    async fn predict_inputs(
+        &self,
+        model: &str,
+        fit: Option<&str>,
+        rows: &[serde_json::Value],
+        level: f64,
+    ) -> Result<Vec<serde_json::Value>> {
+        sc_api::models::predict_inputs(
+            &self.catalog,
+            &self.registry(),
+            self.source.as_ref(),
+            self.max_rows,
+            model,
+            fit,
+            rows,
+            level,
+        )
+        .await
+    }
 }
 
 /// Install `services` as the catalog's [`ModelHost`](sc_catalog::ModelHost).
@@ -419,6 +439,12 @@ pub async fn keep_row(
 fn base_registry(stan: &Arc<StanProvider>) -> Result<ModelRegistry> {
     let mut registry = builtin_registry()?;
     registry.register(Arc::clone(stan) as Arc<dyn ModelProvider>)?;
+    // A formula's generated program fits through the same Stan provider: its
+    // compile cache, its process budget, its runner
+    // (TODO-bayesian-regression R1.7).
+    registry.register(
+        Arc::new(sc_bayesreg::BayesRegProvider::new(Arc::clone(stan))) as Arc<dyn ModelProvider>,
+    )?;
     Ok(registry)
 }
 
@@ -459,7 +485,7 @@ fn stan_provider(catalog: &Arc<Catalog>, settings: &StanSettings) -> StanProvide
 /// platform's data directory (Stan TODO §13) — a compile is a minute, and a
 /// temporary directory cleared at reboot would pay it again. The system
 /// temporary directory when there is no data directory.
-fn stan_cache_dir() -> PathBuf {
+pub fn stan_cache_dir() -> PathBuf {
     match sc_module::default_modules_root() {
         Ok(modules) => modules
             .parent()

@@ -57,6 +57,10 @@ fn filters() -> Vec<Json> {
         json!({ "position": { "lte": 1.5 } }),
         json!({ "due": { "lt": "2026-06-01" } }),
         json!({ "due": { "gte": "2026-07-15" } }),
+        // Several operators on one column, all of which hold: a range.
+        json!({ "due": { "gte": "2026-02-01", "lt": "2026-12-31" } }),
+        json!({ "position": { "gt": -3, "lte": 0 } }),
+        json!({ "board": { "in": [7, 8], "ne": 8 } }),
         json!({ "done": true }),
         json!({ "done": { "ne": true } }),
         json!({ "title": "alpha" }),

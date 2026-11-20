@@ -22,7 +22,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildHyperparameters,
+  featureChoices,
   featureInputs,
+  featuresBody,
   formatNumber,
   formatParameterCell,
   formatPValue,
@@ -30,12 +32,15 @@ import {
   headlineMetric,
   instanceLabel,
   metricRows,
+  offered,
   orderInstances,
+  outcomeLabel,
   outcomeSummary,
   parseGridValue,
   predictionSummary,
   printGridValue,
   readEncoding,
+  readFeatures,
   readHyperparameters,
   readModelDataset,
   readOutcome,
@@ -365,3 +370,53 @@ describe("asking a fit about a row", () => {
 function field(name: string, type: string) {
   return { name, label: name, type, required: false, options: [], multiline: false };
 }
+
+describe("offered", () => {
+  const stan = { name: "stan", listed: false };
+  const formula = { name: "bayesian_regression", listed: true };
+
+  it("leaves an unlisted provider out of a new model's picker", () => {
+    expect(offered(stan, "", null)).toBe(false);
+    expect(offered(formula, "", null)).toBe(true);
+  });
+
+  it("keeps an unlisted provider for the model that already uses it", () => {
+    const saved = { provider: "stan" };
+    expect(offered(stan, "stan", saved)).toBe(true);
+    // Switching away and back must not lose the option.
+    expect(offered(stan, "linear-regression", saved)).toBe(true);
+    expect(offered(stan, "linear-regression", { provider: "bayesian_regression" })).toBe(false);
+  });
+});
+
+describe("the features", () => {
+  const columns = [
+    { name: "pclass", type: "int" },
+    { name: "survived", type: "bool" },
+    { name: "body", type: "int" },
+  ];
+
+  it("reads a stored list, and anything else as every column", () => {
+    expect(readFeatures(["pclass", "sex"])).toEqual(["pclass", "sex"]);
+    expect(readFeatures(null)).toBeNull();
+    expect(readFeatures(undefined)).toBeNull();
+  });
+
+  it("offers every column but the label", () => {
+    const label = outcomeLabel({ outcome: "classification", label: "survived" });
+    expect(label).toBe("survived");
+    expect(featureChoices(columns, label).map((c) => c.name)).toEqual(["pclass", "body"]);
+    expect(outcomeLabel({ outcome: "cluster" })).toBeNull();
+  });
+
+  it("sends null until features are chosen, and never the label", () => {
+    expect(featuresBody(null, "survived", true, columns)).toBeNull();
+    // A label chosen after the features were is taken out of them, and a
+    // column the dataset no longer has is dropped.
+    expect(featuresBody(["pclass", "survived", "cabin"], "survived", true, columns)).toEqual([
+      "pclass",
+    ]);
+    // A provider that takes no feature list is sent none.
+    expect(featuresBody(["pclass"], null, false, columns)).toBeNull();
+  });
+});

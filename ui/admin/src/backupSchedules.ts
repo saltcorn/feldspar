@@ -13,6 +13,10 @@
  * are included whole: every one there is when the backup runs, so one created
  * after the schedule was set up is in it whatever the lists say.
  *
+ * A schedule can also name who is emailed when one of its backups fails:
+ * nobody, every administrator ("all") or one administrator by address. The
+ * choice is offered only when the installation sends mail.
+ *
  * The server checks everything again (and checks what only it can — that the
  * destination can be reached and written, that no other schedule writes
  * there); these checks are here so the obvious mistakes are reported beside
@@ -89,7 +93,13 @@ export type ScheduleForm = {
   /** Whether the server holds a password for this schedule that the form has
    * not removed. */
   backupPasswordStored: boolean;
+  /** Who is emailed when a backup fails: empty for nobody, `FAILURE_EMAIL_ALL`
+   * for every administrator, or one administrator's address. */
+  failureEmail: string;
 };
+
+/** `failure_email`'s value for every administrator. */
+export const FAILURE_EMAIL_ALL = "all";
 
 export type ScheduleField =
   | "directory"
@@ -133,6 +143,7 @@ export function newScheduleForm(include: BackupSelection): ScheduleForm {
     backupPassword: "",
     backupPasswordRepeat: "",
     backupPasswordStored: false,
+    failureEmail: "",
   };
 }
 
@@ -164,6 +175,7 @@ export function editScheduleForm(schedule: BackupSchedule): ScheduleForm {
     includeAll: { ...INCLUDE_ALL, ...schedule.include_all },
     backupPassword: schedule.password ? SECRET_SENTINEL : "",
     backupPasswordStored: !!schedule.password,
+    failureEmail: schedule.failure_email ?? "",
   };
 }
 
@@ -258,6 +270,7 @@ export function scheduleBody(form: ScheduleForm) {
     include_all: form.includeAll,
     // The mask keeps the stored password; empty is none, which removes it.
     password: form.backupPassword === "" ? null : form.backupPassword,
+    failure_email: form.failureEmail === "" ? null : form.failureEmail,
   };
 }
 
@@ -328,4 +341,33 @@ export function scheduleStatus(
   if (schedule.last_success_at)
     return { text: `Last backup ${formatTime(schedule.last_success_at)}`, failed: false };
   return { text: "Not run yet — the first backup is taken within a minute.", failed: false };
+}
+
+/** The failure email dropdown's choices: nobody, every administrator, then each
+ * administrator. An address the schedule names that is no longer an
+ * administrator's is kept as a choice, so opening the dialog does not quietly
+ * change it (the server refuses to save it, and says why). */
+export function failureEmailOptions(
+  admins: string[],
+  current: string,
+  t: Translator["t"] = format,
+): { value: string; label: string }[] {
+  const options = [
+    { value: "", label: t("None") },
+    { value: FAILURE_EMAIL_ALL, label: t("All administrators") },
+    ...admins.map((a) => ({ value: a, label: a })),
+  ];
+  if (!options.some((o) => o.value.toLowerCase() === current.toLowerCase()))
+    options.push({ value: current, label: current });
+  return options;
+}
+
+/** What a schedule's line says about its failure email, or null for none. */
+export function failureEmailNote(
+  failureEmail: string | null | undefined,
+  t: Translator["t"] = format,
+): string | null {
+  if (!failureEmail) return null;
+  if (failureEmail === FAILURE_EMAIL_ALL) return t("Failures emailed to all administrators");
+  return t("Failures emailed to {address}", { address: failureEmail });
 }

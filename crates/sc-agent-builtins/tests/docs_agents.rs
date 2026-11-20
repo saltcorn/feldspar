@@ -176,7 +176,8 @@ fn the_tutorial_shows_the_tool_names_this_scope_derives() {
 /// The admin form's roles and budgets, by the labels the tutorial quotes.
 ///
 /// These labels live in `ui/admin/src/agentForm.ts` (the boxes are hand-built,
-/// not spec-rendered), so this is the only place the two can be compared.
+/// not spec-rendered), so this is the only place the two can be compared. Each
+/// is written `label: (t: Translate) => t("…")` so the i18n extractor can read it.
 #[test]
 fn the_tutorial_names_the_agent_form_roles_and_budgets() {
     let form = fs::read_to_string(workspace_root().join("ui/admin/src/agentForm.ts"))
@@ -184,7 +185,7 @@ fn the_tutorial_names_the_agent_form_roles_and_budgets() {
     let tutorial = tutorial();
     let labels: Vec<String> = form
         .lines()
-        .filter_map(|line| line.trim().strip_prefix("label: \""))
+        .filter_map(|line| line.trim().strip_prefix("label: (t: Translate) => t(\""))
         .filter_map(|rest| rest.split('"').next().map(str::to_owned))
         .collect();
     assert!(

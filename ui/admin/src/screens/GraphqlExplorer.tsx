@@ -42,6 +42,7 @@ import {
   type SchemaType,
 } from "../graphqlExplorer";
 import { IconArrowLeft } from "../icons";
+import { applicationCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader } from "../layout";
 import { T, useT } from "../i18n";
 
@@ -159,13 +160,12 @@ export function GraphqlExplorer({ appId, user }: { appId: string; user: CurrentU
     }
   };
 
-  const title = app ? `GraphQL — ${app.name}` : "GraphQL";
-
   return (
     <>
       <PageHeader
-        pretitle={t("Applications")}
-        title={title}
+        crumbs={applicationCrumbs(t, appId, app?.name ?? null)}
+        title="GraphQL"
+        docTitle={app ? `GraphQL — ${app.name}` : "GraphQL"}
         actions={
           <>
             <Button variant="outline-secondary" href="#/applications">

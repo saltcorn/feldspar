@@ -39,6 +39,31 @@ function block(b: MdBlock, key: number): ReactNode {
       );
     case "rule":
       return <hr key={key} />;
+    case "table":
+      return (
+        <table key={key} className="table table-sm an-md-table">
+          <thead>
+            <tr>
+              {b.header.map((cell, i) => (
+                <th key={i} style={b.align[i] ? { textAlign: b.align[i]! } : undefined}>
+                  {runs(cell)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {b.rows.map((row, r) => (
+              <tr key={r}>
+                {row.map((cell, i) => (
+                  <td key={i} style={b.align[i] ? { textAlign: b.align[i]! } : undefined}>
+                    {runs(cell)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
   }
 }
 

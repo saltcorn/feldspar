@@ -967,6 +967,50 @@ async fn a_static_directory_added_by_an_edit_serves_without_a_rebuild() -> sc_er
     Ok(())
 }
 
+/// UP1: an upload slot the admin API is sent without `read_role` is its
+/// uploader's when it is new, and keeps the stored setting when it is not — so
+/// a client from before the setting neither widens nor narrows a slot it sends
+/// back — while an explicit `null` keeps the folder's readers.
+#[tokio::test]
+async fn an_upload_slot_sent_without_read_role_is_private_when_new_and_kept_when_not()
+-> sc_error::Result<()> {
+    let tmp = TempDir::new("read-role");
+    let (router, catalog, _db) = setup(&tmp).await?;
+    create_user(&catalog, "admin@example.com", "correct-horse", Role::ADMIN).await?;
+    let mut admin = Client::new(router.clone(), BASE_DOMAIN);
+    admin.login("admin@example.com", "correct-horse").await;
+    write_bundler(tmp.path(), "before", true);
+
+    let slot =
+        |name: &str| json!({ "name": name, "store": "apps", "folder": name, "min_role": 80 });
+    let mut body = blog_body();
+    let mut open = slot("open");
+    open["read_role"] = Value::Null;
+    body["uploads"] = json!([slot("sigs"), open]);
+    let (status, created) = admin
+        .send("POST", "/api/applications", Some(body.clone()))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["uploads"][0]["read_role"], json!(1), "{created}");
+    assert_eq!(created["uploads"][1]["read_role"], Value::Null, "{created}");
+    let id = created["id"].as_str().unwrap().to_owned();
+
+    // Sent back as a client that has never heard of the setting would.
+    body["uploads"] = json!([slot("sigs"), slot("open"), slot("new")]);
+    let (status, updated) = admin
+        .send("PUT", &format!("/api/applications/{id}"), Some(body))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    let roles: Vec<_> = updated["uploads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["read_role"].clone())
+        .collect();
+    assert_eq!(roles, [json!(1), Value::Null, json!(1)], "{updated}");
+    Ok(())
+}
+
 /// **Checklists after a build** (TODO-checklists C4.3): with the application's
 /// `check_after_build` setting on, a build runs its enabled checklists,
 /// records each run as triggered `build`, and reports them with the build;
@@ -1180,20 +1224,34 @@ async fn an_application_on_an_unknown_framework_is_listed_but_not_served() -> sc
 
     // Not built: the refusal names the framework.
     let (status, refused) = admin
-        .send("POST", &format!("/api/applications/{}/build", ids["retired"]), None)
+        .send(
+            "POST",
+            &format!("/api/applications/{}/build", ids["retired"]),
+            None,
+        )
         .await;
     assert!(!status.is_success(), "{status} {refused}");
-    assert!(refused.to_string().contains("retired-framework"), "{refused}");
+    assert!(
+        refused.to_string().contains("retired-framework"),
+        "{refused}"
+    );
 
     // Not mounted at boot; the other application is.
     let apps = AppMounts::new(catalog.clone()).with_base_domain(Some(BASE_DOMAIN.to_owned()));
     sc_server::mount_all(&apps).await;
     assert!(apps.get("kept").is_some(), "the known application mounts");
-    assert!(apps.get("retired").is_none(), "the unknown one is not served");
+    assert!(
+        apps.get("retired").is_none(),
+        "the unknown one is not served"
+    );
 
     // And it can still be deleted.
     let (status, deleted) = admin
-        .send("DELETE", &format!("/api/applications/{}", ids["retired"]), None)
+        .send(
+            "DELETE",
+            &format!("/api/applications/{}", ids["retired"]),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{deleted}");
     Ok(())

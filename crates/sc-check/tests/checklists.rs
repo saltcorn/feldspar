@@ -276,6 +276,82 @@ async fn a_data_checklist_inserts_runs_a_trigger_asserts_and_cleans_up() -> Resu
 }
 
 #[tokio::test]
+async fn a_run_reports_each_step_to_its_progress_sink_as_it_goes() -> Result<()> {
+    use sc_check::model::Outcome;
+    use sc_check::progress::{Event, Progress};
+
+    let env = setup("progress").await?;
+    let mut input = ChecklistInput::new("Shows its progress");
+    input.run_as = Some(env.member.id());
+    let checklist = edit::create_checklist(
+        &env.catalog,
+        &env.registry,
+        &env.human(),
+        input,
+        vec![
+            StepDraft::new("core.manual")
+                .param("instruction", "Look at it")
+                .label("First"),
+            StepDraft::new("data.run_trigger")
+                .param("trigger", "stamp_order")
+                .param("payload", json!({ "order_id": 1 }))
+                .label("Stamp"),
+        ],
+    )
+    .await?;
+
+    let events = std::sync::Mutex::new(Vec::new());
+    let sink = |e: Event| events.lock().unwrap().push(e);
+    let run = run_checklist(&env.env().with_progress(Some(&sink)), &checklist, "manual").await?;
+    assert_eq!(run.steps.len(), 2, "{:#?}", run.steps);
+
+    let events = events.into_inner().unwrap();
+    let step = |index: usize, label: &str, type_: &str| Event::StepStarted {
+        index,
+        label: label.into(),
+        type_: type_.into(),
+    };
+    let done = |label: &str, type_: &str, outcome| Event::StepFinished {
+        label: label.into(),
+        type_: type_.into(),
+        outcome,
+    };
+    // Each step is announced before it runs and reported once it has a result;
+    // the run is named before its steps and finished after them.
+    assert_eq!(
+        events,
+        [
+            Event::ChecklistStarted {
+                name: "Shows its progress".into()
+            },
+            Event::StepsKnown { total: 2 },
+            step(0, "First", "core.manual"),
+            done("First", "core.manual", run.steps[0].outcome),
+            step(1, "Stamp", "data.run_trigger"),
+            done("Stamp", "data.run_trigger", Outcome::Pass),
+            Event::ChecklistFinished { run: run.id },
+        ]
+    );
+
+    // Folded, halfway through: the step running, the one before it done.
+    let mut p = Progress::default();
+    for e in events.iter().take(5).cloned() {
+        p.apply(e);
+    }
+    let seen = p.to_json();
+    assert_eq!(seen["checklist"], json!("Shows its progress"));
+    assert_eq!(seen["total"], json!(2));
+    assert_eq!(seen["step"], json!(2));
+    assert_eq!(seen["label"], json!("Stamp"));
+    assert_eq!(seen["steps"].as_array().map(Vec::len), Some(1));
+
+    // Without a sink, a run reports nothing and still runs.
+    let quiet = run_checklist(&env.env(), &checklist, "manual").await?;
+    assert_eq!(quiet.steps.len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
 async fn mail_sent_during_a_run_is_kept_on_the_run_and_not_sent() -> Result<()> {
     let env = setup("outbox").await?;
     let mut input = ChecklistInput::new("Orders are confirmed by mail");

@@ -1539,7 +1539,7 @@ mod tests {
         let user = admin();
         let proof = crate::signin::SecondFactorProof::new(Uuid::new_v4());
         assert!(
-            crate::signin::PasswordVerified::resumed(user, AuthEpoch::INITIAL)
+            crate::signin::PasswordVerified::resumed(user, AuthEpoch::INITIAL, None)
                 .complete(crate::signin::SecondFactor::Proof(proof))
                 .is_err()
         );

@@ -238,6 +238,21 @@ pub const RAW_ROUTES: &[RawRoute] = &[
         auth: RouteAuth::AdminSession,
         route: || get(crate::router::fit_progress),
     },
+    // A checklist run, its progress pushed as it goes (TODO-checklists
+    // C5.1): the run *is* the socket, so the progress comes from the node
+    // running it. An upgrade for the reason the Observe socket's is.
+    RawRoute {
+        path: crate::checklist_live::CHECKLIST_RUN_LIVE_ROUTE,
+        methods: GET,
+        auth: RouteAuth::AdminSession,
+        route: || get(crate::router::checklist_run_live),
+    },
+    RawRoute {
+        path: crate::checklist_live::CHECKLISTS_RUN_LIVE_ROUTE,
+        methods: GET,
+        auth: RouteAuth::AdminSession,
+        route: || get(crate::router::checklists_run_live),
+    },
     // The administration MCP server (§13.6). A real route rather than a
     // typed endpoint for the reason the upload and backup routes are:
     // JSON-RPC over a raw body is not a shape `TypeSchema` describes.

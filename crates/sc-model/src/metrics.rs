@@ -576,7 +576,9 @@ fn numbers(predictions: &[Prediction]) -> Result<Vec<f64>> {
         .iter()
         .enumerate()
         .map(|(i, p)| match p {
-            Prediction::Number { value } => Ok(*value),
+            Prediction::Number { value } | Prediction::Distribution { mean: value, .. } => {
+                Ok(*value)
+            }
             other => Err(wrong_shape(i, "a number", other)),
         })
         .collect()
@@ -630,6 +632,7 @@ fn wrong_shape(row: usize, wanted: &str, got: &Prediction) -> Error {
             Prediction::Class { .. } => "a class name",
             Prediction::Cluster { .. } => "a cluster number",
             Prediction::Vector { .. } => "a vector",
+            Prediction::Distribution { .. } => "a distribution",
         },
         row + 1
     ))

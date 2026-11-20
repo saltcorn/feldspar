@@ -108,6 +108,8 @@ mod call_api;
 mod checklist_browser;
 #[path = "checklist_frameworks.rs"]
 mod checklist_frameworks;
+#[path = "checklists_api.rs"]
+mod checklists_api;
 #[path = "clear_all_api.rs"]
 mod clear_all_api;
 #[path = "code_body_tables.rs"]
@@ -134,6 +136,8 @@ mod file_operations_api;
 mod file_store_admin_api;
 #[path = "fit_model_action.rs"]
 mod fit_model_action;
+#[path = "formula_models.rs"]
+mod formula_models;
 #[path = "generated_client_refresh.rs"]
 mod generated_client_refresh;
 #[path = "geo_import.rs"]
@@ -248,6 +252,8 @@ pub(crate) fn logging_switches() -> &'static tokio::sync::Mutex<()> {
 
 #[path = "app_none_framework.rs"]
 mod app_none_framework;
+#[path = "app_oauth.rs"]
+mod app_oauth;
 #[path = "app_preview.rs"]
 mod app_preview;
 #[path = "app_public_endpoints.rs"]

@@ -6,7 +6,8 @@
 //! [`Destination`]: a local directory, an SFTP directory or a bucket), a
 //! **frequency** (daily, weekly or monthly), a **retention** (days before a
 //! backup there is deleted) and what it **includes** — and optionally a
-//! **password** each backup is encrypted with, stored as a list under
+//! **password** each backup is encrypted with and an administrator to email
+//! when one fails ([`FailureEmail`]), stored as a list under
 //! [`BACKUP_SCHEDULES`](sc_config::BACKUP_SCHEDULES). Each schedule has its own
 //! selection, so a nightly schema-only backup and a weekly full one can sit
 //! side by side.
@@ -59,6 +60,7 @@ use uuid::Uuid;
 use sc_types::SECRET_SENTINEL;
 
 use super::destination::{Connection, Destination};
+use super::failure_email::{FailureEmail, send_failure_email};
 use super::{Available, BackupPreferences};
 
 /// The prefix and suffix of a backup's file name, with the time it was taken
@@ -134,6 +136,8 @@ pub struct BackupSchedule {
     /// The password each backup is protected with, if any. Stored as the
     /// destination's credentials are, and sent to the admin UI as the mask.
     pub password: Option<sc_error::Secret<String>>,
+    /// Who is emailed when a backup fails ([`FailureEmail`]).
+    pub failure_email: FailureEmail,
 }
 
 /// Which kinds a schedule includes every one of — those there are when it
@@ -255,6 +259,7 @@ impl BackupSchedule {
             include,
             include_all: IncludeAll::from_json(body.get("include_all")),
             password: password.map(sc_error::Secret::new),
+            failure_email: FailureEmail::from_json(body.get("failure_email"))?,
         })
     }
 
@@ -282,6 +287,7 @@ impl BackupSchedule {
             "include": self.include.to_json(),
             "include_all": self.include_all.to_json(),
             "password": self.password.as_ref().map(sc_error::Secret::expose_str),
+            "failure_email": self.failure_email.to_json(),
         })
     }
 
@@ -570,6 +576,9 @@ impl Drop for Busy<'_> {
 /// The task that runs the automated backups.
 pub struct BackupScheduler {
     catalog: Arc<Catalog>,
+    /// What a failed backup's email goes through: the installation's own
+    /// settings, read when it is sent.
+    mailer: Arc<dyn sc_email::Mailer>,
     /// Set while a tick's backups are running, so a run that takes longer than
     /// a minute is not joined by a second copy of itself.
     busy: Mutex<bool>,
@@ -578,9 +587,17 @@ pub struct BackupScheduler {
 impl BackupScheduler {
     pub fn new(catalog: Arc<Catalog>) -> BackupScheduler {
         BackupScheduler {
+            mailer: Arc::new(sc_email::SettingsMailer::new(Arc::clone(&catalog))),
             catalog,
             busy: Mutex::new(false),
         }
+    }
+
+    /// This scheduler, sending its failure emails through `mailer` — a test's
+    /// [`RecordingMailer`](sc_email::RecordingMailer).
+    pub fn with_mailer(mut self, mailer: Arc<dyn sc_email::Mailer>) -> BackupScheduler {
+        self.mailer = mailer;
+        self
     }
 
     /// Start the task loop: a tick on every minute boundary. Supervised
@@ -663,11 +680,23 @@ impl BackupScheduler {
                     status.last_file = Some(written);
                 }
                 Err(e) => {
-                    eprintln!(
-                        "feldspar: automated backup to `{}` failed: {e}",
-                        schedule.destination.location()
-                    );
+                    let location = schedule.destination.location();
+                    eprintln!("feldspar: automated backup to `{location}` failed: {e}");
+                    // The first failure after a success (or the first run)
+                    // is emailed; the hourly retries after it are not.
+                    let first_failure = status.last_error.is_none();
                     status.last_error = Some(e.to_string());
+                    if first_failure {
+                        send_failure_email(
+                            &self.catalog,
+                            self.mailer.as_ref(),
+                            &schedule.failure_email,
+                            &location,
+                            &e.to_string(),
+                            now,
+                        )
+                        .await;
+                    }
                 }
             }
             ran.push(schedule.id);
@@ -703,6 +732,7 @@ mod tests {
             include: BackupPreferences::default(),
             include_all: IncludeAll::default(),
             password: None,
+            failure_email: FailureEmail::None,
         }
     }
 

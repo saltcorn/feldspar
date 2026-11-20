@@ -32,6 +32,7 @@ import { api, errorMessage } from "../api";
 import type { SaveStreamRequest } from "../client";
 import { navigate } from "../App";
 import { IconArrowLeft } from "../icons";
+import { streamsCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader } from "../layout";
 import { OptionalRoleSelect } from "../roleSelect";
 import { useRoles } from "../roles";
@@ -158,7 +159,7 @@ export function StreamForm({ streamId }: { streamId?: string }) {
   if (loadError) {
     return (
       <>
-        <PageHeader pretitle={t("Data")} title={t("Stream")} />
+        <PageHeader crumbs={streamsCrumbs(t)} title={t("Stream")} />
         <PageBody>
           <Alert variant="danger">{loadError}</Alert>
         </PageBody>
@@ -177,7 +178,7 @@ export function StreamForm({ streamId }: { streamId?: string }) {
   return (
     <>
       <PageHeader
-        pretitle={t("Data")}
+        crumbs={streamsCrumbs(t)}
         title={streamId ? name || "Stream" : "New stream"}
         actions={
           <Button variant="outline-secondary" href="#/streams">

@@ -446,6 +446,87 @@ from where this runs:
 Fifty requests per run, 8 MB per response, `http`/`https` only. And `Promise.all([fetch(a),
 fetch(b)])` really does send both at once.
 
+**Calling an API in a user's name (OAuth).** Gmail, Google Calendar and Microsoft Graph take a
+bearer token, not a password, and Google is turning off passwords for IMAP. The token comes from
+an OAuth 2.0 consent page, and `oauth` handles that part: the server runs the consent page and the
+code exchange, keeps the tokens in **Secret** fields of a row of yours, and renews them. Your code
+never sees a password or the authorization code, and the user can revoke the access at Google at
+any time. (To read and send *mail*, the Mail module already does all this for Gmail and Outlook:
+[tutorial-mail.md](tutorial-mail.md).)
+
+1. **Register the app with the provider.** In the Google Cloud console, create an OAuth client of
+   type *Web application*. Its authorized redirect URI is this server's one OAuth callback,
+   `https://<admin host>/_feldspar/oauth/callback`, the same address for every application.
+2. **Keep the client secret in a Secret field.** A table `oauth_clients` with `client_id` (text)
+   and `client_secret` (a Secret field,
+   [tutorial-ownership.md](tutorial-ownership.md#step-8--keep-a-password-in-a-secret-field)),
+   one row, filled in on **Data**. Leave the table admin-only. A trigger reads it as it is, and a
+   custom query, which runs as its caller, reads it with `db.asAdmin().oauth_clients`.
+3. **A table for the connections**, with `access_token` and `refresh_token` as Secret fields,
+   `expires_at` (a date and time), and whatever else you want, such as `owner` and `status`. Give it an
+   ownership rule if each user connects their own account.
+4. **A code action that begins the flow**, exposed on the app (Step 3), for the signed-in user:
+
+   ```js
+   const [client] = await db.oauth_clients.rows();
+   const mine = await db.asUser().connections.where({ id: payload.id }).first();
+   if (!mine) throw httpError(404, "no such connection");   // the action runs as admin: check
+   return await oauth.begin({
+     provider: "google",                    // or authorization_url and token_url
+     client_id: client.client_id, client_secret: client.client_secret,
+     scope: "https://www.googleapis.com/auth/calendar.events",
+     params: { login_hint: user.email },
+     return_to: "/settings",
+     store: { table: "connections", id: mine.id,
+              fields: { access_token: "access_token", refresh_token: "refresh_token",
+                        expires_at: "expires_at" },
+              set: { status: "connected" } },
+   });
+   ```
+
+   The page calls it and sends the browser to the answer:
+   `window.location.assign((await api.connectGoogle({ id })).url)`. The user consents at Google,
+   and comes back to `/settings` (with `?oauth_error=…` if something failed). Only the user who
+   called the action can finish the flow, and only in the browser that started it. The tokens are
+   now in the row, sealed. A trigger runs as admin, so the row is written by the server; that is
+   why the action checks the row is the caller's first. A custom query runs as its caller, and
+   there the row is written as the caller, so the table's ownership rule decides.
+5. **Use it anywhere, including from a scheduled trigger** (Step 4), which has no user and no
+   browser:
+
+   ```js
+   const [client] = await db.oauth_clients.rows();
+   for (const c of await db.connections.where({ status: "connected" }).rows()) {
+     const google = { provider: "google", client_id: client.client_id,
+       client_secret: client.client_secret,
+       store: { table: "connections", id: c.id,
+                fields: { access_token: "access_token", refresh_token: "refresh_token",
+                          expires_at: "expires_at" } } };
+     let token;
+     try {
+       token = await oauth.accessToken(google);   // renewed and saved when it is due
+     } catch (e) {
+       // The user revoked it, or the refresh token expired: they must connect again.
+       await db.connections.where({ id: c.id }).update({ status: "reconnect" });
+       continue;
+     }
+     const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events",
+       { headers: { authorization: `Bearer ${token}` } });
+     // …
+   }
+   ```
+
+   `accessToken` answers the stored token while it is good for at least five more minutes, and
+   otherwise renews it with the refresh token and writes the new one back, so no separate
+   "refresh" trigger is needed. If a request answers 401 anyway, call it again with
+   `refused: token` to renew it once, or to pick up the token another run renewed meanwhile.
+
+`provider` knows `google` and `microsoft`; for any other provider, give its `authorization_url`
+and `token_url`. **Writing the callback yourself** is possible, since a public GET custom query
+can answer `response({ status: 302, headers: { location: "/settings" } })`. But then your code
+has to generate and check `state`, do PKCE, exchange the code with the client secret, and make
+sure the tokens land on the right user's row. `oauth.begin` does all of that, so use it.
+
 **Reading and writing files.** The third thing a body can await is `fs`, which is a **file
 store** by name — this server can have several, so there is no default one:
 

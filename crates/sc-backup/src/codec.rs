@@ -1240,6 +1240,7 @@ pub async fn backup_model_json(catalog: &Catalog, model: &sc_model::Model) -> Re
         "hyperparameters": Json::Object(model.hyperparameters.clone()),
         "split": serde_json::to_value(model.split)
             .map_err(|e| Error::msg(format!("split: {e}")))?,
+        "features": model.features,
         "attributes": Json::Object(model.attributes.clone()),
         "view_state": Json::Object(sc_model::model_view_state(catalog, model.id).await?),
     }))
@@ -1705,6 +1706,13 @@ pub async fn model_from_body(
     if let Some(split) = body.get("split").filter(|v| !v.is_null()) {
         model.split = serde_json::from_value(split.clone())
             .map_err(|e| Error::invalid(format!("`split` is not a split: {e}")))?;
+    }
+    // Absent or null is every column but the label — what a body from before
+    // feature lists, or a backup of one, means.
+    if let Some(features) = body.get("features").filter(|v| !v.is_null()) {
+        model.features = Some(serde_json::from_value(features.clone()).map_err(|_| {
+            Error::invalid("`features` is a list of column names, or null for every column")
+        })?);
     }
     Ok(model)
 }

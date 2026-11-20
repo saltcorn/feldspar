@@ -66,7 +66,7 @@ from `payload`, never `row`. `user` is in scope for every event.
   credentials removed). A query saved with `body_type: "bytes"` (JavaScript, POST/PUT/PATCH)
   gets `body` as a `Uint8Array` of the raw request body instead, and its declared params come
   from the query string; its client method takes a `Blob`, `ArrayBuffer` or `Uint8Array`.
-- `db`, `models`, `fetch`, `fs`, `trigger`, `modfn`, `console`, `lib` — below.
+- `db`, `models`, `llm`, `oauth`, `fetch`, `fs`, `trigger`, `modfn`, `console`, `lib` — below.
 - `btoa`, `atob`, `TextEncoder`, `TextDecoder`, `crypto`, `httpError`, `response`,
   `ratelimit` — below.
 
@@ -173,12 +173,19 @@ An upload slot's **hook** is a code query too (a POST is best). It runs before a
 accepted, with `body = { filename, size, mime, slot }` and `user` the uploader; throw
 `httpError(403, …)` (or 413, …) to refuse, or return `{ path, meta, min_role }` — all optional —
 to choose the file's path inside the slot's folder, extra string attributes, and a stricter role
-floor:
+floor than the slot's `read_role`:
 
 ```js
 if (body.size > 100e6 && user.role > 40) throw httpError(413, "100 MB at most");
 return { path: `${user.id}/${body.filename}`, meta: { project: "apollo" } };
 ```
+
+Who reads a finished upload is the slot's `read_role`, not the hook's job: `1` (a new slot's
+default) is only the uploader and admins, a larger role shares the files with that role, and
+`null` leaves them to the store's and folder's floors — every signed-in user, in a folder at the
+user role. A file is fetched by URL only where a static dir covers its folder, or through
+`/files/serve` in a Saltcorn UI app; otherwise only the app's own queries hand it out, and a query
+reading with `fs(store)` (admin) must check who is asking itself.
 
 **A share link to a live document (or a row's topic).** A query saved with `response_type:
 "stream"` is not fetched: the generated client opens it over the app's live socket, and the
@@ -398,6 +405,102 @@ triggers fire.
 `{ counties: ["Aitkin"], week: [...] }` per axis, or index arrays `[[1, 2]]`. Each call is one
 database call. One `draws` answer is at most 500 000 numbers, so thin or select for more. A
 variable the fit did not draw, or whose draws it did not keep, throws naming why.
+
+## `llm`: the configured LLM providers
+
+`llm` calls the LLM providers configured on this server (the LLM providers screen, the
+`llm_providers` MCP tool, or `feldspar llm`), with their keys. Do not call a provider's API
+with `fetch` and a key of your own.
+
+```js
+const summary = await llm.generate("Summarise in one line: " + row.body);   // the text
+const reply = await llm.generate({
+  system: "You answer support tickets briefly.",
+  messages: [{ role: "user", content: row.question }],   // system | user | assistant
+  model: "gpt-5-mini", provider: "OpenAI",               // either left out is the default
+  temperature: 0.2, max_tokens: 400,
+});
+const full = await llm.generate("Hi", { detail: true });
+// { text, provider, model, usage: { input_tokens, output_tokens }, cost }
+const vector = await llm.embed(row.title);               // one vector
+const vectors = await llm.embed(["a", "b"]);             // one per text, in order
+```
+
+A provider left out is the default provider, and a model left out is that provider's default
+chat model (for `generate`) or default embedding model (for `embed`). A chat model has to be one
+of the provider's models. An embedding model can be any name the provider serves. Each call is
+one database call and waits for the model, so give the trigger a `timeout_ms` that leaves time
+for it (the default is 5 s, the maximum 60 s). `llm` is not available where code runs at its
+viewer's authority (an agent's sandbox), and it throws saying so.
+
+A call is charged to nobody unless it says so. `charge` charges it to the **run's caller** (the
+user whose request or write the code is answering) in LLM credits, at a metered agent's rates:
+
+```js
+const reply = await llm.generate({ messages, charge: { credits_per_dollar: 100 }, detail: true });
+reply.credits;   // { charged: "0.42", balance: "17.58" }, or null when not charged
+await llm.embed(row.body, { charge: { credits_per_1k_input: 0.01 } });
+```
+
+The rates are `credits_per_dollar` (of the model's priced cost), `credits_per_1k_input`,
+`credits_per_1k_output` and `credits_min_balance`. An admin caller is not charged. The call is
+refused before the model is called when there is nobody to charge (an anonymous request, a
+scheduled trigger), when the balance is at or below zero or under `credits_min_balance`, and when
+only `credits_per_dollar` is given and the model has no prices. The debit is made after the call,
+and stays even if the run's writes are rolled back.
+
+## `oauth`: a user's tokens for an API
+
+For an API that takes an OAuth 2.0 bearer token rather than a password (Gmail, Google Calendar,
+Microsoft Graph). The server runs the consent page and the code exchange (PKCE, the client
+secret) and keeps the tokens in **Secret** fields of a row of an application table. The code
+never sees the authorization code. Do not write the callback yourself.
+
+```js
+// Keep the client id and secret in a table, the secret in a Secret field.
+const [client] = await db.asAdmin().oauth_clients.rows();   // admin-only: asAdmin()
+const store = { table: "connections", id: row.id,          // a row this code may reach
+  fields: { access_token: "access_token", refresh_token: "refresh_token",  // Secret fields
+            expires_at: "expires_at" },                    // a timestamp field (optional)
+  set: { status: "connected" } };                          // other fields written with them
+
+// In a code action or custom query the signed-in user called:
+const { url } = await oauth.begin({ provider: "google",    // or authorization_url + token_url
+  client_id: client.client_id, client_secret: client.client_secret,
+  scope: "https://www.googleapis.com/auth/calendar", params: { login_hint: user.email },
+  return_to: "/settings", store });
+return { url };   // the page sends the browser there: window.location.assign(url)
+
+// Later (any trigger, a scheduled one included): a token good for at least 5 minutes.
+const google = { provider: "google", client_id: client.client_id,
+  client_secret: client.client_secret, store };
+const token = await oauth.accessToken(google);
+const res = await fetch("https://www.googleapis.com/calendar/v3/users/me/calendarList",
+  { headers: { authorization: "Bearer " + token } });
+if (res.status === 401) {   // revoked early: renew it once (unless another call already did)
+  const again = await oauth.accessToken({ ...google, refused: token });
+}
+```
+
+`provider` is `google` (it adds `access_type=offline` and `prompt=consent`, without which Google
+grants no refresh token) or `microsoft`; any other is named with `authorization_url` and
+`token_url`. The provider's redirect address is `https://<admin host>/_feldspar/oauth/callback`.
+The browser comes back to `return_to`, with `?oauth_error=…` when something failed.
+
+- `begin` needs a signed-in caller (not a scheduled trigger), and only that user, in that
+  browser, can finish it. The table must be an application table, the token fields Secret
+  fields, and the row one this code can read now.
+- The row is written at the code's authority: by the server when the code runs as admin (a
+  trigger's default, so check the row is the caller's, for example with
+  `db.asUser().connections`), and as the caller when the code runs as its caller (a custom
+  query's default), through the table's ownership rules.
+- `accessToken` renews the token with the refresh token when it is due, writes the new tokens
+  back (a new refresh token too, when the provider sends one), and answers the access token
+  (`{ detail: true }`: `{ access_token, expires_at, refreshed }`). One renewal at a time per
+  row. A refresh token the provider refuses (`invalid_grant`) throws, saying to connect again
+  with `begin`. `force: true` renews whatever is stored.
+- Both are database calls of this run. `oauth` is not available where code runs at its viewer's
+  authority.
 
 ## The other handles
 

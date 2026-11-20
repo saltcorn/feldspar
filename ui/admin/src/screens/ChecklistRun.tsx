@@ -15,7 +15,9 @@ import Table from "react-bootstrap/Table";
 import { api, errorMessage } from "../api";
 import { navigate } from "../App";
 import { checklistPath, checklistRunPath, outcomeTone, type ChecklistRun as Run } from "../checklists";
+import { runErrorMessage, useChecklistProgress } from "../checklistProgress";
 import { IconArrowLeft } from "../icons";
+import { checklistCrumbs, checklistsCrumbs, useApplicationName } from "../breadcrumbs";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
 import { RunStatus } from "./Checklists";
 import { when } from "./WorkflowRuns";
@@ -26,6 +28,8 @@ export function ChecklistRun({ runId, appId }: { runId: string; appId: string | 
   const [run, setRun] = useState<Run | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const progress = useChecklistProgress();
+  const appName = useApplicationName(appId);
 
   useEffect(() => {
     setRun(null);
@@ -44,10 +48,10 @@ export function ChecklistRun({ runId, appId }: { runId: string; appId: string | 
     setBusy(true);
     setError(null);
     try {
-      const next = await api.runChecklist(run.checklist);
+      const [next] = await progress.run({ checklist: run.checklist });
       navigate(checklistRunPath(next.id, appId));
     } catch (err) {
-      setError(errorMessage(err, t("Could not run the checklist.")));
+      setError(runErrorMessage(err, t("Could not run the checklist.")));
     } finally {
       setBusy(false);
     }
@@ -56,8 +60,14 @@ export function ChecklistRun({ runId, appId }: { runId: string; appId: string | 
   return (
     <>
       <PageHeader
-        pretitle={t("Checklist run")}
-        title={run?.checklist_name ?? ""}
+        // Down to the checklist this is a run of: the run itself is the title.
+        crumbs={
+          run
+            ? checklistCrumbs(t, appId, appName, run.checklist, run.checklist_name)
+            : checklistsCrumbs(t, appId, appName)
+        }
+        title={run ? t("Run started {when}", { when: when(run.started_at) }) : t("Checklist run")}
+        docTitle={run ? `${run.checklist_name} · ${t("Run")}` : t("Checklist run")}
         actions={
           <>
             <Button
@@ -74,6 +84,7 @@ export function ChecklistRun({ runId, appId }: { runId: string; appId: string | 
           </>
         }
       />
+      {progress.toast}
       <PageBody>
         {error && <Alert variant="danger">{error}</Alert>}
         {run && (

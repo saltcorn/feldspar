@@ -83,7 +83,7 @@ type ProgramCheck = {
 };
 
 /** What Preview data (`previewModelData`) answered. */
-type DataPreview = {
+export type DataPreview = {
   variables: VariablePreview[];
   report?: BindReport | null;
   errors: string[];
@@ -899,7 +899,7 @@ function FieldControl({
 /** What Preview data said about the whole: each dataset's rows read and bound,
  * each dimension's size, the drops, the warnings, and the sentences about no
  * one variable. */
-function PreviewReport({ preview }: { preview: DataPreview }) {
+export function PreviewReport({ preview }: { preview: DataPreview }) {
   const { t } = useT();
   const report = preview.report;
   return (

@@ -42,10 +42,10 @@ use sc_error::{Error, Result};
 use sc_types::validate_attrs;
 use serde_json::Value as Json;
 
-use crate::bind::check_bindings;
+use crate::bind::check_bindings_with;
 use crate::dataset::DatasetShape;
 use crate::model::{MAIN_DATASET, Model};
-use crate::provider::{ModelProvider, OutcomeSpec};
+use crate::provider::{LowerInput, ModelProvider, OutcomeSpec, lowered_configuration};
 use crate::registry::ModelRegistry;
 use crate::store::{MODELS_TABLE, list_models};
 
@@ -131,12 +131,32 @@ pub async fn validate_model(
     // reading the data, so this runs with or without a shape — and a program
     // that is gone from its store lists the model with that reason.
     if provider.binds_data() {
+        // What the provider binds with: its own configuration, or the one it
+        // lowers a formula to (TODO-bayesian-regression §7).
+        let config = lowered_configuration(provider.as_ref(), LowerInput::Shape { model, shape })
+            .map_err(|e| problem(e.to_string()))?;
         let interface = provider
-            .interface(&model.configuration)
+            .interface(&config)
             .await
             .map_err(|e| problem(e.to_string()))?;
         if let Some(interface) = interface {
-            check_bindings(&interface, model).map_err(|e| problem(e.to_string()))?;
+            check_bindings_with(&interface, model, &config).map_err(|e| problem(e.to_string()))?;
+            // A posterior that predicts the rows of `new` (Stan TODO §19):
+            // the generated quantity it names is one per new row.
+            if let OutcomeSpec::Posterior {
+                prediction: Some(key),
+            } = provider.outcome_spec()
+            {
+                if let Some(variable) = config
+                    .get(&key)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                {
+                    crate::bind::check_prediction(&interface, &config, variable)
+                        .map_err(|e| problem(e.to_string()))?;
+                }
+            }
         }
     }
 
@@ -152,7 +172,65 @@ pub async fn validate_model(
             .validate(shape, &model.configuration)
             .map_err(|e| problem(e.to_string()))?;
     }
+    check_features(provider.as_ref(), model, shape).map_err(|e| problem(e.to_string()))?;
 
+    Ok(())
+}
+
+/// Check a model's [feature list](Model::features) — on save, and again before
+/// a fit, which has the shape a save may not.
+///
+/// `None` is every column but the label and is always fine. A list must be for
+/// a provider that encodes features at all, name at least one column, name
+/// each once, and — where the shape is known — name columns of the dataset
+/// other than the label.
+pub(crate) fn check_features(
+    provider: &dyn ModelProvider,
+    model: &Model,
+    shape: Option<&DatasetShape>,
+) -> sc_error::Result<()> {
+    let Some(features) = &model.features else {
+        return Ok(());
+    };
+    if !provider.outcome_spec().takes_features() || provider.binds_data() {
+        return Err(Error::invalid(format!(
+            "`{}` names the columns it reads in its own settings, so it takes no list of features",
+            provider.name()
+        )));
+    }
+    if features.is_empty() {
+        return Err(Error::invalid(
+            "no features are chosen: choose at least one column, or none to use every column \
+             but the label",
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for name in features {
+        if !seen.insert(name.as_str()) {
+            return Err(Error::invalid(format!(
+                "the feature `{name}` is listed twice"
+            )));
+        }
+    }
+    let Some(shape) = shape else {
+        return Ok(());
+    };
+    for name in features {
+        if !shape.columns.iter().any(|c| &c.name == name) {
+            return Err(Error::invalid(format!(
+                "the feature `{name}` is not a column of the dataset `{}`",
+                model.dataset.name
+            )));
+        }
+    }
+    let outcome = provider.outcome(shape, &model.configuration)?;
+    if let Some(label) = outcome.label()
+        && features.iter().any(|f| f == label)
+    {
+        return Err(Error::invalid(format!(
+            "`{label}` is the label, so it cannot also be a feature"
+        )));
+    }
     Ok(())
 }
 

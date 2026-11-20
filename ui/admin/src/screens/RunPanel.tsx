@@ -22,6 +22,7 @@ import {
 import { prettyContext } from "../agentRuns";
 import type { GetRunDiffResponse, GetRunResponse } from "../client";
 import { IconArrowLeft, IconChevronDown, IconRefresh } from "../icons";
+import { agentRunsCrumbs } from "../breadcrumbs";
 import { ClampedText } from "../ClampedText";
 import { InlineCode } from "../inlineCode";
 import {
@@ -618,7 +619,7 @@ export function AgentRunDetail({
   return (
     <>
       <PageHeader
-        pretitle={t("Run of {subject}", { subject: run.subject })}
+        crumbs={agentRunsCrumbs(t, run.subject)}
         title={
           <span className="run-title">
             <InlineCode text={run.description || "Run"} />{" "}

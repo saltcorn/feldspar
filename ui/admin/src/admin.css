@@ -4069,3 +4069,28 @@ a.pd-created:hover {
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
+
+/* The trail over a screen's title (`Breadcrumbs`, `layout.tsx`). It stands
+ * where the pre-title would, so it takes the pre-title's small type and its
+ * gap above the title rather than Bootstrap's breadcrumb margin; a long trail
+ * wraps instead of pushing the header's actions off the screen. */
+.admin-breadcrumb {
+  margin-bottom: 0.25rem;
+  font-size: 0.8125rem;
+  flex-wrap: wrap;
+}
+
+/* The same trail on one line, in a screen's own bar: it truncates rather than
+ * wraps, and the last step — the screen itself, the one not a link — is the
+ * bar's name, so it keeps the weight the name had. */
+.admin-breadcrumb-inline {
+  margin-bottom: 0;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.admin-breadcrumb-inline > .breadcrumb-item:last-child {
+  font-weight: var(--tblr-font-weight-medium, 500);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

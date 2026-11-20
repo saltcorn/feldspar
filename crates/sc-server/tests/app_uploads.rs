@@ -270,15 +270,24 @@ fn drop_app() -> Application {
     let mut api = ApiConfig::new("rest", "/api");
     set_custom_queries(
         &mut api.config,
-        &[CustomQuery::new(
-            "beforeGuarded",
-            Method::Post,
-            "/hooks/guarded",
-            "if (body.filename.startsWith('secret')) throw httpError(403, 'not that one');\n\
+        &[
+            CustomQuery::new(
+                "beforeGuarded",
+                Method::Post,
+                "/hooks/guarded",
+                "if (body.filename.startsWith('secret')) throw httpError(403, 'not that one');\n\
              return { path: user.email.split('@')[0] + '/' + body.filename, \
                       meta: { checked: 'yes', size: body.size } };",
-        )
-        .language(QueryLanguage::Javascript)],
+            )
+            .language(QueryLanguage::Javascript),
+            CustomQuery::new(
+                "beforeHooked",
+                Method::Post,
+                "/hooks/hooked",
+                "return { min_role: body.filename.startsWith('open') ? 100 : 1 };",
+            )
+            .language(QueryLanguage::Javascript),
+        ],
     )
     .unwrap();
     Application::new("Drop", "drop", FrameworkRef::new("code"))
@@ -310,6 +319,32 @@ fn drop_app() -> Application {
                 .mime_allow(["image/png"]),
         )
         .with_upload(UploadSlot::new("admins", "files", "admins"))
+        // Who reads a finished file (UP1), all in `up/`, a members' folder
+        // served at `/up`: the default, a slot stored before `read_role`
+        // existed, a members' gallery, and a hook that asks for a floor.
+        .with_static_dir(StaticDir::new("/up", FileStoreId("files".to_owned()), "up"))
+        .with_upload(UploadSlot::new("sigs", "files", "up/sigs").min_role(ROLE_MEMBER))
+        .with_upload(
+            UploadSlot::new("legacy", "files", "up/legacy")
+                .min_role(ROLE_MEMBER)
+                .read_role(None),
+        )
+        .with_upload(
+            UploadSlot::new("gallery", "files", "up/gallery")
+                .min_role(ROLE_MEMBER)
+                .read_role(Some(ROLE_MEMBER)),
+        )
+        .with_upload(
+            UploadSlot::new("hooked", "files", "up/hooked")
+                .min_role(ROLE_MEMBER)
+                .read_role(Some(ROLE_MEMBER))
+                .hook("beforeHooked"),
+        )
+        .with_upload(
+            UploadSlot::new("private_hooked", "files", "up/private")
+                .min_role(ROLE_MEMBER)
+                .hook("beforeHooked"),
+        )
 }
 
 struct Server {
@@ -354,6 +389,17 @@ async fn setup(tmp: &TempDir, config: ServerConfig) -> sc_error::Result<Server> 
             &sc_files::StorePath::from_static("drops"),
             &FileMeta {
                 min_role: Some(Role::ADMIN),
+                ..FileMeta::default()
+            },
+        )
+        .await?;
+    // …and `up/` is the members': every signed-in member clears its floor.
+    store.mkdir(&sc_files::StorePath::from_static("up")).await?;
+    store
+        .set_meta(
+            &sc_files::StorePath::from_static("up"),
+            &FileMeta {
+                min_role: Some(ROLE_MEMBER),
                 ..FileMeta::default()
             },
         )
@@ -658,6 +704,89 @@ async fn a_hook_refuses_or_decides_where_the_file_goes() -> sc_error::Result<()>
         alice.create("images", "logo.png", 4).await.status,
         StatusCode::CREATED
     );
+    Ok(())
+}
+
+/// Upload `name` through `slot` in one chunk, answering where it went in the
+/// store and the URL it is served at.
+async fn upload_one(client: &mut Client, slot: &str, name: &str) -> (String, String) {
+    let created = client.create(slot, name, 4).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.json());
+    let location = created.header("location").unwrap().to_owned();
+    let done = client
+        .patch(&location, 0, Body::from(b"sign".to_vec()))
+        .await;
+    assert_eq!(done.status, StatusCode::NO_CONTENT, "{}", done.json());
+    (
+        done.header(FILE_PATH_HEADER).unwrap().to_owned(),
+        done.header(FILE_URL_HEADER).unwrap().to_owned(),
+    )
+}
+
+/// UP1 (user report: "a signature uploaded by one user was served to
+/// another"): in a folder every member may read, served by a static
+/// directory, a new slot's file is its uploader's and the admins' alone; a
+/// slot stored without `read_role` still serves the folder's readers; a
+/// `read_role` shares a slot's files with a role; and a hook narrows that
+/// floor but cannot widen it.
+#[tokio::test]
+async fn a_slots_read_role_decides_who_reads_a_finished_file() -> sc_error::Result<()> {
+    let tmp = TempDir::new("read-role");
+    let server = setup(&tmp, ServerConfig::default()).await?;
+    let mut alice = Client::new(server.router.clone(), APP_HOST);
+    alice.login("alice@example.com").await;
+    let mut bob = Client::new(server.router.clone(), APP_HOST);
+    bob.login("bob@example.com").await;
+    let mut admin = Client::new(server.router.clone(), APP_HOST);
+    admin.login("admin@example.com").await;
+    let mut stranger = Client::new(server.router.clone(), APP_HOST);
+
+    let cases = [
+        // (slot, file, may bob read it?, the file's own floor)
+        ("sigs", "signature.png", false, Some(Role::ADMIN)),
+        ("legacy", "signature.png", true, None),
+        ("gallery", "photo.png", true, Some(ROLE_MEMBER)),
+        // The hook's floor 1 is stricter than the slot's members…
+        ("hooked", "photo.png", false, Some(Role::ADMIN)),
+        // …and its 100 is not looser than them.
+        ("hooked", "open.png", true, Some(ROLE_MEMBER)),
+        // A hook cannot open up a private slot's file either.
+        ("private_hooked", "open.png", false, Some(Role::ADMIN)),
+    ];
+    for (slot, file, bob_reads, floor) in cases {
+        let (path, url) = upload_one(&mut alice, slot, file).await;
+        let meta = server
+            .store
+            .get_meta(&sc_files::StorePath::parse(&path).unwrap())
+            .await?;
+        assert_eq!(meta.min_role, floor, "{slot}/{file}");
+        assert!(url.starts_with("/up/"), "{url}");
+        let status = |reply: Reply| reply.status;
+        assert_eq!(
+            status(alice.get(&url, &[]).await),
+            StatusCode::OK,
+            "{slot}: the uploader"
+        );
+        assert_eq!(
+            status(admin.get(&url, &[]).await),
+            StatusCode::OK,
+            "{slot}: an admin"
+        );
+        let expected = match bob_reads {
+            true => StatusCode::OK,
+            false => StatusCode::NOT_FOUND,
+        };
+        assert_eq!(
+            status(bob.get(&url, &[]).await),
+            expected,
+            "{slot}/{file}: another member"
+        );
+        assert_eq!(
+            status(stranger.get(&url, &[]).await),
+            StatusCode::NOT_FOUND,
+            "{slot}: the folder is the members' whatever the slot says"
+        );
+    }
     Ok(())
 }
 

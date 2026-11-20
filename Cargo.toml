@@ -96,6 +96,13 @@ members = [
     # needs to know about. There is no Cargo feature: nothing is linked, so
     # whether Stan is available is a runtime fact.
     "crates/sc-stan",
+    # Bayesian regression from a formula (TODO-bayesian-regression): lme4/brms
+    # formulas parsed, resolved against the dataset and lowered to a generated
+    # Stan program and the binder's bindings. Above `sc-stan`, whose compile
+    # cache and runner it fits through, and `sc-model`, whose binder and
+    # `terms` model matrix it lowers to. Pure Rust: the parser, the resolver
+    # and the generator have no I/O and are tested without CmdStan.
+    "crates/sc-bayesreg",
     # Streams: dataflows as an entity — the provider seam, the element type and
     # the supervisor that keeps a subscription running (TODO "Streams"). At
     # `sc-model`'s layer for `sc-model`'s reason: a module supplies stream
@@ -169,7 +176,7 @@ members = [
 
 # Shared package metadata inherited by every member crate via `field.workspace = true`.
 [workspace.package]
-version = "0.1.3-dev"
+version = "0.1.4-dev"
 edition = "2024"
 license = "MIT"
 authors = ["Saltcorn contributors"]
@@ -220,6 +227,7 @@ sc-action = { path = "crates/sc-action" }
 sc-model = { path = "crates/sc-model" }
 sc-analytics = { path = "crates/sc-analytics" }
 sc-stan = { path = "crates/sc-stan" }
+sc-bayesreg = { path = "crates/sc-bayesreg" }
 sc-stream = { path = "crates/sc-stream" }
 sc-module = { path = "crates/sc-module" }
 sc-llm = { path = "crates/sc-llm" }

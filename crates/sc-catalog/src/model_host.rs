@@ -56,6 +56,9 @@ pub struct ModelSummary {
     /// `neighbourhood`" (analytics TODO A1.9). `None` when its rows are rows
     /// of `table`.
     pub not_rows_of_table: Option<String>,
+    /// What its provider can say about how sure a prediction is (analytics
+    /// TODO A7.2): `none`, `interval`, `probabilities` or `distribution`.
+    pub uncertainty: String,
 }
 
 impl ModelSummary {
@@ -88,6 +91,25 @@ pub trait ModelHost: Send + Sync {
 
     /// What a formula's save check needs to know about `model`.
     async fn describe(&self, model: &str) -> Result<ModelSummary>;
+
+    /// Predict `rows` — objects whose keys are matched to the model's inputs
+    /// by name, from any table or dataset — with `model`'s active fit or the
+    /// fit `fit` names, each prediction's uncertainty at `level` (analytics
+    /// TODO A7.3, the Model predictions operation). Answers one object per
+    /// row, in order: `value`, and as the provider gives them `sd`, `lower`,
+    /// `upper` and `level`, or `probability` and `probabilities`.
+    async fn predict_inputs(
+        &self,
+        model: &str,
+        fit: Option<&str>,
+        rows: &[Json],
+        level: f64,
+    ) -> Result<Vec<Json>> {
+        let _ = (fit, rows, level);
+        Err(sc_error::Error::invalid(format!(
+            "this server cannot predict rows of a dataset with `{model}`"
+        )))
+    }
 }
 
 /// The save check every formula that calls `predict("…")` goes through

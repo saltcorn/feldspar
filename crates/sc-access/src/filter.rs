@@ -388,9 +388,10 @@ fn combined(
 
 /// One condition, on the column or aggregate the [`Operand`] names.
 ///
-/// A JSON object whose keys are all [`OPERATORS`] is those comparisons, all of
-/// them holding (`{"gte": a, "lt": b}` is a range); **anything else is a literal
-/// to match exactly**, including an object destined for a `Json` column. The rule is stated that way round — and in the agent
+/// A non-empty JSON object whose keys are **all** [`OPERATORS`] is those
+/// comparisons, ANDed — `{"gte": "2020-01-01", "lt": "2021-01-01"}` is a range;
+/// **anything else is a literal to match exactly**, including an object destined
+/// for a `Json` column. The rule is stated that way round — and in the agent
 /// tools' own descriptions — because the alternative (an object is always an
 /// operator) makes a `Json` column unfilterable, and a caller that means equality
 /// can always say `{"eq": …}`.
@@ -407,9 +408,9 @@ pub fn condition_on(on: &Operand, column: Expr, condition: &Json) -> Result<Expr
         && !map.is_empty()
         && map.keys().all(|op| OPERATORS.contains(&op.as_str()))
     {
-        let mut all: Option<Expr> = None;
+        let mut parts = Vec::with_capacity(map.len());
         for (op, operand) in map {
-            let part = match (op.as_str(), operand) {
+            parts.push(match (op.as_str(), operand) {
                 ("eq", Json::Null) => Expr::unary(UnOp::IsNull, col()),
                 ("ne", Json::Null) => Expr::unary(UnOp::IsNotNull, col()),
                 ("in" | "nin", Json::Array(items)) if items.is_empty() => {
@@ -418,13 +419,10 @@ pub fn condition_on(on: &Operand, column: Expr, condition: &Json) -> Result<Expr
                     )));
                 }
                 (op, operand) => comparison_on(on, col(), op, operand)?,
-            };
-            all = Some(match all {
-                Some(so_far) => Expr::and(so_far, part),
-                None => part,
             });
         }
-        if let Some(all) = all {
+        // Never `None`: the object is not empty.
+        if let Some(all) = parts.into_iter().reduce(Expr::and) {
             return Ok(all);
         }
     }
@@ -566,30 +564,6 @@ mod tests {
     }
 
     #[test]
-    fn several_operators_on_one_field_all_hold_and_any_other_key_is_a_value() {
-        let table = tasks();
-        let on = Operand::Column {
-            table: &table,
-            column: "due",
-        };
-        let range = serde_json::json!({"gte": "2026-11-10", "lt": "2026-11-11"});
-        let (sql, binds) = rendered(&condition_on(&on, Expr::col("due"), &range).expect("lowers"));
-        assert_eq!(sql, "((\"due\" >= $1) AND (\"due\" < $2))");
-        assert!(
-            matches!(binds.as_slice(), [Value::Date(_), Value::Date(_)]),
-            "{binds:?}"
-        );
-
-        // A key that is not an operator makes the object a value, as before.
-        let mixed = serde_json::json!({"gte": 1, "note": "x"});
-        let on = Operand::Column {
-            table: &table,
-            column: "priority",
-        };
-        assert!(condition_on(&on, Expr::col("priority"), &mixed).is_err());
-    }
-
-    #[test]
     fn an_unknown_operator_is_refused_naming_it_and_the_vocabulary() {
         // The message is read by whoever typed the query string, so it says what
         // they could have typed instead.
@@ -604,5 +578,62 @@ mod tests {
         let text = format!("{err}");
         assert!(text.contains("`between` is not a comparison"), "{text}");
         assert!(text.contains("gte"), "{text}");
+    }
+
+    /// The filter object's predicate over `tasks` plus a `Json` column.
+    fn where_of(filter: serde_json::Value) -> Result<(String, Vec<Value>)> {
+        let mut fields = tasks().fields;
+        fields.push(typed_field("meta", BasicType::Json));
+        let table = table_of("tasks", fields);
+        let names: Vec<String> = table.fields.iter().map(|f| f.base.name.clone()).collect();
+        let expr = where_expr(&table, &names, Some(&filter))?.expect("a predicate");
+        Ok(rendered(&expr))
+    }
+
+    #[test]
+    fn several_operators_on_one_column_are_anded() {
+        // A date range on one column, each bound coerced as a date.
+        let (sql, binds) =
+            where_of(serde_json::json!({ "due": { "gte": "2020-01-01", "lt": "2021-01-01" } }))
+                .expect("a range");
+        assert_eq!(sql, "((\"due\" >= $1) AND (\"due\" < $2))");
+        assert!(
+            matches!(binds.as_slice(), [Value::Date(_), Value::Date(_)]),
+            "{binds:?}"
+        );
+        // On a Text column this used to be an equality against the object's
+        // JSON text — a filter that matched nothing, silently.
+        let (sql, binds) =
+            where_of(serde_json::json!({ "title": { "gte": "a", "lte": "b" } })).expect("a range");
+        assert_eq!(sql, "((\"title\" >= $1) AND (\"title\" <= $2))");
+        assert_eq!(
+            binds,
+            vec![Value::Text("a".into()), Value::Text("b".into())]
+        );
+        // The operators mix freely, the null readings included.
+        let (sql, _) = where_of(serde_json::json!({
+            "priority": { "in": [1, 2, 3], "ne": null }
+        }))
+        .expect("mixed");
+        assert!(
+            sql.contains(" IN (") && sql.contains("IS NOT NULL"),
+            "{sql}"
+        );
+        // Every operator still has its own refusals.
+        let err = where_of(serde_json::json!({ "priority": { "gte": 1, "in": [] } })).unwrap_err();
+        assert!(
+            format!("{err}").contains("needs at least one value"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_object_with_a_key_that_is_not_an_operator_is_a_literal() {
+        // A `Json` column stays filterable by value: one stray key makes the whole
+        // object the value to match, operator-named keys and all.
+        let (sql, binds) =
+            where_of(serde_json::json!({ "meta": { "gte": 1, "kind": "x" } })).expect("a literal");
+        assert_eq!(sql, "(\"meta\" = $1)");
+        assert_eq!(binds.len(), 1);
     }
 }

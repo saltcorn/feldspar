@@ -11,10 +11,10 @@ const kinds: KindItem[] = [
 ];
 
 describe("the workspace kinds", () => {
-  it("lists every kind, the ones not here yet disabled with their milestone", () => {
+  it("lists every kind, the ones not here yet disabled and marked not yet available", () => {
     expect(kindOptions(kinds, t)).toEqual([
       { value: "data_explorer", label: "Data explorer", disabled: false },
-      { value: "simulation", label: "Simulation (arrives in A7)", disabled: true },
+      { value: "simulation", label: "Simulation (not yet available)", disabled: true },
     ]);
     expect(firstAvailable(kinds)).toBe("data_explorer");
     expect(kindLabel(kinds, "simulation")).toBe("Simulation");

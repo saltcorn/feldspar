@@ -395,15 +395,13 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 // per action, and **only when the request named a table** — with
                 // no channel there is no "this table's models" to answer with,
                 // and answering with an empty list would be claiming there are
-                // none rather than that the question was not asked.
+                // none rather than that the question was not asked. Names only:
+                // loading the models would read every dataset, and one this
+                // build cannot read must not take the trigger editor down.
                 let models = match channel {
-                    Some(table) if catalog.get(sc_model::MODELS_TABLE)?.is_some() => Some(
-                        sc_model::models_for_table(&catalog, table)
-                            .await?
-                            .into_iter()
-                            .map(|m| m.name)
-                            .collect::<Vec<_>>(),
-                    ),
+                    Some(table) if catalog.get(sc_model::MODELS_TABLE)?.is_some() => {
+                        Some(sc_model::model_names_for_table(&catalog, table).await?)
+                    }
                     Some(_) => Some(Vec::new()),
                     None => None,
                 };

@@ -76,6 +76,8 @@ pub const LIST_BACKUP_SCHEDULES: HandlerId<AdminOnly> = HandlerId::new("listBack
 pub const CREATE_BACKUP_SCHEDULE: HandlerId<AdminOnly> = HandlerId::new("createBackupSchedule");
 pub const UPDATE_BACKUP_SCHEDULE: HandlerId<AdminOnly> = HandlerId::new("updateBackupSchedule");
 pub const DELETE_BACKUP_SCHEDULE: HandlerId<AdminOnly> = HandlerId::new("deleteBackupSchedule");
+pub const GET_BACKUP_FAILURE_RECIPIENTS: HandlerId<AdminOnly> =
+    HandlerId::new("getBackupFailureRecipients");
 pub const GET_CLEAR_ALL_PREVIEW: HandlerId<AdminOnly> = HandlerId::new("getClearAllPreview");
 pub const CLEAR_ALL: HandlerId<AdminOnly> = HandlerId::new("clearAll");
 
@@ -271,6 +273,18 @@ pub const PREDICT_ROWS: HandlerId<AdminOnly> = HandlerId::new("predictRows");
 pub const GET_PROGRAM_INTERFACE: HandlerId<AdminOnly> = HandlerId::new("getProgramInterface");
 pub const PREVIEW_MODEL_DATA: HandlerId<AdminOnly> = HandlerId::new("previewModelData");
 pub const SUGGEST_BINDINGS: HandlerId<AdminOnly> = HandlerId::new("suggestBindings");
+/// A `bayesian_regression` model's formula checked as the admin types it:
+/// its mistakes located, the pasted priors lifted into rows, the prior table,
+/// the generated program and the derived bindings (TODO-bayesian-regression
+/// §7, R1.8).
+pub const CHECK_FORMULA: HandlerId<AdminOnly> = HandlerId::new("checkFormula");
+/// The same model's prior table against its rows: the data-dependent defaults
+/// as numbers, and the level coefficients matched exactly.
+pub const CHECK_PRIORS: HandlerId<AdminOnly> = HandlerId::new("checkPriors");
+/// A `bayesian_regression` model converted to an ordinary `stan` model: its
+/// generated program written into a file store, and a new model binding it
+/// as the formula did (TODO-bayesian-regression §9, R2.5).
+pub const CONVERT_MODEL_TO_STAN: HandlerId<AdminOnly> = HandlerId::new("convertModelToStan");
 pub const COMPILE_MODEL: HandlerId<AdminOnly> = HandlerId::new("compileModel");
 pub const CANCEL_MODEL_FIT: HandlerId<AdminOnly> = HandlerId::new("cancelModelFit");
 pub const GET_MODEL_DRAWS: HandlerId<AdminOnly> = HandlerId::new("getModelDraws");
@@ -483,6 +497,8 @@ pub const SUGGEST_MAP: HandlerId<AnalyticsUi> = HandlerId::new("suggestMap");
 pub const RENDER_MAP: HandlerId<AnalyticsUi> = HandlerId::new("renderMap");
 pub const RENDER_PANEL: HandlerId<AnalyticsUi> = HandlerId::new("renderPanel");
 pub const GET_MODEL_OUTPUTS: HandlerId<AdminOnly> = HandlerId::new("getModelOutputs");
+pub const PROFILE_MODEL: HandlerId<AdminOnly> = HandlerId::new("profileModel");
+pub const COMPARE_SCENARIOS: HandlerId<AdminOnly> = HandlerId::new("compareScenarios");
 pub const ANALYTICS_SHELL: HandlerId<AnalyticsUi> = HandlerId::new("analyticsShell");
 pub const LIST_WORKSPACE_KINDS: HandlerId<AnalyticsUi> = HandlerId::new("listWorkspaceKinds");
 pub const LIST_WORKSPACES: HandlerId<AnalyticsUi> = HandlerId::new("listWorkspaces");

@@ -122,3 +122,11 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 - [x] C4.4 Scheduled runs through the existing trigger machinery.
 - [x] C4.5 Tests: a trigger that sends mail during a run sends nothing and `data.expect_sent`
       passes; a build with after-build checks enabled records a run.
+
+## C5 — Running a checklist from the admin
+
+- [x] C5.1 Feedback while a run is going: Run (on the list, the checklist and a run's "Run again")
+      and "Run all" open a toast, top right, naming the checklist and the step it is on, updated
+      as each step finishes. The run goes over a WebSocket (`/api/checklists/{id}/run/live`,
+      `/api/checklist-runs/live`) that runs it on its own connection and pushes the progress;
+      the `POST` routes are unchanged and are the fallback.

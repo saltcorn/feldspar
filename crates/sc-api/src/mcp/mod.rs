@@ -61,6 +61,7 @@ mod code_api;
 mod docs;
 mod endpoint_tool;
 mod json_schema;
+mod run_code;
 mod schema;
 mod triggers;
 
@@ -79,6 +80,7 @@ use crate::schema_edit::{self, Grants};
 pub use code_api::{JS_CODE_API, TOOL_DESCRIBE_CODE_API};
 pub use endpoint_tool::{BODY_KEY, ProjectedCall, Projection, check_caller};
 pub use json_schema::{json_schema, object_schema, scalar_schema};
+pub use run_code::TOOL_RUN_CODE;
 pub use schema::{TOOL_DESCRIBE, TOOL_EDIT};
 pub use triggers::{
     TOOL_DELETE_TRIGGER, TOOL_DESCRIBE_ACTION, TOOL_DESCRIBE_TRIGGERS, TOOL_SAVE_TRIGGER,
@@ -635,6 +637,14 @@ impl ToolSet {
     }
 }
 
+/// The tools only the **MCP server** offers, not the `admin_copilot` agent:
+/// [`run_code`](TOOL_RUN_CODE), which runs code an external coding agent wrote
+/// (a migration, a trial run), and is logged with it. The copilot saves and
+/// test-runs triggers instead.
+pub fn mcp_only_tools() -> Vec<Arc<dyn AdminTool>> {
+    vec![Arc::new(run_code::RunCode)]
+}
+
 /// Refuse a caller who is not an administrator, in words the model can relay.
 ///
 /// The check is on the **call's** caller, not on any agent's `min_role`: an
@@ -777,6 +787,13 @@ mod tests {
 
         let set = ToolSet::core(Grants::all(), Areas::all());
         assert!(set.offers(TOOL_SAVE_TRIGGER));
+
+        // `run_code` is the MCP server's alone, and in the triggers half.
+        assert!(!set.offers(TOOL_RUN_CODE));
+        let set = set.with(mcp_only_tools());
+        assert!(set.offers(TOOL_RUN_CODE));
+        let set = ToolSet::core(Grants::all(), Areas::none()).with(mcp_only_tools());
+        assert!(!set.offers(TOOL_RUN_CODE));
     }
 
     #[test]

@@ -50,7 +50,9 @@ import {
   type ProposalSummary,
   type StepType,
 } from "../checklists";
+import { runErrorMessage, useChecklistProgress } from "../checklistProgress";
 import { IconArrowDown, IconArrowLeft, IconArrowUp, IconPlus } from "../icons";
+import { checklistsCrumbs, useApplicationName } from "../breadcrumbs";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
 import { RunStatus } from "./Checklists";
 import { when } from "./WorkflowRuns";
@@ -67,6 +69,8 @@ export function ChecklistDetail({
   appId: string | null;
 }) {
   const { t } = useT();
+  const appName = useApplicationName(appId);
+  const crumbs = checklistsCrumbs(t, appId, appName);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [users, setUsers] = useState<CheckUser[]>([]);
   const [types, setTypes] = useState<StepType[]>([]);
@@ -75,6 +79,7 @@ export function ChecklistDetail({
   const [busy, setBusy] = useState(false);
   // `null` closed, `"new"` adding, a step editing it.
   const [editing, setEditing] = useState<ChecklistStep | "new" | null>(null);
+  const progress = useChecklistProgress();
 
   const load = async () => {
     try {
@@ -128,10 +133,10 @@ export function ChecklistDetail({
     setBusy(true);
     setError(null);
     try {
-      const result = await api.runChecklist(checklistId);
+      const [result] = await progress.run({ checklist: checklistId });
       navigate(checklistRunPath(result.id, appId));
     } catch (err) {
-      setError(errorMessage(err, t("Could not run the checklist.")));
+      setError(runErrorMessage(err, t("Could not run the checklist.")));
       setBusy(false);
     }
   };
@@ -197,7 +202,7 @@ export function ChecklistDetail({
   if (loadError) {
     return (
       <>
-        <PageHeader pretitle={t("Checklist")} title={t("Checklist")} actions={back} />
+        <PageHeader crumbs={crumbs} title={t("Checklist")} actions={back} />
         <PageBody>
           <Alert variant="danger">{loadError}</Alert>
         </PageBody>
@@ -208,7 +213,7 @@ export function ChecklistDetail({
   return (
     <>
       <PageHeader
-        pretitle={t("Checklist")}
+        crumbs={crumbs}
         title={detail?.name ?? ""}
         actions={
           <>
@@ -222,6 +227,7 @@ export function ChecklistDetail({
           </>
         }
       />
+      {progress.toast}
       <PageBody>
         {error && (
           <Alert variant="danger" dismissible onClose={() => setError(null)}>

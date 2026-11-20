@@ -42,6 +42,8 @@ import {
   MAX_RETENTION_DAYS,
   destinationKindLabel,
   editScheduleForm,
+  failureEmailNote,
+  failureEmailOptions,
   frequencyLabel,
   includeAllNote,
   isStoredSecret,
@@ -1022,6 +1024,13 @@ function AutomatedBackups({
   const [formError, setFormError] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Whether the installation sends mail, and the administrators a failure
+  // can be emailed to. Null until read, or if it could not be: the dropdown
+  // is then not shown, and a stored choice is sent back as it was.
+  const [recipients, setRecipients] = useState<{
+    email_configured: boolean;
+    admins: string[];
+  } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -1041,6 +1050,9 @@ function AutomatedBackups({
     setEditing(form);
     setFormError(null);
     setSubmitted(false);
+    // Read each time the dialog opens: an administrator added, or email set
+    // up, since the screen was loaded is offered.
+    api.getBackupFailureRecipients().then(setRecipients, () => setRecipients(null));
   };
 
   const save = async (e: FormEvent) => {
@@ -1161,6 +1173,9 @@ function AutomatedBackups({
                       {schedule.password && (
                         <span className="ms-2">· <T text="Password protected" /></span>
                       )}
+                      {failureEmailNote(schedule.failure_email, t) && (
+                        <span className="ms-2">· {failureEmailNote(schedule.failure_email, t)}</span>
+                      )}
                     </div>
                   </td>
                   <td>{frequencyLabel(schedule.frequency, t)}</td>
@@ -1247,6 +1262,24 @@ function AutomatedBackups({
                   <T text="Backups at the destination older than this are deleted after each new backup." />
                 </Form.Text>
               </Form.Group>
+              {recipients?.email_configured && (
+                <Form.Group className="mb-4" controlId="schedule-failure-email">
+                  <Form.Label><T text="Email on failure" /></Form.Label>
+                  <Form.Select
+                    value={editing.failureEmail}
+                    onChange={(e) => setEditing({ ...editing, failureEmail: e.target.value })}
+                  >
+                    {failureEmailOptions(recipients.admins, editing.failureEmail, t).map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </Form.Select>
+                  <Form.Text muted>
+                    <T text="Sent on the first failure, not on each hourly retry, until a backup succeeds again." />
+                  </Form.Text>
+                </Form.Group>
+              )}
 
               <h4 className="mb-1"><T text="What each backup includes" /></h4>
               <p className="text-secondary small mb-3">

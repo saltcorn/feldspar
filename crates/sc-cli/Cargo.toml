@@ -118,6 +118,9 @@ async-trait.workspace = true
 # `feldspar cmdstan status | install`: finding CmdStan on this machine, and
 # downloading and building one (TODO "Bayesian models with Stan" §20).
 sc-stan.workspace = true
+# `feldspar cmdstan warm`: the formula provider's commonest programs, compiled
+# into the cache ahead of the first fits (TODO-bayesian-regression R2.5).
+sc-bayesreg.workspace = true
 
 # `feldspar python check` (TODO-portable-release R1.7): the embedded
 # interpreter's self-check, with no database. No features of its own — whether

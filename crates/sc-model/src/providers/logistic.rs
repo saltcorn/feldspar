@@ -40,7 +40,7 @@ use smartcore::linear::logistic_regression::{
 
 use crate::frame::Frame;
 use crate::provider::{
-    FitResult, ModelProvider, OutcomeSpec, ParameterBlock, ParameterRow, Prediction,
+    FitResult, ModelProvider, OutcomeSpec, ParameterBlock, ParameterRow, Prediction, Uncertainty,
     categorical_column_field,
 };
 use crate::providers::{
@@ -195,6 +195,65 @@ impl ModelProvider for LogisticRegression {
             })
             .collect()
     }
+
+    fn uncertainty(&self) -> Uncertainty {
+        Uncertainty::Probabilities
+    }
+
+    /// Each row's class with the probability of every class (analytics TODO
+    /// A7.2), by the encoding's class index; a class the fit's training rows
+    /// never had is 0.
+    async fn predict_uncertain(
+        &self,
+        state: &Json,
+        frame: &Frame,
+        _level: f64,
+    ) -> Result<Vec<Prediction>> {
+        let points = self.predict(state, frame).await?;
+        let state: State = from_state(self.name(), state)?;
+        let x = design(frame, &state.features)?;
+        let width = state.classes.iter().max().map_or(0, |m| m + 1);
+        Ok(points
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let row = x.row(i).unwrap_or(&[]);
+                let mut all = vec![0.0; width];
+                for (slot, probability) in probabilities(&state, row).into_iter().enumerate() {
+                    if let Some(&class) = <[usize]>::get(&state.classes, slot) {
+                        all[class] = probability;
+                    }
+                }
+                p.with_probabilities(all)
+            })
+            .collect())
+    }
+}
+
+/// The probability the fit gives each of its classes, in the order of its
+/// `classes`.
+fn probabilities(state: &State, row: &[f64]) -> Vec<f64> {
+    let scores: Vec<f64> = state
+        .coefficients
+        .iter()
+        .zip(&state.intercepts)
+        .map(|(weights, intercept)| {
+            intercept + weights.iter().zip(row).map(|(w, x)| w * x).sum::<f64>()
+        })
+        .collect();
+    match scores.as_slice() {
+        [] => Vec::new(),
+        [one] => {
+            let p = sigmoid(*one);
+            vec![1.0 - p, p]
+        }
+        many => {
+            let max = many.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let exponentials: Vec<f64> = many.iter().map(|s| (s - max).exp()).collect();
+            let total: f64 = exponentials.iter().sum();
+            exponentials.into_iter().map(|e| e / total).collect()
+        }
+    }
 }
 
 /// Which of the fitted classes this row is, and the probability the fit gives
@@ -317,7 +376,10 @@ mod tests {
         let truth = [0usize, 0, 0, 0, 0, 1, 1, 1, 1, 1];
         let mut right = 0;
         for (prediction, actual) in predictions.iter().zip(truth) {
-            let Prediction::ClassIndex { index, probability } = prediction else {
+            let Prediction::ClassIndex {
+                index, probability, ..
+            } = prediction
+            else {
                 panic!("a provider answers a class index, not {prediction:?}");
             };
             // The probability is the one of the class that was answered, so it
@@ -399,6 +461,47 @@ mod tests {
             })
             .collect();
         assert_eq!(answered, vec![0, 1, 2]);
+    }
+
+    /// Every class's probability (analytics TODO A7.2): they sum to one, the
+    /// answered class's is the largest, and it is the probability the point
+    /// prediction gave.
+    #[tokio::test]
+    async fn the_probability_of_every_class_comes_with_the_class() {
+        assert_eq!(LogisticRegression.uncertainty(), Uncertainty::Probabilities);
+        for (data, features) in [
+            (separable(), floats(&[2., 9.])),
+            (
+                frame(vec![
+                    ("x", floats(&[1., 2., 3., 10., 11., 12., 20., 21., 22.])),
+                    ("class", ints(&[0, 0, 0, 1, 1, 1, 2, 2, 2])),
+                ]),
+                floats(&[1., 11.]),
+            ),
+        ] {
+            let fit = LogisticRegression
+                .fit(&data, &attrs(&[("label", "class".into())]), &Attrs::new())
+                .await
+                .unwrap();
+            let rows = frame(vec![("x", features)]);
+            let predicted = LogisticRegression
+                .predict_uncertain(&fit.state, &rows, 0.9)
+                .await
+                .unwrap();
+            for p in &predicted {
+                let Prediction::ClassIndex {
+                    index,
+                    probability,
+                    probabilities,
+                } = p
+                else {
+                    panic!("{p:?}");
+                };
+                close(probabilities.iter().sum::<f64>(), 1.0, 1e-9);
+                close(probabilities[*index], probability.unwrap(), 1e-12);
+                assert!(probabilities.iter().all(|q| *q <= probabilities[*index]));
+            }
+        }
     }
 
     /// A negative ridge penalty rewards large coefficients instead of

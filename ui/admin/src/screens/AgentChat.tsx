@@ -119,7 +119,8 @@ import {
   IconTrash,
   IconX,
 } from "../icons";
-import { StatusBadge, useDocumentTitle, type Tone } from "../layout";
+import { agentsCrumbs } from "../breadcrumbs";
+import { Breadcrumbs, StatusBadge, useDocumentTitle, type Tone } from "../layout";
 import { AgentTabs } from "./AgentHeader";
 import { RunBar } from "./RunPanel";
 import { T, useT } from "../i18n";
@@ -486,9 +487,7 @@ export function AgentChat({
             >
               <IconArrowLeft className="icon-2" />
             </button>
-            <div className="overflow-hidden">
-              <div className="fw-medium text-truncate">{agent}</div>
-            </div>
+            <Breadcrumbs crumbs={[...agentsCrumbs(t), { label: agent }]} inline />
             {/* The same tabs as the agent's other screens, on the bar's one line. */}
             <AgentTabs agent={agent} active="chat" compact />
             <div className="me-auto" />

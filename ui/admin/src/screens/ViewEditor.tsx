@@ -30,6 +30,7 @@ import {
 } from "../builder";
 import { useBuilderAvailable } from "../builderStatus";
 import { IconArrowLeft } from "../icons";
+import { applicationListCrumbs } from "../breadcrumbs";
 import { AlertBody, PageBody, PageHeader } from "../layout";
 import { SettingsFields } from "../settings";
 import {
@@ -174,7 +175,7 @@ export function ViewEditor({
 
   const header = (
     <PageHeader
-      pretitle={app ? `${app.name} · view` : "View"}
+      crumbs={applicationListCrumbs(t, appId, app?.name ?? null, "views")}
       title={name}
       docTitle={t("{name} view", { name })}
       actions={

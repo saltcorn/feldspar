@@ -2,7 +2,8 @@
 // "Panels").
 //
 // A panel is an elementary output — a plot, a summary table, the explorer's
-// tests with their plot, text, a fit's table, a plugin's own kind — stored as
+// tests with their plot, text, a fit's table, a simulation's profiler or
+// scenarios (A7.8), a plugin's own kind — stored as
 // what makes it (`sc_analytics::panel`): `{ id, title?, kind, content }`. A
 // plot panel is its spec, so a panel shows its dataset as it is now wherever
 // it is put, and dragging one copies the spec.
@@ -17,6 +18,7 @@ import type { MapSpec } from "../map/spec";
 import type { ModelOutput } from "../models/outputs";
 import type { PlotSpec, TableSpec } from "../plot/spec";
 import type { TestSpec } from "../explorer/tests";
+import type { SimulationContent } from "../simulation/simulation";
 import { readCard, type StatCard } from "./card";
 
 /** The drag data type a panel travels as. */
@@ -31,6 +33,8 @@ export type PanelBody =
   | { kind: "fit_table"; content: { fit: string; output: string } }
   | { kind: "map"; content: { spec: MapSpec } }
   | { kind: "stat_card"; content: StatCard }
+  | { kind: "profiler"; content: SimulationContent }
+  | { kind: "scenarios"; content: SimulationContent }
   | { kind: "custom"; content: { renderer: string; config?: unknown } };
 
 /** One panel. */
@@ -38,7 +42,18 @@ export type Panel = { id: string; title?: string } & PanelBody;
 
 export type PanelKind = PanelBody["kind"];
 
-export const PANEL_KINDS: PanelKind[] = ["plot", "summary_table", "test_result", "text", "fit_table", "map", "stat_card", "custom"];
+export const PANEL_KINDS: PanelKind[] = [
+  "plot",
+  "summary_table",
+  "test_result",
+  "text",
+  "fit_table",
+  "map",
+  "stat_card",
+  "profiler",
+  "scenarios",
+  "custom",
+];
 
 /** A new panel's id. */
 export function newPanelId(): string {
@@ -82,6 +97,10 @@ export function readPanel(raw: unknown): Panel | null {
         return isObject(c.spec) && Array.isArray(c.spec.layers) && c.spec.layers.length > 0;
       case "stat_card":
         return readCard(c) !== null;
+      case "profiler":
+        return typeof c.model === "string" && (c.scenarios === undefined || Array.isArray(c.scenarios));
+      case "scenarios":
+        return typeof c.model === "string" && Array.isArray(c.scenarios) && c.scenarios.length > 0;
       case "custom":
         return typeof c.renderer === "string";
       default:

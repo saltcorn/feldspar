@@ -59,6 +59,7 @@ mod builder;
 mod change_log_cleanup;
 mod chat;
 mod check_steps;
+mod checklist_live;
 mod checklists;
 mod clear_all;
 mod config;
@@ -207,6 +208,7 @@ pub use build_agent::{
 };
 pub use build_archive::{pack_project, remove_signing_keys, unpack_project};
 pub use builder::{BUILDER_BOOT_ID, BUILDER_PAGE_MODE, BUILDER_PREFIX, BUILDER_VIEW_MODES};
+pub use checklist_live::{CHECKLIST_RUN_LIVE_ROUTE, CHECKLISTS_RUN_LIVE_ROUTE};
 pub use config::{
     DEFAULT_BIND, DEFAULT_HTTPS_PORT, DEFAULT_MAX_UPLOAD_BYTES, LOOPBACK_BASE_DOMAIN, PythonMode,
     ServerConfig, implied_base_domain,
@@ -225,6 +227,7 @@ pub use mcp::{MCP_PROTOCOL_VERSION, MCP_ROUTE, MCP_SERVER_NAME};
 pub use mcp_proxy::MCP_PROXY_ROUTE;
 pub use models::{
     ModelServices, StanSettings, install_model_host, install_models, install_models_with,
+    stan_cache_dir,
 };
 pub use modules::ModuleServices;
 pub use notices::{

@@ -18,6 +18,7 @@ import { navigate } from "../App";
 import { builderPageUrl } from "../builder";
 import { useBuilderAvailable } from "../builderStatus";
 import { IconArrowLeft } from "../icons";
+import { applicationListCrumbs } from "../breadcrumbs";
 import { AlertBody, PageBody, PageHeader } from "../layout";
 import { newPageForm, pageFormErrors, pageFormOf, savePageBody, type PageForm } from "../pageForm";
 import { RoleSelect } from "../roleSelect";
@@ -107,7 +108,7 @@ export function PageProperties({ appId, name }: { appId: string; name: string | 
 
   const header = (
     <PageHeader
-      pretitle={app ? `${app.name} · page` : "Page"}
+      crumbs={applicationListCrumbs(t, appId, app?.name ?? null, "pages")}
       title={name ?? "New page"}
       docTitle={name == null ? t("New page") : t("{name} page", { name })}
       actions={

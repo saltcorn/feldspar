@@ -613,7 +613,7 @@ pub struct Application {
 /// The framework name of a Saltcorn UI application, whose `/files/serve/*`
 /// serves any store file the caller may read (kept in step with
 /// `sc_viewpattern::SALTCORN_UI_FRAMEWORK`, which this crate does not depend on).
-const SALTCORN_UI: &str = "saltcorn-ui";
+pub(crate) const SALTCORN_UI: &str = "saltcorn-ui";
 
 /// Where an application serves its store files, for a code body's
 /// `file.url()` (TODO F2.8) — the same answer the upload route's

@@ -35,6 +35,8 @@ sc-stream.workspace = true
 sc-viewpattern.workspace = true
 sc-workflow.workspace = true
 sc-i18n.workspace = true
+# An automated backup that fails emails the administrator its schedule names.
+sc-email.workspace = true
 
 tokio.workspace = true
 async-trait.workspace = true

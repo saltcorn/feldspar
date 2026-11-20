@@ -43,6 +43,7 @@ import {
   type DbConnectionForm,
 } from "../dbConnection";
 import { IconPlus } from "../icons";
+import { tablesCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
 import { T, useT } from "../i18n";
 
@@ -111,7 +112,7 @@ export function DbConnections() {
   return (
     <>
       <PageHeader
-        pretitle={t("Data")}
+        crumbs={tablesCrumbs(t)}
         title={t("Database connections")}
         actions={
           <Button onClick={() => setEditing({ ...EMPTY_DB_CONNECTION_FORM })}>

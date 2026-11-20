@@ -1,4 +1,4 @@
-// "Get datasets" (beside Create on the front page's Datasets card): well-known
+// "Get datasets" (beside "+ New dataset" on the front page's Datasets heading): well-known
 // open datasets, each downloaded from its publisher when asked, made into
 // tables and opened as a dataset (`sc_api::public_datasets`). An install runs
 // on the server as a job; the picker polls it, shows how far it has got, and

@@ -19,19 +19,27 @@ export type UploadRow = {
   store: string;
   folder: string;
   min_role: string;
+  /** Who besides the uploader reads a finished file: a role number, or
+   * {@link INHERIT_READERS} for the folder's readers. */
+  read_role: string;
   max_bytes: string;
   mime_allow: string;
   hook: string;
 };
 
+/** The `read_role` cell of a slot whose files have no floor of their own, so
+ * whoever the store's and folders' floors let in reads them (stored `null`). */
+export const INHERIT_READERS = "";
+
 /** An empty row — what "Add" produces. Admin-only until the admin says
- * otherwise, as a custom query is. */
+ * otherwise, as a custom query is, and its files the uploader's (UP1). */
 export function blankUploadRow(): UploadRow {
   return {
     name: "",
     store: "",
     folder: "",
     min_role: "1",
+    read_role: "1",
     max_bytes: "",
     mime_allow: "",
     hook: "",
@@ -72,6 +80,7 @@ export function uploadRowsFromApp(slots: UploadSlotItem[]): UploadRow[] {
     store: s.store,
     folder: s.folder,
     min_role: String(s.min_role),
+    read_role: s.read_role == null ? INHERIT_READERS : String(s.read_role),
     max_bytes: formatBytes(s.max_bytes),
     mime_allow: s.mime_allow.join(", "),
     hook: s.hook ?? "",
@@ -99,11 +108,19 @@ export function uploadRowsToRequest(rows: UploadRow[]): UploadSlotItem[] {
           `Upload slot “${name}”: the minimum role should be a role number.`,
         );
       }
+      const readText = r.read_role.trim();
+      const readRole = readText === INHERIT_READERS ? null : Number(readText);
+      if (readRole !== null && !Number.isInteger(readRole)) {
+        throw new Error(
+          `Upload slot “${name}”: who reads the files should be a role number.`,
+        );
+      }
       return {
         name,
         store: r.store.trim(),
         folder: r.folder.trim().replace(/^\/+|\/+$/g, ""),
         min_role: minRole,
+        read_role: readRole,
         max_bytes: maxBytes,
         mime_allow: r.mime_allow
           .split(",")

@@ -3331,11 +3331,13 @@ mod tests {
         );
         assert!(ts.contains("  filter?: Filters<PostsRow>;"), "{ts}");
         // A filter's *keys* are column names, so each entry is a pair of its own
-        // — `?published=gte.2020-01-01`, not `?filter=…`.
+        // — `?published=gte.2020-01-01`, not `?filter=…` — and a list under one
+        // key a pair per element, which is how a range is sent.
         assert!(
             ts.contains(
                 "for (const [key, value] of Object.entries(query?.filter ?? {})) \
-                 search.append(key, String(value));"
+                 for (const v of Array.isArray(value) ? value : [value]) \
+                 if (v !== undefined) search.append(key, String(v));"
             ),
             "{ts}"
         );

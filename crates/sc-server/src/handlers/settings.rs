@@ -236,6 +236,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 // Nothing is stored to merge a sentinel against, so one is
                 // dropped rather than saved as the secret.
                 let record = sc_types::merge_secrets(&spec, &Attrs::new(), &submitted);
+                crate::oauth::check_claim_fields(&catalog, &record)?;
                 let mut records = sc_config::oauth_provider_records(&catalog).await?;
                 records.push(record.clone());
                 sc_config::save_oauth_provider_records(&catalog, &records).await?;
@@ -260,6 +261,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     })?;
                 let spec = sc_config::oauth_provider_spec();
                 let record = sc_types::merge_secrets(&spec, &records[at], &submitted);
+                crate::oauth::check_claim_fields(&catalog, &record)?;
                 records[at] = record.clone();
                 sc_config::save_oauth_provider_records(&catalog, &records).await?;
                 Ok(HandlerResponse::ok(oauth_provider_json(&record)))

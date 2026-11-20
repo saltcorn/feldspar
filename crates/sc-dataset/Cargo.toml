@@ -36,6 +36,10 @@ sha2.workspace = true
 chrono.workspace = true
 
 [dev-dependencies]
+# A stub model host for the Model predictions operation (A7.3).
+async-trait.workspace = true
+# The formula evaluator the operations after a prediction run in.
+sc-expr = { workspace = true, features = ["eval"] }
 sc-db-postgres.workspace = true
 sc-db-sqlite.workspace = true
 sc-test-harness.workspace = true

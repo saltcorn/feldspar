@@ -2464,3 +2464,122 @@ async fn the_upgrade_report_lists_what_elevated_over_an_rls_table_once() -> sc_e
     assert_eq!(after, json!([]));
     Ok(())
 }
+
+/// `run_code` runs a body once, in one transaction: committed when it succeeds,
+/// rolled back when it fails or when the caller asked for a trial run; and
+/// committing needs `allow_edit` where a trial run needs nothing.
+#[tokio::test]
+async fn run_code_commits_a_migration_and_rolls_back_a_trial_run() -> sc_error::Result<()> {
+    let Harness {
+        mut client,
+        router,
+        catalog,
+        _db,
+        ..
+    } = setup().await?;
+    enable_mcp(&catalog, true).await?;
+    let full = mint(&mut client, "full", json!({})).await;
+    let no_edit = mint(&mut client, "no edit", json!({ "allow_edit": false })).await;
+
+    let (_, listed) = McpRequest::new(
+        &full,
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
+    )
+    .send(&router)
+    .await;
+    assert!(tool_names(&listed).contains(&"run_code".to_owned()));
+
+    let result = edit_schema(
+        &router,
+        &full,
+        json!([{
+            "op": "create_table",
+            "table": "notes",
+            "fields": [
+                { "name": "id", "type": "int", "primary_key": true },
+                { "name": "title", "type": "text" },
+            ],
+        }]),
+    )
+    .await;
+    assert_eq!(result["isError"], json!(false), "{result}");
+    let count = "return await db.notes.count();";
+
+    // A trial run: the write is made and its own read sees it, then undone.
+    let (failed, out) = call_tool(
+        &router,
+        &full,
+        "run_code",
+        json!({
+            "code": "await db.notes.insert({ id: payload.id, title: 'trial' });\n\
+                     console.log('inserted', payload.id);\n\
+                     return await db.notes.count();",
+            "payload": { "id": 1 },
+            "rollback": true,
+        }),
+    )
+    .await;
+    assert!(!failed, "{out}");
+    assert_eq!(out["result"], json!(1), "{out}");
+    assert_eq!(out["committed"], json!(false), "{out}");
+    assert_eq!(out["console"][0]["text"], json!("inserted 1"), "{out}");
+    let (_, out) = call_tool(&router, &full, "run_code", json!({ "code": count })).await;
+    assert_eq!(out["result"], json!(0), "the trial run left nothing: {out}");
+
+    // A migration: committed.
+    let (failed, out) = call_tool(
+        &router,
+        &full,
+        "run_code",
+        json!({ "code": "await db.notes.insert([{ id: 1, title: 'a' }, { id: 2, title: 'b' }]);" }),
+    )
+    .await;
+    assert!(!failed, "{out}");
+    assert_eq!(out["committed"], json!(true), "{out}");
+    let (_, out) = call_tool(&router, &full, "run_code", json!({ "code": count })).await;
+    assert_eq!(out["result"], json!(2), "{out}");
+
+    // One that fails half way is rolled back, and says what it printed.
+    let (failed, out) = call_tool(
+        &router,
+        &full,
+        "run_code",
+        json!({
+            "code": "await db.notes.insert({ id: 3, title: 'c' });\n\
+                     console.log('half way');\n\
+                     throw new Error('boom');",
+        }),
+    )
+    .await;
+    assert!(failed, "{out}");
+    let text = out.as_str().unwrap_or_default();
+    assert!(
+        text.contains("boom") && text.contains("rolled back"),
+        "{text}"
+    );
+    assert!(text.contains("half way"), "{text}");
+    let (_, out) = call_tool(&router, &full, "run_code", json!({ "code": count })).await;
+    assert_eq!(
+        out["result"],
+        json!(2),
+        "the failed run left nothing: {out}"
+    );
+
+    // Without `allow_edit`, only a trial run.
+    let (failed, out) = call_tool(&router, &no_edit, "run_code", json!({ "code": count })).await;
+    assert!(failed, "{out}");
+    assert!(
+        out.as_str().unwrap_or_default().contains("allow_edit"),
+        "{out}"
+    );
+    let (failed, out) = call_tool(
+        &router,
+        &no_edit,
+        "run_code",
+        json!({ "code": count, "rollback": true }),
+    )
+    .await;
+    assert!(!failed, "{out}");
+    assert_eq!(out["result"], json!(2), "{out}");
+    Ok(())
+}

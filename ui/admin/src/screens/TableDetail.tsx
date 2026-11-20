@@ -45,6 +45,7 @@ import {
   IconPlus,
   IconUpload,
 } from "../icons";
+import { tablesCrumbs } from "../breadcrumbs";
 import { AlertBody, PageBody, PageHeader, StatusBadge } from "../layout";
 import { anyWrite, writesOf, type TableWrites } from "../tableWrites";
 import type {
@@ -245,7 +246,7 @@ export function TableDetail({ table }: { table: string }) {
   return (
     <>
       <PageHeader
-        pretitle="Table"
+        crumbs={tablesCrumbs(t)}
         title={settings?.label || table}
         docTitle={t("{table} table", { table: settings?.label || table })}
         actions={

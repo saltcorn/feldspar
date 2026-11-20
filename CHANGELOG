@@ -354,6 +354,730 @@ phase's tasks. Saltcorn keeps this state in three new tables and creates them at
 
 Tests: `crates/sc-construct/tests/store.rs`, `crates/sc-server/tests/constructions_api.rs`.
 
+## Admin UI: the Analytics sidebar entry opens in a new tab
+
+The Analytics UI is an application of its own, so its sidebar entry now opens it in a new tab
+(`target="_blank"`, `rel="noopener"`) and the admin UI stays where it was. A sidebar entry says so
+with `newTab` (`ui/admin/src/App.tsx`); `nav.test.ts` checks Analytics is the only one.
+
+## Analytics front page: "+ New" buttons in the section headings, Workspaces first
+
+The Datasets, Models and Workspaces sections of the Analytics UI's front page now look alike: each
+heading has its create button on the same line, labelled as the admin UI's are: a plus icon before
+"New …" ("+ New dataset", "+ New model", "+ New workspace").
+
+- The Datasets and Workspaces cards with inline creation forms are gone. **+ New dataset** opens a
+  dialog asking for the name and the base (tables, then datasets); **+ New workspace** opens one asking
+  for the name and kind. Both open the new item once it is made, as before.
+- **Get datasets** moved from the Datasets card to the Datasets heading. As in the admin UI, a
+  heading's secondary buttons (Get datasets, Compare) come before its primary "+ New …" button,
+  which is rightmost.
+- The sections are reordered: Workspaces first, then Datasets, then Models.
+- Each section is a Tabler card: the title and its buttons in the `card-header` (`card-title`,
+  `card-actions`), the table as the card's body (`card-table`), and an error, a notice or the
+  "No … yet" sentence padded inside the card.
+- In the New workspace dialog a kind that is not here yet reads "Notebook (not yet available)"
+  rather than naming the milestone it arrives in (`workspaces/kinds.ts`, test in `kinds.test.ts`);
+  the hint when no kind can be made says "No kind of workspace is available yet."
+- The datasets table drops its Operations and Rows columns. A dataset that has an error says so
+  with its "has an error" badge under its name, as a model that cannot be fitted does.
+- The sharing select moved from the datasets table to the Dataset editor, under the dataset's name
+  and above its base, for whoever may change the dataset (the `may_change` of its row in
+  `GET /api/datasets`, which the editor already reads). Sharing there announces the change, so the
+  list on the other side of a split view reloads.
+- `#/datasets/new` (the page the admin model form links to) keeps its card form; it and the dialog
+  share the form's state (`useNewDataset`) and base picker.
+- The plus icon is the admin UI's `IconPlus`, in a shared `AddButton` (`ui/analytics/src/AddButton.tsx`).
+- Test: `ui/analytics/src/Home.test.tsx` renders the front page and checks the section order,
+  that each heading row ends with its plus button after the secondary ones, and that no inline
+  creation form remains.
+
+## Analytics model editor: the workbench layout (design A1)
+
+The model editor (`ui/analytics/src/models/ModelEditor.tsx`) is laid out as the A1 "Workbench"
+designs in `docs/`: a setup column beside the fits, which are now cards.
+
+- **The bar** along the top holds the model's name (edited in place), the outcome badge, its
+  `predict("…")` call, whether it is saved, **▶ Fit** and a "⋯" menu (description, save now). When
+  something stops a fit, Fit is disabled and the reason is shown under it: no name, no dataset or
+  provider, an unmatched prior, a split that does not sum to 1, an empty tuning list.
+- **Autosave.** An existing model is saved 1.2 s after the last edit, and the bar says "All changes
+  saved", "Unsaved changes", "Saving…" or "Not saved". Loading the model does not count as an
+  edit. The autosave does not move prior calls pasted into a formula into the prior table; a commit
+  of the field or a Fit still does. A new model is created with **Create model** or by its first Fit.
+- **A banner** says when the dataset has changed since the active fit, with **Refit now**.
+- **Setup** is a column of numbered sections: Data, Algorithm, Features, Tuning and Split. For a
+  formula (`bayesian_regression`) model they are Data, Algorithm, Formula, Priors and Sampler, with
+  "Data binding & Stan program" folded under them. For a hand-written Stan model they are Data,
+  Algorithm, Program and data, and Sampler. Changes in the sections:
+  - The dataset picker has a compact mode (`DatasetPicker compact`) with the preview folded away.
+  - Settings and tuning boxes sit as many abreast as fit.
+  - Features are behind **Choose…**.
+  - Tuning shows the number of combinations. A box that differs from the active fit says
+    "Was … in fit #n", and the section is tinted. A list with no validation rows offers
+    **Use 10% for validation**.
+  - The split is drawn as a bar.
+  - The sampler shows its first four settings and puts the rest under "Advanced".
+  - `FormulaSection` takes a `frame` (how each part is drawn), a `between` slot and `onCheck`. The
+    Formula section shows a problem count and the Priors section shows "N parameters · M set by you".
+- **The fits** are cards that keep the table's columns: Fit (`#n`, numbered by start time, oldest
+  #1), Status, Result, Hyperparameters, Report and Actions. For a posterior, Result is **Trust** and
+  Hyperparameters is **Sampler**. A card's caret opens it in place (`FitCard.tsx`) to show:
+  - About this fit.
+  - Errors by split, or for a posterior the sampler checks against the host's thresholds.
+  - The warnings.
+  - For a posterior, its first table output (population-level effects).
+  - Its first three plots.
+  - Buttons: More plots, Try a row, Full report, and for a posterior Open posterior, Write back… and
+    Download run.
+  - "Save as report" / "Save as another report", which saves the report under its default name.
+
+  "+ Create report" in the Report column does the same for a closed card. The full report is still
+  the modal; it can now open on a given tab (`initialTab`). A running fit shows its progress in its
+  card and opens when it finishes. Only the six newest fits are listed until "Show N older fits" is
+  clicked.
+- **Narrow.** The editor sizes itself with a container query, so it adapts in half of a split view
+  as well as in a narrow window. Below 62rem the columns become **Setup** and **Fits** tabs, each
+  setup section folds to a one-line summary, and a card's hyperparameters and report link drop to a
+  second line.
+
+The pure parts are in `models/fitCard.ts` and tested in `fitCard.test.ts`: fit numbering, errors
+by split, posterior checks and the trust verdict, the split bar, "use 10% for validation", and
+tuning boxes compared with a fit.
+
+## Analytics UI: a reload always serves the latest build
+
+The Analytics UI's document (`index.html`) is now sent `Cache-Control: no-store` instead of
+`no-cache`. This applies on the admin host (`serve_analytics`) and on an Analytics application's
+host (`analytics_app::DOCUMENT_CACHE_CONTROL`). The browser keeps no copy of the page, so every load
+or reload fetches it from the server, and with it the current build's hashed script names. That
+includes a page reached with Back/Forward. The hashed assets stay `immutable`, and the admin UI's own
+document is unchanged.
+
+Tests: `analytics_route` checks that the document is `no-store` and the asset `immutable` on the
+admin host, and the `analytics_app` unit test checks that the document is `no-store` on an
+application's host.
+
+## Analytics model editor: a fit is read in its report, in a modal, and saved as a Report workspace
+
+The model editor no longer shows the fit's outputs under the form. That view (rows, outputs,
+classes, search, posterior warnings, try a row) was too long. Each fit in the **Fits** list now has
+a **Report** column with **View**, which opens the fit's report in a modal. The modal also opens
+when a fit started in the editor finishes, or when a link names a fit (`#/model-instances/<id>`).
+
+- **The report** is built as a Report workspace's state (`ui/analytics/src/models/fitReport.ts`)
+  and drawn read-only (`report/ReportPreview.tsx`). It holds:
+  - **The facts of the fit**, as a table: model, provider type and description, outcome, dataset,
+    fit name and description, when fitted, status, the predicted column, features,
+    hyperparameters and fit id.
+  - **Notices**: a failed fit, the dataset or program changed since the fit.
+  - **A posterior's warnings**, first, then its **Diagnostics** and **Data** (the binding).
+  - **Rows** (for any other fit).
+  - **Outputs**: every output as a panel (`fit_table`, or a plot spec over the fit's output data).
+    An output that cannot be drawn is listed with its reason. The optional plots are added with
+    **More plots** in the modal, and are still kept in the model's view state.
+  - A classification's **Classes**, with its confusion matrix, and the **Hyperparameter search**.
+
+  The facts are written into text when the report is built. A fit never changes, so they cannot go
+  stale.
+- **Nothing is stored until "Save as report workspace"**, in the modal's footer, under a name that
+  can be edited (default "<model> — <fit> report"). The workspace is created with its state in one
+  request and linked to the fit. From then on the fit's row, and the modal, link to it. It is on
+  the Analytics front page like any other workspace, and can be edited as one.
+- **Print** prints the report as a Report workspace's Export PDF does.
+- **Posterior** and **Try a row** are tabs of the modal: the variable explorer, write back and the
+  run download, and the what-if row. They used to be on the editor page.
+- **Warnings**: a fit's "N warnings" in its row opens its report.
+- **Removing a fit** that has a saved report says the report stays, but its plots and tables will
+  say the fit is gone.
+- **Markdown**: text blocks (and text panels) now read GFM pipe tables, with alignment, `\|` and
+  pipes inside code (`panels/markdown.ts`).
+- **API**:
+  - `createWorkspace` takes an optional `state`, checked as `saveWorkspaceState` checks one
+    (`sc_analytics::check_new_state`), and an optional `fit` (report workspaces only), recorded on
+    the fit as the `report` attribute (`sc_model::set_instance_report`).
+  - `listModelInstances` and `getModelInstance` answer `report: { id, name }` while that
+    workspace exists, and `null` otherwise.
+  - `sc_analytics::create_workspace` itself still stores any state: a restore or a sync brings
+    states from earlier versions.
+- Removed: `models/FitView.tsx`, and `OutputsPanel` (the folding cards; `OutputTableView` and
+  `OutputBody` stay for the model comparison and `fit_table` panels). An output can no longer be
+  dragged from the model editor into a report open in a split view: the saved report replaces
+  that.
+- Tests:
+  - `sc-server` `analytics_api::a_fits_report_is_saved_as_a_workspace_linked_to_the_fit`: one
+    request creates the report and links it; a bad state, an unknown fit or a non-report kind
+    creates nothing; deleting the workspace removes the link.
+  - `ui/analytics` `models/fitReport.test.ts`: the facts, notices, panels, the search, a
+    posterior's warnings first, the state reading back as built.
+  - `panels/markdown.test.ts`: pipe tables.
+- **Compatibility:**
+  - No migration. The link is a key in the fit's existing `attributes` JSON.
+  - The new request fields and the `report` field are optional, so older clients are unaffected.
+  - The model's view state keeps its keys; `collapsed` is no longer read.
+  - Existing report text with a pipe row directly over a `---|---` row now renders as a table.
+
+## Trigger editor: one unreadable dataset no longer stops it loading (bug report)
+
+Editing a trigger on a table showed "Could not load the actions and tables.". The form asks
+`listActions?table=<table>`, and the handler answered `fit_model`'s model picker with
+`sc_model::models_for_table`, which loads and resolves each model and, to do that, reads **every**
+dataset in the installation. One dataset this build cannot read failed the request with a 400.
+In the reported case, the dataset had been saved by a build with an operation this one does not
+know (`model_predictions`, from the `analytics-is-back` branch). The editor of every trigger on a
+table broke with it.
+
+- The picker needs only names, so the handler now asks `sc_model::model_names_for_table`, which
+  reads `_fd_models` alone and never the datasets.
+- Test: `sc-model` `model_store::model_names_for_a_table_do_not_read_the_datasets` (a dataset
+  whose operations name an unknown kind: loading the models still refuses, the names do not).
+- **Compatibility:** no API or stored data changes. The dataset itself is still unreadable to
+  this build; the Analytics screens that load it still report it.
+
+## Admin UI: breadcrumbs on every screen below a section's root (BC1)
+
+A screen below a section's root now shows the way down to it from the sidebar, over its title, every
+step a link back up. Before, it had only a pre-title ("Checklist run", "Table data"), and nothing on
+the screen said where it was.
+
+- **What the trails are.** For example: `Applications › Shop › Checklists › Smoke test` over a
+  checklist run; `Tables › Book loans` over a table's data; `Triggers › On signup › Runs` over a
+  workflow run; `Agents › help desk › Runs` over an agent run; `Settings › Checklists` above a
+  Data Layer checklist. The trail lists the screens above this one only, and the title names the
+  screen itself.
+- **Screens covered:** table, table data, changesets and a changeset, database connections; file
+  store form and file manager; stream form and observe; trigger form (one opened from a table's
+  page goes back to that table), workflow editor, workflow runs, a run (workflow or agent); agent
+  settings, chat (in its top bar), runs and memories, LLM provider form; application settings,
+  views, pages, library, translations, GraphQL, a view, a page's properties, checklists, a
+  checklist and a checklist run; roles; code library; shared translations. Root screens (Home, All
+  entities, Tables, File stores, Streams, Triggers, Agents, Applications, Users, Source control,
+  Settings) keep their group pre-title.
+- **Titles that changed**, because the trail now carries what they used to repeat: table data is
+  titled "Data", a checklist run "Run started <time>", stream observe "Observe", workflow runs
+  "Runs", the workflow editor "Workflow" with its version (and "unsaved") as badges, the GraphQL
+  explorer "GraphQL". A run's version moved from the pre-title to a badge. Browser tab titles
+  still name the record (`books data`, `On signup · Runs`).
+- Back buttons are unchanged.
+- Code: `ui/admin/src/breadcrumbs.ts` (one builder per section, so two screens under one parent
+  link it the same way; `useApplicationName` for the checklist screens), `Breadcrumbs` and
+  `PageHeader`'s `crumbs` in `ui/admin/src/layout.tsx`, `.admin-breadcrumb` in `admin.css`.
+- Tests: `ui/admin/src/breadcrumbs.test.tsx` (the trails, and the header drawing one in place of
+  the pre-title); the agent runs/memory tests now expect the trail.
+- **Compatibility:** UI only. No routes, API or stored data changed.
+
+## Checklists: browser steps judge the app, not the checker's own browser; `feldspar check run` drives a browser
+
+The `fanacity-essentials` checklist failed on its second step for reasons that were not the
+application's, and from the command line every browser step was skipped.
+
+- **Another site's requests are not the page's failures.** The checking browser resolves no host
+  outside the base domain (`MAP * ~NOTFOUND`), so an app's map tiles (`tile.openstreetmap.org`) or
+  CDN assets fail with `ERR_NAME_NOT_RESOLVED`. That failure is now left out of the step's failed
+  requests, and logged at verbose ("the checking browser did not fetch …"). Before, it failed the
+  implicit clean check and read as `failed /2/1/1.png`, the host stripped, like a missing file of
+  the app's own.
+- **Only requests to this server are waited for.** `react.open_route` waits for the network to
+  be idle. A `data:` image (Leaflet's placeholder for a tile that failed) or another site's request
+  can stay "in flight" forever, as Chromium need not report it finished, so the step timed out with
+  the page rendered. Requests that are not HTTP to the base domain or a name under it are no longer
+  counted.
+- **A guest's `whoami` 401 is not a failed request.** Every generated app asks `whoami` on load
+  (the scaffold's `src/auth.tsx`), and a 401 is how a guest's page learns it is a guest. So every
+  guest page failed its clean check. A 401 from a path ending `/whoami` is now ignored; any other
+  status from it, and a 401 from anywhere else, still counts.
+- **`feldspar check run` starts the browser** as `serve` does, with its loopback listener, and shuts
+  it down at the end. It used to give the runner no browser, so every `browser.*`/`react.*` step was
+  skipped with "this host has no headless browser", even on a host that has one.
+- Code: `crates/sc-server/src/browser/driver.rs` (`reaches_this_server`,
+  `refused_by_this_browser`, `signed_out_answer`), `crates/sc-cli/src/commands/check.rs`.
+- **Compatibility:** no API or stored data changes. Checks get more lenient only for the three
+  cases above. `view_app` reports the same way, so the coding agent no longer chases those
+  phantom failures either.
+- **Tests:** unit tests for the three rules in the driver. The browser-driving integration tests
+  (`checklist_browser`, `view_app`) still pass. Checked by hand: `feldspar check run --app fanacity
+  --checklist fanacity-essentials` now passes all 13 steps on this machine (it was `incomplete`
+  from the CLI, and `failed` at step 2 from the admin UI).
+
+## Checklists: a "running" toast that follows the run step by step (TODO-checklists C5.1)
+
+Pressing Run on a checklist used to disable the button and show nothing else until the run had
+finished, which is minutes for a checklist that drives a browser. Now a toast opens, top right,
+naming the checklist and the step it is on ("Step 3 of 7: Open the orders list"), with a progress
+bar and the latest finished steps and how each went. It updates as each step finishes. The same
+toast shows on the checklists list (Run, and Run all, which also says "2 of 5"), on a checklist,
+and on a run's "Run again". Hiding it does not stop the run. When the run finishes, the screen
+opens its result as before.
+
+- **How: the run is a socket.** The Run buttons open a WebSocket, `/api/checklists/{id}/run/live`
+  (Run all: `/api/checklist-runs/live?application=`), instead of `POST …/run`. The server runs the
+  checklist on that connection and pushes a `progress` frame whenever a step begins or ends, then
+  `finished` with the runs (or `failed` with the reason), and closes
+  (`crates/sc-server/src/checklist_live.rs`). The run and its progress share one connection, so
+  nothing is polled and nothing has to be shared between nodes: a poll held in one process's
+  memory could have landed on another node, which had never heard of the run.
+- **The run outlives the socket.** It runs in its own task (`spawn_scoped`). If the tab closes or
+  the admin session lapses, the frames stop but the run finishes and is recorded as a `POST` run
+  would be. The page then says the connection was lost and that the result will be in the
+  checklist's runs; it does not run the checklist again.
+- **`sc_check::progress`.** `CheckEnv::with_progress(sink)` gives the runner a callback that
+  receives an `Event` as each checklist and step begins and ends. `Progress` folds those events
+  into what the toast shows. The socket keeps a `tokio::sync::watch` of that `Progress` and sends
+  the latest, so a slow browser is sent less, never a backlog. Every frame is the whole state: a
+  step over in a millisecond may not get its own frame, but the next frame lists it as done. The
+  runner keeps no global state.
+- **Security.** Both routes are admin-session raw routes, like the Observe and fit-progress
+  sockets. The handshake's `Origin` must be this host's, so another site cannot start a run, and
+  a plain `GET` without an upgrade runs nothing. On an application's host both paths are
+  nothing (404).
+- **Compatibility.** `POST /api/checklists/{id}/run` and `POST /api/checklist-runs` are
+  unchanged and remain what the CLI, agents, schedules and after-build checks use. A page whose
+  socket cannot open at all (an older server, a proxy that drops upgrades) falls back to the
+  `POST`: the run still happens, just without the step-by-step toast.
+- **Tests.**
+  - `sc-check` `checklists::a_run_reports_each_step_to_its_progress_sink_as_it_goes`: the exact
+    event sequence of a two-step run, and its fold halfway through. `progress::tests` covers the
+    fold across two checklists.
+  - `sc-server` `checklists_api::a_run_over_its_live_socket_pushes_each_step_then_the_run`, over a
+    real port:
+    - the progress frames arrive in order, then `finished` with a run that is stored;
+    - Run all reports how many checklists it runs;
+    - an unknown checklist gets a `failed` frame;
+    - a plain fetch, a malformed id or another origin's handshake runs nothing.
+  - `checklists_api::the_run_socket_routes_are_the_paths_the_spa_connects_to` holds the route
+    strings written in the admin to the server's.
+  - `app_serving` covers both paths on an application's host.
+  - `ui/admin` `checklistProgress.test.ts`: the toast's wording, the socket URL, frame parsing,
+    and `runLive` with a scripted socket. That covers progress, then the runs; a `failed`
+    reason; the POST fallback when the socket never opens; and no second run when the socket
+    drops mid-run.
+
+## Fix: the agent screens' labels are readable by the i18n extractor; §2's crate table caught up
+
+Two `sc-cli` tests (`cargo test -p sc-cli --test it`) had been failing.
+
+- **i18n.** The Agents tabs and settings screens (`AgentForm.tsx`, `AgentHeader.tsx`) called
+  `t(item.label)`, `t(role.help)`, `t(missing.message)` and so on, which the extractor reports as
+  unreadable call sites, because the message id has to be a literal. The label and help fields of
+  the tables in `agentForm.ts` (`ROLES`, `ANSWER_SETTINGS`, `LIMITS`, `CREDITS`, `AGENT_TABS`) and
+  `agentNav.ts` (`AGENT_AREA_TABS`, `AGENT_SECTIONS`) are now functions, `(t) => t("Strong model")`,
+  and the screens call `role.label(t)`. `missingRequired` takes `t` (defaulting to `format`) and
+  returns the message already translated. The English text is unchanged, so the shipped catalogues
+  still match. `sc-agent-builtins`'s `docs_agents::the_tutorial_names_the_agent_form_roles_and_budgets`,
+  which reads those labels out of `agentForm.ts`, now matches the `label: (t: Translate) => t("…")`
+  form.
+- **Other test failures in the workspace run.**
+  - `sc-python`: `python_models` was the one module in `tests/it.rs` that needs the embedded
+    interpreter but had no `#[cfg(feature = "python-host")]`, so it failed in a default build.
+  - `sc-server` `other_events::an_error_trigger_sees_both_error_kinds_and_no_rejections` used a
+    NOT NULL violation as its system error. Since integrity violations became a 400, it is an
+    application error, so the test's `books.pages` check now divides by the value and a zero
+    raises a real database error (22012, still a 500).
+  - `sc-server` `locale_negotiation`: two French strings the test quoted had been retranslated
+    when their English was reworded ("Balises BCP-47…", "Vues et pages…"). The tests now take
+    the locale lock through `hold_locales()`, which also resets the process-wide enabled set to
+    English only. Before, a test that failed while it had French enabled made the next test
+    fail too.
+- **Docs.** TECHNICAL_DESIGN.md §2's direct-dependency table was missing `sc-auth → sc-http`,
+  `sc-api → sc-net` and `sc-backup → sc-email`, all added by recent commits.
+
+## An automated backup can email an administrator when it fails
+
+A user asked to be told when a backup fails. Each automated backup schedule now has **Email on
+failure** (Settings → Backup → Automated backups → Add/Edit), with the choices None, All
+administrators, or one administrator's address. The dropdown appears only when Settings → Email
+has an SMTP host whose settings read.
+
+- **Stored** as `failure_email` on the schedule in `backup_schedules`: `null` for nobody, `"all"`,
+  or an address. A schedule saved before this has no field, which reads as nobody, so upgrading
+  changes nothing. No migration.
+- **Administrators** are users whose base role is admin (`role = 1`, grants not counted) who are
+  not disabled and not check users (`sc_backup::failure_email::admin_addresses`, over the new
+  `sc_auth::users_with_base_role`). Saving an address that is not an administrator's is refused.
+  At send time the address is looked up again, so an administrator demoted or deleted since is
+  not emailed, and "all" means the administrators there are on the day it fails.
+- **Once per run of failures.** The email goes out on the first failure after a success (or on
+  the first run), not on each hourly retry. It says so in the message. Sending is best effort: a
+  failure email that cannot be sent is logged and does not change the schedule's status.
+- **API:** `failure_email` on the schedule endpoints, and a new `GET
+  /api/backup/failure-recipients` (`getBackupFailureRecipients`) returning `email_configured` and
+  `admins`. `client.ts` is regenerated in all four UIs.
+- `BackupScheduler` sends through the installation's `SettingsMailer`. `with_mailer` swaps it
+  out for tests.
+- Tests: `sc-backup` `failure_email::tests::*`; `sc-server`
+  `backup_api::a_failed_automated_backup_emails_the_chosen_administrator`; `ui/admin`
+  `backupSchedules.test.ts` "names who is emailed when a backup fails".
+
+## Integrity violations are a 400 naming the field, not a 500 with the database's text
+
+A user reported that inserting a row through the row API with a foreign key to a missing row
+returned HTTP 500 with Postgres's error text, in the server's locale (German in their case) and
+naming the table and the constraint. Confirmed: the write funnel
+(`sc_access::rows::constraint_message`) only mapped violations of a catalog constraint (an
+admin's unique key or row constraint). A foreign key, a primary key, a `CHECK` or a `NOT NULL`
+fell through as a database error. A unique constraint without an admin message was already a
+400, but it carried the database's sentence.
+
+- **Integrity violations with no admin message** (SQLSTATE 23502, 23503, 23505, 23514) are now
+  `invalid` (400) with a short English sentence: `account: the referenced row does not exist`,
+  `email: a row with this value already exists`, `salary: the value breaks a rule of this table`,
+  `title: a value is required`, and `other rows still refer to this row` for a delete another
+  table's key forbids. They are classified by SQLSTATE and constraint name, never by the
+  message, so the server's locale does not matter. The field is found through Postgres's default
+  constraint names (`<table>_<field>_fkey`, `_key`, `_check`, `<table>_pkey`), which are the
+  names Saltcorn's DDL produces. A constraint named any other way, or on SQLite, gets the same
+  sentence without the field.
+- **Unchanged:** an admin's message still wins. A `23514` a trigger raised (Saltcorn's row
+  constraints, or a hand-written `RAISE`) keeps its own sentence. Every other database error is
+  still a 500.
+- `sc-db-postgres` appends ` (column "<name>")` to an error when the server names a column, after
+  the existing ` (constraint "…")`. Existing readers of the format are unaffected.
+- The sync push refusals use the same sentences.
+- Tests: `sc-access` `rows::tests::an_integrity_violation_is_refused_in_our_words_naming_the_field`
+  (including the report's German text) and `any_other_database_error_passes_through`. `sc-api`
+  `constraints::an_unexplained_integrity_violation_is_the_callers_fault_naming_the_field` (real
+  Postgres: foreign key, primary key, field `UNIQUE`, `CHECK`). `sync_push`'s assertions follow
+  the new wording.
+
+## Who may read a finished upload: `read_role` on upload slots
+
+A user on a second instance reported that the files of an upload slot were readable by every
+signed-in user unless the slot's hook returned `{ min_role }`: a signature uploaded by one user
+was served to another. Confirmed: a finished upload was given its uploader as owner but no floor
+of its own, so it inherited the store's and folders' floors, and the owner rule only ever adds a
+reader. Another user noted that their uploads were not reachable at all without a static_dirs
+mount; that holds for code and React apps, but a Saltcorn UI application's `/files/serve` serves
+every store it declares too.
+
+- **`read_role` on an upload slot** is written onto each finished file as its `min_role`: `1`
+  is only the uploader and admins, a larger role shares the slot's files with that role, `null`
+  leaves them to the folder's floors (the old behaviour). A hook's `min_role` is combined by
+  taking the stricter, so it narrows and never widens.
+- **Defaults that do not break running applications.** A slot stored or backed up without the
+  key keeps inheriting. A slot *added* through the admin API, the application form or
+  `update_application` without it is private (`1`), and one sent back without it keeps the
+  stored setting, so an older client changes nothing (`sc_app::fill_read_roles`).
+- **`update_application` warns** about a slot with `read_role` `null` that a static directory or
+  `/files/serve` serves, when it changes uploads or static directories.
+- **The application form** has a **Readers** column (uploader and admins, uploader and a role,
+  or the folder's readers). Its help text said files were "readable only by them and admins",
+  which was not true; it now says what the setting does. All five locales are updated.
+- Docs: §2.3 of the technical design, `code_api_js.md` (the hook paragraph), and a "trips
+  people up" entry in `docs/tutorial-file-fields.md`. `client.ts` is regenerated in all four UIs.
+- Tests: `sc-server` `app_uploads::a_slots_read_role_decides_who_reads_a_finished_file` (through
+  a static directory over a members' folder: the uploader, an admin, another member and a
+  stranger, for the default, an inheriting slot, a shared role and a hook that tries to tighten
+  and to loosen), `admin_applications_api::an_upload_slot_sent_without_read_role_is_private_when_new_and_kept_when_not`,
+  `sc-agent-builtins` `admin_copilot_apps::a_new_upload_slots_files_are_its_uploaders_unless_it_says_otherwise`,
+  `sc-app` unit tests for the JSON, `fill_read_roles` and the routes a warning names (including
+  `/files/serve`), and `uploadSlots.test.ts`.
+
+Not changed: files uploaded before this keep their meta. To make them private, set their
+`min_role` to 1 (the file manager's **Minimum role**, or `setMeta` as admin).
+
+## Secret fields from `edit_schema`
+
+A user asked for encrypted credential fields (IMAP or CalDAV passwords, API keys, refresh
+tokens) in application tables, starting with "`secret: true` as a field option in
+`edit_schema`". Secret fields already existed: sealed with AES-256-GCM under the instance key,
+shown as a placeholder on every client surface and readable by server-side code. The admin field
+editor could make one, but MCP `edit_schema` could not, though `describe_schema` already
+reported `secret: true`.
+
+- **`secret: true` on `add_field` and on the fields of `create_table`** makes a Secret field,
+  with no `type`. Given together with `references`, `expression` or `file_store`, it is refused.
+  The tool's description and parameter schema say what a secret is for and what it cannot be.
+- **On `alter_field`**, `secret: true` on a field that is already a secret is accepted, so a
+  described field can be sent back. Making an existing field a secret, or `secret: false` on a
+  secret, is refused with the reason (its stored values are in plain text, or sealed). Before,
+  `secret` was refused as an unknown setting.
+- The schema editor's existing rules still apply: no key, unique, default or `users` field.
+- Tests: `sc-api` `mcp::schema::tests::a_secret_field_is_secret_true_and_not_also_another_kind`,
+  `sc-agent-builtins` `admin_copilot_schema_rules::a_secret_field_is_made_described_and_stored_sealed`
+  (made by both operations, described, sent back, a value stored sealed, and the four refusals).
+
+Not part of this (from the same report): a key outside the data directory (env var or KMS),
+key versions and `rekey`, leaving the key out of backups, and app-wide named secrets.
+
+## OAuth 2.0 tokens for application code: `oauth.begin` and `oauth.accessToken`
+
+A user asked for OAuth support for Gmail (Google is phasing out password IMAP) and other APIs, so
+an application keeps revocable refresh tokens rather than passwords. They suggested a recipe for a
+redirect callback in a public GET code query, the client secret in a secret store, and a
+scheduled trigger that refreshes the token. Checked against the code first:
+
+- Gmail **over IMAP** already works through the Mail module (`mail_oauth_start`, provider
+  `google`), which keeps and renews its own tokens.
+- A public GET custom query could already answer a redirect: `location` is not a server-owned
+  header. Nothing tested it; now `app_oauth::a_public_get_query_answers_a_real_redirect` does.
+- A **Secret** field already worked as the place for a client secret: sealed at rest, redacted on
+  every client surface, readable by code bodies.
+- What was missing: the server's consent flow (PKCE, the binding cookie, tokens written sealed)
+  could be used by **modules only**. A hand-rolled callback would have every application redo
+  `state`, PKCE and the code exchange in an unauthenticated endpoint.
+
+Changes:
+
+- **`oauth.begin(…)` in code bodies** (JavaScript, code libraries, and Python's
+  `saltcorn.oauth.begin`). It takes the same request as a module's `oauth.begin`, with `store`
+  naming a row of an **application** table: never a `_fd_*` table or a module's table. The token
+  fields must be Secret fields, and the row must be readable at the run's authority. It answers
+  `{ url, expires_in }`, and the browser goes through the existing
+  `/_feldspar/oauth/consent/{id}` route, the shared callback
+  (`https://<admin host>/_feldspar/oauth/callback`, nothing new to register) and the completion.
+  A body running as admin (a trigger) has the row written by the server. A body running as its
+  caller (a custom query) has it written as the caller, through the table's ownership rules.
+  `provider: "google"` (with `access_type=offline` and `prompt=consent`) or `"microsoft"` fills
+  in the addresses, and any other provider is named by `authorization_url` and `token_url`.
+- **`oauth.accessToken(…)`** answers a token good for at least 5 more minutes. When the stored
+  one is due, it renews it with the refresh token, writes the new tokens back (a new refresh token
+  too, when the provider rotates them) and answers that. There is one renewal per row at a time.
+  `refused: token` renews after a 401, unless another call already did. A refused refresh token
+  (`invalid_grant`) throws, saying to connect again. So a scheduled trigger just calls it before
+  each request, and no refresh job is needed. `{ detail: true }` answers
+  `{ access_token, expires_at, refreshed }`.
+- **Internal move:** the flow's registry and checks moved from `sc_module::consent` to
+  `sc_auth::consent`, since `sc-api` sits below `sc-module`. `sc_module::consent` re-exports them
+  and keeps its declared-table rule. `ConsentFlow::module` became `asker` (`Asker::Module(name)`
+  or `Asker::Application`), and `TokenStore` gained `writer`. Flows are in memory only, so nothing
+  stored changes. A module's flow and its messages are unchanged.
+- **Docs:** a recipe in `tutorial-triggers.md` Step 5 (register the client, keep its secret in a
+  Secret field, a connect action, a scheduled trigger using the token, and why not to hand-roll
+  the callback); the `oauth` section of the code API reference (`code_api_js.md`); the editor's
+  types (`codeTypes.ts`, `declare const oauth`); and TECHNICAL_DESIGN §10.
+- **Tests:**
+  - `sc-server` `app_oauth`: a code action and a custom query each connect an account end to end
+    against a fake provider, with PKCE and the client secret read from a Secret field. The tokens
+    are sealed at rest and redacted over REST, and another user's browser is refused. A locked
+    row, a non-Secret token field, a system table and a missing row are refused before any
+    browser is involved. Renewal: the stored token is answered while it is good; once due it is
+    renewed and resealed, keeping the refresh token; `refused` with an old token takes the newer
+    one, and with the current one renews; a revoked refresh token says to connect again. The 302
+    redirect.
+  - `sc-auth` `consent` unit tests (moved from `sc-module`, plus `StoreRequest`). `sc-api`
+    `code_host::oauth` unit tests: expiry parsing, the margin, keeping the refresh token, and the
+    form encoding.
+  - `ui/admin` `codeTypes.test.ts`: `oauth.begin` / `accessToken` typed, an unknown provider and
+    method refused.
+  - `sc-python` `python_oauth` (`python-host`): `oauth.begin` and `oauth.access_token` lower to
+    the same requests as the JavaScript ones, with Google's addresses and parameters filled in.
+
+## Several comparisons on one column: ranges in the filter object and the typed client
+
+A user reported that a list filtered by several states had to fetch more rows and filter them in
+the browser, that a column could carry only one operator (no `gte` + `lte` date range), and that
+the `db` chain had the same limit, needing two chained `.where()` calls. Checked against the
+code: `in` was already supported everywhere (`?status=in.(open,pending)`,
+`{ status: { in: [ … ] } }`), and `or` is supported in every filter object. Two gaps were real.
+
+- **The filter object** (`sc_access::filter::condition_on`), which a code body's `.where()`, the
+  agent tools' `where` and live subscriptions all use, read an object as an operator only when it
+  had exactly one key. `{ due: { gte: "2026-01-01", lt: "2026-02-01" } }` was refused on a typed
+  column ("is not a valid date"). On a Text column it became an equality against the object's JSON
+  text and matched nothing, with no error. Now a non-empty object whose keys are **all** operators
+  is those comparisons, ANDed. An object with any other key is still a literal value, so `Json`
+  columns stay filterable by value. One behaviour changes: a `Json` column filtered by an object
+  whose keys are all operator names (`{ "gt": 1, "lt": 5 }`) is now a range rather than an exact
+  match. A one-key object (`{ "eq": … }`) was already read that way.
+- **The generated TS client.** The server has always read a repeated key
+  (`?published=gte.…&published=lt.…`) as a range, but `Filters<Row>` held one string per column,
+  so the client could not send one. A column's filter may now be a list of comparisons that must
+  all hold: `filter: { published: ["gte.2020-01-01", "lt.2021-01-01"] }` sends the key once per
+  element. A single string sends one pair as before. An unset (`undefined`) entry is now skipped;
+  before, it was sent as the text `undefined`. The admin API's `listRows`/`countRows` filter maps
+  take lists too. `whereObject` lowers a list for a live subscription to one object of
+  comparisons (a repeated operator goes in an `and`), so a read and its subscription still
+  describe the same rows. Regenerated `client.ts` and `helper.ts` in `ui/admin`, `ui/ide`,
+  `ui/builder` and `ui/analytics`.
+- **REST `or=`** stays refused, as designed. Its error now points at `in.(a,b)`, at the repeated
+  key for a range, and at GraphQL's `where` or a code query's `.where()` for an `or` across
+  columns.
+- Docs: the agent tools' `WHERE_HELP` ("an object of operator keys … several on one field must
+  all hold"), the `.where()` examples and the `query_table` note in the design document, and
+  `tutorial-rest-queries.md` (`in.(…)` instead of `or`, and a list filter in the client). The
+  Saltcorn 1 compatibility layer's comment on splitting `{ gt, lt }` was brought up to date; its
+  behaviour is unchanged.
+- Tests: `sc-access` (a date range, the Text case that used to match nothing, mixed `in` + `ne`,
+  per-operator refusals, the `Json` literal rule); `sc-api` code-host `.where()` range; a new
+  `client_filters` test that runs the generated client under Node and checks the repeated key
+  and the skipped `undefined`; `typescript_typecheck` (a list filter on a read and on a
+  subscription, and a bad comparison inside a list refused); the `or=` error naming its
+  alternatives; ranges added to `sc-live`'s SQLite/Postgres parity matrix; and `whereObject`
+  in `ui/admin`'s vitest suite.
+
+## `llm` calls in code bodies can charge the caller's LLM credits
+
+A follow-up to the `llm` work below: a code body can now charge a model call to the user it is
+running for, as a metered agent charges its runs.
+
+- **`charge`** is a new option of `llm.generate` and `llm.embed` (Python: `charge=`):
+  `{ credits_per_dollar, credits_per_1k_input, credits_per_1k_output, credits_min_balance }`.
+  These are an agent's metering settings under the same names and with the same meaning.
+  Without `charge`, a call is charged to nobody, as before.
+- **Who pays**: the run's caller, meaning the user whose request or write the code is
+  answering. The agent's rules hold, so a code body is no way round the meter:
+  - an admin caller is not charged;
+  - a call with nobody to charge (an anonymous request, a scheduled trigger) is refused before
+    the model is called;
+  - so is a call when the balance is at or below zero or under `credits_min_balance`;
+  - so is a call that only gives `credits_per_dollar` when the model has no prices.
+- **When**: the debit is made after the call, whatever the balance by then, and in its own
+  transaction, so a rolled-back workflow step or `run_code` still leaves it charged. It is a
+  ledger entry with the model, tokens and cost, and a note naming the trigger.
+- **What the body sees**: `llm.generate(…, { detail: true })` now also answers
+  `credits: { charged, balance }` (decimal strings), or `null` when nothing was charged. The
+  editor's types and the code API document cover the option.
+- **Underneath**: `Meter` moved from `sc-agent` to `sc-llm` (`sc_llm::meter`), so the agent loop
+  and the code host price a call with one rule. `sc_agent::meter` re-exports it, and agents are
+  charged exactly as before. A test keeps the meter's rounding equal to the ledger's. The design's
+  rule that only the agent loop debits credits now reads "only model calls" (§7.4b).
+- Tests: `sc-api` `code_host_llm` charges a user against Postgres through the stub (4 credits
+  for a chat call, 2 for an embedding). It checks that an admin is not charged, and checks each
+  refusal before any call reaches the provider. Also the JS and Python pass-through, and the
+  editor types.
+
+## `llm` in code bodies, and LLM providers set up over MCP and the CLI
+
+A user reported that code bodies called provider APIs with `fetch` and keys of their own, even
+though the instance had LLM providers configured. They asked for `llm.generate({ messages, model })`
+and `llm.embed(text)` over the configured providers, and for a way to set providers up over MCP or
+the CLI, which until now only the admin UI could do.
+
+- **`llm` in JavaScript and Python code bodies** (triggers, workflow steps, custom queries, code
+  libraries, `run_code`):
+  - `llm.generate(prompt)` or `llm.generate({ prompt, system, messages, model, provider,
+    temperature, max_tokens })` answers the text. With `detail: true` it answers
+    `{ text, provider, model, usage, cost }`.
+  - `llm.embed(text)` answers one vector, and `llm.embed([texts])` one per text, at most 2048.
+  - Messages are `{ role: system | user | assistant, content }`. A left-out provider is the
+    default provider, and a left-out model is that provider's default chat or embedding model,
+    the rule agents and `embed_from` already follow.
+  - Python has `llm.generate(prompt, messages=…, detail=…)` and `llm.embed(…)`.
+  - Mistakes throw a sentence at the call before anything is sent: an unknown option, a
+    non-text prompt, a `tool` role, a model the provider does not have.
+- **How it works**: like `models`, `llm` is not a new surface. Each call is an `op: "llm"`
+  request on the run's `db` host (`sc_api::code_host::llm`), on the run's call budget. A body with
+  no `db` has no `llm`, and a body that declares its own `llm` keeps it.
+- **Whose call**: the calls are the installation's. They are logged like every model call and are
+  not charged to anyone's LLM credits, the same as `embed_from` fields.
+- **Refused on viewer-only hosts**: `llm` is refused where code runs at its viewer's authority,
+  with a sentence saying so. That covers an agent's sandbox, whose code the model wrote, so it
+  cannot spend outside the agent's budget. View-pattern code and module routes are viewer-only
+  too and do not get it.
+- **Timeouts**: a model call counts against the body's `timeout_ms`, whose default is 5 s. A body
+  that calls `llm` should raise it, up to the 60 s maximum.
+- **Code editor and docs**: the editor's types declare `llm`, with `generate` typed as text, or as
+  an answer when `detail` is set. The code API document that MCP clients read (`describe_code_api`)
+  has an `llm` section that says not to call provider APIs with `fetch`.
+- **MCP**: eleven more provider and model endpoints are now MCP tools, beside `listLlmProviders`
+  and `listLlmModels`: `createLlmProvider`, `updateLlmProvider`, `deleteLlmProvider`,
+  `setDefaultLlmProvider`, `listLlmProviderBackends`, `createLlmModel`, `updateLlmModel`,
+  `deleteLlmModel`, `listLlmModelSettings`, `fetchLlmModels` and `testLlmModel`.
+  - The writes need `allow_create`, `allow_edit` or `allow_drop`. `fetchLlmModels` and
+    `testLlmModel` are POSTs that call the provider, so they need `allow_create`.
+  - The key goes in and reads back masked, as over the admin API. An update that sends the
+    masked key keeps the stored one.
+  - The MCP audit line at Verbose used to print tool arguments as given. It now masks every
+    argument whose name is a credential (`api_key`, `password`, `*secret*`, `token`, `*_token`).
+- **CLI**: `feldspar llm list [--json]`, `set-provider NAME --backend B [--api-key-env VAR |
+  --api-key-file PATH] [--base-url URL] [--set KEY=VALUE]… [--default]`, `set-model PROVIDER MODEL
+  [--kind …] [--default]`, `set-default PROVIDER` and `test PROVIDER [MODEL]`.
+  - These save through the same `sc_llm` checks as the admin UI.
+  - An update starts from the stored row, so a key that is left out is kept.
+  - A key given on the command line with `--api-key` is refused, and a backend or a model kind
+    cannot change once saved. Deleting stays with the admin UI and MCP, which check which agents
+    still use the provider.
+- Tests:
+  - `sc-expr`: the plans the JS prelude sends, and its refusals.
+  - `sc-api` `code_host_llm`: a JS body against an OpenAI-compatible stub, through `/chat/completions`
+    and `/embeddings`, plus the refusals and the viewer-only refusal.
+  - `sc-api` admin census and grants.
+  - `sc-server` MCP audit masking.
+  - `sc-cli` `llm`: the real binary against Postgres, with the key never printed.
+  - `ui/admin` `codeTypes`.
+
+## MCP: `run_code` runs a snippet once, committed or rolled back
+
+A user reported that there was no safe way to run a snippet once on the server, for example to
+try out a library, so everyone wrote throwaway test triggers. The two uses: a one-off data
+migration, which must persist, and code to be used later in an action, tried out first. TODO
+RC1.1.
+
+- A new MCP tool, **`run_code`**: `code` (required), `rollback` (default false), `language`
+  (`javascript`, the default, or `python`), `payload` and `timeout_ms` (at most 60 s). The body is
+  a `run_js_code` / `run_python_code` body with the same scope (`db`, `fetch`, `fs`, `trigger`,
+  `lib()`), bounds and admin authority a trigger's body has. It is not saved anywhere and fires no
+  trigger of its own. Its answer is `{ result, committed, console }`.
+- **One transaction on the primary database**, which whatever its writes cascade into joins. A body
+  that throws is rolled back, so a migration that stops half way changes nothing, and the error
+  carries the console lines it printed. A body that succeeds is committed, or, with
+  `rollback: true`, rolled back too: its writes are made and its own reads see them, then they are
+  undone. What a transaction cannot take back is not taken back, and the tool's description says
+  so: a `fetch`, a file written through `fs`, an email sent by a trigger a write fired, and rows of
+  a table on another database or provided by a module.
+- **Admin only**: only an administrator's token reaches it, like every MCP tool. It is in the
+  triggers area (`allow_triggers`), since saving and running a code trigger already did the same
+  thing. A committing run also needs `allow_edit`. A rolled-back run needs no further grant.
+- **Logged**: every run writes a line to the server log at info level, whatever the verbosity,
+  with the token's label, whether it commits, and the code itself. The usual MCP audit line with
+  the outcome follows.
+- **MCP only**: the in-app `admin_copilot` agent is not offered it, and its tool list is unchanged.
+  `sc_app::mcp::mcp_tool_set` is the MCP server's set (the shared set plus
+  `sc_api::mcp::mcp_only_tools()`), and the generated `SKILL.md` lists `run_code` under the
+  trigger tools.
+- Underneath: `TriggerDispatcher::run_snippet` (sc-action) runs a code action's configuration
+  once, inside the transaction, with the console collected, as a `TestRun`.
+- **Fix:** an aggregate a code body ran at admin authority (`.count()`, `.sum()`,
+  `.groupBy().aggregate()`) did not join the transaction it ran in, so in a workflow step it
+  missed the rows the step had just written. It now runs where the body's row reads already ran
+  (`sc_access::rows::aggregate_grouped_in`).
+
+## Identity providers: claims fill in the account, groups set the role, `login` sees both
+
+A user reported that a Keycloak (OIDC) provider sends `name`, `given_name`, `family_name` and
+`groups`, and Feldspar kept only the email: the account had no name, the `login` trigger's
+payload was null, and apps had to ask people for a name the provider already knew. (Writing
+the claims into `users.attributes`, as the report suggested, would not have helped: that is a
+system column, which no API returns and no formula sees.) TODO F8.6.
+
+- Three new, optional settings on a provider (Settings → Authentication; the form is generated,
+  so no UI change). A provider saved before keeps working exactly as before.
+  - **Copy claims to user fields** (`claim_fields`): one `claim=field` per line, e.g.
+    `given_name=first_name` or `groups=groups`. Claims are written onto fields an admin added
+    to the users table at every sign-in, and onto a new account when it is created, so they
+    show up as `user.first_name` everywhere. A save that maps onto a system column (`role`,
+    `email`, `attributes`, …) or a missing field is refused. If the field disappears later,
+    the claim is skipped and logged at sign-in. A list goes into a JSON column as it is, or
+    into a text column joined with commas.
+  - **Groups claim** (`groups_claim`, default `groups`) and **Roles from groups**
+    (`group_roles`): one `group=role` per line, e.g. `apps-plus=30`. A leading `/` on a
+    Keycloak path is ignored. No group may give the admin role: the save is refused. At every
+    sign-in the most privileged matching group's role wins. A promotion always applies. A
+    lower role, or falling back to `new_user_role` when no group matches, applies only to a
+    role the mapping manages (one it lists, or `new_user_role`). So an administrator, or a role
+    an admin gave by hand, is never lowered. A userinfo answer without the groups claim (the
+    mapper switched off) leaves the role alone. When the new role requires a second factor the
+    account lacks, its sessions end, as an admin's change would end them.
+- The **`login` event's payload** for a provider's sign-in is `{ provider, claims }`: the
+  provider's name and its whole userinfo answer (never a token), beside `guest_session` when
+  there is one. A password sign-in's payload is still null, so a formula should read
+  `payload.claims ? payload.claims.given_name : null`. **Behaviour change:** a trigger that
+  tested `payload === null` now sees an object on a provider's sign-ins.
+- The payload survives a second factor: `PasswordVerified::with_identity` →
+  `FullyAuthenticated::identity`, stored with the challenge in a new nullable JSON column,
+  `_fd_password_tokens.sign_in`, which the bootstrap adds. No migration. A node still on the
+  old release ignores the column, and the trigger then gets no claims.
+- Only the userinfo endpoint is read, not the ID token, so a Keycloak group mapper must have
+  "Add to userinfo" on (Keycloak's default).
+- The six new form strings are translated in `de`, `fr`, `es`, `ar` and `zh-Hans`.
+- Tests: `sc-config` unit tests (parsing, refusing the admin role, the role rule case by case),
+  a router unit test for the payload, and `oauth_sign_in.rs`
+  `a_providers_claims_fill_in_the_account_and_its_groups_set_the_role`. It covers saves that
+  are refused, a new account made with its claims and role, updates at later sign-ins,
+  falling back to `new_user_role`, a missing groups claim, hand-given and administrator roles
+  left alone, the `login` trigger's payload through a second factor, and a password sign-in's
+  payload staying null.
+
 ## edit_schema and describe_schema restate a table's access rules in words
 
 A user reported that a coding agent misread the access rules. A row is reachable when the
@@ -387,6 +1111,700 @@ read every row. The design is unchanged. The agent is now told what its rules me
   flags, plain role rules, RLS, the folding) and
   `admin_copilot_schema_rules::access_rules_are_restated_in_words_on_a_dry_run_and_after_applying`
   (dry run, applied, fixed, a batch that does not touch access, `describe_schema`).
+
+## A simulation chart's x axis name is no longer clipped
+
+On the Simulation workspace's profile charts the x axis name (the input being varied) showed
+only its top third. The grid's bottom margin was 8px with `containLabel`, but ECharts'
+`containLabel` makes room for the tick labels only, not the axis name, which sat 24px below the
+axis line and ran off the bottom. `curveOption` now adds 24px to the grid's bottom margin
+(`roomForXName`) and sets the name 30px below the axis so it clears the tick labels. The
+comparison chart, which names no x axis, keeps the tight margin. Test in
+`ui/analytics/src/simulation/charts.test.ts`.
+
+## A model chooses its features, and a fit with no complete row says which columns are null
+
+A random forest on the Titanic dataset ("Get datasets") with the label `survived` failed with
+"every one of the 1030 training rows was dropped by the encoding". Every column but the label was
+a feature, and no passenger has a value in every column: `body` is null for 1188 of the 1309,
+`cabin` for 1014, `boat` for 823, and no row has both a `boat` and a `body`. A row with a null in
+any feature is dropped, so every row was dropped.
+
+- **Features can be chosen.** `Model::features: Option<Vec<String>>` is stored in a new nullable
+  `_fd_models.features` column (JSON array). The bootstrap adds it, and NULL means every column
+  but the label, so every existing model reads and fits exactly as before. No migration is
+  needed. The list belongs to the model, not to a provider's configuration, so it works for every
+  provider whose fit goes through the host's encoding: linear and logistic regression, random
+  forest, k-means, PCA and module providers. `OutcomeSpec::takes_features` is false for a
+  hypothesis test and for a posterior, which name their columns in their own settings, and the
+  save refuses a feature list for them. `fit_encoding_of` encodes the chosen columns in the order
+  given. `fit_encoding` is unchanged and means "every column but the label".
+- **Validation** (`validate::check_features`, run on save and again before a fit) refuses an
+  empty list, a column named twice, a column the dataset does not have and the label.
+- **API.** `saveModel` takes an optional `features`, and `getModel` and `listModels` return it
+  (null when not chosen). `listModelProviders` returns `takes_features` for each provider. The
+  backup format carries `features` through `model_from_body`, and an older backup without it
+  restores as "every column". The four generated `client.ts` files are regenerated.
+- **Model editor.** The provider card has a **Features** section for a provider that takes them:
+  "Every column but the label" (the default), or "Only the columns ticked below", which starts
+  with every column ticked and shows each column's type. The label is never offered. A label
+  changed after the features were chosen is taken out of the list on save, and so are columns the
+  dataset no longer has (`featuresBody`). The dataset picker's help text and
+  `docs/tutorial-analytics.md` step 2 mention the choice.
+- **The error says which columns.** When every training row is dropped, the fit now fails with
+  each feature or label column that has nulls and how many, most first (`encode::null_counts`):
+  "… Nulls by column: `body` in …, `cabin` in …, …". It then says to choose the features or
+  filter the rows.
+- **Tests.** `fit::tests::a_fit_that_drops_every_row_names_the_columns_with_nulls` and
+  `a_fit_encodes_only_the_chosen_features_in_their_order` (sc-model).
+  `chosen_features_round_trip_and_an_old_row_has_none` (`sc-model/tests/model_store.rs`) covers
+  the round trip, clearing the list, the refusals, and a table from before the column that gains
+  it on boot. `a_model_chooses_its_features_and_a_fit_with_no_complete_row_names_the_gaps`
+  (`sc-server/tests/model_admin_api.rs`, whose `houses` table gains two columns with
+  complementary nulls) covers it end to end: `takes_features`, the failed fit naming the columns,
+  a save with features, a successful fit, and refusing the label. There are vitest tests for the
+  editor's helpers in `models.test.ts`.
+
+## Test suite green again after the analytics, Bayesian-regression and agent-form changes
+
+Fixes to tests and docs only. The one product change is in the agent form: its labels,
+help texts and validation messages now reach the translation catalogue. No database or API
+change.
+
+- **Analytics switched back on.** `the_analytics_framework_is_not_offered_while_switched_off`
+  (`sc-server/src/apps.rs`) is now `the_analytics_framework_is_offered_while_switched_on`, and the
+  two Analytics tests in `ui/admin/src/nav.test.ts` follow `ANALYTICS_IN_SIDEBAR`. Each test now
+  checks that the framework or sidebar entry is there exactly when its flag is on, so flipping a
+  flag no longer breaks a test.
+- **Crate table.** `docs/TECHNICAL_DESIGN.md` §2 now lists the new `sc-bayesreg` dependency of
+  `sc-server` and `sc-cli`, in both the table and the diagram (`repo_hygiene`).
+- **Agent screens' i18n.** `AgentForm.tsx` and `AgentHeader.tsx` passed table fields such as
+  `t(item.label)` to `t()`. The extractor cannot read those (`i18n` test), so the strings were
+  never put in the catalogue. In `agentForm.ts` (`ROLES`, `ANSWER_SETTINGS`, `LIMITS`,
+  `CREDITS`, `AGENT_TABS`, `missingRequired`) and `agentNav.ts` (`AGENT_AREA_TABS`,
+  `AGENT_SECTIONS`), each label, help text and message is now a function of the translator,
+  `(t) => t("…")`, the pattern `createButtons(t)` already uses.
+  `docs_agents::the_tutorial_names_the_agent_form_roles_and_budgets` reads the labels in that
+  new form.
+- **French catalogue.** "dewordify" reworded the locale help text and the Saltcorn UI pitch, so
+  `locale_negotiation` now expects their new translations ("Balises BCP-47 …", "Vues et pages
+  …").
+
+## The Stan provider is held back from the new-model picker
+
+The hand-written `stan` provider is not easy enough to use for the first release of the
+analytics app, so the model editor no longer offers it for a new model. Nothing is deleted.
+The provider stays registered, because `bayesian_regression` fits through it and existing Stan
+models must keep working. A model that already uses Stan still shows it in the picker, and it
+fits, edits and saves as before. Running applications are unaffected. There is no database
+change.
+
+- `listModelProviders` returns a new `listed` field for each provider. It is false for every
+  provider in `UNLISTED_PROVIDERS` (`crates/sc-server/src/handlers/models.rs`), which for now
+  holds only `stan`. To offer Stan again, empty that list.
+- `ModelEditor.tsx` filters the picker with the new `offered` helper in `models.ts`. An
+  unlisted provider appears only for the model that already uses it.
+- The formula editor's "Convert to Stan" is unchanged. It still makes a Stan model, and that
+  model can be edited.
+- Tests: `stan_is_unlisted_and_the_formula_provider_is_listed` in `model_admin_api.rs` (Stan
+  is unlisted, `bayesian_regression` and the built-ins are listed), a new assertion in
+  `a_stan_model_saves_only_with_its_programs_data_bound`, and `offered` cases in
+  `models.test.ts`. The four generated `client.ts` files were regenerated.
+
+## Analytics A7 phase 4: documentation and the definition of done
+
+Analytics TODO A7.9–A7.10. Milestone A7 (simulation) is documented, and its Try it is a test.
+
+Running applications are unaffected: only documentation and tests change.
+
+- **A7.9: documentation.**
+  - `TECHNICAL_DESIGN.md` §14.2 has a new subsection, "Uncertainty, and simulation (analytics
+    milestone A7)". It covers what each provider declares and returns (a table by provider),
+    `Prediction::Distribution`, prediction for new rows from a posterior through `new` and
+    standalone generated quantities, and the Model predictions operation with its in-memory tail
+    and the SQLite load that lets plots read it. It also covers the inputs of a prediction, the
+    profiler, scenarios and their spreads, the Simulation workspace, scoring, the `profiler` and
+    `scenarios` panels, and why simulation stays the admin's.
+  - In the same file, the Bayesian models' "What was left out" now says prediction from a
+    posterior arrived with A7. §14.4 lists Model predictions among the operations, and §14.5 no
+    longer lists the Simulation kind as disabled.
+  - `tutorial-analytics.md` has a new part 7, "Simulation": a Simulation workspace on part 3's
+    `House prices`, moving an input, saving and comparing `baseline` and `north side`, scoring an
+    `Unsold houses` dataset and exploring it, the profiler in part 6's dashboard and the
+    comparison in part 4's report, and the Radon posterior. The parts list at the top names it.
+  - `tutorial-stan.md`: "Doing prediction in code" becomes "Prediction for new homes". The
+    program declares `N_new`, `county_new` and `x_new` over `new` and a `y_new` generated
+    quantity, and **Prediction** names it. The section then covers what predicts afterwards
+    (formulas, `predictRows`, `m.predict`, Model predictions, the Simulation workspace), the
+    unknown-county refusal, and the cost of a prediction. The code-body route over `m.draws`
+    stays, as "Or in code, from the draws". The introduction says so too.
+- **A7.10: the definition of done.** `analytics_done.rs`'s `the_try_it_of_milestone_a7`, over
+  `feldspar demo analytics`'s rows. Linear regression half:
+  - A linear regression of `price` on `area` and the neighbourhood's name, with the Simulation
+    kind available and a workspace on the model.
+  - The profile starts at typical values, with an interval and a curve per input.
+  - Moving `area` raises the prediction by the area curve's slope, shifts every point of the
+    neighbourhood's curve by the same amount, and leaves the area's curve as it was.
+  - `baseline` and `north side` are saved in the workspace state and compared on one 128-point
+    grid, and their difference is the neighbourhood curve's.
+  - The unsold houses are scored by a dataset based on theirs, with intervals around every
+    prediction and each prediction equal to `predictRows`'s for the same house. A Data
+    explorer's histogram of the predictions counts every scored house.
+  - The profiler is dropped into a dashboard and the comparison into a report. Both draw, the
+    report keeps the saved scenarios, and the model's usage lists the workspace, the dashboard
+    and the report.
+
+  Stub posterior half (`posterior_api.rs`'s `Predictor`, now registered in this file's server
+  beside the `Sampler`):
+  - It is bound over the sold houses and the neighbourhoods, with `new` bindings, and fitted.
+  - Its profile has a distribution, the neighbourhood as a category of five levels, an area slope
+    of 0.5, and each level about one above the last.
+  - Two scenarios are compared by their draws, and the second's mean is its neighbourhood's
+    alpha plus half its area.
+  - Scoring the unsold houses gives each a prediction inside its interval, equal to an integer
+    alpha plus half the area.
+
+  The real CmdStan half is still `stan_models.rs`'s
+  `radon_predicts_new_homes_by_standalone_generated_quantities`, behind `#[ignore]`. Not run
+  here: the Try it walked by hand in the browser.
+
+## Analytics A7 phase 3: the Simulation workspace, scoring, and simulation panels
+
+Analytics TODO A7.6–A7.8. The Simulation workspace can now be created. Its screen sets a fitted
+model's inputs by hand, shows the prediction and a profile curve per input, keeps named
+scenarios and compares them, and scores a dataset with the model. The profiler and the
+comparison can be dragged into dashboards and reports.
+
+Running applications are unaffected. There is no database change and no migration, and no
+`sc-api` schema change, so no client is regenerated. Stored states are untouched: a Simulation
+workspace could not be created before, and the two panel kinds are new. One configuration
+becomes refusable: an Analytics application's `workspace_kinds` refuses `simulation`. No
+existing application can have it, since the kind was unavailable until now.
+
+- **A7.6: the Simulation workspace** (`ui/analytics/src/simulation/`). `WorkspaceKind::Simulation`
+  is available (`arrives_in` is `None`). The screen:
+  - A picker of the models with a fitted fit, and the interval's level.
+  - A control per input, by the kind `profileModel` describes: a slider with a number box for
+    a number or an integer (stepping about a hundredth of the range), a date picker, a drop-down
+    of a category's levels, and a switch for yes/no. Each moved input can be put back at its
+    typical value, and **All typical** resets every input.
+  - The prediction with its interval (or a classifier's probability), and a small chart per
+    input: a line with its interval as a band over a number or a date, or a point and whisker
+    per level over a category. A classifier gets one line (or bar) per class. Every curve
+    marks the input's current value.
+  - Requests wait 150 ms after the last change, and the old curves stay on screen, faded, until
+    the new ones arrive. So dragging a slider updates the prediction and every curve together.
+  - **Save scenario**: by default a name no scenario has, and an existing name replaces that
+    scenario's values. Saved scenarios can be used or deleted. The comparison
+    (`compareScenarios`) draws the saved scenarios, and the current inputs as "Current" when
+    they differ from all of them. A regression or a posterior draws densities on the shared
+    grid with each prediction marked, a classifier draws grouped bars per class, and a model
+    with no uncertainty draws plain bars. A table shows the inputs where the scenarios differ,
+    with each prediction and interval.
+  - The state is `{ model, fit?, level?, values, scenarios }`, checked by the server as in A7.5.
+    `values` holds only the inputs that were moved. Picking another model clears the values
+    and the scenarios, since its inputs are not the old model's.
+  - An Analytics application cannot open the kind (`WorkspaceKind::in_applications`). A
+    simulation predicts with a model, and models are the admin's alone, so `workspace_kinds:
+    ["simulation"]` is refused with a sentence.
+- **A7.7: scoring.** **Score a dataset** picks a dataset and creates "<dataset> scored by
+  <model>" (a free name), based on it, with one Model predictions operation:
+  - The prediction column is `predicted` unless the source already has one. It carries the
+    interval, the workspace's fit (when it names one) and its level.
+  - The dataset opens in the Dataset editor or in a new Data explorer.
+  - Server side, the deviation A7.3 left open is closed: a stage after a Model predictions
+    operation is read with `sc_dataset::read_rows` and loaded into a private in-memory
+    SQLite (`plot::render::tail_rows`). This is how a fit's output data is already loaded, and
+    the loader is now shared (`memory_rows`, typed by `ColType`).
+  - So plots, summary tables, hypothesis tests and stat cards of a scored dataset work
+    unchanged. A dashboard's conditions reach it too, as a Filter run in memory.
+  - A read refused inside the tail (more than `MAX_IN_MEMORY_ROWS`, a prediction refused) is
+    the plot's sentence, not a failure. `card_rows` now loads the models into the library, as
+    `plot_rows_in` does.
+- **A7.8: the profiler and the comparison as panels.** Two new panel kinds:
+  - `profiler` and `scenarios`, both a `SimulationPanel { model, fit?, level?, values,
+    scenarios }`: the workspace's model and level, and its inputs and scenarios when dragged.
+  - `Panel::check` refuses a level outside (0, 1), duplicate scenario names, and a comparison
+    without scenarios.
+  - `Panel::models` names the model. The usage index also maps models: a Simulation
+    workspace's model and these panels. The model's usage (`UsageIndex::model`, which the
+    delete warning reads) lists them beside the panels on its fits.
+  - `render_panel` answers the sentence when the model is gone. For a caller who is not the
+    admin, it answers that a simulation is shown only in the unrestricted Analytics UI. For
+    the admin it answers nothing more: the model providers are the server's, not
+    `sc-analytics`'s, so the browser draws the panels from `profileModel` and
+    `compareScenarios`.
+  - On a dashboard the profiler is interactive: its inputs move and the curves follow, for the
+    viewer only, and the panel keeps what it was dropped with.
+  - In a report (`still`, SVG) it is drawn once at the inputs it was dragged with, beside the
+    saved scenarios' comparison.
+  - The workspace has drag handles for both kinds. The dashboard gives a profiler a 12×8 tile
+    and a comparison a 6×6 one.
+  - Deviation: models stay the admin's, as A9 decided for fit outputs. So "what an
+    application's dashboard may call" (A7.4's note) is answered "neither endpoint", and
+    these panels say so there rather than predicting through an application.
+- Tests:
+  - `sc-analytics`: the new panel kinds round-trip and are checked, the usage index finds a
+    model through its workspace and its panels, and the Simulation kind is available but not
+    in an application.
+  - `analytics_done.rs`'s `a_simulation_scores_a_dataset_and_its_panels_are_kept`:
+    - A Simulation workspace's state is kept, and a duplicate scenario is refused.
+    - A scored dataset's histogram counts every scored house, its scatter plot has a point
+      per row, and a stat card's mean is the mean of the predictions.
+    - A dashboard with both panels is saved, and the model's usage lists it and the workspace.
+    - A panel on a deleted model says so, and a comparison without scenarios is refused.
+  - `analytics_api.rs` and `analytics_apps.rs` follow the kind's arrival.
+  - vitest: `simulation.test.ts` (state, scenarios, controls, scoring definition, panels and
+    their drag) and `charts.test.ts` (each curve and comparison option, spec in, option out).
+
+## Analytics A7 phase 2: the profiler and scenario comparison
+
+Analytics TODO A7.4–A7.5. A fitted model can be profiled — its prediction at chosen inputs and
+how it changes along each one — and named scenarios are compared by the distribution of their
+predictions. This is the server half of the Simulation workspace, whose screen is A7.6.
+
+Running applications are unaffected: no database change and no migration. Two endpoints and two
+optional provider methods (with defaults) are added. The Simulation workspace kind is still
+disabled, so no stored state changes.
+
+- **The inputs** (`sc_model::prediction_inputs`, new `PredictionInput { column, categorical }`):
+  the columns a prediction reads from a row. These come from the fit's encoding (one-hot columns
+  are categorical), from the bindings over a posterior's `new` rows
+  (`PredictionPack::input_columns`, where an `index` binding makes a column categorical, so a
+  county id is a drop-down and not a slider), or from the new provider method
+  `ModelProvider::inputs(state)`. The formula provider (`bayesian_regression`) uses that method
+  to list its bound columns minus the response's own (the response, its bounds, censoring,
+  weights, standard errors and subset). When nothing knows the inputs, they are every training
+  column but the label. `sc_model::bound_columns` is the shared helper.
+- **`sc_analytics::simulate`.** Each input is described from up to 100 000 rows of the training
+  data as a number, integer, date, category or yes/no. It starts at its typical value: the mean
+  (rounded for an integer), the median date, or the most common level. It also carries its range,
+  or up to 50 levels (the fit's own levels for a one-hot column). Values sent are checked
+  against the input's kind, and an input the model does not read is refused by name.
+  - **`profile`**: the prediction at the values and a curve per input, either 21 points across its
+    range (2–101 by request; integers and whole-day dates are deduplicated) or one point per
+    level. All rows go in **one batched** `predict_rows_at` call, so a Stan posterior runs
+    standalone generated quantities once per request.
+  - **`compare`**: each scenario's prediction and its `Spread`. That is `draws` (thinned to 1 000,
+    with a kernel density) where the model predicts from draws, `interval` for a regression,
+    `classes` (the class probabilities) for a classifier, and `point` otherwise. A regression's
+    interval is drawn as the Student t it was computed from: the degrees of freedom are recovered
+    from the interval's width (`t_degrees_of_freedom`), or the distribution is normal when the
+    interval is no wider than a normal one. Every density is on one shared 128-point grid. When
+    there are draws, one call answers both the summary and the distribution.
+  - `SimulationState { model, fit, level, values, scenarios }`. `check_state` now checks a
+    Simulation workspace's state: at most 20 scenarios, each with a non-empty name of at most 200
+    bytes, no two with the same name, and a level between 0 and 1.
+- **Draws for new rows**: `sc_model::predict_rows_draws`, and the new provider method
+  `ModelProvider::predict_draws(state, frame)` (default `None`). The formula provider answers it
+  with its expected-response draws. A posterior predicting through `new` is answered by
+  `predict_posterior`, which is now shared with `predict_rows_at`.
+- **Endpoints** (declared in `sc-api`'s `analytics.rs`, handled in `sc-server`'s
+  `handlers/simulation.rs`, admin only like the model editor's): `profileModel` (`POST
+  /api/models/{id}/profile` with `{ fit?, values?, level?, points? }`) and `compareScenarios`
+  (`POST /api/models/{id}/scenarios` with `{ fit?, level?, scenarios: [{ name, values? }] }`).
+  Without `fit`, both use the active fit, or else the newest fitted one, and a model that was
+  never fitted is refused. Both answer the fit used and whether its dataset has changed since.
+  Clients regenerated in all four UIs.
+- Deviation: the comparison takes its scenarios in the request rather than reading them from a
+  workspace. The workspace keeps them, and the A7.6 screen and A7.8's static report panel send
+  the ones they show.
+- Tests: `simulate`'s unit tests cover typical values for each kind, categorical integers, the
+  fit's one-hot levels, the rows of a profile, refused values, degrees of freedom recovered from
+  t intervals, the shared grid and densities integrating to one, and state checks.
+  `analytics_done.rs`'s `a_regression_is_profiled_and_its_scenarios_compared` covers a linear
+  regression over the demo houses: the area curve is a straight line whose interval is narrowest
+  near the mean, the profile agrees with `predictRows`, and the scenarios' t degrees of freedom
+  are the fit's residual ones. It also covers a logistic regression's class probabilities and an
+  unfitted model refused. `posterior_api.rs`'s
+  `a_posterior_is_profiled_and_its_scenarios_compared_by_their_draws` covers the stub posterior
+  through `new`: county is a category, floor has a slope of 0.5, the two scenarios' draws peak
+  where they should on the shared grid, and an unknown input, an unseen county and a duplicate
+  name are each refused.
+
+## Analytics A7 phase 1: prediction with uncertainty, and the Model predictions operation
+
+Analytics TODO A7.1–A7.3. A posterior predicts new rows, every provider that can says how sure a
+prediction is, and a dataset can add a model's predictions to its rows.
+
+Running applications are unaffected: there is no database change and no migration. Every new
+field is optional and left out of its JSON when unused (`Prediction::Class`'s and
+`ClassIndex`'s `probabilities`, a linear regression's stored covariance, the instance's
+`prediction` attribute), and a linear regression fitted before this change predicts as before,
+without an interval. A Stan model predicts only once its new `prediction` setting is filled in, so
+every existing Stan model is still a posterior that names no prediction.
+
+- **A7.1: prediction for new rows from a posterior** (TODO-post-mvp-30 §19, as designed there).
+  - Bindings may name the pseudo-dataset **`new`**: the main dataset's columns, the rows being
+    predicted. A fit binds it with no rows. Over `new` a binding is a `count`, a `column`,
+    `columns` or an `index` (no `match`, no time grid). Nothing may index into `new`, and no
+    dimension is declared over it. Each refusal is a sentence. A related dataset already called
+    `new` keeps that meaning.
+  - A posterior whose outcome names a prediction and whose bindings name `new` keeps a
+    `PredictionPack` on the instance (`ATTR_PREDICTION`): the generated quantity, the interface
+    and binding keys as fitted, and the bound scalars. At predict time only the `new` variables
+    are bound again (`sc_model::bind_new_rows`), against the instance's stored coordinates. A
+    county the fit never saw is refused by name ("`county` is `27099` in row `#1` of the rows
+    being predicted, which is not one of the 3 values the fit saw in `counties`…"), and so is a
+    null.
+  - New provider method `ModelProvider::predict_posterior` (`PosteriorPrediction`): each new
+    row's draws of the prediction. The host summarises them as the new
+    **`Prediction::Distribution { mean, sd, lower, upper, level }`**, whose value in a row is its
+    mean. (§19 named the fields `q5`/`q95`. An explicit level is used instead, so a regression's
+    interval has the same shape; the default level is 0.9, the 5 % and 95 % quantiles.)
+  - Stan: the configuration key **`prediction`** names the generated quantity
+    (`vector[N_new] y_new`). Saving refuses it without a `runs_store`, and the host's save check
+    refuses one that is not a generated quantity with one axis sized by the count of `new`. A
+    prediction is CmdStan's **standalone generated quantities**: it reads the published run back
+    (data.json and each chain's CSV), merges in the new rows' data, compiles from the fit's
+    program snapshot (a cache hit, as a rule) and runs one process per chain.
+  - `predict()` in a formula, `m.predict` in a code body and `predictRows` all accept such a
+    posterior. `describe_model` now says a Stan model predicts only when its `prediction` is set,
+    so the save check of a `predict("…")` still refuses one that names none. The refusal now says
+    how to name a prediction and still points at `m.draws(…)`.
+  - Tests: `posterior_api.rs`'s `a_posterior_predicts_new_rows_through_its_new_dataset`, a stub
+    posterior whose `y_new` is computed per draw, through `predictRows` (literal rows and a filter),
+    a calculated field's `predict()` and `m.predict`, plus the unknown county and the save-time
+    refusals. `stan_models.rs`'s `radon_predicts_new_homes_by_standalone_generated_quantities`
+    runs real CmdStan and is `#[ignore]`d. It passes here.
+- **A7.2: providers declare and return uncertainty.**
+  - `ModelProvider::uncertainty()` (and `ModelProviderKind::uncertainty`) declares `none`,
+    `interval`, `probabilities` or `distribution`. `ModelProvider::predict_uncertain(state,
+    frame, level)` returns the predictions with it, and defaults to the point prediction. The host
+    has `predict_rows_at` and `predict_subject_at`, which take a level. `predict_rows` and
+    `predict_subject` are unchanged.
+  - Linear regression: the prediction interval ŷ ± t·s·√(1 + x₀ᵀ(XᵀX)⁻¹x₀). The fit now stores
+    (XᵀX)⁻¹, σ² and the residual degrees of freedom. Tested against R's `predict(lm, interval =
+    "prediction", level = 0.9)`.
+  - Logistic regression: the probability of every class, mapped to class names by the host
+    (`Prediction::Class::probabilities`).
+  - Bayesian regression (`bayesian_regression`): the posterior distribution of each row's
+    expected response from the kept draws (`predict::predict_draws`). Checked against the
+    program's own `epred_1` quantiles in the `#[ignore]`d R2.4 recovery test, which passes here.
+  - Stan models answer distributions (A7.1).
+  - `predictRows`, `m.predict(…, { detail: true })` and the `ModelHost` detail objects carry
+    `sd`, `lower`, `upper` and `level` for a distribution, and `probabilities` for a class.
+    `ModelSummary` gains `uncertainty`.
+- **A7.3: the Model predictions operation** (`kind: "model_predictions"`, `sc_dataset::PredictOp
+  { model, fit, name, interval, level }`).
+  - It adds `name` and, as the provider gives them, `name_lower` and `name_upper`, or
+    `name_probability`. The inputs are the row's columns, matched to the model's by name, through
+    the new `ModelHost::predict_inputs`, one batched call per operation. The column types come
+    from the model's description, loaded into the `Library` by the new `sc_dataset::load_models`.
+  - It runs after the SQL. The stage before the first Model predictions is read (at most
+    `MAX_IN_MEMORY_ROWS`, 100 000), and the operations from there on run in memory as a
+    `Stage::tail()`: Calculated column and Filter in the reified formula evaluator, and Select
+    columns, Sort, Aggregate (every summary but geometry union) and Limit (first, seeded sample,
+    top per group) in Rust. Another Model predictions may follow too.
+  - Anything else after a prediction is refused on the operation with a sentence: a Window
+    column, a Join, or a formula that follows a key. A SQL read of such a stage (`rows_query`,
+    `unordered_query`, …) is refused the same way. `read_stage`, `read_page`, `read_rows`,
+    `count` and `column_values` evaluate the tail, so the Dataset editor's spreadsheet, paging
+    and the explorer's value lists work. Plots of such a dataset are A7.7.
+  - Deviation: `load_library` does **not** load the models. A model's own dataset is resolved
+    through the library, so describing models there would recurse once a saved dataset names
+    one (it overflowed the stack). `read_stage`, the editor's `world` and the dataset list call
+    `load_models` after the definitions are in place.
+  - The Dataset editor offers the operation (a model picker, the column's name, the interval and
+    its level) and describes it in the side panel.
+  - Tests: `sc-dataset`'s `predictions.rs` runs on both drivers with a stub model host and the
+    real formula evaluator, checking the predictions and intervals, every in-memory operation
+    against rows worked out by hand, paging, distinct values and the refusals.
+    `analytics_done.rs`'s `a_dataset_is_scored_by_the_model_predictions_operation` scores the
+    demo's unsold houses with a real linear regression through the API. A vitest covers the
+    editor's defaults and summary.
+
+## Bayesian regression from a formula, R2: breadth, prediction, and conversion to Stan
+
+Milestone R2 of `TODO-bayesian-regression.md`. The `bayesian_regression` provider now covers
+the rest of the brms families, non-linear and multivariate formulas, and predicts new rows in
+Rust from the stored draws. A formula model can be converted into an ordinary Stan model, and
+`feldspar stan warm` compiles the commonest programs ahead of the first fits.
+
+Running applications are unaffected. Every field R2 adds to the canonical structure is left
+out of its JSON when unused, so all 176 R1 golden programs are byte-identical,
+`GENERATOR_VERSION` is still 1, and compiled executables in an existing cache are still hits.
+There is no database change and no migration. The binder gains one optional configuration key,
+which no existing model has. The work stays clean-room, as R1 states: the new constructions
+come from published sources named in the modules (Bürkner & Vuorre 2019 for the ordinal
+models, Bürkner & Charpentier 2020 for monotonic effects, Mullahy 1986 for hurdles, Yu &
+Moyeed 2001 for the asymmetric Laplace), the brms documentation for behaviour and default
+links, and no `make_stancode()` output.
+
+- **R2.1: families and terms.**
+  - The families: `zero_inflated_poisson`, `zero_inflated_negbinomial`, `hurdle_poisson`,
+    `hurdle_negbinomial`, `hurdle_gamma`, `hurdle_lognormal`, `zero_inflated_beta`,
+    `zero_one_inflated_beta`, `beta_binomial`, the ordinal `cumulative`, `sratio`, `cratio` and
+    `acat`, `categorical`, `von_mises`, `exgaussian` and `asym_laplace`.
+  - Ordinal models have thresholds in place of an intercept: as many as the data says, or
+    `thres(k)`. Their `disc` is fixed at 1 unless it has a formula, and `cs()` gives
+    category-specific effects (refused with `cumulative`).
+  - Terms: `mo(x)` monotonic effects, `gr(g, by = h)`, fixed distributional parameters
+    (`nu = 4`), grouping by a combination of columns (`g1:g2`, `g1/g2`, refused in R1), and
+    grouping by a foreign key's referenced rows when the model has a related dataset over that
+    table.
+  - The prior menu gains `dirichlet` (on `simo`), and rows may name `nlpar` and `resp`.
+- **R2.2: non-linear formulas.** `y ~ a * (1 - exp(-b * t))` with `a ~ 1 + (1 | tree)` and
+  `b ~ 1`. `nl` is inferred, and the editor says so. The expression is parsed over a whitelist
+  of functions and re-emitted with positional names. A non-linear parameter's coefficients
+  need a proper prior.
+- **R2.3: multivariate models.** `mvbind(y1, y2) ~ …`, several response lines, or
+  `bf(…) + bf(…) + set_rescor(…)`. Responses are sorted canonically, an `|ID|` shares one
+  block across responses, gaussian responses have residual correlations by default, and
+  `subset()` is supported.
+- **R2.4: prediction in Rust.** A fit keeps a prediction pack in its state: the lowered
+  configuration, the coordinates, and the draws a prediction reads, at most 1 000.
+  `predict("…")` in a formula and `m.predict(…)` in a code body answer the posterior mean of
+  E[y]. An unknown level or a null is refused by name, and so is a fit with `keep_draws` off. A
+  multivariate or categorical model does not predict. In `sc-model`, `predict_rows` hands a
+  posterior's rows to its provider unencoded.
+- **R2.5: conversion and warming.**
+  - `POST /api/models/{id}/convert-to-stan` (`convertModelToStan`, admin only) writes the
+    program into a file store and saves a new `stan` model with the bindings the formula was
+    lowered to against its rows. It refuses to overwrite a file. The model editor shows it
+    under **Show Stan program**.
+  - `feldspar stan warm [--family F]… [--list] [--stan-cache-dir DIR]`, also `feldspar cmdstan
+    warm`, compiles 39 common programs into the server's cache.
+- **Host additions** (additive):
+  - `sc-model`: the binder key `derived_columns`, with the kinds `combine` and `mask`, added
+    before binding and known to the save-time check.
+  - `sc-server`: `stan_cache_dir()` is now public.
+  - The admin clients are regenerated for the new endpoint.
+
+Tests:
+- Without CmdStan (all run):
+  - 150 new golden programs, and every one of the 326 passes the real `stanc`.
+  - 11 R2 binding tests through the host's `bind_data`: combinations, foreign-key rows, `mo`,
+    ordinal thresholds, categorical indices, `by` and its refusal, fixed parameters,
+    zero-inflated and hurdle models, and a subset response.
+  - The non-linear and multivariate normalisation rules (renamed parameters and columns give
+    one program; `a*x` and `x*a` give two).
+  - A prediction from known draws, and its refusals.
+  - The ordinal probabilities summing to one for every family and link.
+  - The conversion's configuration, and the CLI's `warm` arguments.
+  - The server API test now converts a model through the endpoint.
+- Against a real CmdStan (`#[ignore]`d like every compiling test, all passing here):
+  - Recovery for case F (non-linear), case G (two responses, residual correlation, shared
+    block), a zero-inflated Poisson and a cumulative ordinal model. Case G's data seed was
+    chosen as R1's were: the first seed's posterior matched the within-school least-squares
+    slopes, which the test now prints.
+  - R2.4: the Rust predictions equal the program's `epred_1` for cases A, C and D.
+  - R2.5: a converted model samples identical draws with the same seed.
+  - R1's cases A–E still recover.
+
+## Bayesian regression from a formula, R1.5–R1.8: the generator, the provider, and the editor
+
+The rest of `TODO-bayesian-regression.md` milestone R1. An admin can now pick the
+**bayesian_regression** provider, type `log_radon ~ floor + (1 | county)` into the model
+editor, and fit it with CmdStan. Existing models are untouched. The `stan` provider behaves as
+before: its fit runs through the newly extracted `run_program`, and its state gains one key,
+`cached`. No database change and no migration. The implementation stays clean-room, as R1.1
+states: the generator's constructions are the Stan User's Guide's, each family's
+parameterisation is brms's documented one, and no `make_stancode()` output was used anywhere,
+the golden files included.
+
+- **R1.5: the canonicaliser and the generator** (`sc_bayesreg::canon`, `generate`). A
+  resolved formula becomes a `Structure`, holding only what changes the program text: the
+  family and links; per linear predictor its intercept (centred or not), coefficients (bounded
+  or not) and offset; per block correlated or not and which predictors it feeds; the addition
+  terms (column or constant); bounds on `b` and `constant()` on a distributional parameter. It
+  holds no column name, no count and no prior number, and blocks are sorted by signature. The
+  program is generated from the structure alone at the fixed path `model.stan`, with a header
+  naming the generator version and the structure.
+  - The group-level effects are non-centred, with an LKJ on the Cholesky factor when
+    correlated.
+  - The predictors are centred, and the intercept is recovered in generated quantities.
+  - The priors are data: a code and three numbers, branched on in one `prior_lpdf`.
+  - The likelihood is a loop when there are weights, censoring or truncation.
+  - The data plan binds everything with the host's own kinds (`terms`, `width`, a `values`
+    dimension per grouping column, `index`, `value`).
+
+  Tests:
+  - §5's acceptance cases: `y ~ x + (1 | g)`, `price ~ area + (1 | county)` and
+    `y ~ a + b + c + (1 + a | g)` give byte-identical programs and one `CompileCache::key`, and
+    so does block order. A different family, `||`, a `sigma ~` line, a link or a bound each
+    give another key, and a prior's numbers do not.
+  - 176 golden programs (every R1 family × no blocks / correlated / uncorrelated / an ID shared
+    across `mu` and a dpar × no addition term / `weights` / `cens` / `trunc`, as each family
+    allows). Each is checked against the generator, and with the real `stanc` when a CmdStan is
+    found.
+- **R1.6: `StanProvider::run_program`.** Compile, chains, draws and publish, extracted from
+  `fit_posterior`. The `stan` provider's tests pass unchanged, and so do the five real-CmdStan
+  server tests.
+- **R1.7: `BayesRegProvider`**, registered in `sc-server` beside `stan` and sharing its
+  `Arc<StanProvider>`, so the compile cache, process budget and runner are one.
+  - **Configuration**: `formula`, `family`, `links`, `priors` (only explicit rows), `center`,
+    and the Stan sampler's keys.
+  - **`validate`**: the formula against the dataset's shape, the prior rows against what it
+    creates, then the sampler's settings as the `stan` provider checks them.
+  - **`lower`**: the configuration plus the generated program and every binding. With the
+    frames, the default priors are computed and level rows are matched exactly, over the rows
+    the fit will keep.
+  - **`interface`**: Stan's own declaration parser on the generated program, so every host
+    check runs unchanged.
+  - **`fit_posterior`**: through `run_program`, adding a brms-style table (population-level,
+    group-level per grouping factor, family-specific) computed with the host's R̂ and ESS.
+  - **`program_changed`**: compares the regenerated program's hash with the snapshot's.
+
+  Tests:
+  - Without CmdStan: lowering, binding through the host's `bind_data` (rows with nulls
+    dropped, column names, prior codes and numbers, bounds), the save-time checks, a level row
+    refused at fit, a renamed model's program unchanged, dimension naming.
+  - With CmdStan (`#[ignore]`d like every compiling test; a notice without one): recovery on
+    simulated data for use cases A–E, every true value inside its 90 % interval (radon;
+    varying slopes with their correlation; binomial with `trials()`; Poisson with an offset;
+    `sigma ~ x`; censored Weibull). A renamed copy of case A fits with `cached: true` and the
+    same key, and the summary reads `floor`, `county` and `C07`, not positions.
+- **R1.8: the editor and its API.**
+  - `checkFormula` (`POST /api/model-formula/check`) and `checkPriors`
+    (`POST /api/model-formula/priors`) answer the located mistakes, pasted priors merged
+    (naming the rows they replaced), the prior table (rules from the shape, numbers from the
+    rows), the generated program, the derived bindings and the completions. A bad formula is a
+    successful answer carrying its mistakes.
+  - In the Analytics model editor, `FormulaEditor.tsx` replaces the binding table for this
+    provider:
+    - a Monaco formula editor with column and parameter completion and the mistakes
+      underlined;
+    - the family, link and centring controls;
+    - the prior table of §7: defaults and inherited rows greyed, explicit rows with a ✕,
+      `(all)` rows for whole classes, constraint checks as you type, bounds on `b` only with a
+      *structural* badge, and a "Not matched by the formula" section with delete and
+      retarget;
+    - Preview data, which also turns the rules into numbers;
+    - the derived bindings and Show Stan program, collapsed.
+
+    Pasted priors move into the table on blur and on save. There is no Compile button and no
+    cache state (§5).
+  - The model-provider list reports CmdStan's absence for this provider too.
+  - The generated clients were regenerated.
+  - Docs: `docs/tutorial-bayesian-regression.md` (radon: cases A, B, D), an OPERATIONS.md §9.3
+    note on formula models and the cache, and TECHNICAL_DESIGN §14.2 updated.
+  - Tests: a server test through the router (listed, checked with spans, pasted priors moved,
+    numbers after the data, preview, a save refused by name), and vitest for the editor's
+    prior logic.
+
+**Fixed on the way**: the coefficient names and the data-dependent defaults were computed over
+every row, so a null in a predictor broke the lowering. They are now computed over the rows a
+fit keeps.
+
+**Not in R1, by decision** (recorded in the TODO):
+- Grouping by a combination of columns (`(1 | g1:g2)`, `g1/g2`) parses but is refused at
+  save, with the advice to add a Calculated column. The binder has no two-column index yet.
+- `constant()` is allowed on a distributional parameter without a formula only.
+- A censoring column must be −1/0/1/2 or yes/no; text values are refused by name.
+- A grouping factor's levels are its distinct values; the foreign-key "rows" dimension of
+  TODO §2.8 is not offered yet.
+
+## Bayesian regression from a formula, R1.1–R1.4: the crate, the parser, families and priors, and the host's half
+
+The first four items of `TODO-bayesian-regression.md` milestone R1. The provider itself, the
+Stan generator and the editor (R1.5–R1.8) are still to come, so nothing changes for an admin
+yet and no existing model behaves differently.
+
+**A clean-room implementation.** brms is GPL-2, and nothing here is derived from its source:
+neither its R code nor its Stan templates were read, and no `make_stancode()` output was
+copied. The code follows published behaviour only: brms's reference documentation
+(`?brmsformula`, `?brmsfamily`, `?set_prior`, `?addition-terms`, `?gr`), Bürkner (2017, *JSS*
+80(1); 2018, *R Journal* 10(1)), Bates et al. (2015, *JSS* 67(1)), R's `?formula` and
+`?model.matrix` with Chambers & Hastie (1992), and the Stan User's Guide. The crate docs list
+these sources, and each module names the one it follows.
+
+- **R1.1: the crate `sc-bayesreg`** (layer 6, above `sc-stan` and `sc-model`). It is in the
+  workspace, in TECHNICAL_DESIGN §2's crate tree, dependency table and graph, and in a new §14.2
+  subsection, "Bayesian regression from a formula". That subsection replaces "a formula front
+  end generating Stan" among the Stan design's later work.
+- **R1.2: the parser and resolver.** `parse_formula` handles:
+  - multi-line text, `#` comments, lines continued after an operator, and `bf()`/
+    `brmsformula()` unwrapped, with its `family`, `center` and `nl` noted as overrides;
+  - the population-level expansion by R's rules (`+ - : * / ^ %in%`, `0`/`1`/`-1`,
+    `0 + Intercept`, terms ordered by degree, variables by first appearance), `offset()`, and
+    the transforms `log log1p exp sqrt abs inv scale poly I`;
+  - group-level terms `|`, `||`, `|ID|`, `gr(g, cor, id)`, `g1:g2` and `g1/g2`;
+  - the R1 addition terms `weights trials cens trunc se rate`;
+  - everything R2 or out of scope (`s()`, `mo()`, `mm()`, `mvbind`, `gr(by)`, `nu = 4`, …)
+    refused with a sentence that says which.
+
+  Every error carries a byte span, a line and character columns, and all bad lines are
+  reported, not just the first. `resolve` checks the result against the column names, the
+  shape or the frames:
+  - unknown columns, with a "did you mean" and an underline at the column;
+  - the response type against the family, and dates or categoricals inside a transform;
+  - distributional-parameter lines the family does not have, and a second response (R2);
+  - addition terms the family does not take, and `binomial` without `trials`;
+  - links against each parameter's allowed list;
+  - group terms merged into blocks by `|ID|`, across `mu` and `sigma`.
+- **R1.3: families and priors.** The family table has the 13 R1 families with brms's
+  documented default and allowed links (`Gamma` defaults to `log`, `nu` to `logm1`), the
+  response each accepts, its Stan density, and the addition terms it takes. The prior menu
+  gives each family a stable integer code (priors are data to the program) and checks its
+  arguments as the editor will ("σ must be positive (it is -1)"). Each menu family is allowed
+  on its classes only: `flat` on `b`, positive-support families on positive classes, `lkj` on
+  `cor` only, `uniform` with matching `lb`/`ub`, bounds on `b` only.
+
+  Rows resolve with precedence (class, coef, group) → (class, group) → (class). The table
+  shows each row's source (explicit, inherited from a named row, default, or default from
+  data), and a data-dependent default shows its rule until the data is read. An explicit row
+  that no longer targets anything is **kept and flagged** with its reason, never dropped, and
+  save and fit refuse it (`require_matched`). A row naming a level (`regionNorth`) is matched
+  by template at save and exactly at fit. Pasted `prior(…)`, `set_prior(…)`, `prior_string(…)`,
+  `c(…)` and `+` calls parse to the same rows as the table. `strip_priors` gives the formula
+  text without them, and `merge_rows` merges them in, naming the rows they replace.
+  `check = FALSE` is refused.
+
+  The default-prior rule was checked against the brms reference documentation (2.23) and
+  §3.7 of the TODO corrected. The documentation gives `b` flat, `lkj(1)`, `gamma(2, 0.1)` for
+  `nu`, `gamma(0.01, 0.01)` or `inv_gamma(0.4, 0.3)` for `shape`, and a half-`student_t(3, 0,
+  s)` for `sd` and `sigma`, with s "depend[ing] on the standard deviation of the response
+  after applying the link function. Minimally, the scale parameter is 2.5". It does not give
+  the formula for s or for the intercept's default. The rule used here is this
+  implementation's own, stated in `prior.rs` and in §3.7: `student_t(3, median(ỹ), max(2.5,
+  MAD(ỹ)))`, rounded to one decimal, and (0, 2.5) for a binary or binomial response.
+- **R1.4: the host's half, in `sc-model`.** All of it is additive with defaults, needs no
+  migration, and leaves `stan` models as they were:
+  - `ModelProvider::lower(cfg, LowerInput)` (with `lowered_configuration`) answers the
+    configuration to bind with. `LowerInput::Shape` serves save, validate and load;
+    `LowerInput::Frames` serves preview and fit.
+  - `validate_model`, the posterior fit, and the server's `previewModelData` and
+    `suggestBindings` use the lowered configuration everywhere they read the model's. They go
+    through `check_bindings_with`, and `posterior.rs` is split into `binding_provider` and
+    `binding_interface`.
+  - A fit stores the lowered configuration as the instance attribute `lowered_configuration`
+    (`ATTR_LOWERED`), not inside the provider's `state`, so it cannot collide with a
+    provider's keys. `Fit` gains a `lowered` field.
+  - `sc_model::terms` adds a model matrix with R's `model.matrix` coding: the margin rule for
+    contrasts versus dummies, the no-intercept rule, products with the first variable
+    fastest, `regionNorth`-style names, the fitted transforms `scale()` and `poly()` (R's
+    orthogonal basis by its three-term recurrence), and a `TermsEncoding` that rebuilds the
+    matrix for new rows and refuses unseen levels by name.
+  - The binding kind `terms` stores its encoding in the coordinates' `designs`. `width` and
+    `labels` accept it as they accept `design`.
+  - The dimension kind `names` (`{kind: "names", of}`) labels and sizes an axis by a
+    matrix's column names (`DimensionKind::Names`). `DimensionSpec::dataset()` and `column()`
+    now return `Option`.
+
+Tests:
+- `crates/sc-model/src/terms.rs`: R's coding cases, products, transforms, `poly(1:5, 2)`
+  against R's known values, stored encodings applied to new rows, unseen levels, non-finite
+  transforms, single-level factors.
+- `crates/sc-model/src/bind/tests.rs`: a `terms` binding sized and labelled by a `names`
+  dimension; nothing may index into one.
+- `crates/sc-model/src/fit.rs`: a lowering provider's bindings are used and stored on the
+  instance; a non-lowering one is bound as before and stores nothing.
+- `crates/sc-bayesreg`, unit and `tests/formulas.rs`, 24 tests:
+  - the expansion table and the model-matrix column names from R's rules;
+  - group-level and addition terms, and `bf()` unwrapping;
+  - 21 error sentences with their spans, plus line and column location;
+  - pasted priors equal to table rows;
+  - resolver refusals, links and block merging;
+  - the prior table before and after the data;
+  - unmatched rows kept and flagged; a level row matched at fit; class, group and dpar
+    refusals; response values;
+  - resolved formulas bound through the real binder as `terms` bindings.
+- The existing `sc-model` and `sc-stan` suites pass unchanged.
+
+## Reenable analytics links and applications
+
+Reversing directions below by which they were disabled
 
 ## Releases: a failed release is finished by running it again; revoking a release
 

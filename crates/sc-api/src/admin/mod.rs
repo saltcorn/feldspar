@@ -418,9 +418,17 @@ fn model_provider_schema() -> TypeSchema {
         // Whether it takes a program's data bound from the datasets — what the
         // form renders the binding editor for (Stan TODO §18).
         StructField::new("binds_data", TypeSchema::bool()),
+        // Whether a model of it takes a list of features — every provider whose
+        // fit goes through the host's encoding; not a hypothesis test or a
+        // posterior, which name their columns in their own settings.
+        StructField::new("takes_features", TypeSchema::bool()),
         // Whether a running fit can be cancelled — what the instance screen
         // renders Cancel for.
         StructField::new("cancellable", TypeSchema::bool()),
+        // Whether the picker offers it for a new model. An unlisted provider
+        // still fits, edits and saves the models that already name it; it is
+        // left out only of the choice for a new one.
+        StructField::new("listed", TypeSchema::bool()),
         // Why it cannot fit anything on this server, when it cannot: "CmdStan
         // was not found: …". Listed rather than hidden (Stan TODO §4).
         StructField::new("unavailable", TypeSchema::optional(TypeSchema::text())),
@@ -540,10 +548,24 @@ mod tests {
                 "undoChangeset",
                 // The LLM providers and their models, read-only (the Paddi
                 // field report): an agent creating an agent needs the names
-                // `createAgent` takes. Setting one up stays an admin's, since
-                // it is where the secrets are.
+                // `createAgent` takes. And setting one up (a user report: the
+                // admin UI was the only way, so code bodies called provider
+                // APIs with keys of their own): the key goes in and is never
+                // read back, as over the admin API, and each write needs its
+                // grant.
                 "listLlmProviders",
+                "createLlmProvider",
+                "updateLlmProvider",
+                "deleteLlmProvider",
+                "setDefaultLlmProvider",
+                "listLlmProviderBackends",
                 "listLlmModels",
+                "createLlmModel",
+                "updateLlmModel",
+                "deleteLlmModel",
+                "listLlmModelSettings",
+                "fetchLlmModels",
+                "testLlmModel",
                 // Modules, behind their own area that is off unless granted: an
                 // agent writing Python needs a library installed to import it,
                 // and asking a human to click Install is the gap this closes.
@@ -726,6 +748,16 @@ mod tests {
         for name in ["createRole", "setUserDisabled", "deleteRole", "deleteUser"] {
             assert_eq!(also_of(name), None, "{name}");
         }
+        // LLM providers and their models can be set up over MCP, as over the
+        // admin API.
+        assert_eq!(grant_of("createLlmProvider"), Some(Grant::Create));
+        assert_eq!(grant_of("updateLlmProvider"), Some(Grant::Edit));
+        assert_eq!(grant_of("setDefaultLlmProvider"), Some(Grant::Edit));
+        assert_eq!(grant_of("deleteLlmProvider"), Some(Grant::Drop));
+        assert_eq!(grant_of("createLlmModel"), Some(Grant::Create));
+        assert_eq!(grant_of("updateLlmModel"), Some(Grant::Edit));
+        assert_eq!(grant_of("deleteLlmModel"), Some(Grant::Drop));
+        assert_eq!(grant_of("testLlmModel"), Some(Grant::Create));
 
         for read_only in [
             "listAgents",
@@ -741,6 +773,10 @@ mod tests {
             "listWorkflowRuns",
             "listRoles",
             "listUsers",
+            "listLlmProviders",
+            "listLlmProviderBackends",
+            "listLlmModels",
+            "listLlmModelSettings",
         ] {
             assert_eq!(grant_of(read_only), None, "`{read_only}` only reads");
         }

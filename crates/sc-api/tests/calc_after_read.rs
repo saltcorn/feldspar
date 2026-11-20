@@ -76,6 +76,7 @@ impl ModelHost for FakeModels {
             no_prediction: None,
             active_fit: Some("fit".to_owned()),
             not_rows_of_table: None,
+            uncertainty: "none".to_owned(),
         })
     }
 }

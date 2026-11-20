@@ -31,6 +31,11 @@ pub const UPLOAD_SEGMENT: &str = "_upload";
 /// custom query's default is (§13.4).
 pub const DEFAULT_SLOT_MIN_ROLE: Role = Role::ADMIN;
 
+/// Who may read a new slot's finished files: the uploader and admins — the
+/// file's own floor is admin, and its owner clears any floor (§2.1). A slot
+/// stored before `read_role` existed has none and inherits (UP1).
+pub const DEFAULT_SLOT_READ_ROLE: Role = Role::ADMIN;
+
 /// A named upload slot of an application (§2.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadSlot {
@@ -45,6 +50,12 @@ pub struct UploadSlot {
     /// The least privileged role that may start an upload (`1` = admin … `100`
     /// = public).
     pub min_role: Role,
+    /// The finished file's own `min_role`: the least privileged role that may
+    /// read it besides its owner, the uploader (`1` = only the uploader and
+    /// admins). `None` gives the file no floor of its own, so it is read by
+    /// whoever the store's and folders' floors let in — every signed-in user,
+    /// in a folder open to them, through any route that serves the folder.
+    pub read_role: Option<Role>,
     /// The largest file one upload may be. `0` is the server's own ceiling
     /// (`--max-upload-bytes`), which caps a larger value too.
     pub max_bytes: u64,
@@ -57,8 +68,9 @@ pub struct UploadSlot {
 }
 
 impl UploadSlot {
-    /// A slot `name` into `folder` of `store`, admin-only, with no limit of its
-    /// own, any type and no hook.
+    /// A slot `name` into `folder` of `store`, admin-only, whose files only
+    /// their uploader and admins read, with no limit of its own, any type and
+    /// no hook.
     pub fn new(
         name: impl Into<String>,
         store: impl Into<String>,
@@ -69,6 +81,7 @@ impl UploadSlot {
             store: store.into(),
             folder: clean_folder(&folder.into()),
             min_role: DEFAULT_SLOT_MIN_ROLE,
+            read_role: Some(DEFAULT_SLOT_READ_ROLE),
             max_bytes: 0,
             mime_allow: Vec::new(),
             hook: None,
@@ -78,6 +91,13 @@ impl UploadSlot {
     /// Set who may start an upload.
     pub fn min_role(mut self, min_role: Role) -> UploadSlot {
         self.min_role = min_role;
+        self
+    }
+
+    /// Set who besides the uploader may read a finished file; `None` inherits
+    /// the folder's readers.
+    pub fn read_role(mut self, read_role: Option<Role>) -> UploadSlot {
+        self.read_role = read_role;
         self
     }
 
@@ -114,6 +134,7 @@ impl UploadSlot {
             "store": self.store,
             "folder": self.folder,
             "min_role": self.min_role,
+            "read_role": self.read_role,
             "max_bytes": self.max_bytes,
             "mime_allow": self.mime_allow,
             "hook": self.hook,
@@ -121,7 +142,11 @@ impl UploadSlot {
     }
 
     /// Read a slot back: `name` and `store` are required, everything else has
-    /// the default [`UploadSlot::new`] gives it. An unknown key is refused,
+    /// the default [`UploadSlot::new`] gives it — except `read_role`, which
+    /// absent is `None`: a slot stored before the setting existed keeps
+    /// serving its files to the readers it did (UP1). A tool that changes slots
+    /// from a client's JSON fills it in after ([`fill_read_roles`]).
+    /// An unknown key is refused,
     /// because a misspelled `max_byte` that was silently ignored is a slot
     /// with no limit.
     pub fn from_json(value: &Json) -> Result<UploadSlot> {
@@ -130,11 +155,12 @@ impl UploadSlot {
                 "an upload slot should be an object, got {value}"
             )));
         };
-        const KEYS: [&str; 7] = [
+        const KEYS: [&str; 8] = [
             "name",
             "store",
             "folder",
             "min_role",
+            "read_role",
             "max_bytes",
             "mime_allow",
             "hook",
@@ -167,6 +193,15 @@ impl UploadSlot {
                         "an upload slot's `min_role` should be a role number, 1 to 100, got {v}"
                     ))
                 })?,
+        };
+        let read_role = match obj.get("read_role") {
+            None | Some(Json::Null) => None,
+            Some(v) => Some(v.as_u64().and_then(|n| Role::try_from(n).ok()).ok_or_else(|| {
+                Error::invalid(format!(
+                    "an upload slot's `read_role` should be a role number, 1 to 100, or null \
+                     for the folder's readers, got {v}"
+                ))
+            })?),
         };
         let max_bytes = match obj.get("max_bytes") {
             None | Some(Json::Null) => 0,
@@ -204,10 +239,33 @@ impl UploadSlot {
             store: text("store", true)?,
             folder: clean_folder(&text("folder", false)?),
             min_role,
+            read_role,
             max_bytes,
             mime_allow,
             hook,
         })
+    }
+}
+
+/// Fill in `read_role` on each of `slots` whose JSON in `sent` (the list a
+/// client sent, in the same order) did not mention it: the setting of the
+/// stored slot of the same name in `stored`, or — a new slot — the default,
+/// [`DEFAULT_SLOT_READ_ROLE`]. An explicit `null` stays, and inherits.
+///
+/// For the tools that change an application's slots from a client's JSON
+/// (UP1): a new slot is its uploader's unless its author says otherwise, a
+/// client that predates the setting does not widen a slot it sends back, and a
+/// stored slot without the key — read with [`UploadSlot::from_json`] — keeps
+/// serving the readers it did.
+pub fn fill_read_roles(slots: &mut [UploadSlot], sent: &[Json], stored: &[UploadSlot]) {
+    for (slot, sent) in slots.iter_mut().zip(sent) {
+        if sent.get("read_role").is_some() {
+            continue;
+        }
+        slot.read_role = match stored.iter().find(|s| s.name == slot.name) {
+            Some(old) => old.read_role,
+            None => Some(DEFAULT_SLOT_READ_ROLE),
+        };
     }
 }
 
@@ -288,6 +346,70 @@ pub fn upload_ceiling_warnings(slots: &[UploadSlot], ceiling: Option<u64>) -> Ve
                  `max_upload_bytes` in the environment's feldspar.toml section, then restarts.",
                 slot.name, slot.max_bytes
             )
+        })
+        .collect()
+}
+
+/// The URLs at which a file in `slot`'s folder can be fetched on `app`: each
+/// static directory that serves the folder or a folder inside it, and a
+/// Saltcorn UI application's `/files/serve/<store>/…`, which serves every store
+/// it declares. Empty when only the application's own code can hand a file
+/// out (a code query, a File field of a row).
+pub fn upload_slot_routes(app: &Application, slot: &UploadSlot) -> Vec<String> {
+    let mut routes: Vec<String> = app
+        .static_dirs
+        .iter()
+        .filter(|d| d.store.0 == slot.store)
+        .filter_map(|d| {
+            d.url_for(&slot.folder).or_else(|| {
+                // A directory mounted on a folder *inside* the slot's: the
+                // files a hook puts there.
+                let base = d.path.trim_matches('/');
+                let inside =
+                    slot.folder.is_empty() || base.starts_with(&format!("{}/", slot.folder));
+                inside.then(|| d.mount.clone())
+            })
+        })
+        .collect();
+    if app.framework.name == crate::application::SALTCORN_UI {
+        routes.push(match slot.folder.is_empty() {
+            true => format!("/files/serve/{}/", slot.store),
+            false => format!("/files/serve/{}/{}/", slot.store, slot.folder),
+        });
+    }
+    routes
+}
+
+/// A warning for each slot that gives its finished files no floor of their own
+/// (`read_role` null) while a route serves its folder: each file is then read
+/// by everyone the store's and folders' floors let in — every signed-in user,
+/// where those are the user role — not only by its uploader (UP1).
+pub fn upload_exposure_warnings(app: &Application) -> Vec<String> {
+    app.uploads
+        .iter()
+        .filter(|slot| slot.read_role.is_none())
+        .filter_map(|slot| {
+            let routes = upload_slot_routes(app, slot);
+            (!routes.is_empty()).then(|| {
+                format!(
+                    "upload slot `{}` has no read_role, so a finished file is served at {} to \
+                     everyone the floors of store `{}` and folder `{}` let read it — every \
+                     signed-in user if those are the user role — not only to its uploader. \
+                     Set `read_role` 1 to keep each file to its uploader and admins, or the \
+                     role that may read them all.",
+                    slot.name,
+                    routes
+                        .iter()
+                        .map(|r| format!("`{r}`"))
+                        .collect::<Vec<_>>()
+                        .join(" and "),
+                    slot.store,
+                    match slot.folder.is_empty() {
+                        true => "/",
+                        false => &slot.folder,
+                    },
+                )
+            })
         })
         .collect()
 }
@@ -711,14 +833,100 @@ mod tests {
         assert_eq!(UploadSlot::from_json(&slot.to_json()).unwrap(), slot);
 
         let bare = UploadSlot::from_json(&json!({ "name": "a", "store": "files" })).unwrap();
-        assert_eq!(bare, UploadSlot::new("a", "files", ""));
+        // A slot stored before `read_role` existed inherits, as it did (UP1);
+        // everything else is what a new slot has.
+        assert_eq!(bare.read_role, None);
+        assert_eq!(bare, UploadSlot::new("a", "files", "").read_role(None));
         assert_eq!(bare.min_role, Role::ADMIN, "admin unless stated");
+        assert_eq!(
+            UploadSlot::new("a", "files", "").read_role,
+            Some(Role::ADMIN),
+            "a new slot's files are its uploader's"
+        );
+        let shared = UploadSlot::new("a", "files", "").read_role(Some(Role::of(80)));
+        assert_eq!(UploadSlot::from_json(&shared.to_json()).unwrap(), shared);
+        let inherit = UploadSlot::new("a", "files", "").read_role(None);
+        assert_eq!(inherit.to_json()["read_role"], Json::Null);
+        assert_eq!(UploadSlot::from_json(&inherit.to_json()).unwrap(), inherit);
+        let err = UploadSlot::from_json(&json!({ "name": "a", "store": "s", "read_role": "me" }))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("read_role"), "{err}");
 
         let err = UploadSlot::from_json(&json!({ "name": "a", "store": "s", "max_byte": 3 }))
             .unwrap_err()
             .to_string();
         assert!(err.contains("max_byte"), "{err}");
         assert!(UploadSlot::from_json(&json!({ "name": "a" })).is_err());
+    }
+
+    #[test]
+    fn a_slot_sent_without_read_role_keeps_its_own_or_is_the_uploaders() {
+        let stored = vec![
+            UploadSlot::new("old", "files", "").read_role(None),
+            UploadSlot::new("gallery", "files", "").read_role(Some(Role::of(80))),
+        ];
+        let sent = vec![
+            json!({ "name": "old", "store": "files" }),
+            json!({ "name": "gallery", "store": "files" }),
+            json!({ "name": "new", "store": "files" }),
+            json!({ "name": "open", "store": "files", "read_role": null }),
+        ];
+        let mut slots = upload_slots_from_json(Some(&Json::Array(sent.clone()))).unwrap();
+        fill_read_roles(&mut slots, &sent, &stored);
+        let roles: Vec<_> = slots.iter().map(|s| s.read_role).collect();
+        assert_eq!(
+            roles,
+            [None, Some(Role::of(80)), Some(Role::ADMIN), None],
+            "kept, kept, new and private, explicitly inheriting"
+        );
+    }
+
+    #[test]
+    fn an_inheriting_slot_served_by_a_route_is_warned_about() {
+        let mut app = app();
+        app.uploads
+            .push(UploadSlot::new("sigs", "files", "signatures").read_role(None));
+        app.uploads
+            .push(UploadSlot::new("mine", "files", "signatures"));
+        // No route serves the folder: only the app's own code can hand a file out.
+        assert!(upload_exposure_warnings(&app).is_empty());
+
+        app.static_dirs.push(crate::StaticDir::new(
+            "/media",
+            FileStoreId("files".into()),
+            "",
+        ));
+        let warnings = upload_exposure_warnings(&app);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("`sigs`"), "{}", warnings[0]);
+        assert!(
+            warnings[0].contains("`/media/signatures`"),
+            "{}",
+            warnings[0]
+        );
+
+        // A directory over a folder inside the slot's is a route to its files too.
+        let mut inner = app.clone();
+        inner.static_dirs = vec![crate::StaticDir::new(
+            "/s",
+            FileStoreId("files".into()),
+            "signatures/2026",
+        )];
+        assert_eq!(upload_slot_routes(&inner, &inner.uploads[0]), ["/s"]);
+        // …and one over another folder is not.
+        inner.static_dirs[0].path = "logos".into();
+        assert!(upload_exposure_warnings(&inner).is_empty());
+
+        // A Saltcorn UI application serves every store it declares.
+        let mut ui = app.clone();
+        ui.static_dirs.clear();
+        ui.framework = FrameworkRef::new("saltcorn-ui");
+        assert_eq!(
+            upload_slot_routes(&ui, &ui.uploads[0]),
+            ["/files/serve/files/signatures/"]
+        );
+        assert_eq!(upload_exposure_warnings(&ui).len(), 1);
     }
 
     #[test]

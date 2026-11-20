@@ -89,10 +89,15 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                         "outcome_error": outcome_error,
                         "standardise": kind.standardise,
                         "binds_data": kind.binds_data,
+                        "takes_features": kind.outcome.takes_features() && !kind.binds_data,
                         "cancellable": kind.cancellable,
+                        // Whether the new-model picker offers it (see
+                        // `UNLISTED_PROVIDERS`).
+                        "listed": !UNLISTED_PROVIDERS.contains(&kind.name.as_str()),
                         // Only a provider this server knows how to ask has an
                         // availability; CmdStan's is found at boot (Stan §20).
-                        "unavailable": (kind.name == sc_stan::STAN_PROVIDER)
+                        "unavailable": (kind.name == sc_stan::STAN_PROVIDER
+                            || kind.name == sc_bayesreg::PROVIDER)
                             .then(|| models.stan().unavailable().map(|why| {
                                 format!("CmdStan was not found: {why}")
                             }))
@@ -384,11 +389,11 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             async move {
                 let id = sc_model::ModelId(parse_uuid(ctx.path_param("id")?, "model")?);
                 let model = sc_model::load_model(&catalog, id).await?;
-                let out: Vec<Json> = sc_model::list_model_instances(&catalog, id)
-                    .await?
-                    .iter()
-                    .map(|i| with_dataset_changed(model_instance_json(i), i, model.as_ref()))
-                    .collect();
+                let mut out = Vec::new();
+                for i in sc_model::list_model_instances(&catalog, id).await? {
+                    let json = with_dataset_changed(model_instance_json(&i), &i, model.as_ref());
+                    out.push(with_report(&catalog, json, &i).await);
+                }
                 Ok(HandlerResponse::ok(Json::Array(out)))
             }
         }
@@ -435,6 +440,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 if let Json::Object(map) = &mut out {
                     map.insert("program_changed".to_owned(), json!(changed));
                 }
+                let out = with_report(&catalog, out, &instance).await;
                 Ok(HandlerResponse::ok(out))
             }
         }
@@ -611,11 +617,20 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             async move {
                 let models = models_of(&apps)?;
                 let model = model_from_body(&catalog, rows::require_object(&ctx.body)?).await?;
-                let (_, interface) = crate::posterior::binding_interface(&models, &model).await?;
+                let provider = crate::posterior::binding_provider(&models, &model)?;
                 let datasets = crate::posterior::posterior_datasets(&models, &model).await?;
+                let config = sc_model::lowered_configuration(
+                    provider.as_ref(),
+                    sc_model::LowerInput::Frames {
+                        model: &model,
+                        datasets: &datasets,
+                    },
+                )?;
+                let interface =
+                    crate::posterior::binding_interface(provider.as_ref(), &config).await?;
                 let preview = sc_model::preview_data(
                     &interface,
-                    &model.configuration,
+                    &config,
                     &datasets,
                     models.posterior_limits().max_data_values,
                 );
@@ -636,7 +651,20 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             async move {
                 let models = models_of(&apps)?;
                 let model = model_from_body(&catalog, rows::require_object(&ctx.body)?).await?;
-                let (_, interface) = crate::posterior::binding_interface(&models, &model).await?;
+                let provider = crate::posterior::binding_provider(&models, &model)?;
+                let config = sc_model::lowered_configuration(
+                    provider.as_ref(),
+                    sc_model::LowerInput::Shape {
+                        model: &model,
+                        shape: None,
+                    },
+                )?;
+                let interface =
+                    crate::posterior::binding_interface(provider.as_ref(), &config).await?;
+                // Suggested against the bindings the provider binds with, so a
+                // provider that derives them has nothing left to suggest.
+                let mut model = model;
+                model.configuration = config;
                 let suggestions =
                     sc_model::suggest_bindings(&interface, &model, &catalog.schema_shape()?);
                 Ok(HandlerResponse::ok(json!({
@@ -644,6 +672,154 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     "reasons": serde_json::to_value(&suggestions.reasons)
                         .unwrap_or(Json::Null),
                 })))
+            }
+        }
+    });
+
+    // TODO-bayesian-regression §7: the formula editor's two questions. The
+    // check is `sc_bayesreg::check`, pure; what is here is reading the
+    // dataset through the row layer — its first rows for the shape while the
+    // admin types, every row (as a fit reads them) for the prior table's
+    // numbers after a data preview.
+    reg.handle(sc_api::handler_ids::CHECK_FORMULA, {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let models = models_of(&apps)?;
+                let model = model_from_body(&catalog, rows::require_object(&ctx.body)?).await?;
+                let frame = models
+                    .source()
+                    .read(
+                        &model.dataset,
+                        &sc_model::Read::all(models.max_rows()).first(DATASET_PREVIEW_ROWS),
+                    )
+                    .await?;
+                let shape = sc_model::DatasetShape::of_frame(&model.dataset.table, &frame);
+                let check = sc_bayesreg::check(
+                    &model.configuration,
+                    sc_model::LowerInput::Shape {
+                        model: &model,
+                        shape: Some(&shape),
+                    },
+                );
+                Ok(HandlerResponse::ok(serde_json::to_value(&check).map_err(
+                    |e| Error::msg(format!("the formula check: {e}")),
+                )?))
+            }
+        }
+    });
+
+    reg.handle(sc_api::handler_ids::CHECK_PRIORS, {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let models = models_of(&apps)?;
+                let model = model_from_body(&catalog, rows::require_object(&ctx.body)?).await?;
+                let datasets = crate::posterior::posterior_datasets(&models, &model).await?;
+                let check = sc_bayesreg::check(
+                    &model.configuration,
+                    sc_model::LowerInput::Frames {
+                        model: &model,
+                        datasets: &datasets,
+                    },
+                );
+                Ok(HandlerResponse::ok(serde_json::to_value(&check).map_err(
+                    |e| Error::msg(format!("the prior check: {e}")),
+                )?))
+            }
+        }
+    });
+
+    // TODO-bayesian-regression §9: a formula model as an ordinary Stan model.
+    // Lowered against its rows as a fit is, so the prior data are the numbers
+    // a fit would use; the program written through the caller's checked
+    // store; the new model saved (and so validated) like any other.
+    reg.handle(sc_api::handler_ids::CONVERT_MODEL_TO_STAN, {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let models = models_of(&apps)?;
+                let id = sc_model::ModelId(parse_uuid(ctx.path_param("id")?, "model")?);
+                let body = rows::require_object(&ctx.body)?;
+                let field = |k: &str| body.get(k).and_then(Json::as_str).map(str::trim);
+                let store_name = field("store")
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| Error::invalid("`store` names the file store to write to"))?;
+                let path = field("path")
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| Error::invalid("`path` is where the program is written"))?;
+                let model = sc_model::load_model(&catalog, id)
+                    .await?
+                    .ok_or_else(|| Error::not_found(format!("no model with id {id}")))?;
+                if model.provider.trim() != sc_bayesreg::PROVIDER {
+                    return Err(Error::invalid(format!(
+                        "model `{}` is not a formula model (its provider is `{}`), so there is \
+                         no generated program to convert",
+                        model.name, model.provider
+                    )));
+                }
+                let registry = models.registry();
+                let provider = registry.require(sc_bayesreg::PROVIDER)?;
+                let datasets = crate::posterior::posterior_datasets(&models, &model).await?;
+                let lowered = sc_model::lowered_configuration(
+                    provider.as_ref(),
+                    sc_model::LowerInput::Frames {
+                        model: &model,
+                        datasets: &datasets,
+                    },
+                )?;
+                let converted = sc_bayesreg::eject::convert(&lowered, store_name, path)?;
+                let name = match field("name").filter(|n| !n.is_empty()) {
+                    Some(n) => n.to_owned(),
+                    None => {
+                        let mut candidate = format!("{} (Stan)", model.name);
+                        let mut n = 2;
+                        while sc_model::load_model_by_name(&catalog, &candidate)
+                            .await?
+                            .is_some()
+                        {
+                            candidate = format!("{} (Stan {n})", model.name);
+                            n += 1;
+                        }
+                        candidate
+                    }
+                };
+                if sc_model::load_model_by_name(&catalog, &name)
+                    .await?
+                    .is_some()
+                {
+                    return Err(Error::invalid(format!(
+                        "model name `{name}` is already used; each model is referenced by its \
+                         own name"
+                    )));
+                }
+                let caller = sc_access::principal_of(ctx.user());
+                let store = catalog.checked_file_store(store_name, &caller).await?;
+                let at = sc_files::StorePath::parse(path.trim_start_matches('/'))?;
+                if store.stat(&at).await?.is_some() {
+                    return Err(Error::invalid(format!(
+                        "`{path}` already exists in `{store_name}`; choose another path, so \
+                         nothing is overwritten"
+                    )));
+                }
+                store.write(&at, converted.program.into()).await?;
+                let mut copy = model.clone();
+                copy.id = sc_model::ModelId::new();
+                copy.name = name;
+                copy.provider = sc_stan::STAN_PROVIDER.to_owned();
+                copy.configuration = converted.config;
+                let shape = dataset_shape(&models, &copy.dataset).await;
+                sc_model::save_model(&catalog, &registry, &copy, shape.as_ref()).await?;
+                Ok(HandlerResponse::ok(model_json(&catalog, &copy, None).await?).with_status(201))
             }
         }
     });
@@ -861,6 +1037,14 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
 /// The ceiling on a preview's `limit` — see [`DATASET_PREVIEW_ROWS`].
 const DATASET_PREVIEW_MAX: u64 = 500;
 
+/// Providers registered and working but not offered for a new model. The
+/// hand-written Stan provider is held back from the first release of the
+/// analytics app as not friendly enough yet: it stays registered, because a
+/// formula model (`sc_bayesreg`) fits through it and a model that already
+/// names it must keep fitting, editing and saving. Remove it from this list
+/// to offer it again.
+pub(crate) const UNLISTED_PROVIDERS: &[&str] = &[sc_stan::STAN_PROVIDER];
+
 /// A required, non-empty query parameter.
 fn required_query<W>(ctx: &crate::handler::HandlerCtx<W>, name: &str) -> Result<String> {
     ctx.query_get(name)
@@ -908,6 +1092,24 @@ fn with_dataset_changed(
     let changed = model.and_then(|m| sc_model::dataset_changed(instance, &m.dataset, &m.related));
     if let Json::Object(map) = &mut out {
         map.insert("dataset_changed".to_owned(), json!(changed));
+    }
+    out
+}
+
+/// A fit's JSON with the Report workspace saved from its report, as `{ id,
+/// name }` — `null` when none was, or when that workspace has since been
+/// deleted (or cannot be read), so the model editor offers to save it again.
+async fn with_report(catalog: &Catalog, mut out: Json, instance: &sc_model::ModelInstance) -> Json {
+    let report = match sc_model::instance_report(instance) {
+        Some(id) => sc_analytics::load_workspace(catalog, sc_analytics::WorkspaceId(id))
+            .await
+            .ok()
+            .flatten()
+            .map(|ws| json!({ "id": ws.id.0, "name": ws.name })),
+        None => None,
+    };
+    if let Json::Object(map) = &mut out {
+        map.insert("report".to_owned(), report.unwrap_or(Json::Null));
     }
     out
 }
@@ -1000,7 +1202,7 @@ async fn model_usage(catalog: &Catalog, model: &sc_model::Model) -> Result<Json>
         .map(|i| i.id.0);
     let workspaces = sc_analytics::panel::UsageIndex::build(catalog)
         .await?
-        .fits(fits);
+        .model(model.id.0, fits);
     Ok(json!({ "fields": fields, "triggers": triggers, "workspaces": workspaces }))
 }
 
@@ -1062,6 +1264,7 @@ async fn model_json(
         "hyperparameters": Json::Object(model.hyperparameters.clone()),
         "split": serde_json::to_value(model.split)
             .map_err(|e| Error::msg(format!("split: {e}")))?,
+        "features": model.features,
         "attributes": Json::Object(model.attributes.clone()),
         "error": problem,
         "instances": instances.len(),

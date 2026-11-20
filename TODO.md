@@ -674,6 +674,13 @@ sign in with. The shared cookie and the lifetime apply to those sign-ins too.
 - [x] **F8.5** Applications: `oauthProviders()` / `oauthSignInUrl()` in the generated client,
   buttons on the scaffold's `Login.tsx`, the runtime README. Tests: the generated client and the
   scaffold's login screen type-check.
+- [x] **F8.6** User feedback: an OIDC provider's claims (`name`, `given_name`, `groups`, …) are
+  thrown away. Per provider: `claim_fields` (`claim=field` lines) writes claims onto admin-added
+  users columns at every sign-in; `groups_claim` + `group_roles` (`group=role` lines, never the
+  admin role) set the role at every sign-in, demoting only a role the mapping manages; the
+  `login` event's payload gains `{ provider, claims }`, carried through a second-factor
+  challenge (a nullable `sign_in` column on `_fd_password_tokens`). Tests: `sc-config` unit
+  tests, `oauth_sign_in.rs`.
 
 ## F9 — Who may use an application
 
@@ -1027,6 +1034,107 @@ Every `@feldspar/imap` action that names its caller answered 422 there.
 - [ ] **AU1.3** The report's "related observation": `db.asUser().<t>.count()` on a table with
   floors 1/1 and an ownership formula is refused for a caller served below the floor, where
   reading rows may be granted by the formula. Waiting on the reporter's repro.
+
+## RC1 — `run_code` over MCP (user feedback)
+
+There was no safe way to run a snippet once on the server (a one-off data migration, or trying
+out code meant for an action), so everyone wrote throwaway test triggers.
+
+- [x] **RC1.1** An MCP-only `run_code` tool (not offered to `admin_copilot`), in the triggers
+  area: a `run_js_code` (or `run_python_code`) body run once, at the admin's authority, with
+  `payload` and `timeout_ms`, through `TriggerDispatcher::run_snippet`. One transaction on the
+  primary database: committed on success, rolled back on failure, and rolled back on success too
+  with `rollback: true`. Committing needs `allow_edit`. Every run is logged with its code at
+  info level. The answer carries the result and the console, and a failure carries the console
+  lines. Tests: `sc-api` unit tests, `run_code_commits_a_migration_and_rolls_back_a_trial_run`
+  in `sc-server`'s `mcp_server.rs`.
+
+## OA1 — OAuth 2.0 tokens for application code (user feedback)
+
+Gmail (Google is phasing out password IMAP) and other APIs need OAuth tokens. The report asked
+for a redirect-callback recipe, the client secret in a secret store, and token refresh from a
+scheduled trigger. Checked against the code: Gmail over IMAP was already covered by the Mail
+module, a public GET code query could already answer a 302, and a Secret field already worked as
+the secret store. The server's consent flow (PKCE, the binding cookie, sealed tokens) was
+available to modules only.
+
+- [x] **OA1.1** The consent flow's core moves from `sc_module::consent` to `sc_auth::consent`
+  (`Asker`, `TokenStore::writer`, `StoreRequest`). The module keeps its own rule for where tokens
+  may go. The completion writes as the server, or as the caller when the flow's code ran as its
+  caller. Tests: `sc-auth` unit tests, `sc-module` and `sc-server` `module_consent`.
+- [x] **OA1.2** `oauth.begin(…)` for application code bodies (JavaScript, a code library, and
+  Python's `saltcorn.oauth`), as `op: "oauth"` on the `db` host (`sc_api::code_host::oauth`).
+  Tokens may go into an application table's Secret fields, in a row the run can read now.
+  `provider: "google" | "microsoft"` fills in the addresses. Tests: `sc-server`
+  `app_oauth::a_code_action_and_a_custom_query_connect_an_account_and_keep_its_tokens`,
+  `sc-python` `python_oauth`.
+- [x] **OA1.3** `oauth.accessToken(…)`: the stored token while it is good for 5 more minutes,
+  otherwise renewed at the token endpoint and written back (one renewal per row at a time;
+  `refused` to renew after a 401). `invalid_grant` says to connect again. Tests: `sc-api` unit
+  tests, `app_oauth::an_access_token_is_renewed_when_it_is_due`.
+- [x] **OA1.4** Docs: the recipe in `tutorial-triggers.md` Step 5 (registering the client, the
+  client secret in a Secret field, the connect action, a scheduled trigger), `code_api_js.md`, the
+  editor's types (`codeTypes.ts`), and TECHNICAL_DESIGN §10. Test: `codeTypes.test.ts`.
+- [x] **OA1.5** The hand-rolled path is kept working: a public GET custom query's
+  `response({ status: 302, headers: { location } })` is a real redirect. Test:
+  `app_oauth::a_public_get_query_answers_a_real_redirect`.
+
+## SF1 — Secret fields from `edit_schema` (user feedback)
+
+A user asked for encrypted credential fields in application tables (IMAP passwords, API keys,
+refresh tokens), with "`secret: true` as a field option in `edit_schema`" as the simplest first
+step. Checked against the code: Secret fields already existed (`DataFieldKind::Secret`, sealed
+with the instance key, redacted on every client surface, readable by code bodies) and the admin
+field editor could make one. MCP `edit_schema` could not, though `describe_schema` already
+reported `secret: true`. Key rotation, a key outside the data directory and named app-wide
+secrets are not part of this.
+
+- [x] **SF1.1** `secret: true` on `add_field` and the fields of `create_table` in `edit_schema`;
+  refused together with `references`, `expression` or `file_store`. On `alter_field`, `true` on a
+  field that is already a secret is accepted (a described field sent back), while making a
+  field a secret, or `secret: false` on one, is refused with the schema editor's reason. Tests:
+  `sc-api` `mcp::schema` unit test, `sc-agent-builtins`
+  `admin_copilot_schema_rules::a_secret_field_is_made_described_and_stored_sealed`.
+
+---
+
+## UP1 — Who may read a finished upload (user feedback)
+
+A user reported that the files of an upload slot were readable by every signed-in user unless the
+slot's hook returned `{ min_role }`: a signature one user uploaded was served to another. A
+finished upload had its uploader as owner but no `min_role` of its own, so it inherited the
+store's and folders' floors, and the owner rule only ever adds a reader. It is reachable by URL
+through a static_dirs mount covering its folder, or `/files/serve` in a Saltcorn UI application.
+
+- [x] **UP1.1** `read_role` on `UploadSlot`: the finished file's own `min_role` (`1` = only the
+  uploader and admins; absent = inherit, as before). New slots (form, MCP, scaffold,
+  `UploadSlot::new`) default to `1`; a stored slot without the key keeps inheriting. A hook's
+  `min_role` can tighten it, not loosen it. `save_application` warns when an inheriting slot's
+  folder is served by a route at a floor looser than admin. Docs: `code_api_js.md`,
+  `tutorial-file-fields.md`, §2.3. Tests in `app_uploads.rs` and `sc-app` unit tests.
+
+## IV1 — Integrity violations are the caller's fault (bug report)
+
+A row write with a foreign key to a missing row returned 500 with Postgres's own text, in the
+server's locale and naming the table and constraint. Only a violation of a catalog constraint
+(an admin's unique key or row constraint) was mapped to a 400.
+
+- [x] **IV1.1** `sc_access::rows::constraint_message` maps SQLSTATE 23502/23503/23505/23514 with
+  no catalog constraint to a 400 with a short English sentence naming the field (found by
+  Postgres's default constraint names, or the column the server reports for `NOT NULL`). A unique
+  constraint with no admin message gets the same sentence instead of the database's. Tests:
+  `sc-access` unit tests, `sc-api` `constraints::an_unexplained_integrity_violation_…`.
+
+## BC1 — Breadcrumbs in the admin UI (user feedback)
+
+It was easy to get lost: an application's checklist run said only "Checklist run" over the
+checklist's name, and a table's data grid "Table data" over the table's label, with nothing
+saying where the screen sits or how to get back up.
+
+- [x] **BC1.1** Every screen that is not the root of a sidebar section shows the trail of screens
+  above it in place of its pre-title, each step a link (`breadcrumbs.ts`, `PageHeader`'s
+  `crumbs`); root screens keep their group pre-title. The agent chat, which has no page header,
+  shows it in its top bar. Test: `ui/admin/src/breadcrumbs.test.tsx`.
 
 ---
 

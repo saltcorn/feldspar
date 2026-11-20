@@ -9,7 +9,8 @@
 //! workspace's classification ([`classify`], A5.9), attribute table and
 //! selection ([`selection`], A5.10) and toolbox ([`tools`], A5.12); a
 //! dashboard's stat cards ([`card`], A6.2) and cross-filtering
-//! ([`crossfilter`], A6.3–A6.6); the Analytics UI as an application framework
+//! ([`crossfilter`], A6.3–A6.6); the Simulation workspace's profiler and
+//! scenario comparison ([`simulate`], A7.4–A7.5); the Analytics UI as an application framework
 //! ([`app`], A9); the A/B tests workspace over the Astro module's tables ([`ab`],
 //! TODO-astro W3.6); and the demo data ([`demo`]). Datasets are not here: they are `sc-dataset`'s, because models
 //! read them too.
@@ -34,12 +35,13 @@ pub mod model_outputs;
 pub mod panel;
 pub mod plot;
 pub mod selection;
+pub mod simulate;
 pub mod stats;
 pub mod tools;
 mod workspace;
 
 pub use workspace::{
-    WORKSPACES_TABLE, Workspace, WorkspaceId, WorkspaceKind, bootstrap_workspaces,
+    WORKSPACES_TABLE, Workspace, WorkspaceId, WorkspaceKind, bootstrap_workspaces, check_new_state,
     create_workspace, delete_workspace, list_workspaces, load_workspace, rename_workspace,
     require_workspace, save_workspace_state, share_workspace,
 };

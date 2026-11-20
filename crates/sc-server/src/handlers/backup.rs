@@ -243,6 +243,9 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let mut schedule = BackupSchedule::from_body(uuid::Uuid::new_v4(), body, include)?
                     .keep_password(None)?;
                 schedule.destination = schedule.destination.keep_secrets(None)?;
+                schedule
+                    .failure_email
+                    .check(&sc_backup::failure_email::admin_addresses(&catalog).await?)?;
                 let mut schedules = load_schedules(&catalog).await?;
                 check_unique(&schedule, &schedules)?;
                 schedule.destination.check().await?;
@@ -282,6 +285,9 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 schedule.destination = schedule
                     .destination
                     .keep_secrets(Some(&previous.destination))?;
+                schedule
+                    .failure_email
+                    .check(&sc_backup::failure_email::admin_addresses(&catalog).await?)?;
                 check_unique(&schedule, &schedules)?;
                 schedule.destination.check().await?;
                 schedules[index] = schedule.clone();
@@ -314,6 +320,24 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 // schedule stops new ones, it does not take the old ones with it.
                 // (Its stored credentials do go, with the schedule.)
                 Ok(HandlerResponse::ok(json!({ "deleted": deleted })))
+            }
+        }
+    });
+
+    // "Configured" is an SMTP host whose settings read: settings that do not
+    // could not send the email either.
+    reg.handle(sc_api::handler_ids::GET_BACKUP_FAILURE_RECIPIENTS, {
+        let catalog = catalog.clone();
+        move |_ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let email_configured =
+                    matches!(sc_config::EmailSettings::load(&catalog).await, Ok(Some(_)));
+                let admins = sc_backup::failure_email::admin_addresses(&catalog).await?;
+                Ok(HandlerResponse::ok(json!({
+                    "email_configured": email_configured,
+                    "admins": admins,
+                })))
             }
         }
     });

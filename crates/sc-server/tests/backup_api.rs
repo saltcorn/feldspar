@@ -4988,3 +4988,79 @@ async fn an_automated_backup_can_be_password_protected() -> sc_error::Result<()>
     assert_eq!(removed["password"], Value::Null);
     Ok(())
 }
+
+/// A schedule can name an administrator to email when its backup fails. The
+/// dialog's options say whether mail is set up and who the administrators are;
+/// anyone else is refused. The email goes out on the first failure and not on
+/// the hourly retries after it.
+#[tokio::test]
+async fn a_failed_automated_backup_emails_the_chosen_administrator() -> sc_error::Result<()> {
+    let mut server = setup().await?;
+    let options = ok(&mut server, "GET", "/api/backup/failure-recipients", None).await;
+    assert_eq!(options["email_configured"], json!(false));
+    assert_eq!(options["admins"], json!([ADMIN]));
+
+    let dest = temp_dir().join("failing-nightly");
+    let body = |failure_email: Value| {
+        with_include(json!({
+            "destination": local(&dest),
+            "frequency": "daily",
+            "retention_days": 7,
+            "failure_email": failure_email,
+        }))
+    };
+    let (status, refused) = server
+        .client
+        .send(
+            "POST",
+            "/api/backup/schedules",
+            Some(body(json!("eve@example.com"))),
+        )
+        .await;
+    assert!(status.is_client_error(), "{status} {refused}");
+    let created = ok(
+        &mut server,
+        "POST",
+        "/api/backup/schedules",
+        Some(body(json!(ADMIN))),
+    )
+    .await;
+    assert_eq!(created["failure_email"], json!(ADMIN));
+
+    // The directory becomes a file: every backup there fails.
+    std::fs::remove_dir_all(&dest).unwrap();
+    std::fs::write(&dest, b"not a directory").unwrap();
+
+    let mailer = Arc::new(sc_email::RecordingMailer::new());
+    let scheduler = sc_backup::BackupScheduler::new(server.catalog.clone())
+        .with_mailer(mailer.clone() as Arc<dyn sc_email::Mailer>);
+    let now = chrono::Utc::now();
+    assert_eq!(scheduler.tick(now).await.len(), 1);
+    let sent = mailer.only()?;
+    assert_eq!(
+        sent.to
+            .iter()
+            .map(|m| m.address.as_str())
+            .collect::<Vec<_>>(),
+        vec![ADMIN]
+    );
+    assert!(sent.subject.contains("failed"), "{}", sent.subject);
+    assert!(
+        sent.text
+            .as_deref()
+            .unwrap()
+            .contains(&*dest.to_string_lossy())
+    );
+
+    // Retried an hour later, still failing: no second email.
+    assert_eq!(
+        scheduler.tick(now + chrono::Duration::hours(2)).await.len(),
+        1
+    );
+    assert_eq!(mailer.sent().len(), 1);
+    let list = ok(&mut server, "GET", "/api/backup/schedules", None).await;
+    assert!(list[0]["last_error"].is_string(), "{list}");
+    assert_eq!(list[0]["failure_email"], json!(ADMIN));
+    std::fs::remove_file(&dest).unwrap();
+    Ok(())
+}

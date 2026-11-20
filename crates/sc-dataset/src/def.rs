@@ -236,8 +236,8 @@ impl Operation {
 
 /// The operations of the goals document: the ones that keep the grain, the
 /// ones that change it, and the ones that combine with another table or
-/// dataset — A1's, and the Spatial join of A5. (Neighbourhood column and Model
-/// predictions arrive with the milestones that bring their machinery.)
+/// dataset — A1's, the Spatial join of A5 and the Model predictions of A7.
+/// (Neighbourhood column arrives with A8.)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "params", rename_all = "snake_case")]
 pub enum Op {
@@ -272,6 +272,11 @@ pub enum Op {
     /// Join another table or dataset where the geometries meet, or to the
     /// nearest (`st_join`; analytics TODO A5.4).
     SpatialJoin(SpatialJoinOp),
+    /// A model's prediction for every row, with its interval (analytics TODO
+    /// A7.3). It runs after the SQL, and the operations after it run in
+    /// memory.
+    #[serde(rename = "model_predictions")]
+    Predict(PredictOp),
 }
 
 impl Op {
@@ -306,6 +311,7 @@ impl Op {
             Op::Join(_) => "join",
             Op::Union(_) => "union",
             Op::SpatialJoin(_) => "spatial_join",
+            Op::Predict(_) => "model_predictions",
         }
     }
 
@@ -316,6 +322,43 @@ impl Op {
             Op::Union(u) => Some(&u.with),
             Op::SpatialJoin(j) => Some(&j.with),
             _ => None,
+        }
+    }
+}
+
+/// A model's predictions, added to every row (analytics TODO A7.3).
+///
+/// The rows are the model's inputs, matched to its columns by name. The new
+/// columns are `name`, the prediction, and — as the model's provider gives
+/// them — `name_lower` and `name_upper`, the interval holding `level` of the
+/// prediction's distribution, or `name_probability`, the predicted class's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PredictOp {
+    /// The model, by name.
+    pub model: String,
+    /// The fit, by id; the model's active fit when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit: Option<String>,
+    /// The prediction column's name.
+    pub name: String,
+    /// Whether the interval (or the class's probability) is added too.
+    #[serde(default = "enabled_by_default")]
+    pub interval: bool,
+    /// The interval's probability; 0.9 (the 5 % and 95 % quantiles) when
+    /// absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<f64>,
+}
+
+impl PredictOp {
+    /// `model`'s active fit's predictions as `name`, with their interval.
+    pub fn new(model: impl Into<String>, name: impl Into<String>) -> PredictOp {
+        PredictOp {
+            model: model.into(),
+            fit: None,
+            name: name.into(),
+            interval: true,
+            level: None,
         }
     }
 }

@@ -13,6 +13,7 @@
 // column centred in the viewport, used by the login and first-user screens.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import type { Crumb } from "./breadcrumbs";
 import { documentTitle } from "./documentTitle";
 import { T, useT } from "./i18n";
 
@@ -39,15 +40,23 @@ export function useDocumentTitle(screen: string | undefined): void {
  * the tab current when the heading changes without this component rendering
  * again (a translation arriving, a record loading inside a child). A screen
  * whose heading alone is ambiguous in a row of tabs — a table's page is titled
- * with just the table's name — passes `docTitle` to say more. */
+ * with just the table's name — passes `docTitle` to say more.
+ *
+ * `crumbs` is the trail of screens above this one (`breadcrumbs.ts`), each a
+ * link back, drawn where the pre-title goes and in its place: a screen that is
+ * not the root of a sidebar section passes one, so the admin can see where
+ * they are and get back up. A root screen passes a `pretitle` (its sidebar
+ * group) instead. */
 export function PageHeader({
   title,
   pretitle,
+  crumbs,
   actions,
   docTitle,
 }: {
   title: ReactNode;
   pretitle?: ReactNode;
+  crumbs?: Crumb[];
   actions?: ReactNode;
   docTitle?: string;
 }) {
@@ -69,7 +78,11 @@ export function PageHeader({
       <div className="container-xl">
         <div className="row g-2 align-items-center">
           <div className="col">
-            {pretitle && <div className="page-pretitle">{pretitle}</div>}
+            {crumbs && crumbs.length > 0 ? (
+              <Breadcrumbs crumbs={crumbs} />
+            ) : (
+              pretitle && <div className="page-pretitle">{pretitle}</div>
+            )}
             <h2 className="page-title" ref={heading}>
               {title}
             </h2>
@@ -82,6 +95,28 @@ export function PageHeader({
         </div>
       </div>
     </div>
+  );
+}
+
+/** The trail over a screen's title: Tabler's arrowed breadcrumb, every step a
+ * link back up (a step with no `href` is plain text). `inline` is the one-line
+ * form a screen with no page header puts in its own bar (the agent chat). */
+export function Breadcrumbs({ crumbs, inline = false }: { crumbs: Crumb[]; inline?: boolean }) {
+  const { t } = useT();
+  return (
+    <nav aria-label={t("Breadcrumb")} className={inline ? "overflow-hidden" : undefined}>
+      <ol
+        className={`breadcrumb breadcrumb-arrows ${
+          inline ? "admin-breadcrumb-inline" : "admin-breadcrumb"
+        }`}
+      >
+        {crumbs.map((crumb, index) => (
+          <li className="breadcrumb-item" key={`${index}:${crumb.href ?? crumb.label}`}>
+            {crumb.href ? <a href={crumb.href}>{crumb.label}</a> : crumb.label}
+          </li>
+        ))}
+      </ol>
+    </nav>
   );
 }
 

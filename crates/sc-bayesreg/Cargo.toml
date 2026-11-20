@@ -1,0 +1,41 @@
+[package]
+name = "sc-bayesreg"
+description = "Bayesian regression from a formula: lme4/brms formulas lowered to a generated Stan program (layer 6)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+# One integration-test binary per crate, as everywhere in the workspace.
+autotests = false
+
+[dependencies]
+async-trait.workspace = true
+sc-error.workspace = true
+# The host's half: `ModelProvider::lower`, the `terms` binding kind and its
+# model-matrix coding, `DatasetShape` and `Frame`. The formula's terms are
+# `sc_model::terms::VarExpr`s, so what this crate parses is exactly what the
+# binder evaluates.
+sc-model.workspace = true
+# The Stan machinery the provider fits through: `StanProvider::run_program`
+# (its compile cache, runner and process budget, shared rather than
+# duplicated) and the declaration parser `interface` reads the generated
+# program with. Layer 6, above `sc-stan`.
+sc-stan.workspace = true
+# `Attrs`: the provider's configuration.
+sc-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+sc-dataset.workspace = true
+sc-files.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
