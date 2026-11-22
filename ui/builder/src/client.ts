@@ -286,6 +286,34 @@ export type CreateBuildHostResponse = { host: { id: string; name: string; target
 export type UpdateBuildHostRequest = { name: string; targets: Array<string> };
 export type UpdateBuildHostResponse = { id: string; name: string; targets: Array<string>; created_at: string; last_seen_at?: string | null; online: boolean; report?: unknown | null };
 export type DeleteBuildHostResponse = { deleted: boolean };
+export type ListConstructionsResponse = Array<{ id: string; application: string; status: string; agent?: string | null; phases: number; phases_done: number }>;
+export type GetConstructionResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; plan_only: boolean; designing: boolean; asking: boolean; questions: Array<{ id: string; text: string; answer?: string | null }>; mockups: Array<{ id: string; round: number; title: string; rationale: string; screens: Array<{ name: string; file: string }>; status: string; feedback?: string | null }>; feedback: Array<{ id: string; phase: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; run?: string | null; planning: boolean; status: string }>; errors: Array<{ id: string; construction: string; at: string; source: string; phase?: string | null; task?: string | null; feedback?: string | null; run?: string | null; construction_run?: string | null; message: string; current: boolean }>; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown>; feedback?: string | null }> }> };
+export type CreateConstructionRequest = { provider?: string | null };
+export type CreateConstructionResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; plan_only: boolean; designing: boolean; asking: boolean; questions: Array<{ id: string; text: string; answer?: string | null }>; mockups: Array<{ id: string; round: number; title: string; rationale: string; screens: Array<{ name: string; file: string }>; status: string; feedback?: string | null }>; feedback: Array<{ id: string; phase: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; run?: string | null; planning: boolean; status: string }>; errors: Array<{ id: string; construction: string; at: string; source: string; phase?: string | null; task?: string | null; feedback?: string | null; run?: string | null; construction_run?: string | null; message: string; current: boolean }>; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown>; feedback?: string | null }> }> };
+export type SaveConstructionSpecificationRequest = { specification: string };
+export type SaveConstructionSpecificationResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; plan_only: boolean; designing: boolean; asking: boolean; questions: Array<{ id: string; text: string; answer?: string | null }>; mockups: Array<{ id: string; round: number; title: string; rationale: string; screens: Array<{ name: string; file: string }>; status: string; feedback?: string | null }>; feedback: Array<{ id: string; phase: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; run?: string | null; planning: boolean; status: string }>; errors: Array<{ id: string; construction: string; at: string; source: string; phase?: string | null; task?: string | null; feedback?: string | null; run?: string | null; construction_run?: string | null; message: string; current: boolean }>; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown>; feedback?: string | null }> }> };
+export type PlanConstructionResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; plan_only: boolean; designing: boolean; asking: boolean; questions: Array<{ id: string; text: string; answer?: string | null }>; mockups: Array<{ id: string; round: number; title: string; rationale: string; screens: Array<{ name: string; file: string }>; status: string; feedback?: string | null }>; feedback: Array<{ id: string; phase: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; run?: string | null; planning: boolean; status: string }>; errors: Array<{ id: string; construction: string; at: string; source: string; phase?: string | null; task?: string | null; feedback?: string | null; run?: string | null; construction_run?: string | null; message: string; current: boolean }>; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown>; feedback?: string | null }> }> };
+export type AskConstructionQuestionsResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; plan_only: boolean; designing: boolean; asking: boolean; questions: Array<{ id: string; text: string; answer?: string | null }>; mockups: Array<{ id: string; round: number; title: string; rationale: string; screens: Array<{ name: string; file: string }>; status: string; feedback?: string | null }>; feedback: Array<{ id: string; phase: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; run?: string | null; planning: boolean; status: string }>; errors: Array<{ id: string; construction: string; at: string; source: string; phase?: string | null; task?: string | null; feedback?: string | null; run?: string | null; construction_run?: string | null; message: string; current: boolean }>; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown>; feedback?: string | null }> }> };
+export type AnswerConstructionQuestionsRequest = { answers: Array<{ question: string; text: string }> };
+export type AnswerConstructionQuestionsResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; plan_only: boolean; designing: boolean; asking: boolean; questions: Array<{ id: string; text: string; answer?: string | null }>; mockups: Array<{ id: string; round: number; title: string; rationale: string; screens: Array<{ name: string; file: string }>; status: string; feedback?: string | null }>; feedback: Array<{ id: string; phase: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; run?: string | null; planning: boolean; status: string }>; errors: Array<{ id: string; construction: string; at: string; source: string; phase?: string | null; task?: string | null; feedback?: string | null; run?: string | null; construction_run?: string | null; message: string; current: boolean }>; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown>; feedback?: string | null }> }> };
+export type ProposeMockupsRequest = { count?: number | null; feedback?: Array<{ mockup: string; text: string }> | null; note?: string | null };
+export type ProposeMockupsResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; plan_only: boolean; designing: boolean; asking: boolean; questions: Array<{ id: string; text: string; answer?: string | null }>; mockups: Array<{ id: string; round: number; title: string; rationale: string; screens: Array<{ name: string; file: string }>; status: string; feedback?: string | null }>; feedback: Array<{ id: string; phase: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; run?: string | null; planning: boolean; status: string }>; errors: Array<{ id: string; construction: string; at: string; source: string; phase?: string | null; task?: string | null; feedback?: string | null; run?: string | null; construction_run?: string | null; message: string; current: boolean }>; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown>; feedback?: string | null }> }> };
+export type GetMockupScreensResponse = Array<{ name: string; file: string; html: string }>;
+export type ChooseMockupResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; plan_only: boolean; designing: boolean; asking: boolean; questions: Array<{ id: string; text: string; answer?: string | null }>; mockups: Array<{ id: string; round: number; title: string; rationale: string; screens: Array<{ name: string; file: string }>; status: string; feedback?: string | null }>; feedback: Array<{ id: string; phase: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; run?: string | null; planning: boolean; status: string }>; errors: Array<{ id: string; construction: string; at: string; source: string; phase?: string | null; task?: string | null; feedback?: string | null; run?: string | null; construction_run?: string | null; message: string; current: boolean }>; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown>; feedback?: string | null }> }> };
+export type GiveConstructionFeedbackRequest = { phase: string; title: string; description: string };
+export type GiveConstructionFeedbackResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; plan_only: boolean; designing: boolean; asking: boolean; questions: Array<{ id: string; text: string; answer?: string | null }>; mockups: Array<{ id: string; round: number; title: string; rationale: string; screens: Array<{ name: string; file: string }>; status: string; feedback?: string | null }>; feedback: Array<{ id: string; phase: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; run?: string | null; planning: boolean; status: string }>; errors: Array<{ id: string; construction: string; at: string; source: string; phase?: string | null; task?: string | null; feedback?: string | null; run?: string | null; construction_run?: string | null; message: string; current: boolean }>; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown>; feedback?: string | null }> }> };
+export type PlanConstructionFeedbackResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; plan_only: boolean; designing: boolean; asking: boolean; questions: Array<{ id: string; text: string; answer?: string | null }>; mockups: Array<{ id: string; round: number; title: string; rationale: string; screens: Array<{ name: string; file: string }>; status: string; feedback?: string | null }>; feedback: Array<{ id: string; phase: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; run?: string | null; planning: boolean; status: string }>; errors: Array<{ id: string; construction: string; at: string; source: string; phase?: string | null; task?: string | null; feedback?: string | null; run?: string | null; construction_run?: string | null; message: string; current: boolean }>; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown>; feedback?: string | null }> }> };
+export type DeleteConstructionFeedbackResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; plan_only: boolean; designing: boolean; asking: boolean; questions: Array<{ id: string; text: string; answer?: string | null }>; mockups: Array<{ id: string; round: number; title: string; rationale: string; screens: Array<{ name: string; file: string }>; status: string; feedback?: string | null }>; feedback: Array<{ id: string; phase: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; run?: string | null; planning: boolean; status: string }>; errors: Array<{ id: string; construction: string; at: string; source: string; phase?: string | null; task?: string | null; feedback?: string | null; run?: string | null; construction_run?: string | null; message: string; current: boolean }>; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown>; feedback?: string | null }> }> };
+export type SavePhasesRequest = { phases: Array<{ id?: string | null; title: string; description: string; requirements: Array<{ text: string; priority: string }> }> };
+export type SavePhasesResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; plan_only: boolean; designing: boolean; asking: boolean; questions: Array<{ id: string; text: string; answer?: string | null }>; mockups: Array<{ id: string; round: number; title: string; rationale: string; screens: Array<{ name: string; file: string }>; status: string; feedback?: string | null }>; feedback: Array<{ id: string; phase: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; run?: string | null; planning: boolean; status: string }>; errors: Array<{ id: string; construction: string; at: string; source: string; phase?: string | null; task?: string | null; feedback?: string | null; run?: string | null; construction_run?: string | null; message: string; current: boolean }>; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown>; feedback?: string | null }> }> };
+export type RunConstructionRequest = { until_phase?: string | null };
+export type RunConstructionResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; plan_only: boolean; designing: boolean; asking: boolean; questions: Array<{ id: string; text: string; answer?: string | null }>; mockups: Array<{ id: string; round: number; title: string; rationale: string; screens: Array<{ name: string; file: string }>; status: string; feedback?: string | null }>; feedback: Array<{ id: string; phase: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; run?: string | null; planning: boolean; status: string }>; errors: Array<{ id: string; construction: string; at: string; source: string; phase?: string | null; task?: string | null; feedback?: string | null; run?: string | null; construction_run?: string | null; message: string; current: boolean }>; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown>; feedback?: string | null }> }> };
+export type PlanPhaseTasksRequest = { note?: string | null };
+export type PlanPhaseTasksResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; plan_only: boolean; designing: boolean; asking: boolean; questions: Array<{ id: string; text: string; answer?: string | null }>; mockups: Array<{ id: string; round: number; title: string; rationale: string; screens: Array<{ name: string; file: string }>; status: string; feedback?: string | null }>; feedback: Array<{ id: string; phase: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; run?: string | null; planning: boolean; status: string }>; errors: Array<{ id: string; construction: string; at: string; source: string; phase?: string | null; task?: string | null; feedback?: string | null; run?: string | null; construction_run?: string | null; message: string; current: boolean }>; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown>; feedback?: string | null }> }> };
+export type StopConstructionResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; plan_only: boolean; designing: boolean; asking: boolean; questions: Array<{ id: string; text: string; answer?: string | null }>; mockups: Array<{ id: string; round: number; title: string; rationale: string; screens: Array<{ name: string; file: string }>; status: string; feedback?: string | null }>; feedback: Array<{ id: string; phase: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; run?: string | null; planning: boolean; status: string }>; errors: Array<{ id: string; construction: string; at: string; source: string; phase?: string | null; task?: string | null; feedback?: string | null; run?: string | null; construction_run?: string | null; message: string; current: boolean }>; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown>; feedback?: string | null }> }> };
+export type RetryTaskResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; plan_only: boolean; designing: boolean; asking: boolean; questions: Array<{ id: string; text: string; answer?: string | null }>; mockups: Array<{ id: string; round: number; title: string; rationale: string; screens: Array<{ name: string; file: string }>; status: string; feedback?: string | null }>; feedback: Array<{ id: string; phase: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; run?: string | null; planning: boolean; status: string }>; errors: Array<{ id: string; construction: string; at: string; source: string; phase?: string | null; task?: string | null; feedback?: string | null; run?: string | null; construction_run?: string | null; message: string; current: boolean }>; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown>; feedback?: string | null }> }> };
+export type SkipTaskResponse = { id: string; application: string; status: string; agent?: string | null; specification: string; started_by?: string | null; plan_run?: string | null; planning: boolean; error?: string | null; until_phase?: string | null; plan_only: boolean; designing: boolean; asking: boolean; questions: Array<{ id: string; text: string; answer?: string | null }>; mockups: Array<{ id: string; round: number; title: string; rationale: string; screens: Array<{ name: string; file: string }>; status: string; feedback?: string | null }>; feedback: Array<{ id: string; phase: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; run?: string | null; planning: boolean; status: string }>; errors: Array<{ id: string; construction: string; at: string; source: string; phase?: string | null; task?: string | null; feedback?: string | null; run?: string | null; construction_run?: string | null; message: string; current: boolean }>; updated_at?: string | null; phases: Array<{ id: string; title: string; description: string; requirements: Array<{ text: string; priority: string }>; status: string; tasks: Array<{ id: string; kind: string; title: string; brief: string; depends_on: Array<string>; status: string; runs: Array<string>; summary?: string | null; created: Array<unknown>; feedback?: string | null }> }> };
+export type DeleteConstructionResponse = { deleted: boolean; agent?: string | null };
 export type ListViewsResponse = Array<{ id: string; name: string; description: string; viewpattern: string; table_name?: string | null; configuration: unknown; min_role: number; slug?: unknown | null; attributes: unknown }>;
 export type GetViewResponse = { id: string; name: string; description: string; viewpattern: string; table_name?: string | null; configuration: unknown; min_role: number; slug?: unknown | null; attributes: unknown };
 export type SaveViewRequest = { name: string; description: string; viewpattern: string; table_name?: string | null; configuration: unknown; min_role: number; slug?: unknown | null; attributes: unknown };
@@ -780,6 +808,26 @@ export interface ApiClient {
   createBuildHost(body: CreateBuildHostRequest): Promise<CreateBuildHostResponse>;
   updateBuildHost(id: string, body: UpdateBuildHostRequest): Promise<UpdateBuildHostResponse>;
   deleteBuildHost(id: string): Promise<DeleteBuildHostResponse>;
+  listConstructions(): Promise<ListConstructionsResponse>;
+  getConstruction(id: string): Promise<GetConstructionResponse>;
+  createConstruction(id: string, body: CreateConstructionRequest): Promise<CreateConstructionResponse>;
+  saveConstructionSpecification(id: string, body: SaveConstructionSpecificationRequest): Promise<SaveConstructionSpecificationResponse>;
+  planConstruction(id: string): Promise<PlanConstructionResponse>;
+  askConstructionQuestions(id: string): Promise<AskConstructionQuestionsResponse>;
+  answerConstructionQuestions(id: string, body: AnswerConstructionQuestionsRequest): Promise<AnswerConstructionQuestionsResponse>;
+  proposeMockups(id: string, body: ProposeMockupsRequest): Promise<ProposeMockupsResponse>;
+  getMockupScreens(id: string, mockup: string): Promise<GetMockupScreensResponse>;
+  chooseMockup(id: string, mockup: string): Promise<ChooseMockupResponse>;
+  giveConstructionFeedback(id: string, body: GiveConstructionFeedbackRequest): Promise<GiveConstructionFeedbackResponse>;
+  planConstructionFeedback(id: string, feedback: string): Promise<PlanConstructionFeedbackResponse>;
+  deleteConstructionFeedback(id: string, feedback: string): Promise<DeleteConstructionFeedbackResponse>;
+  savePhases(id: string, body: SavePhasesRequest): Promise<SavePhasesResponse>;
+  runConstruction(id: string, body: RunConstructionRequest): Promise<RunConstructionResponse>;
+  planPhaseTasks(id: string, phase: string, body: PlanPhaseTasksRequest): Promise<PlanPhaseTasksResponse>;
+  stopConstruction(id: string): Promise<StopConstructionResponse>;
+  retryTask(id: string, task: string): Promise<RetryTaskResponse>;
+  skipTask(id: string, task: string): Promise<SkipTaskResponse>;
+  deleteConstruction(id: string): Promise<DeleteConstructionResponse>;
   listViews(id: string): Promise<ListViewsResponse>;
   getView(id: string, name: string): Promise<GetViewResponse>;
   saveView(id: string, name: string, body: SaveViewRequest): Promise<SaveViewResponse>;
@@ -2656,6 +2704,174 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("deleteBuildHost", res);
       return (await res.json()) as DeleteBuildHostResponse;
+    },
+    async listConstructions() {
+      const res = await doFetch(`${baseUrl}/api/constructions`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listConstructions", res);
+      return (await res.json()) as ListConstructionsResponse;
+    },
+    async getConstruction(id) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getConstruction", res);
+      return (await res.json()) as GetConstructionResponse;
+    },
+    async createConstruction(id, body) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("createConstruction", res);
+      return (await res.json()) as CreateConstructionResponse;
+    },
+    async saveConstructionSpecification(id, body) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/specification`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("saveConstructionSpecification", res);
+      return (await res.json()) as SaveConstructionSpecificationResponse;
+    },
+    async planConstruction(id) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/plan`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("planConstruction", res);
+      return (await res.json()) as PlanConstructionResponse;
+    },
+    async askConstructionQuestions(id) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/questions`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("askConstructionQuestions", res);
+      return (await res.json()) as AskConstructionQuestionsResponse;
+    },
+    async answerConstructionQuestions(id, body) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/questions`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("answerConstructionQuestions", res);
+      return (await res.json()) as AnswerConstructionQuestionsResponse;
+    },
+    async proposeMockups(id, body) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/mockups`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("proposeMockups", res);
+      return (await res.json()) as ProposeMockupsResponse;
+    },
+    async getMockupScreens(id, mockup) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/mockups/${encodeURIComponent(mockup)}/screens`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getMockupScreens", res);
+      return (await res.json()) as GetMockupScreensResponse;
+    },
+    async chooseMockup(id, mockup) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/mockups/${encodeURIComponent(mockup)}/choose`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("chooseMockup", res);
+      return (await res.json()) as ChooseMockupResponse;
+    },
+    async giveConstructionFeedback(id, body) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/feedback`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("giveConstructionFeedback", res);
+      return (await res.json()) as GiveConstructionFeedbackResponse;
+    },
+    async planConstructionFeedback(id, feedback) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/feedback/${encodeURIComponent(feedback)}/plan`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("planConstructionFeedback", res);
+      return (await res.json()) as PlanConstructionFeedbackResponse;
+    },
+    async deleteConstructionFeedback(id, feedback) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/feedback/${encodeURIComponent(feedback)}`, {
+        method: "DELETE",
+        headers: requestHeaders("DELETE", false),
+      });
+      if (!res.ok) throw await clientError("deleteConstructionFeedback", res);
+      return (await res.json()) as DeleteConstructionFeedbackResponse;
+    },
+    async savePhases(id, body) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/phases`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("savePhases", res);
+      return (await res.json()) as SavePhasesResponse;
+    },
+    async runConstruction(id, body) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/run`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("runConstruction", res);
+      return (await res.json()) as RunConstructionResponse;
+    },
+    async planPhaseTasks(id, phase, body) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/phases/${encodeURIComponent(phase)}/plan`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("planPhaseTasks", res);
+      return (await res.json()) as PlanPhaseTasksResponse;
+    },
+    async stopConstruction(id) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/stop`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("stopConstruction", res);
+      return (await res.json()) as StopConstructionResponse;
+    },
+    async retryTask(id, task) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/tasks/${encodeURIComponent(task)}/retry`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("retryTask", res);
+      return (await res.json()) as RetryTaskResponse;
+    },
+    async skipTask(id, task) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction/tasks/${encodeURIComponent(task)}/skip`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("skipTask", res);
+      return (await res.json()) as SkipTaskResponse;
+    },
+    async deleteConstruction(id) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/construction`, {
+        method: "DELETE",
+        headers: requestHeaders("DELETE", false),
+      });
+      if (!res.ok) throw await clientError("deleteConstruction", res);
+      return (await res.json()) as DeleteConstructionResponse;
     },
     async listViews(id) {
       const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/views`, {

@@ -233,6 +233,15 @@ export function IconPlayerStop(props: IconProps) {
   );
 }
 
+/** Run: a construction phase's "Run". */
+export function IconPlayerPlay(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M7 4v16l13 -8z" />
+    </Svg>
+  );
+}
+
 export function IconMessagePlus(props: IconProps) {
   return (
     <Svg {...props}>

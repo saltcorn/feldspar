@@ -52,6 +52,14 @@ pub trait LlmProvider: Send + Sync {
     /// key. Once a stream exists, everything that goes wrong arrives as an `Err`
     /// item inside it.
     async fn stream(&self, req: LlmRequest) -> Result<LlmStream>;
+
+    /// The most tokens an answer may generate when the request asks for
+    /// `requested`: what the backend actually sends. `None` when no cap is sent
+    /// and the model stops where it likes. An answer that used exactly this
+    /// many was cut off, which the agent loop tells the model.
+    fn output_cap(&self, requested: Option<u32>) -> Option<u32> {
+        requested
+    }
 }
 
 /// A response in progress: deltas until a

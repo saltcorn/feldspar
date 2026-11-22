@@ -115,6 +115,19 @@ pub async fn call(
     };
 
     let (store, floor) = scope.connect(ctx.catalog).await?;
+    // A file named as `dir` cannot be listed; say what to do instead of
+    // passing on the store's "listing" error.
+    if !dir.trim().is_empty() {
+        let at = sc_files::StorePath::parse(&query.dir)?;
+        if let Ok(Some(stat)) = store.stat(&at).await
+            && !stat.is_dir
+        {
+            return Err(Error::invalid(format!(
+                "`{ARG_DIR}` must be a directory, and `{dir}` is a file: search it with \
+                 `{ARG_GLOB}` set to its name, or read it"
+            )));
+        }
+    }
     // The caller's own role, so a search cannot report a line out of a file
     // the caller could not have opened.
     let found = search_store(
@@ -126,8 +139,10 @@ pub async fn call(
     .await?;
     if found.hits.is_empty() {
         return Ok(Json::String(format!(
-            "No matches for `{}` in {} files.",
-            query.pattern, found.files_scanned
+            "No matches for `{}` in {} files.{}",
+            query.pattern,
+            found.files_scanned,
+            literal_hint(&query)
         )));
     }
 
@@ -172,6 +187,19 @@ pub async fn call(
         ));
     }
     Ok(Json::String(out.join("\n")))
+}
+
+/// After a literal search found nothing: a note when the pattern reads as a
+/// regular expression, which a literal search looks for character by character.
+fn literal_hint(query: &SearchQuery) -> String {
+    let regex_like = ["|", ".*", "\\b", "\\s", "\\w", "\\d", "^", "$", "(?"];
+    if query.regex || !regex_like.iter().any(|m| query.pattern.contains(m)) {
+        return String::new();
+    }
+    format!(
+        " The pattern was searched as literal text; set `{ARG_REGEX}` to true to search it \
+         as a regular expression (e.g. `a|b` for either)."
+    )
 }
 
 /// The context argument, bounded.
@@ -235,6 +263,14 @@ mod tests {
             root: "web".to_owned(),
         };
         assert_eq!(tool_name(&scope), "search_files_src_web");
+    }
+
+    #[test]
+    fn a_literal_search_that_looks_like_a_regex_says_so_when_it_finds_nothing() {
+        let hint = literal_hint(&SearchQuery::literal("listMachines|logSet"));
+        assert!(hint.contains("`regex` to true"), "{hint}");
+        assert_eq!(literal_hint(&SearchQuery::regex("listMachines|logSet")), "");
+        assert_eq!(literal_hint(&SearchQuery::literal("export const api")), "");
     }
 
     #[test]

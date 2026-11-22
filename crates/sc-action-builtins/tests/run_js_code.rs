@@ -428,7 +428,8 @@ async fn the_body_reads_and_writes_its_tables_through_db() -> Result<()> {
         "const long = await db.books.where({ pages: { gte: 100 } }).select(\"id\", \"title\").rows();\n\
          const made = await db.books.insert({ id: 8, title: 'Second', pages: 20 });\n\
          await db.books.where({ id: 8 }).update({ pages: 21 });\n\
-         return { long: long.map((b) => b.title), made: made.title, \
+         const mid = await db.books.where({ pages: { gte: 21, lt: 100 } }).select(\"title\").rows();\n\
+         return { long: long.map((b) => b.title), made: made.title, mid: mid.map((b) => b.title), \
                   pages: await db.books.sum('pages'), n: await db.books.count() };",
     )
     .await?;
@@ -436,7 +437,8 @@ async fn the_body_reads_and_writes_its_tables_through_db() -> Result<()> {
         out,
         // `sum` over a bigint column is a Decimal, and the wire shape of a
         // Decimal is an exact string rather than a float that might not be.
-        json!({ "long": ["A Book"], "made": "Second", "pages": "121", "n": 2 })
+        // Two operators on one field are a range.
+        json!({ "long": ["A Book"], "made": "Second", "mid": ["Second"], "pages": "121", "n": 2 })
     );
 
     // And the write is really there afterwards — the action's result is not the

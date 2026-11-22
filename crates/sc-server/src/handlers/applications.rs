@@ -56,6 +56,11 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 {
                     obj.insert("agent".to_owned(), json!(name));
                 }
+                // Its construction too, with the agent made for it: a
+                // construction exists to build this application.
+                if let Some(app) = &existing {
+                    crate::constructions::delete_construction_of(&catalog, app).await?;
+                }
                 Ok(HandlerResponse::ok(body))
             }
         }
@@ -1049,7 +1054,7 @@ fn parse_build_host_id(raw: &str) -> Result<uuid::Uuid> {
 /// does, with `log` ahead of the build's own — Build's whole body, and the
 /// second half of Deep clean. `quick` is the dev loop's build, which leaves the
 /// generated client as it is.
-async fn build_now(
+pub(crate) async fn build_now(
     catalog: &Arc<Catalog>,
     apps: &Arc<AppMounts>,
     app: Application,

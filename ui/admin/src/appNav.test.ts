@@ -25,6 +25,7 @@ const react = {
   id: "a1",
   name: "todo",
   subdomain: "todo",
+  framework: { name: "react" },
   builds: true,
   has_views: false,
   source: { store: "code", path: "todo" },
@@ -37,6 +38,7 @@ const saltcornUi = {
   id: "a2",
   name: "crm",
   subdomain: "crm",
+  framework: { name: "saltcorn" },
   builds: false,
   has_views: true,
   source: null,
@@ -78,19 +80,28 @@ describe("the current application's sidebar links", () => {
     const links = appNavLinks(react, null, admin);
     expect(links.map((l) => l.label)).toEqual([
       "Application link",
+      "Plan & build",
       "Edit code",
       "Build",
       "Coding agent",
       "Checklists",
       "Application settings",
     ]);
-    const edit = links[1];
+    const edit = links[2];
     expect(edit.href).toBe("/ide/?store=code");
     expect(edit.external).toBe(true);
     // Build does something rather than going somewhere, and it brings the
     // generated client up to date itself — there is no separate link for that.
-    expect(links[2].href).toBeUndefined();
+    expect(links[3].href).toBeUndefined();
     expect(links.map((l) => l.id)).not.toContain("update-client");
+  });
+
+  it("offers Plan & build right after the application link, for React only", () => {
+    const links = appNavLinks(react, null, admin);
+    expect(links[1].id).toBe("construct");
+    expect(links[1].href).toBe("#/applications/a1/construct");
+    expect(linkActive(links[1], "/applications/a1/construct")).toBe(true);
+    expect(appNavLinks(saltcornUi, null, admin).map((l) => l.id)).not.toContain("construct");
   });
 
   it("starts with a link out to the application on its own subdomain", () => {
@@ -117,6 +128,7 @@ describe("the current application's sidebar links", () => {
     }
     expect(appNavLinks(react, "build-todo", admin).map((l) => l.label)).toEqual([
       "Application link",
+      "Plan & build",
       "Edit code",
       "Build",
       "Coding agent",
@@ -146,6 +158,7 @@ describe("the current application's sidebar links", () => {
       id: "a3",
       name: "landing",
       subdomain: "landing",
+      framework: { name: "none" },
       builds: false,
       has_views: false,
       source: { store: "site", path: "public" },

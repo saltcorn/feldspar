@@ -421,10 +421,10 @@ pub fn condition_on(on: &Operand, column: Expr, condition: &Json) -> Result<Expr
                 (op, operand) => comparison_on(on, col(), op, operand)?,
             });
         }
-        return Ok(parts
-            .into_iter()
-            .reduce(Expr::and)
-            .expect("a non-empty object has a comparison"));
+        // Never `None`: the object is not empty.
+        if let Some(all) = parts.into_iter().reduce(Expr::and) {
+            return Ok(all);
+        }
     }
     Ok(match condition {
         Json::Null => Expr::unary(UnOp::IsNull, col()),

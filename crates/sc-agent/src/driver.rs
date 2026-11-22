@@ -637,6 +637,9 @@ impl<'a> Runner<'a> {
         // The agent's minimum balance is what a drive needs to *start*; after
         // that, anything above zero carries it on to the next call.
         let mut starting = true;
+        // The output cap the last answer reached, when it reached it: the
+        // answer was cut off, and any call in it may be missing its end.
+        let mut cut_off: Option<u32> = None;
         loop {
             match state.next_step() {
                 Step::Done(conclusion) => {
@@ -765,6 +768,18 @@ impl<'a> Runner<'a> {
                     match answered {
                         Ok(answer) => {
                             let usage = answer.usage;
+                            cut_off = model
+                                .provider
+                                .output_cap(self.agent.max_tokens())
+                                .filter(|cap| usage.output_tokens >= u64::from(*cap));
+                            if let Some(cap) = cut_off {
+                                sc_log::log_warn!(
+                                    "agent `{}` run {}: the answer to step {step} was cut off \
+                                     at the {cap}-token output limit",
+                                    self.agent.name,
+                                    run.id
+                                );
+                            }
                             let meta = StepMeta {
                                 role,
                                 model: model.provider.model().to_owned(),
@@ -810,8 +825,18 @@ impl<'a> Runner<'a> {
                     }
                     self.after_tools(run.id, mode, &tools, &mut state, &mut outcomes)
                         .await;
+                    let cap = cut_off.take();
+                    if let Some(cap) = cap {
+                        cut_off_calls(&mut outcomes, cap);
+                    }
                     let rung = state.control().rung();
                     state.tool_results(outcomes)?;
+                    if let Some(cap) = cap {
+                        state.explain_stuck(&format!(
+                            "the model's answer was cut off at the {cap}-token output limit, \
+                             so the call was incomplete; raise the agent's max tokens"
+                        ));
+                    }
                     if state.control().rung() != rung && !state.is_done() {
                         sc_log::log_warn!(
                             "agent `{}` run {}: loop control moved to {:?} after step {}",
@@ -2237,4 +2262,19 @@ pub async fn connect(catalog: &Catalog, agent: &Agent, role: ModelRole) -> Resul
             _ => e,
         })?;
     sc_llm::connect_model(&def, &model)
+}
+
+/// Tell the model why its malformed calls were malformed when its answer was
+/// cut off at the output limit (`cap` tokens): the arguments ended where the
+/// answer did. Said plainly, the model writes a smaller call; told only that
+/// a field is missing, it writes the same long call again, and is cut off
+/// again.
+fn cut_off_calls(outcomes: &mut [ToolOutcome], cap: u32) {
+    for outcome in outcomes.iter_mut().filter(|o| o.malformed) {
+        outcome.content.push_str(&format!(
+            "\n\nYour answer was cut off: it reached the {cap}-token output limit before this \
+             call was complete, so its arguments are missing their end. Write less in one \
+             call: split the work into several smaller calls, or shorten what you send."
+        ));
+    }
 }

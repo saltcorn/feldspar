@@ -412,7 +412,7 @@ fn claude_window(name: &str) -> u64 {
 /// `(4, 6)` from `claude-opus-4-6`, `(3, 5)` from `claude-3-5-sonnet-20241022`,
 /// `(4, 0)` from `claude-sonnet-4-20250514`. A snapshot date is not a version
 /// number, and ends the search.
-fn claude_version(name: &str) -> Option<(u32, u32)> {
+pub(crate) fn claude_version(name: &str) -> Option<(u32, u32)> {
     let mut numbers = name
         .split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))

@@ -75,6 +75,39 @@ pub async fn migrate_database(driver: &dyn DatabaseDriver) -> Result<sc_migrate:
     .await
 }
 
+/// Look for the database extensions geometry and vector fields need, and say
+/// on stderr whether each is there.
+async fn report_extensions(catalog: &Catalog) -> Result<()> {
+    // Geometry (analytics TODO A5.1): PostGIS where the role may install it,
+    // and a sentence where it may not, so the admin knows why a geometry field
+    // is refused before trying one.
+    match sc_catalog::bootstrap_spatial(catalog)
+        .await
+        .context("looking for PostGIS")?
+    {
+        sc_db::SpatialSupport::Available { version } => {
+            eprintln!("feldspar: PostGIS {version}; geometry fields are available");
+        }
+        sc_db::SpatialSupport::Unavailable { reason } => {
+            eprintln!("feldspar: geometry fields are unavailable: {reason}");
+        }
+    }
+    // Vectors (TODO-agent-skills AS2.2): pgvector on the same terms.
+    match sc_catalog::bootstrap_vector(catalog)
+        .await
+        .context("looking for pgvector")?
+    {
+        sc_db::VectorSupport::Available { version } if version != "builtin" => {
+            eprintln!("feldspar: pgvector {version}; vector fields are available");
+        }
+        sc_db::VectorSupport::Available { .. } => {}
+        sc_db::VectorSupport::Unavailable { reason } => {
+            eprintln!("feldspar: vector fields are unavailable: {reason}");
+        }
+    }
+    Ok(())
+}
+
 /// Connect to the primary database described by `db`, initialise the
 /// [`Catalog`] from its live schema, and ensure the platform tables (`users`,
 /// `_fd_applications`, `_fd_file_stores`, `_fd_tables`) exist.
@@ -161,6 +194,11 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
     sc_check::bootstrap_checklists(&catalog)
         .await
         .context("ensuring the checklist tables exist")?;
+    // The App Constructor (TODO-app-constructor AC1.1): an application's
+    // construction, its phases and its tasks.
+    sc_construct::bootstrap_constructions(&catalog)
+        .await
+        .context("ensuring the construction tables exist")?;
     // The Analytics UI's datasets and workspaces (analytics TODO A1). Models
     // bootstrap the datasets table too, because a model's dataset is a row of
     // it; this is for a server whose models are never installed.
@@ -178,33 +216,7 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
     sc_sync::bootstrap(&catalog)
         .await
         .context("ensuring the source control tables exist")?;
-    // Geometry (analytics TODO A5.1): PostGIS where the role may install it,
-    // and a sentence where it may not, so the admin knows why a geometry field
-    // is refused before trying one.
-    match sc_catalog::bootstrap_spatial(&catalog)
-        .await
-        .context("looking for PostGIS")?
-    {
-        sc_db::SpatialSupport::Available { version } => {
-            eprintln!("feldspar: PostGIS {version}; geometry fields are available");
-        }
-        sc_db::SpatialSupport::Unavailable { reason } => {
-            eprintln!("feldspar: geometry fields are unavailable: {reason}");
-        }
-    }
-    // Vectors (TODO-agent-skills AS2.2): pgvector on the same terms.
-    match sc_catalog::bootstrap_vector(&catalog)
-        .await
-        .context("looking for pgvector")?
-    {
-        sc_db::VectorSupport::Available { version } if version != "builtin" => {
-            eprintln!("feldspar: pgvector {version}; vector fields are available");
-        }
-        sc_db::VectorSupport::Available { .. } => {}
-        sc_db::VectorSupport::Unavailable { reason } => {
-            eprintln!("feldspar: vector fields are unavailable: {reason}");
-        }
-    }
+    report_extensions(&catalog).await?;
     // The TLS settings the selected environment pins (§13.5), before anything
     // reads a setting: from here every read of them — the boot's, the settings
     // screen's, `get-cfg`'s — sees the file's value, and a write is refused.

@@ -30,6 +30,10 @@ function fakes(providers: { name: string; is_default: boolean }[] = []) {
       calls.push(`copilot on ${provider}`);
       return "Admin copilot";
     },
+    constructApplication: async (app) => {
+      calls.push(`construct ${app.name} on ${app.provider}`);
+      return { id: "app-1", name: app.name };
+    },
     createApplication: async (app) => {
       calls.push(`app ${app.name} ${app.framework}`);
       return { id: "app-1", name: app.name, ide: app.framework === REACT ? "/ide/?store=my" : null };
@@ -84,6 +88,8 @@ describe("the onboarding script", () => {
         fx,
       );
       state = await settle(ONBOARDING, state, fx);
+      expect(at(state)).toBe("ai-choose");
+      state = await settle(ONBOARDING, pick(state, "Chat with the admin copilot"), fx);
       expect(state).toMatchObject({ done: { to: "/agents/Admin%20copilot/chat" } });
       expect(calls).toEqual([
         'provider house anthropic {"api_key":"sk-1"} claude-sonnet-5-5',
@@ -100,8 +106,21 @@ describe("the onboarding script", () => {
       expect(at(state)).toBe("ai-provider");
       expect(state.ctx.vars.provider).toBe("main");
       state = await settle(ONBOARDING, pick(state, "Use {provider}"), fx);
+      expect(at(state)).toBe("ai-choose");
+      state = await settle(ONBOARDING, pick(state, "Chat with the admin copilot"), fx);
       expect(state).toMatchObject({ done: { to: "/agents/Admin%20copilot/chat" } });
       expect(calls).toEqual(["copilot on main"]);
+    });
+
+    it("can build an application from a description instead, ending on Plan & build", async () => {
+      const { fx, calls } = fakes([{ name: "main", is_default: true }]);
+      let state = await settle(ONBOARDING, pick(startFlow(ONBOARDING), "Generative AI"), fx);
+      state = await settle(ONBOARDING, pick(state, "Use {provider}"), fx);
+      state = pick(state, "Application from a description");
+      expect(at(state)).toBe("ai-app");
+      state = await submit(ONBOARDING, state, { name: " Gym log " }, fx);
+      expect(state).toMatchObject({ done: { to: "/applications/app-1/construct" } });
+      expect(calls).toEqual(["construct Gym log on main"]);
     });
 
     it("with a provider, can still set up a new one", async () => {
