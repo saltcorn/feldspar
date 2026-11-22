@@ -43,7 +43,7 @@ pub(crate) fn question_fields() -> Vec<DataField> {
         DataField::plain("id", BasicType::Uuid)
             .required()
             .primary_key(),
-        DataField::plain("construction", BasicType::Uuid).required(),
+        crate::store::key("construction", crate::store::CONSTRUCTIONS_TABLE).required(),
         DataField::plain("position", BasicType::Float).required(),
         DataField::plain("question", BasicType::Text).required(),
         DataField::plain("answer", BasicType::Text),

@@ -4,7 +4,7 @@
 //!
 //! - [`model`] — the construction, the phase, the task, and a phase's status,
 //!   which follows from its tasks.
-//! - [`store`] — the three `_fd_construction*` tables.
+//! - [`store`] — the construction, phase and task tables.
 //! - [`plan`] — saving the phases, validated once for the agent's tool and
 //!   the admin's edits.
 //! - [`tasks`] — a phase's tasks, planned when the phase is reached, and what
@@ -13,8 +13,11 @@
 //!   which the admin may choose.
 //! - [`questions`] — what the agent asks about the specification first, and
 //!   the admin's answers.
-//! - [`feedback`] — the admin's feedback on what a phase built, planned as
-//!   requirements and follow-up tasks.
+//! - [`feedback`] — feedback on what a phase built, planned as requirements
+//!   and follow-up tasks once approved.
+//! - [`errors`] — every error the construction met, newest first.
+//! - [`construction_runs`] — the runs it started; the latest one's error is
+//!   its current error.
 
 /// This crate's own tables' access to the primary database
 /// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
@@ -23,6 +26,8 @@
 pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
     sc_catalog::Unchecked::system("sc-construct: the construction store");
 
+pub mod construction_runs;
+pub mod errors;
 pub mod feedback;
 pub mod mockups;
 pub mod model;
@@ -31,10 +36,17 @@ pub mod questions;
 pub mod store;
 pub mod tasks;
 
+pub use construction_runs::{
+    CONSTRUCTION_RUNS_TABLE, ConstructionRun, RunPurpose, construction_runs_for, current_build,
+    insert_construction_run, latest_agent_run, latest_construction_run, set_agent_run,
+};
+pub use errors::{
+    ConstructionError, ERRORS_TABLE, ErrorSource, Failure, MAX_ERRORS_SHOWN, current_error,
+    errors_of,
+};
 pub use feedback::{
     FEEDBACK_TABLE, FeedbackPlan, MAX_FEEDBACK_TASKS, add_feedback, delete_feedback, feedback_of,
     feedback_tasks, parse_feedback_plan, plan_feedback, require_feedback, require_feedback_phase,
-    set_feedback_run,
 };
 pub use mockups::{
     DEFAULT_MOCKUPS, MAX_MOCKUPS, MOCKUPS_TABLE, MockupInput, choose_mockup, chosen_mockup,
@@ -56,7 +68,7 @@ pub use store::{
     delete_construction, delete_phase, insert_phase, insert_task, list_constructions,
     load_construction, load_task, mark_planning, mark_running, phases_of, phases_with_tasks,
     require_construction, running_constructions, save_specification, set_construction_status,
-    set_plan_error, set_plan_run, task_insert, tasks_of_phase, update_task,
+    set_plan_error, task_insert, tasks_of_phase, update_task,
 };
 pub use tasks::{
     MAX_TASKS, Next, TaskInput, clear_tasks, next_step, parse_tasks, replan_note,

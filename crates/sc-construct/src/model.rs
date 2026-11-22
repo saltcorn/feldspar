@@ -79,10 +79,13 @@ pub struct Construction {
     pub agent: Option<String>,
     /// Who last started it: the runner works as this admin.
     pub started_by: Option<Uuid>,
-    /// The run that planned the phases last.
+    /// The run that planned the phases last: its latest `phases` run's.
     pub plan_run: Option<Uuid>,
-    /// Why it stopped or failed last, for the admin to read.
+    /// Why its latest run stopped or failed, for the admin to read: the
+    /// newest error logged for it ([`crate::current_error`]).
     pub error: Option<String>,
+    /// The logged error `error` is, when it is one.
+    pub error_entry: Option<Uuid>,
     /// The phase a run stops after, or `None` to run them all.
     pub until_phase: Option<Uuid>,
     /// The run only plans the tasks of `until_phase` and stops, so the admin
@@ -237,7 +240,6 @@ pub struct QuestionAnswer {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Feedback {
     pub id: Uuid,
-    pub construction: Uuid,
     pub phase: Uuid,
     pub position: f64,
     pub title: String,
@@ -245,7 +247,8 @@ pub struct Feedback {
     /// What the feedback asks of the phase, as the agent wrote it; empty until
     /// it is planned.
     pub requirements: Vec<Requirement>,
-    /// The run that planned it last; `None` until the admin approves it.
+    /// The run that planned it last, from its construction runs; `None`
+    /// until the admin approves it.
     pub run: Option<Uuid>,
 }
 

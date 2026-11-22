@@ -2,6 +2,19 @@
 
 Changes in reverse chronological order.
 
+## Plan & build: an Activity tab with every error
+
+Plan & build's Progress tab is now Activity, the last tab, since it covers every step, and it
+is always open. It has three cards, only Now open at first, whose headers already say what they hold:
+Now, what the construction agent or the runner is doing (planning the phases, proposing
+mockups, asking questions, planning a feedback, or a task); Errors, everything the
+construction met, newest first; and Phases, the progress as before. The browser remembers
+which cards you opened, and Research's Questions and Mockups cards fold the same way, their
+headers saying how many questions are answered and which mockup is chosen. Each error says
+where it happened (a task, a phase's planning, the mockups, a feedback…), when, and links to
+its run; the one the construction is stuck on is marked current. Before, only the last error
+was kept, and starting a new run wiped it.
+
 ## Plan & build: feedback on what a phase built
 
 Plan & build has a fifth tab, Feedback. Once a phase has built something, say what should

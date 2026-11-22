@@ -29,6 +29,8 @@ import {
   feedbackDeletable,
   feedbackEditable,
   agentBusy,
+  agentWork,
+  TABS,
   createdEntity,
   dependencyTitles,
   landingTab,
@@ -108,6 +110,7 @@ function construction(status: string, extra: Partial<Construction> = {}): Constr
     questions: [],
     mockups: [],
     feedback: [],
+    errors: [],
     updated_at: null,
     phases: [],
     ...extra,
@@ -128,11 +131,11 @@ describe("the step the screen opens on", () => {
     expect(currentStep(construction("planned", { phases: [phase("p1")] }))).toBe("phases");
   });
 
-  it("shows the progress once a task has run, and whenever it runs or ran", () => {
+  it("shows the activity once a task has run, and whenever it runs or ran", () => {
     const ran = construction("planned", { phases: [phase("p1", [task("done"), task("todo")])] });
-    expect(currentStep(ran)).toBe("progress");
+    expect(currentStep(ran)).toBe("activity");
     for (const status of ["running", "stopped", "failed", "done"]) {
-      expect(currentStep(construction(status))).toBe("progress");
+      expect(currentStep(construction(status))).toBe("activity");
     }
   });
 });
@@ -154,11 +157,13 @@ describe("the tabs", () => {
     expect(tabOpen(construction("planned", { phases: [phase("p1")] }), "phases")).toBe(true);
   });
 
-  it("opens the progress once a run has started", () => {
-    expect(tabOpen(construction("planned", { phases: [phase("p1")] }), "progress")).toBe(false);
-    expect(tabOpen(construction("running", { phases: [phase("p1")] }), "progress")).toBe(true);
-    const ran = construction("planned", { phases: [phase("p1", [task("done")])] });
-    expect(tabOpen(ran, "progress")).toBe(true);
+  it("always opens the activity, which says what there is even when nothing ran", () => {
+    expect(tabOpen(construction("draft"), "activity")).toBe(true);
+    expect(tabOpen(blankConstruction("a1"), "activity")).toBe(true);
+  });
+
+  it("puts the activity last, after the steps", () => {
+    expect(TABS[TABS.length - 1]).toBe("activity");
   });
 });
 
@@ -409,7 +414,7 @@ describe("what the buttons call", () => {
     expect(currentStep(blank)).toBe("specification");
     expect(tabOpen(blank, "specification")).toBe(true);
     expect(tabOpen(blank, "phases")).toBe(false);
-    expect(tabOpen(blank, "progress")).toBe(false);
+    expect(tabOpen(blank, "activity")).toBe(true);
   });
 
   it("runs all phases or up to one", async () => {
@@ -489,7 +494,7 @@ describe("the tab the screen opens on", () => {
   it("is the current step's, except that a build under way opens on its phases", () => {
     expect(landingTab("specification")).toBe("specification");
     expect(landingTab("phases")).toBe("phases");
-    expect(landingTab("progress")).toBe("phases");
+    expect(landingTab("activity")).toBe("phases");
   });
 });
 
@@ -861,5 +866,28 @@ describe("the feedback on the phases", () => {
     const ran = construction("done", { phases: [built("done", { feedback: "f1" })] });
     expect(feedbackDeletable(ran, f)).toBe(false);
     expect(feedbackDeletable(waiting, { ...f, planning: true })).toBe(false);
+  });
+});
+
+describe("the activity", () => {
+  it("says what the construction agent is doing outside the runner", () => {
+    expect(agentWork(construction("draft"))).toBeNull();
+    expect(agentWork(construction("draft", { planning: true }))).toEqual({ kind: "phases" });
+    expect(agentWork(construction("draft", { designing: true }))).toEqual({ kind: "mockups" });
+    expect(agentWork(construction("draft", { asking: true }))).toEqual({ kind: "questions" });
+    const feedback = {
+      id: "f1",
+      phase: "p1",
+      title: "Sorting",
+      description: "Sort",
+      requirements: [],
+      run: "r1",
+      planning: true,
+      status: "open",
+    };
+    expect(agentWork(construction("planned", { feedback: [feedback] }))).toEqual({
+      kind: "feedback",
+      feedback,
+    });
   });
 });

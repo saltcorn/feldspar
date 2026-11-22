@@ -2,8 +2,8 @@
 //!
 //! Feedback is given on one phase that has been built, at least in part, and
 //! is only recorded ([`add_feedback`]): giving it starts nothing. The admin
-//! approves it by starting the run that plans it, recorded as its `run`
-//! ([`set_feedback_run`]). The construction agent turns it into requirements,
+//! approves it by starting the run that plans it: the latest of its runs
+//! ([`crate::construction_runs`]) is its `run`. The construction agent turns it into requirements,
 //! kept with the feedback, and follow-up tasks, added after the phase's own
 //! tasks and naming the feedback ([`plan_feedback`]). The tasks wait as `todo`
 //! for the admin to review and run, as a phase's planned tasks do: the runner
@@ -18,15 +18,18 @@
 use sc_catalog::{Catalog, DataField};
 use sc_db::{Row, Transaction};
 use sc_error::{Error, Result};
-use sc_query::{Assignment, Delete, Expr, OrderBy, Select, Source, Statement, Update, Value};
+use sc_query::{
+    Assignment, Delete, Expr, InSet, OrderBy, Projection, Select, Source, Statement, Update, Value,
+};
 use sc_types::BasicType;
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::construction_runs::{RunPurpose, construction_runs_for};
 use crate::model::{Feedback, PhaseWithTasks, Requirement, Task, TaskStatus};
 use crate::store::{
-    TASKS_TABLE, from_json, insert_statement, lock_phases, opt_uuid, req_float, req_text, req_uuid,
-    require_construction, rows, run, task_insert, tasks_in, to_json, tx_rows, tx_run,
+    PHASES_TABLE, TASKS_TABLE, from_json, insert_statement, key, lock_phases, req_float, req_text,
+    req_uuid, require_construction, rows, task_insert, tasks_in, to_json, tx_rows, tx_run,
 };
 use crate::tasks::{TaskInput, build_tasks};
 
@@ -46,13 +49,12 @@ pub(crate) fn feedback_fields() -> Vec<DataField> {
         DataField::plain("id", BasicType::Uuid)
             .required()
             .primary_key(),
-        DataField::plain("construction", BasicType::Uuid).required(),
-        DataField::plain("phase", BasicType::Uuid).required(),
+        // The construction is the phase's.
+        key("phase", PHASES_TABLE).required(),
         DataField::plain("position", BasicType::Float).required(),
         DataField::plain("title", BasicType::Text).required(),
         DataField::plain("description", BasicType::Text).required(),
         DataField::plain("requirements", BasicType::Json).required(),
-        DataField::plain("run", BasicType::Uuid),
     ]
 }
 
@@ -123,7 +125,6 @@ pub async fn add_feedback(
                     .fold(0.0, f64::max);
                 let feedback = Feedback {
                     id: Uuid::new_v4(),
-                    construction: construction.id,
                     phase,
                     position: last + 1.0,
                     title,
@@ -135,23 +136,19 @@ pub async fn add_feedback(
                     FEEDBACK_TABLE,
                     &[
                         "id",
-                        "construction",
                         "phase",
                         "position",
                         "title",
                         "description",
                         "requirements",
-                        "run",
                     ],
                     vec![
                         Value::Uuid(feedback.id),
-                        Value::Uuid(feedback.construction),
                         Value::Uuid(feedback.phase),
                         Value::Float(feedback.position),
                         Value::Text(feedback.title.clone()),
                         Value::Text(feedback.description.clone()),
                         Value::Json(to_json(&feedback.requirements)?),
-                        Value::Null,
                     ],
                 );
                 tx_run(tx, &Statement::from(insert)).await?;
@@ -168,11 +165,22 @@ pub async fn feedback_of(catalog: &Catalog, construction: Uuid) -> Result<Vec<Fe
     if !matches!(catalog.get(FEEDBACK_TABLE), Ok(Some(_))) {
         return Ok(Vec::new());
     }
-    rows(catalog, feedback_select(construction))
+    let mut feedback = rows(catalog, feedback_select(construction))
         .await?
         .iter()
         .map(feedback_from_row)
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    if feedback.is_empty() {
+        return Ok(feedback);
+    }
+    let runs = construction_runs_for(catalog, construction, RunPurpose::Feedback).await?;
+    for f in &mut feedback {
+        f.run = runs
+            .iter()
+            .filter(|r| r.feedback == Some(f.id))
+            .find_map(|r| r.run);
+    }
+    Ok(feedback)
 }
 
 /// The feedback `id` of `construction`, or not found.
@@ -182,16 +190,6 @@ pub async fn require_feedback(catalog: &Catalog, construction: Uuid, id: Uuid) -
         .into_iter()
         .find(|f| f.id == id)
         .ok_or_else(|| Error::not_found(format!("no feedback {id} in this construction")))
-}
-
-/// Record the run that plans `feedback`, which approves it.
-pub async fn set_feedback_run(catalog: &Catalog, feedback: Uuid, run_id: Uuid) -> Result<()> {
-    let update = Update::new(
-        FEEDBACK_TABLE,
-        vec![Assignment::new("run", Expr::Lit(Value::Uuid(run_id)))],
-    )
-    .filter(Expr::col("id").eq(Expr::lit(feedback)));
-    run(catalog, Statement::from(update)).await
 }
 
 /// The tasks planned for `feedback`, in order.
@@ -350,9 +348,15 @@ async fn with_tasks(tx: &mut dyn Transaction, construction: Uuid) -> Result<Vec<
     Ok(out)
 }
 
+/// The feedback on `construction`'s phases.
 fn feedback_select(construction: Uuid) -> Select {
-    let mut select = Select::from(Source::table(FEEDBACK_TABLE))
+    let mut phases = Select::from(Source::table(PHASES_TABLE))
         .filter(Expr::col("construction").eq(Expr::lit(construction)));
+    phases.columns = vec![Projection::expr(Expr::col("id"))];
+    let mut select = Select::from(Source::table(FEEDBACK_TABLE)).filter(Expr::In {
+        e: Box::new(Expr::col("phase")),
+        set: InSet::Subquery(Box::new(phases)),
+    });
     select.order = vec![OrderBy::asc(Expr::col("position"))];
     select
 }
@@ -361,13 +365,13 @@ fn feedback_from_row(row: &Row) -> Result<Feedback> {
     let t = FEEDBACK_TABLE;
     Ok(Feedback {
         id: req_uuid(row, t, "id")?,
-        construction: req_uuid(row, t, "construction")?,
         phase: req_uuid(row, t, "phase")?,
         position: req_float(row, t, "position")?,
         title: req_text(row, t, "title")?,
         description: req_text(row, t, "description")?,
         requirements: from_json(row, t, "requirements")?,
-        run: opt_uuid(row, t, "run")?,
+        // From its construction runs ([`feedback_of`]).
+        run: None,
     })
 }
 

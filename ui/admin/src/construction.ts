@@ -17,6 +17,7 @@ export type ConstructionTask = ConstructionPhase["tasks"][number];
 export type ConstructionMockup = Construction["mockups"][number];
 export type ConstructionQuestion = Construction["questions"][number];
 export type ConstructionFeedback = Construction["feedback"][number];
+export type ConstructionErrorEntry = Construction["errors"][number];
 
 /** A phase as the admin edits it before saving. */
 export type PhaseDraft = SavePhasesRequest["phases"][number];
@@ -86,7 +87,7 @@ export function constructible(app: { framework: { name: string } }): boolean {
 }
 
 /** The step the screen opens on. */
-export type Step = "start" | "specification" | "research" | "phases" | "progress";
+export type Step = "start" | "specification" | "research" | "phases" | "activity";
 
 /** Which step is open for `construction` (`null`: the application has none).
  *
@@ -94,9 +95,9 @@ export type Step = "start" | "specification" | "research" | "phases" | "progress
  * - A draft has no phases: write the specification, or, once questions are
  *   asked or mockups proposed (or being), the research: answer them, choose
  *   a mockup.
- * - Planned: edit the phases, until a task has run. From then on the progress
- *   is what the admin comes back to see.
- * - Running, stopped, failed or done: the progress. */
+ * - Planned: edit the phases, until a task has run. From then on the
+ *   activity is what the admin comes back to see.
+ * - Running, stopped, failed or done: the activity. */
 export function currentStep(construction: Construction | null): Step {
   if (!construction) return "start";
   if (construction.planning) return "phases";
@@ -105,9 +106,9 @@ export function currentStep(construction: Construction | null): Step {
     case "draft":
       return researched(construction) ? "research" : "specification";
     case "planned":
-      return started(construction) ? "progress" : "phases";
+      return started(construction) ? "activity" : "phases";
     default:
-      return "progress";
+      return "activity";
   }
 }
 
@@ -126,25 +127,28 @@ export function blankConstruction(appId: string): Construction {
     questions: [],
     mockups: [],
     feedback: [],
+    errors: [],
     phases: [],
   };
 }
 
-/** The screen's tabs, in order; each is one step. */
-export const TABS = ["specification", "research", "phases", "progress", "feedback"] as const;
+/** The screen's tabs, in order: the steps, then the activity, which spans
+ * them all. */
+export const TABS = ["specification", "research", "phases", "feedback", "activity"] as const;
 export type Tab = (typeof TABS)[number];
 
 /** The tab the screen opens on: the current step's, except that a build under
- * way opens on its phases — the plan is what an admin comes back to, and each
- * phase's progress is one click from there. */
+ * way opens on its phases — the plan is what an admin comes back to, and the
+ * activity is one click from there. */
 export function landingTab(step: Exclude<Step, "start">): Tab {
-  return step === "progress" ? "phases" : step;
+  return step === "activity" ? "phases" : step;
 }
 
 /** Whether `tab` can be opened yet: the specification always, the research
  * once there is a specification to research, the phases once they are planned or
- * being planned, the progress once the step is reached, the feedback once a
- * phase has built something to give it on. */
+ * being planned, the feedback once a phase has built something to give it
+ * on, and the activity always: its cards say what there is, even when that
+ * is nothing yet. */
 export function tabOpen(construction: Construction, tab: Tab): boolean {
   switch (tab) {
     case "specification":
@@ -158,10 +162,10 @@ export function tabOpen(construction: Construction, tab: Tab): boolean {
       );
     case "phases":
       return construction.planning || construction.phases.length > 0;
-    case "progress":
-      return currentStep(construction) === "progress";
     case "feedback":
       return construction.feedback.length > 0 || feedbackPhases(construction).length > 0;
+    case "activity":
+      return true;
   }
 }
 
@@ -233,10 +237,10 @@ export function pollConstruction(
 
 /** Why the last plan run failed, to show with the specification: the
  * construction's error while it is not being planned or run. Once tasks have
- * run, the error is the progress's to show. */
+ * run, the error is the activity's to show. */
 export function planError(construction: Construction): string | null {
   if (construction.planning || construction.designing || construction.asking) return null;
-  if (currentStep(construction) === "progress") return null;
+  if (currentStep(construction) === "activity") return null;
   return construction.error ?? null;
 }
 
@@ -313,6 +317,21 @@ export function currentWork(construction: Construction): CurrentWork | null {
   // Between two tasks: the next one is about to start.
   const next = phase.tasks.find((t) => t.status === "todo");
   return next ? { kind: "task", phase, task: next } : null;
+}
+
+/** What the construction agent is doing for the construction, outside the
+ * runner: planning the phases, proposing mockups, asking questions or
+ * planning a feedback. `null` when it is free. */
+export type AgentWork =
+  | { kind: "phases" | "mockups" | "questions" }
+  | { kind: "feedback"; feedback: ConstructionFeedback };
+
+export function agentWork(construction: Construction): AgentWork | null {
+  if (construction.planning) return { kind: "phases" };
+  if (construction.designing) return { kind: "mockups" };
+  if (construction.asking) return { kind: "questions" };
+  const feedback = construction.feedback.find((f) => f.planning);
+  return feedback ? { kind: "feedback", feedback } : null;
 }
 
 export function runHref(run: string): string {

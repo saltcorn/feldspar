@@ -73,6 +73,7 @@ import {
   phasesPath,
   landingTab,
   currentWork,
+  agentWork,
   blankConstruction,
   unfinishedBefore,
   createdEntity,
@@ -92,6 +93,8 @@ import {
   type Tab,
   type Construction,
   type CurrentWork,
+  type AgentWork,
+  type ConstructionErrorEntry,
   type ConstructionPhase,
   type ConstructionTask,
   type PhaseDraft,
@@ -100,6 +103,7 @@ import {
   IconArrowDown,
   IconArrowLeft,
   IconChevronLeft,
+  IconChevronDown,
   IconChevronRight,
   IconArrowUp,
   IconCheck,
@@ -119,6 +123,7 @@ import {
   IconTrash,
 } from "../icons";
 import { ClampedText } from "../ClampedText";
+import { historyTime } from "../history";
 import { InlineCode } from "../inlineCode";
 import { firstSentence } from "../runStory";
 import { tableHref } from "./TableDetail";
@@ -224,8 +229,8 @@ export function StepTabs({
     specification: t("Specification"),
     research: t("Research"),
     phases: t("Phases"),
-    progress: t("Progress"),
     feedback: t("Feedback"),
+    activity: t("Activity"),
   };
   const step = currentStep(construction);
   return (
@@ -466,6 +471,26 @@ export function Construct({
     );
   };
 
+  /** The Phases tab's "Plan phases again", always confirmed: it replaces
+   * the phases the admin may have edited. */
+  const replan = () => {
+    if (!construction) return;
+    const kept = construction.phases.filter((p) => p.tasks.length > 0).length;
+    confirmation.confirm({
+      title: t("Plan the phases again?"),
+      body:
+        t(
+          "The construction agent plans the phases anew from the specification, the answers and the chosen mockup, and they replace the current ones.",
+        ) +
+        (kept > 0
+          ? " " + t("{n} phases have tasks and are kept as they are.", { n: kept })
+          : ""),
+      confirm: t("Plan phases again"),
+      onConfirm: () =>
+        void act(() => calls.plan(construction.specification), t("Could not plan the phases.")),
+    });
+  };
+
   if (phaseId !== null) {
     const index = construction ? construction.phases.findIndex((p) => p.id === phaseId) : -1;
     const phase = construction && index >= 0 ? construction.phases[index] : null;
@@ -651,6 +676,7 @@ export function Construct({
                 onRun={(until) =>
                   void act(() => calls.run(until), t("Could not run the construction."))
                 }
+                onReplan={replan}
               />
             )}
             {construction && tab === "feedback" && (
@@ -697,8 +723,8 @@ export function Construct({
                 onRun={(phase) => confirmedRun.request(phase)}
               />
             )}
-            {construction && tab === "progress" && (
-              <ProgressCard
+            {construction && tab === "activity" && (
+              <ActivityCard
                 construction={construction}
                 busy={busy}
                 onRetry={(task) =>
@@ -887,14 +913,35 @@ export function QuestionsCard({
   const questions = construction.questions;
   const changed = changedAnswers(construction, drafts);
   const answered = questions.filter((q) => (q.answer ?? "") !== "").length;
+  const [open, toggle, reveal] = useFoldOpen(QUESTIONS_FOLD_KEY, true);
   return (
-    <Card className="mb-3">
-      <StepHeader title={t("Questions")} number={1}>
+    <FoldCard
+      title={t("Questions")}
+      number={1}
+      open={open}
+      onToggle={toggle}
+      summary={
+        construction.asking ? (
+          <FoldWorking />
+        ) : (
+          <span className="text-secondary small">
+            {questions.length > 0 ? (
+              t("{n} of {total} answered", { n: answered, total: questions.length })
+            ) : (
+              <T text="None" />
+            )}
+          </span>
+        )
+      }
+      actions={
         <Button
           size="sm"
           variant={questions.length === 0 ? "primary" : "outline-secondary"}
           disabled={busy || !editable}
-          onClick={onAsk}
+          onClick={() => {
+            reveal();
+            onAsk();
+          }}
         >
           {construction.asking ? (
             <Spinner animation="border" size="sm" className="me-2" />
@@ -903,68 +950,67 @@ export function QuestionsCard({
           )}
           {questions.length > 0 ? t("Ask again") : t("Ask questions")}
         </Button>
-      </StepHeader>
-      <Card.Body>
-        {construction.asking && (
-          <Alert variant="info" className="d-flex align-items-center gap-2">
-            <Spinner animation="border" size="sm" />
-            <T text="The construction agent is reading the specification and writing its questions." />
-          </Alert>
-        )}
-        {questions.length === 0 && !construction.asking && (
-          <div className="text-secondary">
-            <T text="The construction agent asks what the specification leaves open, so the mockups and the phases follow your answers." />
+      }
+    >
+      {construction.asking && (
+        <Alert variant="info" className="d-flex align-items-center gap-2">
+          <Spinner animation="border" size="sm" />
+          <T text="The construction agent is reading the specification and writing its questions." />
+        </Alert>
+      )}
+      {questions.length === 0 && !construction.asking && (
+        <div className="text-secondary">
+          <T text="The construction agent asks what the specification leaves open, so the mockups and the phases follow your answers." />
+        </div>
+      )}
+      {questions.length > 0 && (
+        <>
+          <p className="text-secondary">
+            <T text="Answer what you can and skip the rest. The answers go with the specification to the mockups, the phases and every task. Asking again keeps the answered questions." />
+          </p>
+          <ol className="research-questions">
+            {questions.map((q, i) => {
+              const value = drafts[q.id] ?? q.answer ?? "";
+              return (
+                <li key={q.id}>
+                  <Form.Label htmlFor={`question-${q.id}`} className="research-question">
+                    <span className="mockup-number mockup-number-sm">{i + 1}</span>
+                    <span>{q.text}</span>
+                  </Form.Label>
+                  <Form.Control
+                    id={`question-${q.id}`}
+                    as="textarea"
+                    rows={2}
+                    value={value}
+                    disabled={!editable}
+                    placeholder={t("Your answer (optional)")}
+                    onChange={(e) => setDrafts((d) => ({ ...d, [q.id]: e.target.value }))}
+                  />
+                </li>
+              );
+            })}
+          </ol>
+          <div className="research-footer">
+            <span className="text-secondary small">
+              {t("{n} of {total} answered", { n: answered, total: questions.length })}
+              {changed.length > 0 && (
+                <span className="spec-dirty">
+                  <T text="Unsaved answers" />
+                </span>
+              )}
+            </span>
+            <Button
+              variant={changed.length > 0 ? "primary" : "outline-secondary"}
+              disabled={busy || !editable || changed.length === 0}
+              onClick={() => onAnswer(changed)}
+            >
+              <IconCheck className="icon-2" />
+              <T text="Save answers" />
+            </Button>
           </div>
-        )}
-        {questions.length > 0 && (
-          <>
-            <p className="text-secondary">
-              <T text="Answer what you can and skip the rest. The answers go with the specification to the mockups, the phases and every task. Asking again keeps the answered questions." />
-            </p>
-            <ol className="research-questions">
-              {questions.map((q, i) => {
-                const value = drafts[q.id] ?? q.answer ?? "";
-                return (
-                  <li key={q.id}>
-                    <Form.Label htmlFor={`question-${q.id}`} className="research-question">
-                      <span className="mockup-number mockup-number-sm">{i + 1}</span>
-                      <span>{q.text}</span>
-                    </Form.Label>
-                    <Form.Control
-                      id={`question-${q.id}`}
-                      as="textarea"
-                      rows={2}
-                      value={value}
-                      disabled={!editable}
-                      placeholder={t("Your answer (optional)")}
-                      onChange={(e) => setDrafts((d) => ({ ...d, [q.id]: e.target.value }))}
-                    />
-                  </li>
-                );
-              })}
-            </ol>
-            <div className="research-footer">
-              <span className="text-secondary small">
-                {t("{n} of {total} answered", { n: answered, total: questions.length })}
-                {changed.length > 0 && (
-                  <span className="spec-dirty">
-                    <T text="Unsaved answers" />
-                  </span>
-                )}
-              </span>
-              <Button
-                variant={changed.length > 0 ? "primary" : "outline-secondary"}
-                disabled={busy || !editable || changed.length === 0}
-                onClick={() => onAnswer(changed)}
-              >
-                <IconCheck className="icon-2" />
-                <T text="Save answers" />
-              </Button>
-            </div>
-          </>
-        )}
-      </Card.Body>
-    </Card>
+        </>
+      )}
+    </FoldCard>
   );
 }
 
@@ -1275,176 +1321,206 @@ export function MockupsCard({
     setNote("");
   }, [round]);
 
+  const [open, toggle, reveal] = useFoldOpen(MOCKUPS_FOLD_KEY, true);
   return (
     <>
-      <Card className="mb-3">
-        <StepHeader title={t("Mockups")} number={2}>
-          {latest.length > 0 && (
-            <div className="btn-group" role="group" aria-label={t("Width")}>
-              {(["desktop", "phone"] as const).map((w) => (
-                <Button
-                  key={w}
-                  size="sm"
-                  variant={width === w ? "secondary" : "outline-secondary"}
-                  aria-pressed={width === w}
-                  onClick={() => setWidth(w)}
-                >
-                  {w === "desktop" ? (
-                    <IconDeviceDesktop className="icon-2" />
-                  ) : (
-                    <IconDeviceMobile className="icon-2" />
-                  )}
-                  {w === "desktop" ? t("Desktop") : t("Phone")}
-                </Button>
-              ))}
-            </div>
-          )}
-          {latest.length === 0 && (
-            <Button size="sm" variant="primary" disabled={busy || !editable} onClick={onPropose}>
-              {construction.designing ? (
-                <Spinner animation="border" size="sm" className="me-2" />
-              ) : (
-                <IconLayoutDashboard className="icon-2" />
-              )}
-              <T text="Propose mockups" />
-            </Button>
-          )}
-        </StepHeader>
-        <Card.Body>
-          {construction.designing && (
-            <Alert variant="info" className="d-flex align-items-center gap-2">
-              <Spinner animation="border" size="sm" />
-              <T text="The construction agent is drawing the mockups. This takes a minute or two." />
-            </Alert>
-          )}
-          {latest.length === 0 && !construction.designing && (
-            <div className="text-secondary">
-              {construction.questions.length === 0 ? (
-                <T text="A few different looks of the main screens, drawn from the specification. Ask the questions first to have your answers in them." />
-              ) : (
-                <T text="A few different looks of the main screens, drawn from the specification and your answers, for you to choose one or say what should change." />
-              )}
-            </div>
-          )}
-          {rechosen && hasPhases && chosen && (
-            <Alert variant="warning" className="d-flex align-items-center gap-3">
-              <div className="flex-fill">
-                <T text="The phases were planned for another mockup. Plan them again so they follow this one." />
-              </div>
-              <Button size="sm" variant="primary" disabled={busy || !editable} onClick={onPlan}>
-                <IconSparkles className="icon-2" />
-                <T text="Plan phases again" />
-              </Button>
-            </Alert>
-          )}
-          {chosen && !latest.includes(chosen) && (
-            <Alert variant="secondary">
-              {t("The chosen mockup is “{title}”, from an earlier round.", { title: chosen.title })}
-            </Alert>
-          )}
-          {latest.length > 1 && (
-            // The mockups are alternatives: say so, and name them by number,
-            // with a way to each, as the second is a long way down.
-            <div className="mockup-compare">
-              <span className="text-secondary">
-                {t("{n} alternatives: look at each, then choose one or say what should change.", {
-                  n: latest.length,
-                })}
-              </span>
-              <div className="mockup-compare-links">
-                {latest.map((mockup, i) => (
+      <FoldCard
+        title={t("Mockups")}
+        number={2}
+        open={open}
+        onToggle={toggle}
+        summary={
+          construction.designing ? (
+            <FoldWorking />
+          ) : chosen ? (
+            <span className="text-nowrap">
+              <StatusBadge tone="green" className="me-2">
+                <T text="Chosen" />
+              </StatusBadge>
+              {chosen.title}
+            </span>
+          ) : latest.length === 0 ? (
+            <span className="text-secondary small">
+              <T text="None" />
+            </span>
+          ) : null
+        }
+        actions={
+          <>
+            {latest.length > 0 && (
+              <div className="btn-group" role="group" aria-label={t("Width")}>
+                {(["desktop", "phone"] as const).map((w) => (
                   <Button
-                    key={mockup.id}
+                    key={w}
                     size="sm"
-                    variant="outline-secondary"
-                    onClick={() =>
-                      document
-                        .getElementById(mockupAnchor(mockup.id))
-                        ?.scrollIntoView({ behavior: "smooth", block: "start" })
-                    }
+                    variant={width === w ? "secondary" : "outline-secondary"}
+                    aria-pressed={width === w}
+                    onClick={() => setWidth(w)}
                   >
-                    <span className="mockup-number mockup-number-sm">{i + 1}</span>
-                    {mockup.title}
+                    {w === "desktop" ? (
+                      <IconDeviceDesktop className="icon-2" />
+                    ) : (
+                      <IconDeviceMobile className="icon-2" />
+                    )}
+                    {w === "desktop" ? t("Desktop") : t("Phone")}
                   </Button>
                 ))}
               </div>
-            </div>
-          )}
-          <div className={width === "phone" ? "mockup-grid mockup-grid-phone" : "mockup-grid"}>
-            {latest.map((mockup, i) => (
-              <MockupPanel
-                key={mockup.id}
-                mockup={mockup}
-                number={i + 1}
-                total={latest.length}
-                loadScreens={loadScreens}
-                width={width}
-                busy={busy || !editable}
-                feedback={notes[mockup.id] ?? ""}
-                onFeedback={(text) => setNotes((n) => ({ ...n, [mockup.id]: text }))}
-                onChoose={() => choose(mockup.id)}
-              />
-            ))}
+            )}
+            {latest.length === 0 && (
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={busy || !editable}
+                onClick={() => {
+                  reveal();
+                  onPropose();
+                }}
+              >
+                {construction.designing ? (
+                  <Spinner animation="border" size="sm" className="me-2" />
+                ) : (
+                  <IconLayoutDashboard className="icon-2" />
+                )}
+                <T text="Propose mockups" />
+              </Button>
+            )}
+          </>
+        }
+      >
+        {construction.designing && (
+          <Alert variant="info" className="d-flex align-items-center gap-2">
+            <Spinner animation="border" size="sm" />
+            <T text="The construction agent is drawing the mockups. This takes a minute or two." />
+          </Alert>
+        )}
+        {latest.length === 0 && !construction.designing && (
+          <div className="text-secondary">
+            {construction.questions.length === 0 ? (
+              <T text="A few different looks of the main screens, drawn from the specification. Ask the questions first to have your answers in them." />
+            ) : (
+              <T text="A few different looks of the main screens, drawn from the specification and your answers, for you to choose one or say what should change." />
+            )}
           </div>
-          {latest.length > 0 && (
-            <div className="mockup-revise">
-              <Form.Label htmlFor="mockup-note">
-                <T text="A note on all of them (optional)" />
-              </Form.Label>
-              <Form.Control
-                id="mockup-note"
-                as="textarea"
-                rows={2}
-                value={note}
-                disabled={!editable}
-                placeholder={t("e.g. fewer screens, a sidebar instead of tabs")}
-                onChange={(e) => setNote(e.target.value)}
-              />
-              <div className="d-flex justify-content-between align-items-center mt-2">
-                <span className="text-secondary small">
-                  <T text="Revising proposes a new round from your feedback; this round stays below." />
-                </span>
-                <Button
-                  variant="outline-primary"
-                  disabled={busy || !editable || (feedback.length === 0 && note.trim() === "")}
-                  onClick={() => onRevise(feedback, note.trim() || null)}
-                >
-                  <IconRefresh className="icon-2" />
-                  <T text="Revise" />
-                </Button>
-              </div>
+        )}
+        {rechosen && hasPhases && chosen && (
+          <Alert variant="warning" className="d-flex align-items-center gap-3">
+            <div className="flex-fill">
+              <T text="The phases were planned for another mockup. Plan them again so they follow this one." />
             </div>
-          )}
-          {earlier.length > 0 && (
-            <details className="mockup-earlier">
-              <summary>{t("Earlier rounds ({n})", { n: earlier.length })}</summary>
-              <ul className="list-unstyled mb-0 mt-2">
-                {earlier.map((m) => (
-                  <li key={m.id} className="d-flex align-items-start gap-2 mb-2">
-                    <span className="badge bg-secondary-lt">{t("Round {n}", { n: m.round })}</span>
-                    <div className="flex-fill">
-                      <strong>{m.title}</strong>
-                      {m.feedback && <div className="text-secondary small">{m.feedback}</div>}
-                    </div>
-                    {m.status === "chosen" ? (
-                      <StatusBadge tone="green">{t("Chosen")}</StatusBadge>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="outline-secondary"
-                        disabled={busy || !editable}
-                        onClick={() => choose(m.id)}
-                      >
-                        <T text="Choose" />
-                      </Button>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </details>
-          )}
-        </Card.Body>
-      </Card>
+            <Button size="sm" variant="primary" disabled={busy || !editable} onClick={onPlan}>
+              <IconSparkles className="icon-2" />
+              <T text="Plan phases again" />
+            </Button>
+          </Alert>
+        )}
+        {chosen && !latest.includes(chosen) && (
+          <Alert variant="secondary">
+            {t("The chosen mockup is “{title}”, from an earlier round.", { title: chosen.title })}
+          </Alert>
+        )}
+        {latest.length > 1 && (
+          // The mockups are alternatives: say so, and name them by number,
+          // with a way to each, as the second is a long way down.
+          <div className="mockup-compare">
+            <span className="text-secondary">
+              {t("{n} alternatives: look at each, then choose one or say what should change.", {
+                n: latest.length,
+              })}
+            </span>
+            <div className="mockup-compare-links">
+              {latest.map((mockup, i) => (
+                <Button
+                  key={mockup.id}
+                  size="sm"
+                  variant="outline-secondary"
+                  onClick={() =>
+                    document
+                      .getElementById(mockupAnchor(mockup.id))
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                  }
+                >
+                  <span className="mockup-number mockup-number-sm">{i + 1}</span>
+                  {mockup.title}
+                </Button>
+              ))}
+            </div>
+          </div>
+        )}
+        <div className={width === "phone" ? "mockup-grid mockup-grid-phone" : "mockup-grid"}>
+          {latest.map((mockup, i) => (
+            <MockupPanel
+              key={mockup.id}
+              mockup={mockup}
+              number={i + 1}
+              total={latest.length}
+              loadScreens={loadScreens}
+              width={width}
+              busy={busy || !editable}
+              feedback={notes[mockup.id] ?? ""}
+              onFeedback={(text) => setNotes((n) => ({ ...n, [mockup.id]: text }))}
+              onChoose={() => choose(mockup.id)}
+            />
+          ))}
+        </div>
+        {latest.length > 0 && (
+          <div className="mockup-revise">
+            <Form.Label htmlFor="mockup-note">
+              <T text="A note on all of them (optional)" />
+            </Form.Label>
+            <Form.Control
+              id="mockup-note"
+              as="textarea"
+              rows={2}
+              value={note}
+              disabled={!editable}
+              placeholder={t("e.g. fewer screens, a sidebar instead of tabs")}
+              onChange={(e) => setNote(e.target.value)}
+            />
+            <div className="d-flex justify-content-between align-items-center mt-2">
+              <span className="text-secondary small">
+                <T text="Revising proposes a new round from your feedback; this round stays below." />
+              </span>
+              <Button
+                variant="outline-primary"
+                disabled={busy || !editable || (feedback.length === 0 && note.trim() === "")}
+                onClick={() => onRevise(feedback, note.trim() || null)}
+              >
+                <IconRefresh className="icon-2" />
+                <T text="Revise" />
+              </Button>
+            </div>
+          </div>
+        )}
+        {earlier.length > 0 && (
+          <details className="mockup-earlier">
+            <summary>{t("Earlier rounds ({n})", { n: earlier.length })}</summary>
+            <ul className="list-unstyled mb-0 mt-2">
+              {earlier.map((m) => (
+                <li key={m.id} className="d-flex align-items-start gap-2 mb-2">
+                  <span className="badge bg-secondary-lt">{t("Round {n}", { n: m.round })}</span>
+                  <div className="flex-fill">
+                    <strong>{m.title}</strong>
+                    {m.feedback && <div className="text-secondary small">{m.feedback}</div>}
+                  </div>
+                  {m.status === "chosen" ? (
+                    <StatusBadge tone="green">{t("Chosen")}</StatusBadge>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline-secondary"
+                      disabled={busy || !editable}
+                      onClick={() => choose(m.id)}
+                    >
+                      <T text="Choose" />
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </FoldCard>
       {/* The research's way on, under both of its parts. */}
       <div className="research-plan">
         <Button
@@ -1780,11 +1856,15 @@ export function PhasesCard({
   busy,
   onSave,
   onRun,
+  onReplan,
 }: {
   construction: Construction;
   busy: boolean;
   onSave: (phases: PhaseDraft[]) => void;
   onRun: (until: string | null) => void;
+  /** Plan the phases again (the screen confirms it): a phase without tasks
+   * is replaced, one with tasks kept. */
+  onReplan: () => void;
 }) {
   const { t } = useT();
   const now = currentWork(construction);
@@ -1812,6 +1892,8 @@ export function PhasesCard({
   const changed = draftsChanged(drafts, construction.phases);
   const confirmed = useConfirmedRun(construction, onRun);
   const canRun = editable && !changed && construction.phases.length > 0;
+  // Not over unsaved edits: the new plan would replace them.
+  const canReplan = researchEditable(construction) && !changed;
 
   return (
     <Card className="mb-3">
@@ -1819,6 +1901,21 @@ export function PhasesCard({
         {changed && (
           <Button size="sm" disabled={busy || !editable} onClick={save}>
             <T text="Save phases" />
+          </Button>
+        )}
+        {construction.phases.length > 0 && (
+          <Button
+            size="sm"
+            variant="outline-secondary"
+            disabled={busy || !canReplan}
+            onClick={onReplan}
+          >
+            {construction.planning ? (
+              <Spinner animation="border" size="sm" className="me-2" />
+            ) : (
+              <IconSparkles className="icon-2" />
+            )}
+            <T text="Plan phases again" />
           </Button>
         )}
         <Button size="sm" variant="primary" disabled={busy || !canRun} onClick={() => onRun(null)}>
@@ -2116,102 +2213,434 @@ function NowWorking({ now }: { now: CurrentWork }) {
   );
 }
 
-export function ProgressCard({
+/** The activity (AC10): what the construction is doing now, the errors it
+ * met, newest first, and how far its phases have got. Spans every step: the
+ * runner's work and the construction agent's (phases, mockups, questions,
+ * feedback). */
+export function ActivityCard({
   construction,
   busy,
   onRetry,
   onSkip,
+  opened,
 }: {
   construction: Construction;
   busy: boolean;
   onRetry: (task: ConstructionTask) => void;
   onSkip: (task: ConstructionTask) => void;
+  /** Cards to start open, over what this browser remembers. */
+  opened?: Partial<ActivityFold>;
 }) {
   const { t } = useT();
-  const { done, total } = progress(construction);
+  const [open, toggle] = useActivityOpen(opened);
   const now = currentWork(construction);
+  const agent = agentWork(construction);
+  const working = !!now || !!agent;
+  const { done, total } = progress(construction);
+  const errorCount = construction.errors.length;
   return (
-    <Card className="mb-3">
-      <StepHeader title={t("Progress")}>
-        <span className="text-secondary small">
-          {t("{done} of {total} phases done", { done, total })}
-        </span>
-      </StepHeader>
-      <div
-        className="build-meter"
-        role="progressbar"
-        aria-valuemin={0}
-        aria-valuemax={total}
-        aria-valuenow={done}
+    <>
+      <FoldCard
+        title={t("Now")}
+        open={open.now}
+        onToggle={() => toggle("now")}
+        summary={
+          working ? (
+            <FoldWorking />
+          ) : (
+            <span className="text-secondary small">
+              <T text="Nothing is running" />
+            </span>
+          )
+        }
       >
-        <div style={{ width: `${total ? (100 * done) / total : 0}%` }} />
-      </div>
-      <Card.Body>
-        {construction.error && (
+        {agent && <AgentWorking construction={construction} work={agent} />}
+        {now && <NowWorking now={now} />}
+        {/* What stopped it, while nothing runs: the Errors card starts
+            closed, and a failed build should say why where the admin looks
+            first. */}
+        {!working && construction.error && (
           <Alert variant={construction.status === "failed" ? "danger" : "warning"}>
-            {construction.error}
+            <ClampedText className="activity-error-message" text={construction.error} />
           </Alert>
         )}
-        {now && <NowWorking now={now} />}
-        <ol className="phase-list">
-          {construction.phases.map((phase, i) => {
-            const tasks = phaseProgress(phase);
-            const planning = now?.kind === "planning" && now.phase.id === phase.id;
-            return (
-              <li
-                key={phase.id}
-                className={`phase phase-${planning ? "running" : phase.status}${now?.phase.id === phase.id ? " phase-working" : ""}`}
-              >
-                <div className="phase-marker" aria-hidden="true">
-                  {phase.status === "done" ? <IconCheck className="icon-2" /> : i + 1}
-                </div>
-                <div className="phase-card">
-                  <div className="phase-head build-phase-head">
-                    <a
-                      className="build-phase-title"
-                      href={`#${phasePath(construction.application, phase.id)}`}
-                    >
-                      {phase.title}
-                    </a>
-                    <Status status={phase.status} />
-                    {tasks.total > 0 && (
-                      <span className="build-phase-count">
-                        {t("{done} of {total} tasks", tasks)}
-                      </span>
-                    )}
-                  </div>
-                  {phase.tasks.length === 0 ? (
-                    <div className="build-empty">
-                      {planning ? (
-                        <>
-                          <Spinner animation="border" size="sm" className="me-2" />
-                          <T text="Planning its tasks…" />
-                        </>
-                      ) : (
-                        <T text="Its tasks are planned when the phase is reached." />
-                      )}
-                    </div>
+        {!working && (
+          <div className="text-secondary">
+            <T text="Nothing is running. Planning, mockups, questions, feedback and the build show here while they run." />
+          </div>
+        )}
+      </FoldCard>
+      <FoldCard
+        title={t("Errors")}
+        open={open.errors}
+        onToggle={() => toggle("errors")}
+        summary={
+          errorCount > 0 ? (
+            <StatusBadge tone={construction.error ? "red" : "secondary"} className="text-nowrap">
+              {errorCount}
+            </StatusBadge>
+          ) : (
+            <span className="text-secondary small">
+              <T text="None" />
+            </span>
+          )
+        }
+      >
+        {errorCount > 0 ? (
+          <ErrorList construction={construction} />
+        ) : (
+          <div className="text-secondary">
+            <T text="No errors so far." />
+          </div>
+        )}
+      </FoldCard>
+      <FoldCard
+        title={t("Phases")}
+        open={open.phases}
+        onToggle={() => toggle("phases")}
+        summary={
+          <span className="text-secondary small">
+            {t("{done} of {total} phases done", { done, total })}
+          </span>
+        }
+        meter={{ done, total }}
+      >
+        {construction.phases.length > 0 ? (
+          <PhasesProgress
+            construction={construction}
+            now={now}
+            busy={busy}
+            onRetry={onRetry}
+            onSkip={onSkip}
+          />
+        ) : (
+          <div className="text-secondary">
+            <T text="No phases yet." />
+          </div>
+        )}
+      </FoldCard>
+    </>
+  );
+}
+
+/** Which of the activity's cards are open: the first time only Now, then as
+ * the admin left them, in this browser. */
+export type ActivityFold = { now: boolean; errors: boolean; phases: boolean };
+const ACTIVITY_FOLD_KEY = "feldspar.construct.activity.open";
+
+function useActivityOpen(
+  opened: Partial<ActivityFold> = {},
+): [ActivityFold, (card: keyof ActivityFold) => void] {
+  const [open, setOpen] = useState<ActivityFold>(() => {
+    const first = { now: true, errors: false, phases: false };
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(ACTIVITY_FOLD_KEY) ?? "null");
+      const remembered = stored && typeof stored === "object" ? stored : {};
+      return { ...first, ...remembered, ...opened };
+    } catch {
+      return { ...first, ...opened };
+    }
+  });
+  const toggle = (card: keyof ActivityFold) =>
+    setOpen((was) => {
+      const next = { ...was, [card]: !was[card] };
+      try {
+        window.localStorage.setItem(ACTIVITY_FOLD_KEY, JSON.stringify(next));
+      } catch {
+        // Not remembered, then: private windows and blocked storage.
+      }
+      return next;
+    });
+  return [open, toggle];
+}
+
+const QUESTIONS_FOLD_KEY = "feldspar.construct.research.questions.open";
+const MOCKUPS_FOLD_KEY = "feldspar.construct.research.mockups.open";
+
+/** A fold card's header while something works on what it holds. */
+function FoldWorking() {
+  return (
+    <span className="text-nowrap">
+      <Spinner animation="border" size="sm" className="me-1" />
+      <T text="Working" />
+    </span>
+  );
+}
+
+/** Whether one card is open, as the admin left it in this browser, `first`
+ * until they have; `open()` opens it (an action in its header was used). */
+function useFoldOpen(key: string, first: boolean): [boolean, () => void, () => void] {
+  const [open, setOpen] = useState<boolean>(() => {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(key) ?? "null");
+      return typeof stored === "boolean" ? stored : first;
+    } catch {
+      return first;
+    }
+  });
+  const set = (next: boolean) => {
+    setOpen(next);
+    try {
+      window.localStorage.setItem(key, JSON.stringify(next));
+    } catch {
+      // Not remembered, then: private windows and blocked storage.
+    }
+  };
+  return [open, () => set(!open), () => set(true)];
+}
+
+/** A card whose header opens and closes it, with a summary that stays in
+ * the header, and optionally a progress meter under it, so a closed card
+ * still says what it holds. */
+function FoldCard({
+  title,
+  number,
+  open,
+  onToggle,
+  summary,
+  actions,
+  meter,
+  children,
+}: {
+  title: string;
+  /** Its place in the step, when the step has parts to take in order. */
+  number?: number;
+  open: boolean;
+  onToggle: () => void;
+  summary: ReactNode;
+  /** Buttons beside the header's toggle, not in it: a button cannot hold
+   * buttons. They work with the card closed too. */
+  actions?: ReactNode;
+  meter?: { done: number; total: number };
+  children: ReactNode;
+}) {
+  return (
+    <Card className="mb-3 fold-card">
+      <Card.Header>
+        <button
+          type="button"
+          className="fold-card-toggle"
+          aria-expanded={open}
+          onClick={onToggle}
+        >
+          {open ? (
+            <IconChevronDown className="icon-2" />
+          ) : (
+            <IconChevronRight className="icon-2" />
+          )}
+          <Card.Title className="mb-0">
+            {number !== undefined && (
+              <span className="mockup-number mockup-number-sm me-2">{number}</span>
+            )}
+            {title}
+          </Card.Title>
+          <span className="ms-auto">{summary}</span>
+        </button>
+        {actions && <div className="fold-card-actions btn-list">{actions}</div>}
+      </Card.Header>
+      {meter && (
+        <div
+          className="build-meter"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={meter.total}
+          aria-valuenow={meter.done}
+        >
+          <div style={{ width: `${meter.total ? (100 * meter.done) / meter.total : 0}%` }} />
+        </div>
+      )}
+      {open && <Card.Body>{children}</Card.Body>}
+    </Card>
+  );
+}
+
+/** The line that says what the construction agent is doing, outside the
+ * runner, with a link to its run when it is known. */
+function AgentWorking({ construction, work }: { construction: Construction; work: AgentWork }) {
+  const { t } = useT();
+  const [text, run] = (() => {
+    switch (work.kind) {
+      case "phases":
+        return [t("Planning the phases."), construction.plan_run ?? null];
+      case "mockups":
+        return [t("Proposing mockups."), null];
+      case "questions":
+        return [t("Asking questions about the specification."), null];
+      case "feedback":
+        return [
+          t("Planning the feedback “{title}”.", { title: work.feedback.title }),
+          work.feedback.run ?? null,
+        ];
+    }
+  })();
+  return (
+    <div className="build-now mb-0">
+      <Spinner animation="border" size="sm" />
+      <span className="build-now-text">{text}</span>
+      {run && (
+        <a className="build-now-link" href={runHref(run)}>
+          <T text="Watch the run" />
+        </a>
+      )}
+    </div>
+  );
+}
+
+/** How many errors show before "Show all". */
+const ERRORS_SHOWN = 5;
+
+/** The errors the construction met, newest first: when, what failed, why,
+ * and its run. The one its last step ended with is marked current. */
+export function ErrorList({ construction }: { construction: Construction }) {
+  const { t } = useT();
+  const [all, setAll] = useState(false);
+  const shown = all ? construction.errors : construction.errors.slice(0, ERRORS_SHOWN);
+  return (
+    <>
+      <ul className="activity-errors">
+        {shown.map((entry) => (
+          <ErrorRow key={entry.id} construction={construction} entry={entry} />
+        ))}
+      </ul>
+      {!all && construction.errors.length > ERRORS_SHOWN && (
+        <Button size="sm" variant="link" className="px-0" onClick={() => setAll(true)}>
+          {t("Show all {n}", { n: construction.errors.length })}
+        </Button>
+      )}
+    </>
+  );
+}
+
+function ErrorRow({
+  construction,
+  entry,
+}: {
+  construction: Construction;
+  entry: ConstructionErrorEntry;
+}) {
+  const { t } = useT();
+  const app = construction.application;
+  const phase = construction.phases.find((p) => p.id === entry.phase);
+  const task = phase?.tasks.find((x) => x.id === entry.task);
+  const feedback = construction.feedback.find((f) => f.id === entry.feedback);
+  const place: ReactNode = (() => {
+    const phaseLink = (label: string) =>
+      phase ? <a href={`#${phasePath(app, phase.id)}`}>{label}</a> : label;
+    switch (entry.source) {
+      case "phases":
+        return t("Planning the phases");
+      case "tasks":
+        return phaseLink(
+          phase ? t("Planning the tasks of “{phase}”", { phase: phase.title }) : t("Planning tasks"),
+        );
+      case "task":
+        return phaseLink(task ? t("Task “{task}”", { task: task.title }) : t("A task"));
+      case "mockups":
+        return t("Proposing mockups");
+      case "questions":
+        return t("Asking questions");
+      case "feedback":
+        return feedback ? t("Feedback “{title}”", { title: feedback.title }) : t("Feedback");
+      default:
+        return phase ? phaseLink(t("Phase “{phase}”", { phase: phase.title })) : t("The runner");
+    }
+  })();
+  const current = entry.current;
+  return (
+    <li className={`activity-error${current ? " activity-error-current" : ""}`}>
+      <div className="activity-error-head">
+        <span className="activity-error-place">{place}</span>
+        {current && (
+          <StatusBadge tone="red" className="text-nowrap">
+            <T text="Current" />
+          </StatusBadge>
+        )}
+        <span className="text-secondary small ms-auto text-nowrap">{historyTime(entry.at)}</span>
+        {entry.run && (
+          <a className="small text-nowrap" href={runHref(entry.run)}>
+            <T text="Open the run" />
+          </a>
+        )}
+      </div>
+      <ClampedText className="activity-error-message" text={entry.message} />
+    </li>
+  );
+}
+
+/** Each phase with its tasks and their results, the one the runner is on
+ * marked. */
+function PhasesProgress({
+  construction,
+  now,
+  busy,
+  onRetry,
+  onSkip,
+}: {
+  construction: Construction;
+  now: CurrentWork | null;
+  busy: boolean;
+  onRetry: (task: ConstructionTask) => void;
+  onSkip: (task: ConstructionTask) => void;
+}) {
+  const { t } = useT();
+  return (
+    <ol className="phase-list">
+      {construction.phases.map((phase, i) => {
+        const tasks = phaseProgress(phase);
+        const planning = now?.kind === "planning" && now.phase.id === phase.id;
+        return (
+          <li
+            key={phase.id}
+            className={`phase phase-${planning ? "running" : phase.status}${now?.phase.id === phase.id ? " phase-working" : ""}`}
+          >
+            <div className="phase-marker" aria-hidden="true">
+              {phase.status === "done" ? <IconCheck className="icon-2" /> : i + 1}
+            </div>
+            <div className="phase-card">
+              <div className="phase-head build-phase-head">
+                <a
+                  className="build-phase-title"
+                  href={`#${phasePath(construction.application, phase.id)}`}
+                >
+                  {phase.title}
+                </a>
+                <Status status={phase.status} />
+                {tasks.total > 0 && (
+                  <span className="build-phase-count">
+                    {t("{done} of {total} tasks", tasks)}
+                  </span>
+                )}
+              </div>
+              {phase.tasks.length === 0 ? (
+                <div className="build-empty">
+                  {planning ? (
+                    <>
+                      <Spinner animation="border" size="sm" className="me-2" />
+                      <T text="Planning its tasks…" />
+                    </>
                   ) : (
-                    <ul className="build-tasks">
-                      {phase.tasks.map((task) => (
-                        <TaskRow
-                          key={task.id}
-                          task={task}
-                          construction={construction}
-                          busy={busy}
-                          onRetry={() => onRetry(task)}
-                          onSkip={() => onSkip(task)}
-                        />
-                      ))}
-                    </ul>
+                    <T text="Its tasks are planned when the phase is reached." />
                   )}
                 </div>
-              </li>
-            );
-          })}
-        </ol>
-      </Card.Body>
-    </Card>
+              ) : (
+                <ul className="build-tasks">
+                  {phase.tasks.map((task) => (
+                    <TaskRow
+                      key={task.id}
+                      task={task}
+                      construction={construction}
+                      busy={busy}
+                      onRetry={() => onRetry(task)}
+                      onSkip={() => onSkip(task)}
+                    />
+                  ))}
+                </ul>
+              )}
+            </div>
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 

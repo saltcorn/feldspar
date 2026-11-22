@@ -7,8 +7,11 @@
 //! - `_fd_construction_tasks` — a phase's tasks, in `position` order.
 //! - `_fd_construction_mockups` — a construction's mockups ([`crate::mockups`]).
 //! - `_fd_construction_questions` — its clarifying questions ([`crate::questions`]).
-//! - `_fd_construction_feedback` — the admin's feedback on its phases
+//! - `_fd_construction_feedback` — the feedback on its phases
 //!   ([`crate::feedback`]).
+//! - `_fd_construction_errors` — the errors it met ([`crate::errors`]).
+//! - `_fd_construction_runs` — the runs it started
+//!   ([`crate::construction_runs`]).
 //!
 //! The tables have no foreign keys (the schema layer renders no `ON DELETE`),
 //! so [`delete_construction`] removes the tasks and phases itself, and the
@@ -17,7 +20,7 @@
 
 use std::collections::HashSet;
 
-use sc_catalog::{Catalog, DataField};
+use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId};
 use sc_db::{Row, Transaction};
 use sc_error::{Error, Result};
 use sc_query::{
@@ -27,6 +30,8 @@ use sc_types::BasicType;
 use serde_json::Value as Json;
 use uuid::Uuid;
 
+use crate::construction_runs::{RunPurpose, construction_run_insert, latest_agent_run};
+use crate::errors::{Failure, update_logging};
 use crate::model::{
     Construction, ConstructionStatus, Phase, PhaseWithTasks, Requirement, Task, parse, spelling,
 };
@@ -37,6 +42,20 @@ pub const CONSTRUCTIONS_TABLE: &str = "_fd_constructions";
 pub const PHASES_TABLE: &str = "_fd_construction_phases";
 /// A phase's tasks.
 pub const TASKS_TABLE: &str = "_fd_construction_tasks";
+
+/// A uuid column holding the id of a row of `table`, as a foreign key. Only
+/// for a link whose rows are always deleted before the row they point at: the
+/// key has no `ON DELETE`, so it refuses to delete a row still pointed at.
+pub(crate) fn key(name: &str, table: &str) -> DataField {
+    DataField {
+        kind: DataFieldKind::Key {
+            target_table: table.to_owned(),
+            target_field: FieldId("id".to_owned()),
+            summary_field: None,
+        },
+        ..DataField::plain(name, BasicType::Uuid)
+    }
+}
 
 fn construction_fields() -> Vec<DataField> {
     vec![
@@ -50,10 +69,7 @@ fn construction_fields() -> Vec<DataField> {
         DataField::plain("status", BasicType::Text).required(),
         DataField::plain("agent", BasicType::Text),
         DataField::plain("started_by", BasicType::Uuid),
-        // The run that planned the phases last (AC2.2).
-        DataField::plain("plan_run", BasicType::Uuid),
-        // Why it stopped or failed last, and the phase a run ends after (AC3).
-        DataField::plain("error", BasicType::Text),
+        // The phase a run ends after (AC3).
         DataField::plain("until_phase", BasicType::Uuid),
         // A run that only plans `until_phase`'s tasks, and what it is told.
         DataField::plain("plan_only", BasicType::Bool),
@@ -67,7 +83,7 @@ fn phase_fields() -> Vec<DataField> {
         DataField::plain("id", BasicType::Uuid)
             .required()
             .primary_key(),
-        DataField::plain("construction", BasicType::Uuid).required(),
+        key("construction", CONSTRUCTIONS_TABLE).required(),
         DataField::plain("position", BasicType::Float).required(),
         DataField::plain("title", BasicType::Text).required(),
         DataField::plain("description", BasicType::Text).required(),
@@ -80,7 +96,7 @@ fn task_fields() -> Vec<DataField> {
         DataField::plain("id", BasicType::Uuid)
             .required()
             .primary_key(),
-        DataField::plain("phase", BasicType::Uuid).required(),
+        key("phase", PHASES_TABLE).required(),
         DataField::plain("position", BasicType::Float).required(),
         DataField::plain("kind", BasicType::Text).required(),
         DataField::plain("title", BasicType::Text).required(),
@@ -91,7 +107,7 @@ fn task_fields() -> Vec<DataField> {
         DataField::plain("summary", BasicType::Text),
         DataField::plain("created", BasicType::Json).required(),
         // The feedback a follow-up task was planned for (AC9).
-        DataField::plain("feedback", BasicType::Uuid),
+        key("feedback", crate::feedback::FEEDBACK_TABLE),
     ]
 }
 
@@ -102,6 +118,13 @@ pub async fn bootstrap_constructions(catalog: &Catalog) -> Result<()> {
         .await?;
     catalog
         .bootstrap_table(PHASES_TABLE, &phase_fields())
+        .await?;
+    // Before the tasks, which point at it.
+    catalog
+        .bootstrap_table(
+            crate::feedback::FEEDBACK_TABLE,
+            &crate::feedback::feedback_fields(),
+        )
         .await?;
     catalog.bootstrap_table(TASKS_TABLE, &task_fields()).await?;
     catalog
@@ -116,11 +139,15 @@ pub async fn bootstrap_constructions(catalog: &Catalog) -> Result<()> {
             &crate::questions::question_fields(),
         )
         .await?;
+    // Before the errors, which point at it.
     catalog
         .bootstrap_table(
-            crate::feedback::FEEDBACK_TABLE,
-            &crate::feedback::feedback_fields(),
+            crate::construction_runs::CONSTRUCTION_RUNS_TABLE,
+            &crate::construction_runs::construction_run_fields(),
         )
+        .await?;
+    catalog
+        .bootstrap_table(crate::errors::ERRORS_TABLE, &crate::errors::error_fields())
         .await?;
     Ok(())
 }
@@ -153,6 +180,7 @@ pub async fn create_construction(
         started_by: None,
         plan_run: None,
         error: None,
+        error_entry: None,
         until_phase: None,
         plan_only: false,
         plan_note: None,
@@ -203,11 +231,21 @@ pub async fn load_construction(
     }
     let select = Select::from(Source::table(CONSTRUCTIONS_TABLE))
         .filter(Expr::col("application").eq(Expr::lit(application)));
-    rows(catalog, select)
-        .await?
-        .first()
-        .map(construction_from_row)
-        .transpose()
+    match rows(catalog, select).await?.first() {
+        Some(row) => Ok(Some(with_runs(catalog, construction_from_row(row)?).await?)),
+        None => Ok(None),
+    }
+}
+
+/// `construction` with what its runs say: its current error
+/// ([`crate::current_error`]) and the run that planned its phases last.
+async fn with_runs(catalog: &Catalog, mut construction: Construction) -> Result<Construction> {
+    if let Some(entry) = crate::errors::current_error(catalog, construction.id).await? {
+        construction.error = Some(entry.message);
+        construction.error_entry = Some(entry.id);
+    }
+    construction.plan_run = latest_agent_run(catalog, construction.id, RunPurpose::Phases).await?;
+    Ok(construction)
 }
 
 /// [`load_construction`], or a not-found error.
@@ -222,11 +260,11 @@ pub async fn list_constructions(catalog: &Catalog) -> Result<Vec<Construction>> 
     if !bootstrapped(catalog) {
         return Ok(Vec::new());
     }
-    rows(catalog, Select::from(Source::table(CONSTRUCTIONS_TABLE)))
-        .await?
-        .iter()
-        .map(construction_from_row)
-        .collect()
+    let mut out = Vec::new();
+    for row in rows(catalog, Select::from(Source::table(CONSTRUCTIONS_TABLE))).await? {
+        out.push(with_runs(catalog, construction_from_row(&row)?).await?);
+    }
+    Ok(out)
 }
 
 /// Replace the specification. Only while nothing runs: a running construction
@@ -242,55 +280,37 @@ pub async fn save_specification(
             "the construction is running; stop it before changing its specification".to_owned(),
         ));
     }
-    update_construction(
+    update_construction_with(
         catalog,
         construction.id,
         vec![Assignment::new(
             "specification",
             Expr::Lit(Value::Text(specification.to_owned())),
         )],
+        Vec::new(),
     )
     .await?;
     require_construction(catalog, application).await
 }
 
-/// Record `run` as the run planning `application`'s phases. The error the
-/// last run left is cleared before a run starts, not here: the run may have
-/// failed by now, and its error is the one to show.
-pub async fn set_plan_run(catalog: &Catalog, application: Uuid, run: Uuid) -> Result<Construction> {
-    let construction = require_construction(catalog, application).await?;
-    update_construction(
-        catalog,
-        construction.id,
-        vec![Assignment::new("plan_run", Expr::Lit(Value::Uuid(run)))],
-    )
-    .await?;
-    require_construction(catalog, application).await
-}
-
-/// Record why the run planning `application`'s phases failed, leaving the
-/// status as it is: a failed plan changes nothing else.
+/// Log why a run of the construction agent for `application` failed
+/// (planning the phases, mockups, questions or feedback), leaving the status
+/// as it is: a failed plan changes nothing else. It is the construction's
+/// current error while `failure`'s construction run is its latest.
 pub async fn set_plan_error(
     catalog: &Catalog,
     application: Uuid,
-    error: &str,
+    failure: &Failure,
 ) -> Result<Construction> {
     let construction = require_construction(catalog, application).await?;
-    update_construction(
-        catalog,
-        construction.id,
-        vec![Assignment::new(
-            "error",
-            Expr::Lit(opt_text_value(Some(error))),
-        )],
-    )
-    .await?;
+    update_logging(catalog, construction.id, Vec::new(), Some(failure)).await?;
     require_construction(catalog, application).await
 }
 
 /// Mark the construction of `application` as running, for `user`, up to
-/// `until_phase` (all phases when `None`), with no error. Only the row: the
-/// runner that does the work is started by the server.
+/// `until_phase` (all phases when `None`), starting a runner session
+/// ([`RunPurpose::Build`]), which has no error yet. Only the rows: the runner
+/// that does the work is started by the server.
 pub async fn mark_running(
     catalog: &Catalog,
     application: Uuid,
@@ -298,7 +318,8 @@ pub async fn mark_running(
     until_phase: Option<Uuid>,
 ) -> Result<Construction> {
     let construction = require_construction(catalog, application).await?;
-    update_construction(
+    let (_, session) = construction_run_insert(construction.id, RunPurpose::Build, None);
+    update_construction_with(
         catalog,
         construction.id,
         vec![
@@ -311,10 +332,10 @@ pub async fn mark_running(
                 "until_phase",
                 Expr::Lit(until_phase.map_or(Value::Null, Value::Uuid)),
             ),
-            Assignment::new("error", Expr::Lit(Value::Null)),
             Assignment::new("plan_only", Expr::Lit(Value::Bool(false))),
             Assignment::new("plan_note", Expr::Lit(Value::Null)),
         ],
+        vec![Statement::from(session)],
     )
     .await?;
     require_construction(catalog, application).await
@@ -323,7 +344,7 @@ pub async fn mark_running(
 /// Mark the construction of `application` as running for `user` to plan the
 /// tasks of `phase` only, the planning run told `note` besides the phase.
 /// The runner stops once they are planned, leaving them for the admin to
-/// review before they run.
+/// review before they run. A runner session, as [`mark_running`]'s.
 pub async fn mark_planning(
     catalog: &Catalog,
     application: Uuid,
@@ -332,7 +353,8 @@ pub async fn mark_planning(
     note: Option<&str>,
 ) -> Result<Construction> {
     let construction = require_construction(catalog, application).await?;
-    update_construction(
+    let (_, session) = construction_run_insert(construction.id, RunPurpose::Build, None);
+    update_construction_with(
         catalog,
         construction.id,
         vec![
@@ -342,31 +364,34 @@ pub async fn mark_planning(
             ),
             Assignment::new("started_by", Expr::Lit(Value::Uuid(user))),
             Assignment::new("until_phase", Expr::Lit(Value::Uuid(phase))),
-            Assignment::new("error", Expr::Lit(Value::Null)),
             Assignment::new("plan_only", Expr::Lit(Value::Bool(true))),
             Assignment::new("plan_note", Expr::Lit(opt_text_value(note))),
         ],
+        vec![Statement::from(session)],
     )
     .await?;
     require_construction(catalog, application).await
 }
 
-/// Set the status of the construction of `application`, and why when it
-/// stopped or failed (`None` clears the reason).
+/// Set the status of the construction of `application`, logging why when it
+/// stopped or failed. A reason is the current error while its construction
+/// run is the latest; `None` logs nothing and clears nothing, as starting a
+/// run is what clears it.
 pub async fn set_construction_status(
     catalog: &Catalog,
     application: Uuid,
     status: ConstructionStatus,
-    error: Option<&str>,
+    failure: Option<&Failure>,
 ) -> Result<Construction> {
     let construction = require_construction(catalog, application).await?;
-    update_construction(
+    update_logging(
         catalog,
         construction.id,
-        vec![
-            Assignment::new("status", Expr::Lit(Value::Text(spelling(status)))),
-            Assignment::new("error", Expr::Lit(opt_text_value(error))),
-        ],
+        vec![Assignment::new(
+            "status",
+            Expr::Lit(Value::Text(spelling(status))),
+        )],
+        failure,
     )
     .await?;
     require_construction(catalog, application).await
@@ -383,7 +408,7 @@ pub async fn running_constructions(catalog: &Catalog) -> Result<Vec<Construction
 }
 
 /// Delete the construction of `application` with its phases, tasks, mockups,
-/// questions and feedback, answering what it was. `None` when it had none.
+/// questions, feedback, errors and runs, answering what it was. `None` when it had none.
 ///
 /// All in one transaction: a failure deletes nothing. The phases are locked
 /// first, so a task being added to one of them is either deleted with it or
@@ -416,16 +441,22 @@ pub async fn delete_construction(
                     .map(|p| Expr::lit(p.id))
                     .collect();
                 if !phases.is_empty() {
-                    let tasks = Delete::from(TASKS_TABLE).filter(Expr::In {
-                        e: Box::new(Expr::col("phase")),
-                        set: InSet::List(phases),
-                    });
-                    tx_run(tx, &Statement::from(tasks)).await?;
+                    for table in [TASKS_TABLE, crate::feedback::FEEDBACK_TABLE] {
+                        let delete = Delete::from(table).filter(Expr::In {
+                            e: Box::new(Expr::col("phase")),
+                            set: InSet::List(phases.clone()),
+                        });
+                        tx_run(tx, &Statement::from(delete)).await?;
+                    }
                 }
                 for (table, column) in [
                     (crate::mockups::MOCKUPS_TABLE, "construction"),
                     (crate::questions::QUESTIONS_TABLE, "construction"),
-                    (crate::feedback::FEEDBACK_TABLE, "construction"),
+                    (crate::errors::ERRORS_TABLE, "construction"),
+                    (
+                        crate::construction_runs::CONSTRUCTION_RUNS_TABLE,
+                        "construction",
+                    ),
                     (PHASES_TABLE, "construction"),
                     (CONSTRUCTIONS_TABLE, "id"),
                 ] {
@@ -440,18 +471,35 @@ pub async fn delete_construction(
     .await
 }
 
-pub(crate) async fn update_construction(
+/// Set the construction `id`'s columns as `assignments` say and run `extra`,
+/// in one transaction.
+pub(crate) async fn update_construction_with(
     catalog: &Catalog,
     id: Uuid,
     mut assignments: Vec<Assignment>,
+    extra: Vec<Statement>,
 ) -> Result<()> {
     assignments.push(Assignment::new(
         sc_catalog::COL_UPDATED_AT,
         Expr::Lit(sc_catalog::updated_now()),
     ));
-    let update = sc_query::Update::new(CONSTRUCTIONS_TABLE, assignments)
-        .filter(Expr::col("id").eq(Expr::lit(id)));
-    run(catalog, Statement::from(update)).await
+    let update = Statement::from(
+        sc_query::Update::new(CONSTRUCTIONS_TABLE, assignments)
+            .filter(Expr::col("id").eq(Expr::lit(id))),
+    );
+    sc_db::with_tx(
+        catalog.primary(crate::INTERNAL_TABLES).as_ref(),
+        move |tx| {
+            Box::pin(async move {
+                tx_run(tx, &update).await?;
+                for statement in &extra {
+                    tx_run(tx, statement).await?;
+                }
+                Ok(())
+            })
+        },
+    )
+    .await
 }
 
 // --- phases -------------------------------------------------------------------
@@ -710,8 +758,10 @@ fn construction_from_row(row: &Row) -> Result<Construction> {
         status: parse("construction status", &req_text(row, t, "status")?)?,
         agent: opt_text(row, t, "agent")?,
         started_by: opt_uuid(row, t, "started_by")?,
-        plan_run: opt_uuid(row, t, "plan_run")?,
-        error: opt_text(row, t, "error")?,
+        // From its runs ([`with_runs`]).
+        plan_run: None,
+        error: None,
+        error_entry: None,
         until_phase: opt_uuid(row, t, "until_phase")?,
         // Absent (NULL) on rows written before the column: an ordinary run.
         plan_only: opt_bool(row, t, "plan_only")?.unwrap_or(false),

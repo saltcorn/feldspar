@@ -55,10 +55,10 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 - [x] AC2.2 `planConstruction` (`POST …/construction/plan`, 202): one run of the construction
   agent, told the specification and the application's description, to look at the schema with
   `describe_schema` and to answer with `save_phases`. The first phase is always the data model
-  (the trait's prompt). The run is driven in a server task, not in the request; its id is kept
-  on the construction (`plan_run`), and its transcript is in the agent's run history. The
-  construction reads `planning: true` while this process drives the run, so a run left
-  `running` by a restart does not block a new plan. Refused without a specification, while
+  (the trait's prompt). The run is driven in a server task, not in the request; its id is the
+  construction's `plan_run` (its latest `phases` construction run's), and its transcript is in
+  the agent's run history. The construction reads `planning: true` while this process drives
+  the run, so a run left `running` by a restart does not block a new plan. Refused without a specification, while
   running, and while a plan run is being driven.
 - [x] AC2.3 The admin edits phases before running (`savePhases`, `PUT …/construction/phases`):
   retitle, reword, reorder, delete, add a requirement, with the same validation as the tool.
@@ -224,7 +224,7 @@ v1's feedback tab, per phase first: someone says what should change in what a ph
 the admin approves it, the construction agent plans it as requirements and follow-up tasks on
 that phase.
 
-- [x] AC9.1 `_fd_construction_feedback` (bootstrap, additive): construction, phase, position,
+- [x] AC9.1 `_fd_construction_feedback` (bootstrap, additive): phase (which gives the construction), position,
   title, description, the requirements the agent made of it, the run that planned it.
   `_fd_construction_tasks.feedback` (nullable) names the feedback a follow-up task is for.
   Deleted with the construction.
@@ -248,17 +248,75 @@ that phase.
   (given without a run, declined, approved, an empty run leaves it open with the error,
   planned again, deleted); the screen's rules and the card.
 
+## AC10 — Activity: what is happening and every error
+
+Progress becomes Activity, a tab for everything the construction does, with the errors it met.
+The construction's current error is only the latest run's; each new run starts without one.
+
+- [x] AC10.1 `_fd_construction_errors` (bootstrap, additive): construction, at, source (`phases`,
+  `tasks`, `task`, `mockups`, `questions`, `feedback`, `runner`), phase, task, feedback, run,
+  message. Written by `set_plan_error` and `set_construction_status`; deleted with the
+  construction.
+- [x] AC10.2 Every error is logged with what failed: the agent's runs by purpose, the runner's
+  task failures with phase, task and run, a step's unexpected error as that step's, the rest as
+  `runner`. The construction answers the newest 100 as `errors`.
+- [x] AC10.3 Plan & build: Progress renamed **Activity** and moved last, always open. Three
+  cards, always there, only Now open on the first visit (then as left, per browser), each header
+  saying what it holds: **Now** (what the agent or the runner is doing), **Errors** (newest
+  first, five then "Show all", with where each happened, when, its run and the current one
+  marked) and **Phases** (the progress bar, and each phase's tasks).
+- [x] AC10.4 Tests: the store (the current error is the latest run's, a new run clears it, all
+  stay logged newest first, deleted with the construction); the API (a failed plan, a red build and its retry, a run that planned
+  no feedback, a demoted admin, each logged with its source and marked current or not); the
+  screen's rules and the card.
+- [x] AC10.5 `_fd_construction_runs` (bootstrap, additive): every run the construction starts,
+  agent runs and runner sessions (`build`). Errors name the construction run they happened in
+  (`construction_run`, nullable). The current error is the newest error of the latest run,
+  derived on read and marked `current`. The planning run and a feedback's run are read from
+  the runs too, not stored (`_fd_constructions.error` and `plan_run`,
+  `_fd_construction_feedback.run` are gone); the links rows never outlive are foreign keys.
+
+## AC11 — Runtime errors of the application, and fix tasks
+
+Self-healing from v1: errors the built application meets at runtime are tracked, and the admin
+can have one fixed by a fix task. Waits for the system error log, `_fd_errors`
+(TECHNICAL_DESIGN §16, GOALS "Error handling"), which is designed but not built.
+
+- [ ] AC11.1 `_fd_errors`, the shared error log: application, where (route, code query,
+  action, trigger, table), role, message, application or system error. The same error is
+  grouped into one row with a count, first and last seen, so a loop cannot flood it.
+- [ ] AC11.2 Server-side errors first: an application's API requests, code queries, actions
+  and triggers, logged where the server catches them.
+- [ ] AC11.3 Browser errors after: the generated client reports uncaught exceptions and
+  rejected promises to an endpoint any visitor can reach, so with a size cap, a rate limit and
+  the grouping. A failed checklist's console errors and failed requests are a source too.
+- [ ] AC11.4 Activity: a "Runtime errors" section with the application's grouped errors, their
+  count and when last seen, and **Fix** or **Dismiss**. `_fd_construction_errors` stays the
+  log of building the application, not of running it.
+- [ ] AC11.5 Fix reuses the feedback flow: a feedback on the phase that built the failing part
+  (else the last built one), prefilled with the error and its context and naming it (a nullable
+  `error` column on `_fd_construction_feedback`); the agent plans fix tasks, the admin reviews
+  and runs them. An error that comes back after its fix ran reopens.
+
 ## Later (not planned yet)
 
 From v1, once AC1–AC5 work:
 - web research for the specification (the questions are AC8);
 - feedback on the whole application, and from the application's own pages by its users, not
   only admins (AC9 is per phase; giving feedback starts nothing, so it is ready for that);
-- self-healing: a failed checklist or runtime error becomes a fix task;
+- self-healing beyond AC11: fix tasks started without the admin;
 - checklists generated from requirements, as the acceptance test of each phase;
 - `module` tasks (install a module);
 - seed data;
 - Saltcorn UI applications, after O1.3.
+
+Unify a task's runs with the construction runs: each attempt at a task recorded in
+`_fd_construction_runs` (purpose `task`, the task, its agent run, the `build` session it ran
+in), replacing the JSON list `_fd_construction_tasks.runs`. All of a construction's runs would
+then be in one place, with a key to their task. Worth it once an attempt needs more than its
+run id (when it started and ended, how it ended, its session), a query asks across tasks
+(every run of a construction, the task of a run), or old runs are pruned and the lists would
+keep dead ids.
 
 ### Running tasks on a Claude subscription (was AC6)
 

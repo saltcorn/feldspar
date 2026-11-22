@@ -50,7 +50,7 @@ pub(crate) fn mockup_fields() -> Vec<DataField> {
         DataField::plain("id", BasicType::Uuid)
             .required()
             .primary_key(),
-        DataField::plain("construction", BasicType::Uuid).required(),
+        crate::store::key("construction", crate::store::CONSTRUCTIONS_TABLE).required(),
         DataField::plain("round", BasicType::Int).required(),
         DataField::plain("position", BasicType::Float).required(),
         DataField::plain("title", BasicType::Text).required(),

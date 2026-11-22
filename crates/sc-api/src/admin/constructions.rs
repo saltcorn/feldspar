@@ -357,6 +357,9 @@ fn construction_schema() -> TypeSchema {
         StructField::new("mockups", TypeSchema::array(mockup_schema())),
         // The admin's feedback on the phases, in the order it was given.
         StructField::new("feedback", TypeSchema::array(feedback_schema())),
+        // The errors it met, newest first, at most 100 (AC10). `error` is the
+        // current one, marked `current` here; they stay after a new run.
+        StructField::new("errors", TypeSchema::array(error_schema())),
         StructField::new("updated_at", TypeSchema::optional(TypeSchema::timestamp())),
         StructField::new("phases", TypeSchema::array(phase_schema())),
     ]))
@@ -391,6 +394,31 @@ fn mockup_schema() -> TypeSchema {
         // proposed | chosen
         StructField::new("status", TypeSchema::text()),
         StructField::new("feedback", TypeSchema::optional(TypeSchema::text())),
+    ])
+}
+
+fn error_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::uuid()),
+        StructField::new("construction", TypeSchema::uuid()),
+        StructField::new("at", TypeSchema::timestamp()),
+        // phases | tasks | task | mockups | questions | feedback | runner:
+        // planning the phases, planning a phase's tasks, running a task,
+        // proposing mockups, asking questions, planning a feedback, or the
+        // runner itself.
+        StructField::new("source", TypeSchema::text()),
+        StructField::new("phase", TypeSchema::optional(TypeSchema::uuid())),
+        StructField::new("task", TypeSchema::optional(TypeSchema::uuid())),
+        StructField::new("feedback", TypeSchema::optional(TypeSchema::uuid())),
+        // The run that failed, if there was one.
+        StructField::new("run", TypeSchema::optional(TypeSchema::uuid())),
+        // The construction run it happened in (AC10.5); absent on errors
+        // logged before those were recorded.
+        StructField::new("construction_run", TypeSchema::optional(TypeSchema::uuid())),
+        StructField::new("message", TypeSchema::text()),
+        // Whether it is the construction's `error`: the newest error of its
+        // latest run. A new run has none until it fails.
+        StructField::new("current", TypeSchema::bool()),
     ])
 }
 

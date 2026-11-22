@@ -618,14 +618,40 @@ async fn a_failed_plan_says_why_on_the_construction() -> sc_error::Result<()> {
     let error = read["error"].as_str().unwrap_or_default();
     assert!(error.starts_with("planning the phases failed"), "{read}");
     assert!(error.contains("invalid x-api-key"), "{read}");
+    // Logged, with what failed and its run.
+    let logged = &read["errors"][0];
+    assert_eq!(logged["source"], json!("phases"), "{read}");
+    assert_eq!(logged["message"], read["error"]);
+    assert_eq!(logged["run"], read["plan_run"]);
+    assert_eq!(logged["current"], json!(true), "{read}");
 
-    // Planning again clears it.
+    // A launch refused before its run starts — here the agent lost its
+    // constructor trait — is answered to the admin and leaves the current
+    // error as it was: no run started, so nothing replaced it.
+    let original = agent(&mut admin, "construct-crm").await.unwrap();
+    let agent_path = format!("/api/agents/{}", original["id"].as_str().unwrap());
+    let mut stripped = original.clone();
+    stripped["traits"] = json!([]);
+    let (status, body) = admin.send("PUT", &agent_path, Some(stripped)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, refused) = admin.send("POST", &format!("{path}/plan"), None).await;
+    assert!(status.is_client_error(), "{status} {refused}");
+    let (_, after) = admin.send("GET", &path, None).await;
+    assert_eq!(after["error"], read["error"], "{after}");
+    assert_eq!(after["errors"].as_array().unwrap().len(), 1, "{after}");
+    assert_eq!(after["errors"][0]["current"], json!(true), "{after}");
+    let (status, body) = admin.send("PUT", &agent_path, Some(original)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Planning again clears it; the log keeps it.
     let (status, started) = admin.send("POST", &format!("{path}/plan"), None).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{started}");
     assert_eq!(started["error"], Value::Null, "{started}");
     let read = planned(&mut admin, &path).await;
     assert_eq!(read["status"], json!("planned"), "{read}");
     assert_eq!(read["error"], Value::Null, "{read}");
+    assert_eq!(read["errors"].as_array().unwrap().len(), 1, "{read}");
+    assert_eq!(read["errors"][0]["current"], json!(false), "{read}");
     assert_eq!(titles(&read), ["Data model"]);
     Ok(())
 }
@@ -1423,6 +1449,14 @@ async fn a_red_build_fails_the_task_and_the_construction_and_retry_carries_on()
     let failed = &read["phases"][0]["tasks"][0];
     assert_eq!(failed["status"], json!("failed"));
     assert_eq!(read["phases"][0]["status"], json!("failed"));
+    // Logged as the task's, with its phase and its run.
+    let logged = &read["errors"][0];
+    assert_eq!(logged["source"], json!("task"), "{read}");
+    assert_eq!(logged["task"], failed["id"]);
+    assert_eq!(logged["phase"], json!(c.phases[0]));
+    assert_eq!(logged["run"], failed["runs"][0]);
+    assert_eq!(logged["message"], read["error"]);
+    assert_eq!(logged["current"], json!(true), "{read}");
 
     // Retrying a task that has not failed is refused; this one carries on.
     let task_path = format!("{}/tasks/{}", c.path, failed["id"].as_str().unwrap());
@@ -1442,6 +1476,9 @@ async fn a_red_build_fails_the_task_and_the_construction_and_retry_carries_on()
         "one run per attempt"
     );
     assert_eq!(task["summary"], json!("Fixed the list."));
+    // The retry's session ran clean: the red build is logged, no longer current.
+    assert_eq!(read["error"], Value::Null, "{read}");
+    assert_eq!(read["errors"][0]["current"], json!(false), "{read}");
     let (status, body) = c
         .admin
         .send("POST", &format!("{task_path}/retry"), None)
@@ -1654,6 +1691,8 @@ async fn a_demoted_admin_stops_the_construction_before_its_next_task() -> sc_err
             .contains("no longer an admin"),
         "{read}"
     );
+    assert_eq!(read["errors"][0]["source"], json!("runner"), "{read}");
+    assert_eq!(read["errors"][0]["run"], Value::Null, "{read}");
     assert_eq!(read["phases"][0]["tasks"][0]["status"], json!("todo"));
     assert!(model.requests().is_empty(), "no task ran");
     Ok(())
@@ -1931,6 +1970,11 @@ async fn feedback_on_a_built_phase_is_planned_as_follow_up_tasks() -> sc_error::
             .contains("without planning the feedback"),
         "{read}"
     );
+    // A run that ended without doing its job is logged too.
+    let logged = &read["errors"][0];
+    assert_eq!(logged["source"], json!("feedback"), "{read}");
+    assert_eq!(logged["feedback"], json!(id));
+    assert_eq!(logged["run"], feedback["run"]);
 
     // Planned again: requirements on the feedback, follow-up tasks after the
     // phase's own, waiting for the admin.

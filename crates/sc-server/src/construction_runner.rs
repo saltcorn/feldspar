@@ -51,8 +51,8 @@ use sc_agent::{Agent, Conclusion, ModelRole, Run, RunCaller, RunId, Runner};
 use sc_app::{AppId, Application, builder_agent_name, load_application};
 use sc_catalog::Catalog;
 use sc_construct::{
-    Construction, ConstructionStatus, Next, Phase, PhaseStatus, PhaseWithTasks, Task, TaskKind,
-    TaskStatus, store,
+    Construction, ConstructionStatus, ErrorSource, Failure, Next, Phase, PhaseStatus,
+    PhaseWithTasks, Task, TaskKind, TaskStatus, store,
 };
 use sc_error::{Error, Result};
 use sc_llm::ConnectedModel;
@@ -134,7 +134,7 @@ pub(crate) fn start(catalog: Arc<Catalog>, apps: Arc<AppMounts>, construction: &
         live.insert(construction.id, stop);
     }
     let slot = RunnerSlot(construction.id);
-    let application = construction.application;
+    let (application, construction_id) = (construction.application, construction.id);
     sc_catalog::spawn_scoped(async move {
         let mut runner = ConstructionRunner {
             catalog,
@@ -142,16 +142,36 @@ pub(crate) fn start(catalog: Arc<Catalog>, apps: Arc<AppMounts>, construction: &
             application,
             stopped,
             slot: Some(slot),
+            step: None,
+            session: None,
+        };
+        // The runner session its errors belong to, started when it was
+        // marked running. Without it the runner still runs, its errors
+        // logged on no session, so a failed lookup is logged, not fatal.
+        runner.session = match sc_construct::current_build(&runner.catalog, construction_id).await {
+            Ok(session) => Some(session),
+            Err(e) => {
+                crate::router::log_failure("finding a construction's runner session failed", &e);
+                None
+            }
         };
         if let Err(e) = runner.run().await {
             crate::router::log_failure("a construction's runner failed", &e);
             runner.slot = None;
-            let reason = e.to_string();
+            // Logged as the step's that failed, when one did.
+            let failure = match runner.step.take() {
+                Some(step) => Failure {
+                    message: e.to_string(),
+                    ..step
+                },
+                None => Failure::new(ErrorSource::Runner, e.to_string()),
+            }
+            .during(runner.session);
             store::set_construction_status(
                 &runner.catalog,
                 application,
                 ConstructionStatus::Failed,
-                Some(&reason),
+                Some(&failure),
             )
             .await
             .ok();
@@ -194,6 +214,12 @@ struct ConstructionRunner {
     /// written: a construction that reads other than `running` then never has
     /// a runner still winding down behind it.
     slot: Option<RunnerSlot>,
+    /// The step under way, as an error of it would be logged (its message
+    /// left empty): what a step that fails is recorded as.
+    step: Option<Failure>,
+    /// The runner session ([`sc_construct::RunPurpose::Build`]) its errors
+    /// are logged in, which makes them the construction's current error.
+    session: Option<Uuid>,
 }
 
 /// How a step ended, when it did not fail.
@@ -209,6 +235,7 @@ impl ConstructionRunner {
     /// longer `running`.
     async fn run(&mut self) -> Result<()> {
         loop {
+            self.step = None;
             let Some(construction) = store::load_construction(&self.catalog, self.application)
                 .await?
                 .filter(|c| c.status == ConstructionStatus::Running)
@@ -224,8 +251,9 @@ impl ConstructionRunner {
             let caller = match self.admin_caller(&construction).await? {
                 Ok(caller) => caller,
                 Err(reason) => {
+                    let failure = Failure::new(ErrorSource::Runner, reason);
                     return self
-                        .finish(ConstructionStatus::Stopped, Some(&reason))
+                        .finish(ConstructionStatus::Stopped, Some(failure))
                         .await;
                 }
             };
@@ -253,7 +281,11 @@ impl ConstructionRunner {
                         task.title,
                         task.summary.as_deref().unwrap_or("no reason was recorded")
                     );
-                    return self.finish(ConstructionStatus::Failed, Some(&reason)).await;
+                    let failure = Failure::new(ErrorSource::Task, reason)
+                        .phase(task.phase)
+                        .task(task.id)
+                        .run(task.runs.last().copied());
+                    return self.finish(ConstructionStatus::Failed, Some(failure)).await;
                 }
                 Next::Blocked(phase) => {
                     let reason = format!(
@@ -261,9 +293,11 @@ impl ConstructionRunner {
                          done",
                         phase.title
                     );
-                    return self.finish(ConstructionStatus::Failed, Some(&reason)).await;
+                    let failure = Failure::new(ErrorSource::Runner, reason).phase(phase.id);
+                    return self.finish(ConstructionStatus::Failed, Some(failure)).await;
                 }
                 Next::PlanTasks(phase) => {
+                    self.step = Some(Failure::new(ErrorSource::Tasks, "").phase(phase.id));
                     let note = construction
                         .plan_only
                         .then_some(construction.plan_note.as_deref())
@@ -271,7 +305,14 @@ impl ConstructionRunner {
                     self.plan_tasks(&app, &construction, &phase, &phases, note, caller)
                         .await?
                 }
-                Next::RunTask(task) => self.run_task(&app, &construction, task, caller).await?,
+                Next::RunTask(task) => {
+                    self.step = Some(
+                        Failure::new(ErrorSource::Task, "")
+                            .phase(task.phase)
+                            .task(task.id),
+                    );
+                    self.run_task(&app, &construction, task, caller).await?
+                }
             };
             if let Step::Stopped = step {
                 return self.finish(ConstructionStatus::Stopped, None).await;
@@ -280,9 +321,11 @@ impl ConstructionRunner {
     }
 
     /// Set the construction's status, ending the runner.
-    async fn finish(&mut self, status: ConstructionStatus, error: Option<&str>) -> Result<()> {
+    async fn finish(&mut self, status: ConstructionStatus, failure: Option<Failure>) -> Result<()> {
         self.slot = None;
-        store::set_construction_status(&self.catalog, self.application, status, error).await?;
+        let failure = failure.map(|f| f.during(self.session));
+        store::set_construction_status(&self.catalog, self.application, status, failure.as_ref())
+            .await?;
         Ok(())
     }
 
@@ -319,6 +362,7 @@ impl ConstructionRunner {
         let message = plan_tasks_message(&self.catalog, app, phase, phases, note, mockup.as_ref())?;
         let mut run = driver.new_run(&message, &format!("Plan the tasks of `{}`", phase.title))?;
         sc_agent::save_run(&self.catalog, &run).await?;
+        self.step = self.step.take().map(|step| step.run(Some(run.id.0)));
         let Some(conclusion) = driver.drive(&mut run, &mut self.stopped).await? else {
             return Ok(Step::Stopped);
         };
@@ -370,6 +414,7 @@ impl ConstructionRunner {
                 run
             }
         };
+        self.step = self.step.take().map(|step| step.run(Some(run.id.0)));
 
         let outcome = driver.drive(&mut run, &mut self.stopped).await;
         let conclusion = match outcome {

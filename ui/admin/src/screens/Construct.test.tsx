@@ -1,16 +1,17 @@
-// The Plan & build screen's progress and phases, rendered from a construction
+// The Plan & build screen's activity and phases, rendered from a construction
 // (TODO-app-constructor AC4.4).
 
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { Construction } from "../construction";
+import type { ActivityFold } from "./Construct";
 import {
   Construct,
   FeedbackCard,
   PhaseDetail,
   PhasesCard,
-  ProgressCard,
+  ActivityCard,
   MockupsCard,
   QuestionsCard,
   SpecificationCard,
@@ -35,6 +36,7 @@ function construction(status: string, taskStatus: string): Construction {
     questions: [],
     mockups: [],
     feedback: [],
+    errors: [],
     updated_at: null,
     phases: [
       {
@@ -78,36 +80,87 @@ describe("Construct", () => {
   });
 });
 
-describe("the progress", () => {
-  it("shows a failed task with Retry and Skip, its runs, and the error", () => {
-    const html = renderToStaticMarkup(
-      <ProgressCard
-        construction={construction("failed", "failed")}
-        busy={false}
-        onRetry={noop}
-        onSkip={noop}
-      />,
+describe("the activity", () => {
+  const all = { now: true, errors: true, phases: true };
+  const activity = (c: Construction, opened: Partial<ActivityFold> = all) =>
+    renderToStaticMarkup(
+      <ActivityCard construction={c} busy={false} onRetry={noop} onSkip={noop} opened={opened} />,
     );
+
+  it("opens only Now at first, each card saying in its header what it holds", () => {
+    const html = activity(construction("failed", "failed"), {});
+    expect(html).toContain(">Now<");
+    expect(html).toContain("Nothing is running");
+    // The current error is in Now, which is open, though Errors is closed.
+    expect(html).toContain('class="fade alert alert-danger show"');
+    expect(html).toContain("failed: the build is red");
+    expect(html).toContain(">Errors<");
+    expect(html).toContain("0 of 2 phases done");
+    expect(html.match(/aria-expanded="true"/g)).toHaveLength(1);
+    expect(html.indexOf('aria-expanded="true"')).toBeLessThan(html.indexOf(">Errors<"));
+    // Closed: none of their contents.
+    expect(html).not.toContain("Retry");
+    expect(html).not.toContain("activity-error-current");
+  });
+
+  it("shows its cards with nothing in them yet, too", () => {
+    const html = activity({ ...construction("draft", "todo"), phases: [] });
+    expect(html).toContain("No errors so far.");
+    expect(html).toContain("No phases yet.");
+    expect(html).toContain("0 of 0 phases done");
+  });
+
+  it("shows a failed task with Retry and Skip, its runs, and the error", () => {
+    const html = activity(construction("failed", "failed"));
     expect(html).toContain("Retry");
     expect(html).toContain("Skip");
     expect(html).toContain('href="#/runs/r1"');
     expect(html).toContain('href="#/runs/r2"');
-    expect(html).toContain("task `Books list` failed");
-    expect(html).toContain("0 of 2 phases done");
     expect(html).toContain("Its tasks are planned when the phase is reached.");
   });
 
   it("offers neither while the construction runs", () => {
-    const html = renderToStaticMarkup(
-      <ProgressCard
-        construction={construction("running", "running")}
-        busy={false}
-        onRetry={noop}
-        onSkip={noop}
-      />,
-    );
+    const html = activity(construction("running", "running"));
     expect(html).not.toContain("Retry");
     expect(html).not.toContain(">Skip<");
+    expect(html).toContain("Working");
+    expect(html).not.toContain("alert-danger");
+  });
+
+  const logged = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `e${n - i}`,
+      construction: "c1",
+      at: "2026-11-20T10:00:00Z",
+      source: i === 0 ? "task" : "mockups",
+      phase: i === 0 ? "p1" : null,
+      task: i === 0 ? "t1" : null,
+      run: i === 0 ? "r2" : null,
+      message: i === 0 ? "task `Books list` failed: the build is red" : `mockups failed ${i}`,
+      current: i === 0,
+    }));
+
+  it("lists the errors newest first, the current one marked, with their runs", () => {
+    const html = activity({ ...construction("failed", "failed"), errors: logged(2) });
+    expect(html).toContain("Task “Books list”");
+    expect(html).toContain("Proposing mockups");
+    expect(html).toContain("Current");
+    expect(html).toContain("Open the run");
+    // Shown in Now, as nothing runs, and in the list (the code span is
+    // rendered as such).
+    expect(html.split("</code><span> failed: the build is red").length - 1).toBe(2);
+    expect(html.indexOf("Task “Books list”")).toBeLessThan(html.indexOf("Proposing mockups"));
+  });
+
+  it("shows five errors, and the rest on request", () => {
+    const html = activity({ ...construction("failed", "failed"), errors: logged(7) });
+    expect(html).toContain("Show all 7");
+    expect(html).not.toContain("mockups failed 6");
+  });
+
+  it("says what the construction agent is doing, before the build has started", () => {
+    const html = activity({ ...construction("draft", "todo"), asking: true, phases: [] });
+    expect(html).toContain("Asking questions about the specification.");
   });
 });
 
@@ -119,6 +172,7 @@ describe("the phases", () => {
         busy={false}
         onSave={noop}
         onRun={noop}
+        onReplan={noop}
       />,
     );
     expect(stopped).toContain('value="Data model"');
@@ -132,6 +186,7 @@ describe("the phases", () => {
         busy={false}
         onSave={noop}
         onRun={noop}
+        onReplan={noop}
       />,
     );
     // Each saved phase opens its own page.
@@ -141,6 +196,17 @@ describe("the phases", () => {
     expect(running).toMatch(/<input[^>]*disabled[^>]*value="Data model"/);
   });
 
+  it("offers to plan the phases again, but not while the construction runs", () => {
+    const replan = (c: Construction) =>
+      renderToStaticMarkup(
+        <PhasesCard construction={c} busy={false} onSave={noop} onRun={noop} onReplan={noop} />,
+      ).match(/<button[^>]*>(?:(?!<\/button>).)*Plan phases again<\/button>/)?.[0];
+    expect(replan(construction("stopped", "todo"))).not.toContain("disabled");
+    expect(replan(construction("running", "running"))).toContain("disabled");
+    // Nothing to plan again before the first plan.
+    expect(replan({ ...construction("draft", "todo"), phases: [] })).toBeUndefined();
+  });
+
   it("marks the phase the run is on, with what it is doing", () => {
     const working = renderToStaticMarkup(
       <PhasesCard
@@ -148,6 +214,7 @@ describe("the phases", () => {
         busy={false}
         onSave={noop}
         onRun={noop}
+        onReplan={noop}
       />,
     );
     expect(working.match(/phase-working/g)).toHaveLength(1);
@@ -157,7 +224,7 @@ describe("the phases", () => {
     const reached = construction("running", "done");
     reached.phases[0].status = "done";
     const planning = renderToStaticMarkup(
-      <PhasesCard construction={reached} busy={false} onSave={noop} onRun={noop} />,
+      <PhasesCard construction={reached} busy={false} onSave={noop} onRun={noop} onReplan={noop} />,
     );
     expect(planning).toMatch(/phase phase-running phase-working[\s\S]*value="Checkout"/);
     expect(planning).toContain("Planning its tasks…");
@@ -168,6 +235,7 @@ describe("the phases", () => {
         busy={false}
         onSave={noop}
         onRun={noop}
+        onReplan={noop}
       />,
     );
     expect(stopped).not.toContain("phase-working");
@@ -213,7 +281,7 @@ describe("the tabs", () => {
     expect(empty).toMatch(/disabled[^>]*>.*2<\/span>Research/);
     expect(html).toMatch(/bg-secondary-lt">3<\/span>Phases/);
     expect(html).toMatch(/disabled[^>]*>.*3<\/span>Phases/);
-    expect(html).toMatch(/disabled[^>]*>.*4<\/span>Progress/);
+    expect(html).toMatch(/disabled[^>]*>.*5<\/span>Activity/);
     expect(html).not.toMatch(/disabled[^>]*>.*1<\/span>Specification/);
   });
 });
@@ -468,6 +536,58 @@ describe("the questions", () => {
     );
     expect(html).toContain("writing its questions");
     expect(html).toMatch(/<textarea[^>]*disabled/);
+    // The header says so too, for a closed card.
+    expect(html).toContain("Working");
+  });
+
+  it("folds like the activity's cards: open at first, closed as the admin left it", () => {
+    const asked = {
+      ...draft,
+      questions: [
+        { id: "q1", text: "Who takes the orders?", answer: "The sales team" },
+        { id: "q2", text: "Which currency?", answer: null },
+      ],
+    };
+    const card = () =>
+      renderToStaticMarkup(
+        <QuestionsCard construction={asked} busy={false} onAsk={noop} onAnswer={noop} />,
+      );
+    expect(card()).toContain('aria-expanded="true"');
+
+    vi.stubGlobal("window", {
+      localStorage: { getItem: () => "false", setItem: () => undefined },
+    });
+    try {
+      const closed = card();
+      expect(closed).toContain('aria-expanded="false"');
+      // The header still says how far it is and can ask again, outside the
+      // toggle; the questions are not shown.
+      expect(closed).toContain("1 of 2 answered");
+      expect(closed).toMatch(/fold-card-actions[^>]*>.*Ask again/);
+      expect(closed).not.toContain("Who takes the orders?");
+
+      const closedMockups = renderToStaticMarkup(
+        <MockupsCard
+          construction={{
+            ...draft,
+            mockups: [
+              { id: "m1", round: 1, title: "Table", rationale: "Rows.", screens: [], status: "chosen", feedback: null },
+            ],
+          }}
+          busy={false}
+          onRevise={noop}
+          onChoose={noop}
+          onPlan={noop}
+          onPropose={noop}
+          loadScreens={async () => []}
+        />,
+      );
+      expect(closedMockups).toContain('aria-expanded="false"');
+      expect(closedMockups).toMatch(/Chosen<\/span>Table/);
+      expect(closedMockups).not.toContain("mockup-frame");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

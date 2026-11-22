@@ -2849,8 +2849,6 @@ erDiagram
     text status "draft | planned | running | stopped | done | failed"
     text agent "the construction agent, by name"
     uuid started_by "-> users.id, by value: who last ran it"
-    uuid plan_run "the run that planned the phases"
-    text error "why it failed or stopped"
     uuid until_phase "run up to and including this phase; null runs all"
   }
   CONSTRUCTIONPHASES["_fd_construction_phases"] {
@@ -2895,13 +2893,31 @@ erDiagram
   }
   CONSTRUCTIONFEEDBACK["_fd_construction_feedback"] {
     uuid id PK
-    uuid construction "-> _fd_constructions.id"
-    uuid phase "-> _fd_construction_phases.id: the built phase it is on"
+    uuid phase "-> _fd_construction_phases.id: the built phase it is on, whose construction it is"
     float position
     text title
     text description
     json requirements "[{text, priority}]: what the agent made of it"
-    uuid run "the run that planned it last"
+  }
+  CONSTRUCTIONERRORS["_fd_construction_errors"] {
+    uuid id PK
+    uuid construction "-> _fd_constructions.id"
+    timestamp at
+    text source "phases | tasks | task | mockups | questions | feedback | runner"
+    uuid phase "nullable: the phase it was on"
+    uuid task "nullable: the task that failed"
+    uuid feedback "nullable: the feedback being planned"
+    uuid run "nullable: the run that failed"
+    text message
+    uuid construction_run "nullable: -> _fd_construction_runs.id, the run it happened in"
+  }
+  CONSTRUCTIONRUNS["_fd_construction_runs"] {
+    uuid id PK
+    uuid construction "-> _fd_constructions.id"
+    text purpose "phases | mockups | questions | feedback | build (a runner session)"
+    uuid run "nullable: -> _fd_runs.id, the agent run it launched"
+    uuid feedback "nullable: the feedback a feedback run plans"
+    timestamp started_at
   }
   MODELS["_fd_models"] {
     uuid id PK
@@ -3324,6 +3340,9 @@ erDiagram
   CONSTRUCTIONS ||--o{ CONSTRUCTIONQUESTIONS : "construction"
   CONSTRUCTIONPHASES ||--o{ CONSTRUCTIONFEEDBACK : "phase"
   CONSTRUCTIONFEEDBACK ||--o{ CONSTRUCTIONTASKS : "feedback -- its follow-up tasks"
+  CONSTRUCTIONS ||--o{ CONSTRUCTIONERRORS : "construction"
+  CONSTRUCTIONS ||--o{ CONSTRUCTIONRUNS : "construction"
+  CONSTRUCTIONRUNS |o--o{ CONSTRUCTIONERRORS : "construction_run"
   USERS |o--o{ CHECKLISTS : "run_as -- by value, nullable"
   USERS |o--o{ AGENTMEMORY : "user_id -- by value, nullable"
   RUNS |o--o{ AGENTMEMORY : "run_id -- by value, nullable"
@@ -6427,9 +6446,9 @@ research step without the web searches, which may follow.
 **Feedback on a built phase** (AC9). Once a phase has built something, the admin can say what
 should change, on that phase. This is v1's feedback tab, per phase first: feedback on the whole
 application, and feedback sent from the application's own pages, may follow.
-- **Stored per feedback** in `_fd_construction_feedback` (construction, phase, title,
-  description, and the requirements the agent made of it). A phase takes feedback once a task
-  of it is done and none has failed, which would stop the runner before the follow-up tasks.
+- **Stored per feedback** in `_fd_construction_feedback` (phase, which gives the construction,
+  title, description, and the requirements the agent made of it). A phase takes feedback once a
+  task of it is done and none has failed, which would stop the runner before the follow-up tasks.
 - **Given, then approved.** Giving feedback only records it, so it can be given at any time,
   even while the construction runs, and later by users other than the admin. The admin
   approves it by starting the run that plans it, recorded as the feedback's `run`, or declines
@@ -6450,6 +6469,41 @@ application, and feedback sent from the application's own pages, may follow.
   designing and asking. A reader learns a run has ended only after its outcome is recorded:
   the construction is read after what the agent is busy with, never before, so a run that
   failed is never shown as finished without its error.
+
+**The Activity tab and the error log** (AC10). Every error the construction meets is logged in
+`_fd_construction_errors`, with what failed (`source`: planning the phases, planning a phase's
+tasks, running a task, mockups, questions, a feedback, or the runner itself), the phase, task
+or feedback it was on, the agent run, and the construction run it happened in.
+- **Every run the construction starts is recorded** in `_fd_construction_runs`: each run of
+  the construction agent (phases, mockups, questions, feedback), recorded by `launch` before it
+  starts, and each runner session (`build`), recorded with the status by `mark_running` and
+  `mark_planning`.
+- **The current error is derived, not stored:** it is the newest error logged for the
+  construction's latest run, read when the construction is loaded and answered as its `error`,
+  the entry marked `current`. Starting a run is what clears it, as the new run has no error
+  yet; nothing is written to clear it.
+- **What the runs record is not stored again:** the run that planned the phases (`plan_run`
+  in the API) is the latest launched `phases` run's; a feedback is approved once a run
+  planning it has launched, and that run is its `run`. The error log is the exception: like
+  the phase and task, it keeps the feedback it was planning, so the list reads without a
+  lookup.
+- **Foreign keys** hold the links whose rows the code always deletes first: a construction's
+  phases, mockups, questions, runs and errors; a phase's tasks and feedback; a feedback's
+  tasks; an error's construction run. Feldspar's keys have no `ON DELETE`, so
+  `delete_construction` deletes in that order. The error log's phase, task, feedback and run, and the
+  links to `_fd_runs`, stay plain: what they name can be deleted first.
+- **Logged where it happens:** `set_plan_error` for the agent's runs and
+  `set_construction_status` for the runner, each with its construction run. So the log has
+  every error the screen ever showed, including those where no run failed: a run that ended
+  without doing its job, an admin who is no longer one, tasks that wait on each other.
+- **The runner knows its step:** before planning a phase's tasks or running a task it notes
+  the step (and the run once started), so an unexpected error is logged as that step's.
+- **On the screen** the Progress tab became **Activity**, last after the steps since it spans
+  them, and always open. It has three cards, always shown, only Now open on the first visit, each
+  header summing up what it holds: **Now** (what the construction agent or the runner is
+  doing), **Errors** (newest first, the current one marked, each with its run) and **Phases**
+  (the progress). Which are open is remembered per browser. The construction answers the
+  newest 100 errors.
 
 **Two kinds of task, two agents.**
 - A `data_model` task runs the construction's own agent, which has the copilot's tools.

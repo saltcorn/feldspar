@@ -43,8 +43,8 @@ use sc_agent::{Conclusion, ModelRole, RunCaller, Runner};
 use sc_app::{AppId, Application, builder_agent_name, load_application};
 use sc_catalog::Catalog;
 use sc_construct::{
-    Construction, ConstructionStatus, MockupFeedback, PhaseStatus, PhaseWithTasks, QuestionAnswer,
-    Task, TaskStatus, store,
+    Construction, ConstructionStatus, ErrorSource, Failure, MockupFeedback, PhaseStatus,
+    PhaseWithTasks, QuestionAnswer, RunPurpose, Task, TaskStatus, store,
 };
 use sc_error::{Error, Result};
 use sc_llm::list_llm_models;
@@ -923,10 +923,7 @@ async fn start_planning(
         chosen.as_ref(),
         replan,
     );
-    // The last run's failure is not this one's. Cleared before the run
-    // starts, as a run that fails at once records its own.
-    store::set_construction_status(&catalog, app.id.0, construction.status, None).await?;
-    let run = launch(
+    launch(
         catalog.clone(),
         apps,
         app,
@@ -938,7 +935,7 @@ async fn start_planning(
         Purpose::Phases,
     )
     .await?;
-    store::set_plan_run(&catalog, app.id.0, run).await
+    store::require_construction(&catalog, app.id.0).await
 }
 
 /// Start the run that proposes mockups of `app` (AC7): `count` of them, or a
@@ -967,9 +964,6 @@ async fn start_designing(
         &mockups,
         note,
     );
-    // The last run's failure is not this one's. Cleared before the run
-    // starts, as a run that fails at once records its own.
-    store::set_construction_status(&catalog, app.id.0, construction.status, None).await?;
     let description = if message.revision {
         format!("Revise the mockups of {}", app.name)
     } else {
@@ -1004,9 +998,6 @@ async fn start_asking(
     let questions = sc_construct::questions_of(&catalog, construction.id).await?;
     let known = questions.iter().map(|q| q.id).collect();
     let message = questions_message(app, &construction.specification, &questions);
-    // The last run's failure is not this one's. Cleared before the run
-    // starts, as a run that fails at once records its own.
-    store::set_construction_status(&catalog, app.id.0, construction.status, None).await?;
     launch(
         catalog.clone(),
         apps,
@@ -1036,10 +1027,7 @@ async fn start_feedback(
     let phases = store::phases_with_tasks(&catalog, construction.id).await?;
     let phase = sc_construct::require_feedback_phase(&phases, feedback.phase)?;
     let message = feedback_message(app, phase, feedback);
-    // The last run's failure is not this one's. Cleared before the run
-    // starts, as a run that fails at once records its own.
-    store::set_construction_status(&catalog, app.id.0, construction.status, None).await?;
-    let run = launch(
+    launch(
         catalog.clone(),
         apps,
         app,
@@ -1053,7 +1041,6 @@ async fn start_feedback(
         },
     )
     .await?;
-    sc_construct::set_feedback_run(&catalog, feedback.id, run).await?;
     store::require_construction(&catalog, app.id.0).await
 }
 
@@ -1201,8 +1188,21 @@ async fn launch(
         );
         runner.new_run(message)?.description(description)
     };
+    // Recorded once the run can start, and not before: from now on it is the
+    // construction's latest run, so the last run's error is no longer its
+    // current one. A launch refused above (no agent, no provider) is answered
+    // to the caller and leaves the current error as it was.
+    let (kind, feedback) = match purpose {
+        Purpose::Phases => (RunPurpose::Phases, None),
+        Purpose::Mockups { .. } => (RunPurpose::Mockups, None),
+        Purpose::Questions { .. } => (RunPurpose::Questions, None),
+        Purpose::Feedback { feedback } => (RunPurpose::Feedback, Some(feedback)),
+    };
+    let during =
+        sc_construct::insert_construction_run(&catalog, construction.id, kind, feedback).await?;
     sc_agent::save_run(&catalog, &run).await?;
     let run_id = run.id.0;
+    sc_construct::set_agent_run(&catalog, during, run_id).await?;
 
     let (construction_id, application) = (construction.id, app.id.0);
     sc_catalog::spawn_scoped(async move {
@@ -1283,6 +1283,18 @@ async fn launch(
             }
         };
         if let Some(failure) = failure {
+            let source = match purpose {
+                Purpose::Phases => ErrorSource::Phases,
+                Purpose::Mockups { .. } => ErrorSource::Mockups,
+                Purpose::Questions { .. } => ErrorSource::Questions,
+                Purpose::Feedback { .. } => ErrorSource::Feedback,
+            };
+            let mut failure = Failure::new(source, failure)
+                .run(Some(run_id))
+                .during(Some(during));
+            if let Purpose::Feedback { feedback } = purpose {
+                failure = failure.feedback(feedback);
+            }
             store::set_plan_error(&catalog, application, &failure)
                 .await
                 .ok();
@@ -1708,6 +1720,18 @@ async fn construction_json(catalog: &Catalog, construction: &Construction) -> Re
         .collect();
     out["mockups"] = Json::Array(mockups);
     out["feedback"] = Json::Array(feedback);
+    // Marked by id: the one the construction's latest run failed with.
+    let errors: Vec<Json> = sc_construct::errors_of(catalog, construction.id)
+        .await?
+        .into_iter()
+        .map(|e| {
+            let current = construction.error_entry == Some(e.id);
+            let mut entry = json!(e);
+            entry["current"] = json!(current);
+            entry
+        })
+        .collect();
+    out["errors"] = Json::Array(errors);
     out["updated_at"] = json!(construction.updated_at.map(|at| at.to_rfc3339()));
     out["phases"] = Json::Array(phases);
     Ok(out)
