@@ -407,6 +407,8 @@ async fn write_entries<W: Write + Seek>(
     }
 
     // --- applications -------------------------------------------------------
+    // Whether one of them is an identity provider, whose keys then go too.
+    let mut provider_chosen = false;
     for app in sc_app::list_applications(catalog).await? {
         if !selection.includes_application(&app.subdomain) {
             continue;
@@ -466,6 +468,27 @@ async fn write_entries<W: Write + Seek>(
                 &format!("applications/{}/translations.json", app.subdomain),
                 &catalogues,
             )?;
+        }
+        // An identity provider's clients travel with it (TODO IP1), secret
+        // hashes and all, so its relying parties go on signing in.
+        if catalog.get(sc_auth::OAUTH_CLIENTS_TABLE)?.is_some() {
+            let clients = sc_auth::export_oauth_clients(catalog, app.id.0).await?;
+            if !clients.is_empty() {
+                zip.json(
+                    &format!("applications/{}/oauth-clients.json", app.subdomain),
+                    &Json::Array(clients),
+                )?;
+            }
+        }
+        provider_chosen |= app.identity_provider;
+    }
+    // …and so do its signing keys, still sealed, which is why the key that
+    // opens them goes in too: tokens a relying party holds go on verifying.
+    if provider_chosen && catalog.get(sc_auth::OIDC_KEYS_TABLE)?.is_some() {
+        let keys = sc_auth::export_signing_keys(catalog).await?;
+        if !keys.is_empty() {
+            zip.json(super::OIDC_KEYS_FILE, &Json::Array(keys))?;
+            sealed_rows = true;
         }
     }
 

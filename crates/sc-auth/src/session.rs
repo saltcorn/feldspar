@@ -208,6 +208,11 @@ pub const COL_EXPIRES_AT: &str = "expires_at";
 /// the bootstrap adds it to an existing table, and `NULL` — a session from
 /// before epochs — reads as the initial epoch.
 pub const COL_AUTH_EPOCH: &str = "auth_epoch";
+/// When the session started: the `auth_time` an identity provider's
+/// `id_token` reports (TODO IP1.4). Nullable, so the bootstrap adds it to an
+/// existing table; `NULL` is a session from before it, whose start is not
+/// known.
+pub(crate) const COL_STARTED_AT: &str = "started_at";
 
 /// How often a process sweeps lapsed rows, at most.
 const SWEEP_INTERVAL_SECONDS: i64 = 60;
@@ -237,6 +242,7 @@ fn session_fields() -> Vec<DataField> {
         DataField::plain(COL_USER, uuid()).required(),
         DataField::plain(COL_EXPIRES_AT, timestamp()).required(),
         DataField::plain(COL_AUTH_EPOCH, TypeRef::Basic(BasicType::Int)),
+        DataField::plain(COL_STARTED_AT, timestamp()),
     ]
 }
 
@@ -326,6 +332,7 @@ struct Entry {
     user: User,
     expires_at: DateTime<Utc>,
     epoch: AuthEpoch,
+    started_at: DateTime<Utc>,
 }
 
 /// The in-memory backend's sessions, and the epochs its bumps raised.
@@ -537,6 +544,7 @@ impl SessionStore {
                         user: who.into_user(),
                         expires_at,
                         epoch,
+                        started_at: Utc::now(),
                     },
                 );
             }
@@ -619,6 +627,30 @@ impl SessionStore {
             user,
             scope: SessionScope::of_token(token),
         }))
+    }
+
+    /// When the session `token` names started, if it is known: what an
+    /// identity provider reports as `auth_time` (TODO IP1.4). Read from the
+    /// row rather than the cache, because nothing else needs it and it is
+    /// asked once per sign-in to another service. `None` for no such session,
+    /// and for one started before the column existed.
+    pub async fn started_at(&self, token: &str) -> Result<Option<DateTime<Utc>>> {
+        match &self.backend {
+            Backend::Memory(sessions) => Ok(read(sessions)
+                .entries
+                .get(token)
+                .map(|entry| entry.started_at)),
+            Backend::Database { catalog, .. } => {
+                let select = Select::from(Source::table(SESSIONS_TABLE))
+                    .filter(Expr::col(COL_TOKEN_HASH).eq(Expr::lit(token_hash(token))))
+                    .limit(1);
+                let rows = rows(catalog, Statement::from(select)).await?;
+                Ok(rows.first().and_then(|row| match row.get(COL_STARTED_AT) {
+                    Some(Value::Timestamp(at)) => Some(*at),
+                    _ => None,
+                }))
+            }
+        }
     }
 
     /// [`user_for`](SessionStore::user_for)'s lookup, before the proof is
@@ -1019,12 +1051,14 @@ async fn insert_session(
             COL_USER.to_owned(),
             COL_EXPIRES_AT.to_owned(),
             COL_AUTH_EPOCH.to_owned(),
+            COL_STARTED_AT.to_owned(),
         ],
         vec![
             Expr::lit(token_hash),
             Expr::lit(user_id),
             Expr::Lit(Value::Timestamp(expires_at)),
             Expr::lit(epoch.value()),
+            Expr::Lit(Value::Timestamp(Utc::now())),
         ],
     );
     run(catalog, Statement::from(insert)).await

@@ -86,6 +86,7 @@ mod modules;
 mod notices;
 mod oauth;
 mod observe;
+mod oidc;
 mod posterior;
 mod raw_routes;
 mod reload;

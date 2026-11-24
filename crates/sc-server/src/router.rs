@@ -3814,7 +3814,7 @@ pub(crate) fn parse_form(body: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-fn form_decode(s: &str) -> String {
+pub(crate) fn form_decode(s: &str) -> String {
     percent_decode(s, true)
 }
 

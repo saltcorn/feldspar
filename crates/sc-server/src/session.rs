@@ -232,6 +232,14 @@ impl AppSession {
         }
     }
 
+    /// The token the request carried.
+    pub(crate) fn token(&self) -> &str {
+        match self {
+            AppSession::Own(s) => s.token(),
+            AppSession::Visiting(s) => s.token(),
+        }
+    }
+
     /// Only a session this application issued.
     pub(crate) fn own(self) -> Option<Session<AppScope>> {
         match self {

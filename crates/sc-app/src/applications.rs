@@ -109,6 +109,9 @@ pub const COL_MAX_ROLE: &str = "max_role";
 /// The formula a caller must satisfy to use the application (text). Nullable;
 /// `NULL` reads back as no condition.
 pub const COL_ACCESS_IF: &str = "access_if";
+/// Whether the application is an identity provider (TODO IP1). Nullable for
+/// [`COL_TRIGGERS`]' reason; `NULL` reads back as off.
+pub const COL_IDENTITY_PROVIDER: &str = "identity_provider";
 
 /// The fields of the `_fd_applications` table, in declaration order.
 ///
@@ -150,6 +153,8 @@ fn applications_fields() -> Vec<DataField> {
         DataField::plain(COL_MIN_ROLE, int()),
         DataField::plain(COL_MAX_ROLE, int()),
         DataField::plain(COL_ACCESS_IF, text()),
+        // Not `required`, for the reason above it: see [`COL_IDENTITY_PROVIDER`].
+        DataField::plain(COL_IDENTITY_PROVIDER, TypeRef::Basic(BasicType::Bool)),
         // When it was last saved (`sc_catalog::edited`): bookkeeping for the
         // entities list, written by every save and read by nothing else.
         sc_catalog::updated_at_field(),

@@ -45,6 +45,8 @@ const EXPECTED: &[(&str, &[&str], RouteAuth)] = &[
     ("/admin/agent-chat", &["GET"], AdminSession),
     ("/api/streams/{id}/observe", &["GET"], AdminSession),
     ("/api/model-instances/{id}/progress", &["GET"], AdminSession),
+    ("/api/checklists/{id}/run/live", &["GET"], AdminSession),
+    ("/api/checklist-runs/live", &["GET"], AdminSession),
     ("/mcp", &["POST"], McpToken),
     ("/ide/mcp-proxy/{server}", &["*"], TerminalToken),
     ("/build-agent/heartbeat", &["POST"], BuildHostToken),
@@ -97,6 +99,15 @@ const EXPECTED: &[(&str, &[&str], RouteAuth)] = &[
         ScopedSession,
     ),
     ("/_feldspar/oauth/consent/{id}", &["GET"], HostSession),
+    ("/.well-known/openid-configuration", &["GET"], Public),
+    ("/.well-known/oauth-authorization-server", &["GET"], Public),
+    ("/_feldspar/oidc/jwks", &["GET"], Public),
+    (
+        "/_feldspar/oidc/authorize",
+        &["GET", "POST"],
+        AppSessionOrSignIn,
+    ),
+    ("/_feldspar/oidc/token", &["POST"], OAuthClient),
 ];
 
 #[test]

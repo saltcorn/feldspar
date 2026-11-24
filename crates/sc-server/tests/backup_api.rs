@@ -5119,3 +5119,112 @@ async fn an_unreadable_file_is_left_out_rather_than_failing_the_backup() -> sc_e
     assert_eq!(manifest["contents"]["users"], json!(1));
     Ok(())
 }
+
+/// `archive` with the entry `drop` left out.
+fn without_entry(archive: &[u8], drop: &str) -> Vec<u8> {
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive)).expect("a zip");
+    let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for i in 0..zip.len() {
+        let file = zip.by_index(i).unwrap();
+        if file.name() != drop {
+            out.raw_copy_file(file).unwrap();
+        }
+    }
+    out.finish().unwrap().into_inner()
+}
+
+/// An identity provider's clients travel with its application, and its signing
+/// keys with the instance key that opens them (TODO IP1.2): restored onto an
+/// instance with **another** key, the client's secret still authenticates and
+/// the old keys are published and sign. A backup without the key that sealed
+/// them says so, and those keys are never served.
+#[tokio::test]
+async fn an_identity_provider_travels_with_its_application_and_its_keys() -> sc_error::Result<()> {
+    let mut source = setup().await?;
+    source
+        .catalog
+        .set_secret_key(sc_catalog::SecretKey::generate()?);
+    let framework = sc_app::FrameworkRef::new("none")
+        .with("store", "site")
+        .with("source", "idp");
+    let app = sc_app::save_application(
+        &source.catalog,
+        &sc_app::Application::new("Provider", "idp", framework).identity_provider(true),
+    )
+    .await?;
+    let client = sc_auth::register_oauth_client(
+        &source.catalog,
+        sc_auth::NewOAuthClient {
+            app_id: app.id.0,
+            name: "Grafana".into(),
+            confidential: true,
+            redirect_uris: vec!["https://grafana.example.net/cb".into()],
+            scopes: vec![],
+            skip_consent: false,
+            created_by: None,
+        },
+    )
+    .await?;
+    let secret = client.secret.clone().unwrap();
+    let kids = sc_auth::ensure_signing_keys(&source.catalog).await?.created;
+    assert_eq!(kids.len(), 2);
+
+    let archive = backup_everything(&mut source).await;
+    assert!(has_entry(&archive, "applications/idp/oauth-clients.json"));
+    assert!(has_entry(&archive, "keys/oidc-keys.json"));
+    assert!(
+        has_entry(&archive, "keys/secrets.key"),
+        "the key that opens them goes too"
+    );
+    assert!(
+        !entry(&archive, "applications/idp/oauth-clients.json").contains(&secret),
+        "a secret's hash travels, never the secret"
+    );
+
+    // Onto an instance with a key of its own.
+    let mut target = setup().await?;
+    target
+        .catalog
+        .set_secret_key(sc_catalog::SecretKey::generate()?);
+    let report = restore_everything(&mut target, &archive).await;
+    assert!(
+        report_has(&report, "restored", "signing keys restored"),
+        "{report}"
+    );
+    let restored = sc_app::load_application_by_subdomain(&target.catalog, "idp")
+        .await?
+        .unwrap();
+    assert!(restored.identity_provider);
+    assert!(
+        sc_auth::authenticate_oauth_client(
+            &target.catalog,
+            restored.id.0,
+            &client.client.client_id,
+            Some(&secret)
+        )
+        .await?
+        .is_ok()
+    );
+    let published = sc_auth::published_jwks(&target.catalog).await?.to_string();
+    for kid in &kids {
+        assert!(published.contains(kid.as_str()), "{kid} is published");
+    }
+    let signed = sc_auth::sign_jwt(&target.catalog, sc_auth::SigningAlg::Rs256, &json!({})).await;
+    assert!(signed.is_ok(), "{signed:?}");
+
+    // Without the key that sealed them: said so, and not served.
+    let keyless = without_entry(&archive, "keys/secrets.key");
+    let mut elsewhere = setup().await?;
+    elsewhere
+        .catalog
+        .set_secret_key(sc_catalog::SecretKey::generate()?);
+    let report = restore_everything(&mut elsewhere, &keyless).await;
+    assert!(report_has(&report, "warnings", "signing keys"), "{report}");
+    let published = sc_auth::published_jwks(&elsewhere.catalog)
+        .await?
+        .to_string();
+    for kid in &kids {
+        assert!(!published.contains(kid.as_str()), "{kid} is not served");
+    }
+    Ok(())
+}

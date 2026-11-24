@@ -411,13 +411,8 @@ async fn start(
     let agents = Agents::load(&ctx.catalog, &registry).await?;
     let definition = agents.require(agent)?;
     may_chat(&ctx.caller, definition)?;
-    let controls = sc_agent::composer_controls_for(
-        &ctx.catalog,
-        &ctx.caller,
-        &registry,
-        definition,
-    )
-    .await?;
+    let controls =
+        sc_agent::composer_controls_for(&ctx.catalog, &ctx.caller, &registry, definition).await?;
     let Some(id) = run else {
         return Ok((None, controls));
     };
@@ -509,19 +504,13 @@ async fn turn(
     let mut input = input;
     let attachments = input.checked_attachments()?;
     let observer = SocketObserver { tx: tx.clone() };
-    let mut runner = Runner::new(
-        &ctx.catalog,
-        &registry,
-        agent,
-        executor,
-        ctx.caller.clone(),
-    )
-    .observing(&observer)
-    // The same connector this turn's own provider came from, so the agent's
-    // roles can be connected and an agent with a `subagent` trait can start the
-    // sub-agent's run — which needs the sub-agent's provider and model, not
-    // this one's (§11.3).
-    .with_connector(ctx.services.providers());
+    let mut runner = Runner::new(&ctx.catalog, &registry, agent, executor, ctx.caller.clone())
+        .observing(&observer)
+        // The same connector this turn's own provider came from, so the agent's
+        // roles can be connected and an agent with a `subagent` trait can start the
+        // sub-agent's run — which needs the sub-agent's provider and model, not
+        // this one's (§11.3).
+        .with_connector(ctx.services.providers());
     if let Some(evaluator) = &ctx.evaluator {
         runner = runner.with_evaluator(evaluator);
     }

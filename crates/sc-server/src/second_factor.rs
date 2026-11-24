@@ -1006,7 +1006,7 @@ fn html_page(title: &str, body: SafeHtml) -> Response {
 
 /// A page of this module: the title escaped, the body already `SafeHtml`
 /// (TODO-type-hardening H3.7).
-fn page_html(title: &str, body: SafeHtml) -> SafeHtml {
+pub(crate) fn page_html(title: &str, body: SafeHtml) -> SafeHtml {
     safe_html!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
@@ -1018,7 +1018,7 @@ fn page_html(title: &str, body: SafeHtml) -> SafeHtml {
     )
 }
 
-const PAGE_STYLE: &str = "\
+pub(crate) const PAGE_STYLE: &str = "\
 :root{color-scheme:light dark;--bg:#f5f7fb;--card:#fff;--text:#1d273b;--muted:#667382;\
 --accent:#206bc4;--error:#d63939;--border:#dce1e7}\
 @media (prefers-color-scheme:dark){:root{--bg:#151f2c;--card:#1d2a3a;--text:#e6ebf1;\

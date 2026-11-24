@@ -143,8 +143,7 @@ impl sc_sync::DeployHost for AppMounts {
         Ok(sc_sync::Registries {
             actions: triggers_of(self).map_or(builtin.actions, |d| d.registry()),
             streams: streams_of(self).map_or(builtin.streams, |s| s.registry()),
-            agent_traits: agents_of(self)
-                .map_or(builtin.agent_traits, |a| a.registry()),
+            agent_traits: agents_of(self).map_or(builtin.agent_traits, |a| a.registry()),
             modules: std::collections::BTreeMap::new(),
         })
     }

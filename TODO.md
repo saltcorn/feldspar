@@ -1168,6 +1168,120 @@ They need a declaration, and an operator's switch that allows them.
   administrator's run at the admin console, in act mode. Tests: `bundled_bash`, `unsafe_modules`
   (ssh argument checks), sc-proc's stdin test, `node --test plugins/bash/test`.
 
+## IP1 — Feldspar as an OAuth 2.0 / OpenID Connect identity provider (user request)
+
+GOALS: "can be an identity provider. Option to enable oauth2 server", and design §7.2's one line
+("`sc-auth` exposes the authorization-code/PKCE endpoints when enabled"). None of it is built.
+Feldspar is only an OAuth **client** today: F8 signs people in with an external provider, and
+OA1 gets tokens from one. An application cannot do this well by itself either. A code query never
+sees the `Authorization` header (`ApiRequest::headers`), so `client_secret_basic` and a bearer
+token at `/userinfo` are out of reach. `crypto` has HMAC only, so there is no RS256 `id_token` and
+no JWKS. So this is core work.
+
+Decisions this milestone takes (change them here before starting, not halfway through):
+
+- **Per application, off by default.** An application turns the provider on. Its issuer is
+  `https://<the application's host>`, its clients are registered on it, and F9's `min_role`,
+  `max_role` and `access_if` decide who may sign in to a client through it. One signing key set
+  serves the whole instance. **The admin host is never an issuer.**
+- **Its access tokens are for `/userinfo` only.** They do not call the issuing application's API.
+- **Authorization code with PKCE only.** No implicit grant, no password grant, no client
+  credentials, and no dynamic client registration: an admin registers every client. Not for
+  the MCP server either; it keeps its bearer token. PKCE `S256` is required
+  of every client, confidential ones included (OAuth 2.1).
+- **OpenID Connect Core on top.** `openid`, `email` and `profile` scopes, an `id_token`, and
+  UserInfo and discovery, so that off-the-shelf relying parties (oauth2-proxy, Grafana, Nextcloud,
+  Gitea, any `openidconnect` library) work with no Feldspar-specific code.
+- **Tokens are stored as API tokens are** (`sc_auth::tokens`): opaque, prefixed, shown once,
+  SHA-256 at rest. They are a **separate kind** that `/mcp`, the build host and the app API never
+  accept.
+- **Codes and grants live in the database, not in memory.** The relying party's server calls
+  the token endpoint, not the browser, so it can land on any node.
+- New tables are additive and stay with the bootstrap. No migration is needed.
+
+- [x] **IP1.1** Storage and settings. `Application::identity_provider` (a nullable column, off
+  when null). `_fd_oauth_clients`: `client_id`, a display name, the application, `confidential`,
+  the SHA-256 of the client secret, exact `redirect_uris`, allowed scopes, `skip_consent` for a
+  first-party client, and who created it and when. `_fd_oauth_codes`, `_fd_oauth_grants` (one per
+  user and client: the scopes consented to and the refresh-token family) and
+  `_fd_oauth_tokens`. Tests: `sc-auth` unit tests for minting, hashing and lookup, and a refused
+  lookup of another application's client.
+- [x] **IP1.2** Signing keys. `_fd_oidc_keys` with a `kid`, the algorithm, the public JWK and the
+  private key sealed with the instance key (`sc_catalog::secrets`). There is an RS256 key, which
+  is OIDC's default `id_token_signed_response_alg`, and an ES256 key. Each is made on first
+  enable. Rotation: a new key signs from now on, and the old one stays in the JWKS until every
+  token it signed has expired. Use the `rsa`/`p256` (or `aws-lc-rs`) crates already in
+  `Cargo.lock`. Do not hand-write JWT encoding. Backups carry the sealed keys. Tests: sign and
+  verify round trips, rotation keeps the old `kid` published, and a restore onto an instance with
+  another key says so rather than serving keys it cannot open.
+- [x] **IP1.3** Discovery and JWKS on an enabled application's host:
+  `/.well-known/openid-configuration`, `/.well-known/oauth-authorization-server` (RFC 8414) and
+  `/_feldspar/oidc/jwks`. They are raw routes with `RouteAuth::Public` (update `RAW_ROUTES` and
+  the pinned list in `tests/raw_routes.rs`). On a disabled application, or on the admin host, the
+  answer is 404. Tests: the metadata's URLs, algorithms and `code_challenge_methods_supported`,
+  and the 404s.
+- [x] **IP1.4** `GET /_feldspar/oidc/authorize`. Check the client and the **exact**
+  `redirect_uri` before anything else. A bad one is an error page, never a redirect.
+  `response_type=code`, `code_challenge` (S256), `state`, `nonce` and `scope` are carried through,
+  and an error after that point goes back to the client as `error=…&state=…`. With no session
+  there is a server-rendered sign-in that goes through the one session path (password, second
+  factor, external providers, disabled accounts, F9 admission), so nothing is checked twice in
+  two places. Then a consent page (a CSRF-protected POST) unless the grant already covers the
+  scopes or the client skips consent. `prompt=none`, `prompt=login` and `prompt=consent` are
+  supported. The code is single-use, lives 60 s and is stored hashed, bound to the client, the
+  redirect URI, the challenge, the nonce, the user and `auth_time`. Tests: an open-redirect
+  attempt, an unregistered URI, a missing PKCE challenge, a refused F9 user, a disabled user, a
+  consent page POSTed cross-site, and `prompt=none` with no session.
+- [x] **IP1.5** `POST /_feldspar/oidc/token`, form-encoded. Client authentication is
+  `client_secret_basic` or `client_secret_post` for a confidential client, and none for a public
+  one, which must rely on PKCE. Make it CSRF-exempt by **ignoring cookies entirely**, as `/mcp`
+  does, written as a property of the route's authentication and not as a path test. Grants:
+  `authorization_code` (with the verifier checked; a code used twice revokes everything issued
+  from it) and `refresh_token` (rotated on every use; a reused one revokes the family). The answer
+  is an access token (10 min), a refresh token, and for `openid` an `id_token` with `iss`,
+  `sub`, `aud`, `exp`, `iat`, `auth_time`, `nonce`, `at_hash`, plus claims for the granted scopes.
+  `sub` is a stable per-user identifier, not the email address. `Cache-Control: no-store`.
+  Rate-limited per client and per IP (`sc-ratelimit`). Tests: each error code from RFC 6749 §5.2,
+  code reuse, a wrong verifier, another client's code, an expired code and refresh reuse.
+  Done as described, with these details (CHANGELOG has the rest):
+  `identity_provider` is a nullable boolean column. The keys are made on first use, not on
+  enable. The `id_token`'s `auth_time` comes from a new nullable `_fd_sessions.started_at`
+  column. Clients and keys travel in the backup with the application that is a provider.
+- [ ] **IP1.6** `GET`/`POST /_feldspar/oidc/userinfo` with `Authorization: Bearer`. Add
+  `userinfo_endpoint` to `sc_server::oidc::metadata` when it exists (discovery leaves it out
+  until then); `sc_auth::authenticate_oauth_access_token` is the lookup. Claims
+  follow the scopes: `sub`; `email` and `email_verified`; and for `profile`, `name` and the
+  F8.6-style fields. A client may map further user fields to claims (`role`, `groups`, a
+  department), set on the client and validated against the users table. Tests: claims per scope,
+  an expired token, a revoked token, and an IdP access token refused at `/mcp` and at the app's
+  REST API.
+- [ ] **IP1.7** Revocation. `POST /_feldspar/oidc/revoke` (RFC 7009). A grant ends when the
+  account's authentication epoch moves (`sc_auth::epoch`: password change, second factor change,
+  disabled), when the account is deleted, and when the client is deleted. RP-initiated logout
+  (`end_session_endpoint`) ends the Feldspar session and returns to a registered
+  `post_logout_redirect_uri`. Tests: each of these ends a refresh token and an access token.
+- [ ] **IP1.8** Admin API and UI. `identity_provider` is already in the codec's JSON
+  (`application_json` / `application_from_body`) and kept by `updateApplication` when absent, but
+  not yet in `sc-api`'s application schema or the generated clients. The storage functions are
+  in `sc_auth` (`register_oauth_client`, `list_oauth_clients`, `regenerate_oauth_client_secret`,
+  `delete_oauth_client`, `rotate_signing_keys`, `list_signing_keys`). An "Identity provider" tab
+  on the application: the switch, the
+  issuer and discovery URL to copy, and clients (create, edit, delete). The secret is shown once,
+  with "regenerate" available. Also each user's grants, with revoke. Regenerate `client.ts` in
+  the four UIs. MCP: `describe_applications` shows whether the provider is on and how many
+  clients it has, but **no tool mints a client secret**. Tests: admin API tests, including a
+  non-admin refused, and the UI's vitest.
+- [ ] **IP1.9** Interoperability. An end-to-end test in `sc-server/tests/oidc_provider.rs` drives
+  the assembled router on a real port with the `openidconnect` crate as a dev-dependency: the
+  discovery document, then authorize, sign-in, consent, token, `id_token` verification against
+  the JWKS, userinfo, refresh and revoke. Also check by hand with one real relying party (e.g.
+  oauth2-proxy or Grafana) and record it in the CHANGELOG. Extend `catalog_teardown.rs` if a new
+  service holds the catalog.
+- [ ] **IP1.10** Docs. Replace §7.2's one line in TECHNICAL_DESIGN with the design: issuer,
+  endpoints, storage, keys, what is deliberately not supported. Add a tutorial, "Let another
+  service sign in with your application's users" (registering a client, then oauth2-proxy or
+  Grafana as the worked example).
+
 ---
 
 ## Open questions

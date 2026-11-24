@@ -25,6 +25,8 @@ mod db_sessions;
 mod first_user;
 #[path = "login.rs"]
 mod login;
+#[path = "oauth_provider.rs"]
+mod oauth_provider;
 #[path = "role_gate.rs"]
 mod role_gate;
 #[path = "role_grants.rs"]

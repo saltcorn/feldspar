@@ -604,6 +604,11 @@ pub struct Application {
     /// against the caller's real role, before [`max_role`](Self::max_role)
     /// caps it, and failing closed.
     pub access_if: String,
+    /// Whether the application is an OAuth 2.0 / OpenID Connect **identity
+    /// provider** for other services (TODO IP1): off unless an admin turns it
+    /// on. Its issuer is the application's own host, and its clients are
+    /// registered on it (`sc_auth::register_oauth_client`).
+    pub identity_provider: bool,
     /// Sparse per-app values that do not warrant a column of their own (the §9
     /// column-vs-attributes rule). A framework's settings do **not** live here —
     /// they belong to the framework, in [`FrameworkRef::config`].
@@ -689,6 +694,7 @@ impl Application {
             min_role: Role::PUBLIC,
             max_role: Role::ADMIN,
             access_if: String::new(),
+            identity_provider: false,
             attributes: Attrs::new(),
         }
     }
@@ -784,6 +790,12 @@ impl Application {
     /// Set the most privileged role a caller holds while using the application.
     pub fn max_role(mut self, role: Role) -> Application {
         self.max_role = role;
+        self
+    }
+
+    /// Turn the identity provider on or off (TODO IP1).
+    pub fn identity_provider(mut self, on: bool) -> Application {
+        self.identity_provider = on;
         self
     }
 

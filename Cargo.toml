@@ -326,6 +326,12 @@ hmac = "0.12"
 # secret is written in base32, and the setup screen shows it as a QR code.
 sha1 = "0.10"
 data-encoding = "2"
+# The OpenID Connect provider (`sc_auth::oidc`, TODO IP1): its signing keys are
+# made with `aws-lc-rs`, the crypto provider the `rustls` pin below already
+# compiles in, and its `id_token`s are JWTs written by `jsonwebtoken` over that
+# same provider, so no second implementation of RSA or ECDSA joins the tree.
+aws-lc-rs = "1"
+jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs", "use_pem"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 # Line and character diffs for the coding trait (TODO §6): the run's unified
 # diff and diffstat from the change ledger, and the similarity ratio the edit

@@ -2,6 +2,105 @@
 
 Changes in reverse chronological order.
 
+## An application as an OpenID Connect identity provider: storage, keys, discovery, authorize, token
+
+An application can now be an OAuth 2.0 / OpenID Connect identity provider. Another service (Grafana,
+oauth2-proxy, any OIDC library) can then sign people in with the application's users (TODO
+IP1.1–IP1.5). It is off by default. UserInfo, revocation, logout, the admin screen and the interop
+test (IP1.6–IP1.10) are still to come.
+
+- **The switch.** `Application::identity_provider` is stored in a new nullable `identity_provider`
+  column on `_fd_applications`, added by the bootstrap. `NULL` reads as off. The admin and backup
+  JSON carry it as `identity_provider`. `updateApplication` keeps the stored value when a client
+  does not send it, so an admin UI that predates the field never turns it off. The admin API's
+  schema and the generated clients do not list it yet (IP1.8).
+- **Storage** (`sc_auth::oidc`). There are four bootstrapped tables:
+  - `_fd_oauth_clients`: a client is registered on one application. Its secret is shown once and
+    stored as a SHA-256. Every lookup names the application, so another application's client is
+    "not found".
+  - `_fd_oauth_codes`: single-use, 60 s, stored hashed. Each is bound to the client, the redirect
+    URI, the S256 challenge, the nonce, the user, `auth_time` and the issuer.
+  - `_fd_oauth_grants`: the scopes each user consented to, per client.
+  - `_fd_oauth_tokens`: access tokens (10 min) and refresh tokens (30 days, rotated on every use).
+
+  Each token belongs to the family of the code it came from. A code used twice, or a refresh
+  token used twice, revokes the whole family. Redirect URIs must be absolute, have no fragment, and
+  use `https` except to localhost. They are compared exactly. Tokens are prefixed (`fdac_`,
+  `fdat_`, `fdrt_`, `fdcs_`) and live in their own tables, so `/mcp`, the build host and an
+  application's API never accept one.
+- **Signing keys** (`sc_auth::oidc_keys`, `_fd_oidc_keys`). There is one RS256 key and one ES256
+  key per instance, made the first time they are needed. Each private half is stored as PKCS#8,
+  sealed with the instance key. Each key's `kid` is its RFC 7638 thumbprint. Keys are made with
+  `aws-lc-rs`, which the rustls pin already compiles in. JWTs and the JWKS come from the new
+  `jsonwebtoken` dependency (10.3, `aws_lc_rs` backend), so no JWT encoding is hand-written.
+  `rotate_signing_keys` retires the live keys, and a retired key stays published for 24 hours.
+  Neither the JWKS nor signing uses a key this instance's key cannot open; `ensure_signing_keys`
+  retires it, logs a warning, and makes a new one.
+- **Backups** carry the provider. An application's clients go in
+  `applications/<subdomain>/oauth-clients.json` (secret hashes, never secrets). When a chosen
+  application is a provider, the signing keys go in `keys/oidc-keys.json` with their private halves
+  still sealed, and `keys/secrets.key` goes too. A restore opens each key with the backup's key and
+  reseals it with this server's. A key the backup cannot open is not restored, and the report says
+  so.
+- **Discovery and JWKS.** `/.well-known/openid-configuration`,
+  `/.well-known/oauth-authorization-server` (RFC 8414) and `/_feldspar/oidc/jwks` are public raw
+  routes. The issuer is the application's host. They return 404 on an application that is not a
+  provider, on a preview, and on the admin host.
+- **`GET /_feldspar/oidc/authorize`** (`sc_server::oidc`).
+  - **Request checks.** The client and its exact `redirect_uri` are checked first; a bad one gets
+    an error page, never a redirect. After that, errors go back to the client with `state` and
+    `iss` (RFC 9207). Only `response_type=code` is accepted, and every client must send an S256
+    challenge.
+  - **Sign-in.** Someone with no session gets a server-rendered sign-in page. It goes through the
+    login throttle, `authenticate`, F9 admission and `apply_session` (so a second factor is asked
+    for on its own page, which returns here). The application's external identity providers are
+    offered too.
+  - **Consent.** A CSRF-checked consent form is shown unless the user's grant covers the scopes or
+    the client skips consent. `prompt=none` (`login_required`, `consent_required`),
+    `prompt=login` and `prompt=consent` are supported.
+  - **The session cookie.** It is `SameSite=Strict`, so it is not sent on the relying party's
+    cross-site redirect. A request with no session cookie therefore gets a page that loads the
+    same URL once more (`_fd_bounced`), from this host, before "nobody is signed in" is believed.
+    After a form post, a page also takes the browser on to the relying party, because CSP's
+    `form-action 'self'` blocks a cross-site redirect after a form post.
+- **`POST /_feldspar/oidc/token`**.
+  - **Client authentication.** `client_secret_basic` (form-decoded) or `client_secret_post` for a
+    confidential client; none for a public one.
+  - **Grants.** `authorization_code`, with the verifier checked, and `refresh_token`. A refresh may
+    narrow the scopes; asking for more is `invalid_scope`.
+  - **Account checks.** Before tokens are issued, the account is re-read: a disabled or deleted
+    account, one F9 no longer admits, or a withdrawn consent revokes the family.
+  - **The `id_token`.** It is RS256 and carries `iss`, `sub` (the user's id, not the email), `aud`,
+    `exp`, `iat`, `auth_time`, `nonce` and `at_hash`, plus `email`/`email_verified` and `name`
+    for the matching scopes.
+  - **Other properties.** Responses are `Cache-Control: no-store`, and requests are rate-limited
+    per IP and per client.
+  - **CSRF and cookies.** The route's auth is the new `RouteAuth::OAuthClient`, whose
+    `ignores_cookies()` is true. The CSRF middleware removes the `Cookie` header from such a route
+    and lets the request through. The exemption is written as a property of the route's
+    authentication, not a path test.
+- **Sessions record when they started.** `_fd_sessions` gets a nullable `started_at` column, added
+  by the bootstrap, and `SessionStore::started_at` reads it. The `id_token`'s `auth_time` comes
+  from it. A session from before the column exists has no `auth_time`.
+- **`tests/raw_routes.rs`** now pins the new routes. It also pins the two checklist live sockets,
+  which had been registered without being pinned, so that test failed at HEAD.
+- **Tests.**
+  - `sc-auth/tests/oauth_provider.rs`: secrets shown once, refused cross-application lookups,
+    single-use codes, refresh rotation and reuse, JWKS verification and rotation, and keys sealed
+    by another instance.
+  - `sc-server/tests/identity_provider.rs`, through the router:
+    - discovery and its 404s;
+    - an open-redirect attempt, an unregistered URI, and a missing or `plain` PKCE challenge;
+    - `prompt=none`;
+    - a disabled account, and one F9 refuses;
+    - a consent form posted cross-site;
+    - each token-endpoint error from RFC 6749 §5.2 that this endpoint can return. It never returns
+      `unauthorized_client`: every client may use both grants;
+    - code reuse, a wrong verifier, another client's code, an expired code and refresh reuse;
+    - an `id_token` verified against the JWKS.
+  - `backup_api.rs`: a round trip onto an instance with another key, and a backup without its
+    key.
+
 ## Modules supply agent traits; the bash module's `run_bash`, locally or over SSH
 
 A module can now add **agent traits**, and the bundled bash module adds one (TODO UM1.5, UM1.6).

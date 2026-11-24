@@ -29,6 +29,8 @@
 //! users/users.json                    { roles, fields } — the admin-added columns
 //! users/rows.ndjson                   the accounts, one per line — hashes included
 //! keys/secrets.key                    the key Secret fields are sealed with, when rows hold any
+//! keys/oidc-keys.json                 [ signing key, … ] — the identity provider's, still sealed
+//! applications/<subdomain>/oauth-clients.json [ client, … ] — an identity provider's clients
 //! modules.json                        [ module, … ] — reinstalled from where they came
 //! modules/<id>/files/<path>           a local module's source directory, as it is
 //! db-connections.json                 [ connection, … ] — passwords included
@@ -350,6 +352,10 @@ pub(crate) const CREDIT_ROWS_FILES: [(&str, &str); 3] = [
 /// when a backed-up table's rows hold any — the 32 bytes of `secrets.key`. The
 /// manifest names it under [`MANIFEST_SECRETS_KEY`].
 pub(crate) const SECRETS_KEY_FILE: &str = "keys/secrets.key";
+/// Where the identity provider's signing keys go (TODO IP1.2): with an
+/// application that is a provider. Their private halves stay sealed, so the
+/// key file goes too.
+pub(crate) const OIDC_KEYS_FILE: &str = "keys/oidc-keys.json";
 /// The manifest entry that says the backup carries [`SECRETS_KEY_FILE`].
 pub(crate) const MANIFEST_SECRETS_KEY: &str = "secrets_key";
 /// The settings section the SSL choice covers — the one section of `_fd_config`

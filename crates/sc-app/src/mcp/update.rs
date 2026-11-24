@@ -1289,6 +1289,7 @@ async fn save(ctx: &ToolContext<'_>, app: &Application, out: &mut Json) -> Resul
     body["min_role"] = json!(app.min_role);
     body["max_role"] = json!(app.max_role);
     body["access_if"] = json!(app.access_if);
+    body["identity_provider"] = json!(app.identity_provider);
     // Where the locales live (§9's column-vs-attributes rule).
     body["attributes"] = Json::Object(app.attributes.clone());
     let updated = host.update_application(user, app.id.0, body).await?;

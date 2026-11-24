@@ -613,10 +613,17 @@ pub(crate) async fn csrf_middleware(
     request: Request,
     next: Next,
 ) -> Response {
+    // A route judged by no cookie (`RouteAuth::ignores_cookies`) is given
+    // none: with nothing a cross-site page could borrow, it needs no token,
+    // and it is not handed a CSRF cookie either.
+    let mut request = request;
+    if crate::raw_routes::ignores_cookies(request.uri().path()) {
+        request.headers_mut().remove(header::COOKIE);
+        return next.run(request).await;
+    }
     let secure = policy.secure;
     let cookie_name = csrf_cookie(secure);
     let existing = jar.get(cookie_name).map(|c| c.value().to_owned());
-    let mut request = request;
 
     if is_mutating(request.method()) && !is_bearer_authenticated(&request) {
         let header = [CSRF_HEADER, V1_CSRF_HEADER]

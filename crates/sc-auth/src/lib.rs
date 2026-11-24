@@ -91,6 +91,8 @@ mod guest;
 mod login;
 mod lookup;
 mod manage;
+mod oidc;
+mod oidc_keys;
 mod password;
 mod password_tokens;
 mod roles;
@@ -137,6 +139,27 @@ pub use lookup::{
 pub use manage::{
     UserChanged, UserUpdate, claim_unproven_account, delete_user, set_user_disabled,
     set_user_password, update_user,
+};
+pub use oidc::{
+    ACCESS_TOKEN_PREFIX as OAUTH_ACCESS_TOKEN_PREFIX,
+    ACCESS_TOKEN_TTL_SECONDS as OAUTH_ACCESS_TOKEN_TTL_SECONDS,
+    CLIENT_ID_PREFIX as OAUTH_CLIENT_ID_PREFIX, CLIENT_SECRET_PREFIX as OAUTH_CLIENT_SECRET_PREFIX,
+    CODE_PREFIX as OAUTH_CODE_PREFIX, CODE_TTL_SECONDS as OAUTH_CODE_TTL_SECONDS, ClientRefused,
+    GrantRefused, IssuedTokens, NewAuthorizationCode, NewOAuthClient, OAUTH_CLIENTS_TABLE,
+    OAUTH_CODES_TABLE, OAUTH_GRANTS_TABLE, OAUTH_TOKENS_TABLE, OAuthAccess, OAuthClient,
+    OAuthGrant, REFRESH_TOKEN_PREFIX as OAUTH_REFRESH_TOKEN_PREFIX,
+    REFRESH_TOKEN_TTL_DAYS as OAUTH_REFRESH_TOKEN_TTL_DAYS, RedeemedCode, RegisteredOAuthClient,
+    SCOPE_EMAIL, SCOPE_OFFLINE_ACCESS, SCOPE_OPENID, SCOPE_PROFILE, SUPPORTED_SCOPES, TokenSubject,
+    authenticate_oauth_access_token, authenticate_oauth_client, check_scopes, constant_time_eq,
+    delete_oauth_client, export_oauth_clients, import_oauth_clients, is_pkce_verifier,
+    issue_authorization_code, issue_oauth_tokens, list_oauth_clients, load_oauth_client,
+    load_oauth_grant, pkce_s256, record_oauth_grant, redeem_authorization_code,
+    redeem_refresh_token, regenerate_oauth_client_secret, register_oauth_client, revoke_family,
+};
+pub use oidc_keys::{
+    KeyCheck, KeyImport, OIDC_KEYS_TABLE, RETIRED_KEY_PUBLISHED_HOURS, SigningAlg, SigningKey,
+    ensure_signing_keys, export_signing_keys, import_signing_keys, left_half_sha256,
+    list_signing_keys, published_jwks, rotate_signing_keys, sign_jwt,
 };
 pub use password::{
     HashScheme, RANDOM_PASSWORD_LENGTH, hash_password, is_valid_hash, random_password,

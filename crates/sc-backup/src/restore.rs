@@ -321,6 +321,9 @@ pub async fn restore_backup(
     for subdomain in &selection.applications {
         restore_application(catalog, apps, &archive, subdomain, &selection, &mut report).await;
     }
+    if !selection.applications.is_empty() {
+        restore_signing_keys(catalog, &archive, &backup_key, &mut report).await;
+    }
     // Code libraries after the applications, because one that belongs to an
     // application is refused unless that application exists here.
     if selection.code_libraries {
@@ -2034,6 +2037,7 @@ async fn restore_application(
     // Before the build: mounting a Saltcorn UI application is reading its views.
     restore_views_and_pages(catalog, archive, key, &app, selection, report).await;
     restore_translations(catalog, archive, key, &app, report).await;
+    restore_oauth_clients(catalog, archive, key, &app, report).await;
 
     // A framework constructed from a factory (Saltcorn UI) has no build and no
     // Build button, so "build it once its source is in place" would send the
@@ -3358,6 +3362,82 @@ async fn restore_streams(
 /// A Saltcorn UI application's translations, a locale at a time. **A locale
 /// this application already has a catalogue for keeps it**: those are the
 /// translations its visitors are reading.
+/// An identity provider's clients (TODO IP1), onto the restored application.
+/// A client already registered here is kept as it is.
+async fn restore_oauth_clients(
+    catalog: &Catalog,
+    archive: &Archive,
+    key: &str,
+    app: &sc_app::Application,
+    report: &mut RestoreReport,
+) {
+    let path = format!("applications/{key}/oauth-clients.json");
+    if !archive.contains(&path) {
+        return;
+    }
+    let result = async {
+        let document = archive.json(&path)?;
+        let clients = document
+            .as_array()
+            .ok_or_else(|| Error::invalid("the OAuth clients must be a list"))?;
+        let (restored, kept) = sc_auth::import_oauth_clients(catalog, app.id.0, clients).await?;
+        Ok(match (restored.len(), kept.len()) {
+            (_, 0) => String::new(),
+            (_, n) => format!("{n} already registered here, kept as they are"),
+        })
+    }
+    .await;
+    report.outcome(
+        &format!("identity provider clients of `{}`", app.subdomain),
+        result,
+    );
+}
+
+/// The identity provider's signing keys (TODO IP1.2): each private half
+/// opened with the backup's key and sealed again with this server's. One the
+/// backup's key does not open is left out and said so — never stored where it
+/// could not sign, and never served.
+async fn restore_signing_keys(
+    catalog: &Catalog,
+    archive: &Archive,
+    backup_key: &BackupKey,
+    report: &mut RestoreReport,
+) {
+    if !archive.contains(super::OIDC_KEYS_FILE) {
+        return;
+    }
+    let result = async {
+        let document = archive.json(super::OIDC_KEYS_FILE)?;
+        let keys = document
+            .as_array()
+            .ok_or_else(|| Error::invalid("the signing keys must be a list"))?;
+        let open = |sealed: &str| match backup_key {
+            BackupKey::Key(key) => key.open(sealed).ok(),
+            BackupKey::Missing(_) => None,
+        };
+        sc_auth::import_signing_keys(catalog, keys, &open).await
+    }
+    .await;
+    match result {
+        Ok(imported) => {
+            if !imported.unreadable.is_empty() {
+                report.skipped(format!(
+                    "identity provider signing keys {}: {}, so they are not restored; new                      keys are made when the provider is next used, and tokens the old ones                      signed will not verify",
+                    imported.unreadable.join(", "),
+                    backup_key.why_not()
+                ));
+            }
+            if !imported.restored.is_empty() {
+                report.did(format!(
+                    "identity provider signing keys restored: {}",
+                    imported.restored.join(", ")
+                ));
+            }
+        }
+        Err(e) => report.skipped(format!("identity provider signing keys: {}", e.causes())),
+    }
+}
+
 async fn restore_translations(
     catalog: &Catalog,
     archive: &Archive,

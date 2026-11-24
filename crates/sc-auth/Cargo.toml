@@ -36,6 +36,9 @@ qrcode.workspace = true
 # The base64url of an API token's random bytes (§13.6).
 base64.workspace = true
 lru.workspace = true
+# The OpenID Connect provider's signing keys and `id_token`s (`oidc`, TODO IP1).
+aws-lc-rs.workspace = true
+jsonwebtoken.workspace = true
 chrono.workspace = true
 serde.workspace = true
 uuid.workspace = true

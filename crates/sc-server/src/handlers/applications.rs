@@ -1451,6 +1451,11 @@ pub(crate) async fn update_application(
     // The id is the path's, not the body's — the row's identity is not
     // something a payload gets to reassign.
     let mut updated = application_from_body(id, &body)?;
+    // A client that does not send the identity-provider switch (one that
+    // predates it) leaves it as it is, rather than turning it off (TODO IP1).
+    if body.get("identity_provider").is_none() {
+        updated.identity_provider = stored.identity_provider;
+    }
     // A slot not naming its readers keeps the stored ones, so a client that
     // predates `read_role` does not widen a slot it sends back (UP1).
     if let Some(Json::Array(sent)) = body.get("uploads") {

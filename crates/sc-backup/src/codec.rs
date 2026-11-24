@@ -358,6 +358,7 @@ pub fn application_json(app: &Application) -> Json {
         "min_role": app.min_role,
         "max_role": app.max_role,
         "access_if": app.access_if,
+        "identity_provider": app.identity_provider,
         "source": app_source_json(app),
         // A framework constructed from `sc-app`'s factory registry has nothing
         // to build: saving is its deployment (TODO "Saltcorn UI" 9.3).
@@ -669,6 +670,17 @@ pub fn application_from_body(id: AppId, body: &Json) -> Result<Application> {
         Some(Json::String(formula)) => formula.trim().to_owned(),
         Some(_) => return Err(Error::invalid("`access_if` should be a formula, as text")),
     };
+    // Absent is off. An admin client that predates the field does not send
+    // it, and `updateApplication` keeps the stored value for one that does not.
+    let identity_provider = match obj.get("identity_provider") {
+        None | Some(Json::Null) => false,
+        Some(Json::Bool(on)) => *on,
+        Some(_) => {
+            return Err(Error::invalid(
+                "`identity_provider` should be true or false",
+            ));
+        }
+    };
 
     Ok(Application {
         id,
@@ -690,6 +702,7 @@ pub fn application_from_body(id: AppId, body: &Json) -> Result<Application> {
         min_role,
         max_role,
         access_if,
+        identity_provider,
         attributes,
     })
 }

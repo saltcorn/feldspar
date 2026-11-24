@@ -210,7 +210,7 @@ fn encode(value: &str) -> String {
 }
 
 /// `pairs` as a form-encoded string.
-fn form(pairs: &[(&str, &str)]) -> String {
+pub(crate) fn form(pairs: &[(&str, &str)]) -> String {
     pairs
         .iter()
         .map(|(k, v)| format!("{}={}", encode(k), encode(v)))

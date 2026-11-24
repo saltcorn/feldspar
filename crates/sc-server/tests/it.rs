@@ -152,6 +152,8 @@ mod ide_route;
 mod ide_terminal;
 #[path = "ide_typecheck.rs"]
 mod ide_typecheck;
+#[path = "identity_provider.rs"]
+mod identity_provider;
 #[path = "live_mounting.rs"]
 mod live_mounting;
 #[path = "llm_credits.rs"]

@@ -66,9 +66,29 @@ pub enum RouteAuth {
     /// ([`HostSession`](crate::session::HostSession)), which must be the user
     /// whose call began it.
     HostSession,
+    /// The identity provider's authorization endpoint (TODO IP1.4): the
+    /// application's session ([`AppSession`](crate::session::AppSession)), or
+    /// a sign-in made on the page it serves to somebody without one. Its form
+    /// posts are CSRF-checked like any other.
+    AppSessionOrSignIn,
+    /// The identity provider's token endpoint (TODO IP1.5): the client's own
+    /// credentials — its secret, or for a public client the PKCE verifier —
+    /// and **no cookie**. [`ignores_cookies`](RouteAuth::ignores_cookies):
+    /// the CSRF middleware strips the request's cookies and lets it through.
+    OAuthClient,
 }
 
 impl RouteAuth {
+    /// Whether a route of this kind is judged by **no cookie at all**: the
+    /// CSRF middleware removes the request's `Cookie` header before the
+    /// handler sees it, and so has nothing to defend (design §13.6's rule,
+    /// written as a property of the route's authentication, not as a path).
+    /// The bearer-token kinds are exempt from the check by their header
+    /// instead.
+    pub fn ignores_cookies(self) -> bool {
+        matches!(self, RouteAuth::OAuthClient)
+    }
+
     /// Whether an anonymous request is refused before anything is done: the
     /// kinds that need a caller in hand.
     pub fn refuses_anonymous(self) -> bool {
@@ -426,7 +446,59 @@ pub const RAW_ROUTES: &[RawRoute] = &[
         auth: RouteAuth::HostSession,
         route: || get(crate::oauth::consent),
     },
+    // An application as an OpenID Connect identity provider (TODO IP1,
+    // `crate::oidc`): answered on an application's host when it has turned
+    // the provider on, 404 everywhere else. The metadata and the keys are
+    // public; the authorization endpoint signs people in with a page; the
+    // token endpoint is the relying party's server, by its own credentials.
+    RawRoute {
+        path: crate::oidc::DISCOVERY_ROUTE,
+        methods: GET,
+        auth: RouteAuth::Public,
+        route: || get(crate::oidc::discovery),
+    },
+    RawRoute {
+        path: crate::oidc::AS_METADATA_ROUTE,
+        methods: GET,
+        auth: RouteAuth::Public,
+        route: || get(crate::oidc::discovery),
+    },
+    RawRoute {
+        path: crate::oidc::JWKS_ROUTE,
+        methods: GET,
+        auth: RouteAuth::Public,
+        route: || get(crate::oidc::jwks),
+    },
+    RawRoute {
+        path: crate::oidc::AUTHORIZE_ROUTE,
+        methods: GET_POST,
+        auth: RouteAuth::AppSessionOrSignIn,
+        route: || get(crate::oidc::authorize).post(crate::oidc::authorize_form),
+    },
+    RawRoute {
+        path: crate::oidc::TOKEN_ROUTE,
+        methods: POST,
+        auth: RouteAuth::OAuthClient,
+        route: || post(crate::oidc::token),
+    },
 ];
+
+/// Whether `path` is a raw route whose authentication ignores cookies
+/// ([`RouteAuth::ignores_cookies`]).
+pub(crate) fn ignores_cookies(path: &str) -> bool {
+    static COOKIELESS: std::sync::OnceLock<matchit::Router<()>> = std::sync::OnceLock::new();
+    COOKIELESS
+        .get_or_init(|| {
+            let mut router = matchit::Router::new();
+            for raw in RAW_ROUTES.iter().filter(|r| r.auth.ignores_cookies()) {
+                // A path listed twice is already in.
+                let _ = router.insert(raw.path, ());
+            }
+            router
+        })
+        .at(path)
+        .is_ok()
+}
 
 /// `router` with every route of [`RAW_ROUTES`] added: the only place a raw
 /// route is mounted.

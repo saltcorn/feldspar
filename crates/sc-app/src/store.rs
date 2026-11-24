@@ -36,8 +36,8 @@ use crate::application::{
 use crate::applications::{
     APPLICATIONS_TABLE, COL_ACCESS_IF, COL_AGENTS, COL_API_TABLES, COL_APIS, COL_ATTRIBUTES,
     COL_CSP, COL_DESCRIPTION, COL_EXTRA_FRAMEWORKS, COL_FILE_STORES, COL_FRAMEWORK, COL_ID,
-    COL_MAX_ROLE, COL_MIN_ROLE, COL_NAME, COL_STATIC_DIRS, COL_STREAMS, COL_SUBDOMAIN, COL_TABLES,
-    COL_TRIGGERS, COL_UPLOADS,
+    COL_IDENTITY_PROVIDER, COL_MAX_ROLE, COL_MIN_ROLE, COL_NAME, COL_STATIC_DIRS, COL_STREAMS,
+    COL_SUBDOMAIN, COL_TABLES, COL_TRIGGERS, COL_UPLOADS,
 };
 use crate::framework::{CFG_STORE, validate_framework_config};
 
@@ -319,6 +319,7 @@ fn app_columns() -> Vec<String> {
         COL_MIN_ROLE,
         COL_MAX_ROLE,
         COL_ACCESS_IF,
+        COL_IDENTITY_PROVIDER,
         sc_catalog::COL_UPDATED_AT,
     ]
     .iter()
@@ -370,6 +371,7 @@ fn app_values(app: &Application) -> Result<Vec<Value>> {
         Value::Int(i64::from(app.min_role)),
         Value::Int(i64::from(app.max_role)),
         Value::Text(app.access_if.trim().to_owned()),
+        Value::Bool(app.identity_provider),
         // Every save is an edit (`sc_catalog::edited`).
         sc_catalog::updated_now(),
     ])
@@ -488,6 +490,13 @@ pub(crate) fn application_from_row(row: &Row) -> Result<Application> {
             Some(Value::Text(t)) => t.clone(),
             Some(Value::Null) | None => String::new(),
             other => return Err(bad_column(COL_ACCESS_IF, "text", other)),
+        },
+        // Read leniently for `NULL`/absent: off, as every application was
+        // before the column arrived.
+        identity_provider: match row.get(COL_IDENTITY_PROVIDER) {
+            Some(Value::Bool(on)) => *on,
+            Some(Value::Null) | None => false,
+            other => return Err(bad_column(COL_IDENTITY_PROVIDER, "a boolean", other)),
         },
     })
 }
