@@ -9,6 +9,9 @@ mod fixture;
 #[path = "base.rs"]
 mod base;
 
+#[path = "code_libraries.rs"]
+mod code_libraries;
+
 #[path = "deploy.rs"]
 mod deploy;
 

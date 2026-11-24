@@ -2,6 +2,45 @@
 
 Changes in reverse chronological order.
 
+## Source control: an application's code libraries are exported inside the application
+
+A bug report: Source control (`/#/source-control`) failed for the whole instance with "two
+entities export to `code-libraries/feedback.json`; their names differ only in characters a file
+name cannot hold". Two applications each had their own code library `feedback`. That is allowed (a
+library name is unique within its scope, and `lib()` resolves the application's own first), but the
+export wrote every library to `code-libraries/<name>.json`, whatever its scope.
+
+- **Layout.** An application's own library is now
+  `applications/<subdomain>/code-libraries/<name>.json`; instance-wide libraries stay at
+  `code-libraries/<name>.json` (`code_libraries` in `sc-sync/src/export.rs`). The library is an
+  entity scoped to its application (`Kind::CodeLibrary` now has `Application` as its parent, and
+  comes after it in `Kind::ALL` so the application is matched first). On deploy, the containing
+  application's id wins over the file's `application_id`, and `application_id` is no longer a
+  difference when comparing (matching already accounts for it).
+- **Deploy order.** An application's library is now saved in step 8, after its application and
+  before its views and pages (`step_of_entity` in `plan.rs`). Before, every library was saved in
+  step 3, so deploying a new application together with its own library to an instance that did not
+  have the application yet failed with "names application …, which does not exist".
+- **Trees written by 0.1.3.** These have an application's library at the top level. Reading a tree
+  gives such a file (one whose `application_id` names an application in the same tree) that
+  application's scope (`scope_older_app_libraries` in `entity.rs`), so it matches the library in its
+  new place: Status shows it in sync and a deploy plans nothing for it. Without this, the deploy
+  would have created the library in the application and then, in the delete step, deleted the same
+  row.
+- **Moving a library between scopes.** A library made instance-wide here and the application's in
+  the target (same id) is a create in one scope and a delete in the other. The delete now leaves
+  the row alone when it is no longer in the scope it was deleted from, so the moved library is kept.
+- **The message.** A collision now names both entities and no longer guesses why they collided:
+  "`a` and `b` both export to `<path>`, and a file name cannot tell them apart — rename one of
+  them".
+- No format version bump. A build older than this one reading the new layout sees
+  `applications/<app>/code-libraries/…` as a file it does not know and blocks the deploy, telling
+  the operator to upgrade.
+- Tests: `crates/sc-sync/tests/code_libraries.rs` (same-named libraries in three scopes export to
+  three files; deploying them to an empty instance puts the app libraries in step 8 and converges;
+  an old-layout tree plans nothing; a library moved into an application is kept), and
+  `a_collision_names_both_entities` in `export.rs`.
+
 ## File stores: colons and macOS-decomposed names; a backup no longer fails at one bad file
 
 A bug report: case attachments migrated from a macOS system were 404 on the row file API, and the

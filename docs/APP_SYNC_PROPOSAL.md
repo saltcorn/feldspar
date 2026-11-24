@@ -112,7 +112,7 @@ newline, so that git diffs and merges are line-based and local:
   db-connections/<name>.json
   file-stores/<name>.json      definition; for a git store also the pinned commit (3.5)
   file-stores/<name>/files/... a local store's synced directories (3.5), byte for byte
-  code-libraries/<name>.json
+  code-libraries/<name>.json   instance-wide libraries
   triggers/<name>.json         workflow steps inline
   streams/<name>.json
   agents/<name>.json
@@ -123,7 +123,15 @@ newline, so that git diffs and merges are line-based and local:
   applications/<subdomain>/application.json
   applications/<subdomain>/{views,pages,library}/<name>.json
   applications/<subdomain>/translations/<locale>.json
+  applications/<subdomain>/code-libraries/<name>.json   the application's own libraries
 ```
+
+A code library's name is unique only within its scope (§10.1 of the technical design, "`lib`"), so
+an application's own library is written inside its application: two applications may each have a
+`fmt`, and the instance a third. A tree written before 0.1.4 has an application's library at
+`code-libraries/<name>.json` with its `application_id`; reading the tree gives it its
+application's scope when the tree has that application, so it is the same library as the one in the
+new place, and the next commit moves the file.
 
 Each record is **the admin API's own JSON** (`handlers::*_json` / `*_from_body`), the same rule the
 backup format follows (`backup/mod.rs:4-13`), so there is no second serialisation to keep in step.
@@ -355,13 +363,14 @@ Further rules:
 8. Apply in dependency order:
    1. modules
    2. roles
-   3. database connections, file stores and code libraries. Then each git store is fetched and its
+   3. database connections, file stores and instance-wide code libraries. Then each git store is fetched and its
       branch reset to the pinned commit, and synced files in local stores are written
    4. tables and fields, via `schema_edit::apply` batches (`RenameTable` alone in its batch)
    5. LLM providers and MCP servers
    6. triggers, streams and agents
    7. analytics
-   8. applications, then their views, pages, library and translations
+   8. applications, then their own code libraries (which need the application to exist, and
+      which its views and pages may import), views, pages, library and translations
    9. portable settings
    10. deletes in reverse order
 

@@ -391,10 +391,22 @@ fn shown(e: &Entity) -> String {
         .map_or_else(|| e.name.clone(), |(_, n)| n.to_owned())
 }
 
-/// The order a delete of `kind` runs in: the reverse of the order it would be
-/// created in, children before parents.
-fn delete_rank(kind: Kind) -> u32 {
-    10_000 - (step_of(kind) as u32 * 100 + kind_rank(kind))
+/// Which step `e` is created or updated in: its kind's, except that an
+/// application's own code library is saved with its application — after it,
+/// and before the views and pages that may import it — since it cannot be
+/// saved before the application exists.
+pub fn step_of_entity(e: &Entity) -> Step {
+    if e.kind == Kind::CodeLibrary && e.scope.is_some() {
+        Step::Applications
+    } else {
+        step_of(e.kind)
+    }
+}
+
+/// The order a delete of `kind`, created in `step`, runs in: the reverse of the
+/// order it would be created in, children before parents.
+fn delete_rank(step: Step, kind: Kind) -> u32 {
+    10_000 - (step as u32 * 100 + kind_rank(kind))
 }
 
 fn kind_rank(kind: Kind) -> u32 {
@@ -429,10 +441,15 @@ impl Planner {
         };
         let deleting =
             matches!(body, OpBody::Delete { .. }) || matches!(action, "drop_table" | "drop_field");
+        let created_in = match &body {
+            OpBody::Put { target, .. } => step_of_entity(target),
+            OpBody::Delete { live } => step_of_entity(live),
+            OpBody::Schema { .. } => step_of(kind),
+        };
         let (step, rank) = if deleting {
-            (Step::Deletes, delete_rank(kind))
+            (Step::Deletes, delete_rank(created_in, kind))
         } else {
-            (step_of(kind), kind_rank(kind))
+            (created_in, kind_rank(kind))
         };
         if class == OpClass::Unsupported {
             self.block(Some(id.clone()), Some(entity.to_owned()), summary.clone());

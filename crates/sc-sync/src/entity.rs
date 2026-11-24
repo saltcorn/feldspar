@@ -45,8 +45,6 @@ pub enum Kind {
     FileStore,
     /// One file of a local store's synced directories.
     StoreFile,
-    /// A code library.
-    CodeLibrary,
     /// An LLM provider and its models.
     LlmProvider,
     /// An MCP server.
@@ -65,6 +63,10 @@ pub enum Kind {
     Workspace,
     /// An application.
     Application,
+    /// A code library: the instance's (`code-libraries/`), or an application's
+    /// own (`applications/<app>/code-libraries/`), whose parent is its
+    /// application — after it here, so its application is matched first.
+    CodeLibrary,
     /// An application's view.
     View,
     /// An application's page.
@@ -92,7 +94,6 @@ impl Kind {
         Kind::DbConnection,
         Kind::FileStore,
         Kind::StoreFile,
-        Kind::CodeLibrary,
         Kind::LlmProvider,
         Kind::McpServer,
         Kind::Trigger,
@@ -102,6 +103,7 @@ impl Kind {
         Kind::Model,
         Kind::Workspace,
         Kind::Application,
+        Kind::CodeLibrary,
         Kind::View,
         Kind::Page,
         Kind::LibraryItem,
@@ -162,11 +164,12 @@ impl Kind {
         )
     }
 
-    /// The kind an entity of this kind lives inside, if any.
+    /// The kind an entity of this kind lives inside, if any. A code library
+    /// lives inside an application only when it is that application's.
     pub fn parent(self) -> Option<Kind> {
         match self {
             Kind::StoreFile => Some(Kind::FileStore),
-            Kind::View | Kind::Page | Kind::LibraryItem | Kind::Translation => {
+            Kind::View | Kind::Page | Kind::LibraryItem | Kind::Translation | Kind::CodeLibrary => {
                 Some(Kind::Application)
             }
             _ => None,
@@ -335,6 +338,11 @@ pub fn comparable_json(kind: Kind, value: &Json) -> Json {
         if kind == Kind::DbConnection {
             map.remove("password");
         }
+        // An application's library is matched within its application, whose
+        // id is the instance's own when it was matched by name.
+        if kind == Kind::CodeLibrary {
+            map.remove("application_id");
+        }
         // Likewise a git store's URL: one that exists keeps this instance's
         // own (SSH here, HTTPS there), and only a new store is made from the
         // tree's (§3.5).
@@ -412,7 +420,35 @@ pub fn entities(tree: &StructureTree) -> Vec<Entity> {
             TreeEntry::Json(value) => json_entities(path, value, &mut out),
         }
     }
+    scope_older_app_libraries(&mut out);
     out
+}
+
+/// Give an application's code library written where an older build put it —
+/// `code-libraries/<name>.json`, with its `application_id` — the scope of
+/// that application, if the tree has it, so it matches the same library
+/// written under `applications/<app>/code-libraries/`. Otherwise Status would
+/// see two libraries, and a deploy would create the one and delete the other,
+/// both being the same row.
+fn scope_older_app_libraries(list: &mut [Entity]) {
+    let apps: BTreeMap<String, String> = list
+        .iter()
+        .filter(|e| e.kind == Kind::Application)
+        .filter_map(|e| Some((e.id.clone()?, e.path.clone())))
+        .collect();
+    for e in list
+        .iter_mut()
+        .filter(|e| e.kind == Kind::CodeLibrary && e.scope.is_none())
+    {
+        if let Some(path) = e
+            .json()
+            .and_then(|v| v.get("application_id"))
+            .and_then(Json::as_str)
+            .and_then(|app| apps.get(app))
+        {
+            e.scope = Some(path.clone());
+        }
+    }
 }
 
 /// `(store segment, path in the store)` for a store file's tree path.
@@ -520,6 +556,9 @@ fn json_entities(path: &str, value: &Json, out: &mut Vec<Entity>) {
             ["views", _] => return out.push(one(Kind::View, named("name"), scope)),
             ["pages", _] => return out.push(one(Kind::Page, named("name"), scope)),
             ["library", _] => return out.push(one(Kind::LibraryItem, named("name"), scope)),
+            ["code-libraries", _] => {
+                return out.push(one(Kind::CodeLibrary, named("name"), scope));
+            }
             ["translations", file] => {
                 let locale = file.strip_suffix(".json").unwrap_or(file).to_owned();
                 return out.push(one(Kind::Translation, locale, scope));

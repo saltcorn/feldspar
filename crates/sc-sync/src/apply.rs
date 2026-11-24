@@ -387,7 +387,13 @@ impl Executor<'_> {
                     .await
             }
             Kind::CodeLibrary => {
-                let library = sc_app::code_library_from_json(entity_id(target)?, &value)?;
+                let mut library = sc_app::code_library_from_json(entity_id(target)?, &value)?;
+                // An application's library is that application's, as it is
+                // here, whatever id the file says.
+                if target.scope.is_some() {
+                    let app = trees.application(catalog, target, true).await?;
+                    library.application_id = Some(app.id.0);
+                }
                 sc_app::save_code_library_checked(catalog, &library).await
             }
             Kind::LlmProvider => put_llm_provider(catalog, target, value, notes).await,
@@ -924,7 +930,22 @@ impl Executor<'_> {
                 touched.stores.insert(store);
             }
             Kind::CodeLibrary => {
-                gone(sc_catalog::delete_code_library(catalog, entity_id(live)?).await?);
+                let id = entity_id(live)?;
+                // A library moved to another scope is a create there and a
+                // delete here of the same row, and the create has run: the
+                // row is no longer the one to delete.
+                let scope = |v: Option<&Json>| {
+                    v.and_then(|v| v.get("application_id"))
+                        .and_then(Json::as_str)
+                        .and_then(|s| Uuid::parse_str(s).ok())
+                };
+                match sc_catalog::load_code_library(catalog, id).await? {
+                    Some(stored) if stored.application_id == scope(live.json()) => {
+                        gone(sc_catalog::delete_code_library(catalog, id).await?);
+                    }
+                    Some(_) => {}
+                    None => gone(false),
+                }
             }
             Kind::LlmProvider => {
                 let id = sc_llm::LlmProviderDefId(entity_id(live)?);

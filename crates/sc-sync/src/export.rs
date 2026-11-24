@@ -220,7 +220,7 @@ impl Writer {
             map.remove("updated_at");
         }
         if self.tree.get(&path).is_some() {
-            return Err(collision(&path));
+            return Err(self.collision(&path, named(&value)));
         }
         self.tree.insert_json(path, value);
         Ok(())
@@ -228,18 +228,28 @@ impl Writer {
 
     fn put_file(&mut self, path: String, bytes: Vec<u8>) -> Result<()> {
         if self.tree.get(&path).is_some() {
-            return Err(collision(&path));
+            return Err(self.collision(&path, None));
         }
         self.tree.insert_file(path, bytes);
         Ok(())
     }
+
+    /// Two entities for the one file: both named, when they have names.
+    fn collision(&self, path: &str, second: Option<String>) -> Error {
+        let first = self.tree.json(path).and_then(named);
+        let which = match (first, second) {
+            (Some(a), Some(b)) => format!("`{a}` and `{b}` both export"),
+            _ => "two entities export".to_owned(),
+        };
+        Error::invalid(format!(
+            "{which} to `{path}`, and a file name cannot tell them apart — rename one of them"
+        ))
+    }
 }
 
-fn collision(path: &str) -> Error {
-    Error::invalid(format!(
-        "two entities export to `{path}`; their names differ only in characters a file \
-         name cannot hold — rename one of them"
-    ))
+/// An exported entity's `name`.
+fn named(value: &Json) -> Option<String> {
+    value.get("name").and_then(Json::as_str).map(str::to_owned)
 }
 
 /// Take `keys` out of an object.
@@ -601,12 +611,24 @@ async fn code_libraries(catalog: &Catalog, out: &mut Writer) -> Result<()> {
     if !has_table(catalog, sc_catalog::CODE_LIBRARIES_TABLE)? {
         return Ok(());
     }
+    // An application's own library is written inside the application, as
+    // its name is unique only there.
+    let mut apps = BTreeMap::new();
+    if has_table(catalog, sc_app::APPLICATIONS_TABLE)? {
+        for app in sc_app::list_applications(catalog).await? {
+            apps.insert(
+                app.id.0,
+                format!("applications/{}", path_segment(&app.subdomain)),
+            );
+        }
+    }
     for library in sc_catalog::list_code_libraries(catalog).await? {
+        let dir = match library.application_id.and_then(|app| apps.get(&app)) {
+            Some(app) => format!("{app}/code-libraries"),
+            None => "code-libraries".to_owned(),
+        };
         let value = sc_app::code_library_json(&library, None, None);
-        out.put(
-            format!("code-libraries/{}.json", path_segment(&library.name)),
-            value,
-        )?;
+        out.put(format!("{dir}/{}.json", path_segment(&library.name)), value)?;
     }
     Ok(())
 }
@@ -876,5 +898,25 @@ fn redact_framework(framework: &mut Json) {
     if let Some(Json::Object(config)) = framework.get("config") {
         let redacted = redact_by(spec.as_deref(), config);
         framework["config"] = Json::Object(redacted);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_collision_names_both_entities() {
+        let mut out = Writer::default();
+        out.put("triggers/a.json", json!({ "name": "a b" }))
+            .unwrap();
+        let err = out
+            .put("triggers/a.json", json!({ "name": "a/b" }))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("`a b` and `a/b` both export to `triggers/a.json`"),
+            "{err}"
+        );
     }
 }
