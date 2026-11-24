@@ -499,6 +499,7 @@ impl<'a> Deployer<'a> {
         let path = dir.join(&name);
         let file = std::fs::File::create(&path)
             .map_err(|e| Error::file(format!("creating {}: {e}", path.display())))?;
+        // What could not be read is named in the archive's own manifest.
         sc_backup::write_backup_to(catalog, &selection, None, file).await?;
         Ok(path.to_string_lossy().into_owned())
     }

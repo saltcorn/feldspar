@@ -40,6 +40,19 @@ fn rfc3339(time: std::time::SystemTime) -> String {
     chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+/// The entry of `dir` whose name is `segment` up to Unicode normalisation
+/// (both compared as NFC); `None` when there is none, or `dir` cannot be read.
+/// A name on disk that is not UTF-8 never matches.
+fn equivalent_entry(dir: &Path, segment: &str) -> Option<std::ffi::OsString> {
+    use unicode_normalization::UnicodeNormalization;
+    let wanted: String = segment.nfc().collect();
+    std::fs::read_dir(dir).ok()?.flatten().find_map(|entry| {
+        let name = entry.file_name();
+        let matches = name.to_str().is_some_and(|n| n.nfc().eq(wanted.chars()));
+        matches.then_some(name)
+    })
+}
+
 /// Name of the extended attribute holding a file's serialised [`FileMeta`]. On
 /// Unix the effective key is `user.saltcorn.meta` (the `user.` namespace is
 /// applied by the xattr layer).
@@ -132,12 +145,36 @@ impl LocalFileStore {
 
     /// The path `rel` names under the root, by its spelling alone: one
     /// [`PathBuf::push`] per segment, each of which the validator has already
-    /// confined to a plain name (no `\`, `:` or NUL that Windows would read as
-    /// a separator, a drive or a stream; no `..`).
+    /// confined to a plain name (no `\` or NUL, nor on Windows a `:`, that
+    /// Windows would read as a separator, a drive or a stream; no `..`).
+    ///
+    /// Where that names nothing and the spelling is not plain ASCII, a segment
+    /// that is missing is matched against its directory's entries by Unicode
+    /// normalisation, as macOS's own file systems do: `März` precomposed (NFC,
+    /// what a form or a database row usually holds) finds a file whose name on
+    /// disk is decomposed (NFD, what a Mac writes), and the other way round.
+    /// Without it such a file lists, but every read of the name the row holds
+    /// is a not-found. The match is an entry of the same directory, so the
+    /// root check that follows still sees the real path.
     fn lexical(&self, rel: &StorePath) -> PathBuf {
         let mut out = self.root.clone();
         for segment in rel.segments() {
             out.push(segment);
+        }
+        if rel.as_str().is_ascii() || std::fs::symlink_metadata(&out).is_ok() {
+            return out;
+        }
+        let mut out = self.root.clone();
+        for segment in rel.segments() {
+            let exact = out.join(segment);
+            if segment.is_ascii() || std::fs::symlink_metadata(&exact).is_ok() {
+                out = exact;
+                continue;
+            }
+            match equivalent_entry(&out, segment) {
+                Some(name) => out.push(name),
+                None => out = exact,
+            }
         }
         out
     }
@@ -778,5 +815,48 @@ mod git_dir_tests {
             b"hi"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod name_tests {
+    use super::*;
+
+    /// A name that differs from the one on disk only in its Unicode
+    /// normalisation finds the file, both ways round and in a directory name
+    /// too; a name with a colon in it is an ordinary file off Windows.
+    #[tokio::test]
+    async fn a_name_finds_its_file_whatever_its_normalisation() {
+        let dir = std::env::temp_dir().join(format!("sc-names-{}", uuid::Uuid::new_v4()));
+        let nfd = "Ma\u{0308}rz";
+        let nfc = "M\u{00e4}rz";
+        std::fs::create_dir_all(dir.join(nfd)).unwrap();
+        std::fs::write(dir.join(nfd).join(format!("{nfd}.pdf")), b"decomposed").unwrap();
+        std::fs::write(dir.join(format!("{nfc}.txt")), b"precomposed").unwrap();
+        std::fs::write(dir.join("scan 09:20:34.pdf"), b"colon").unwrap();
+        let store = LocalFileStore::new("docs", &dir).unwrap();
+        let read = |path: String| {
+            let store = store.clone();
+            async move { store.read(&StorePath::parse(&path).unwrap()).await }
+        };
+
+        for path in [format!("{nfd}/{nfd}.pdf"), format!("{nfc}/{nfc}.pdf")] {
+            assert_eq!(read(path.clone()).await.expect(&path), "decomposed");
+        }
+        for path in [format!("{nfc}.txt"), format!("{nfd}.txt")] {
+            assert_eq!(read(path.clone()).await.expect(&path), "precomposed");
+        }
+        assert_eq!(read("scan 09:20:34.pdf".into()).await.unwrap(), "colon");
+        // A metadata write lands on the file that is there, not a twin.
+        let nfc_path = StorePath::parse(&format!("{nfc}/{nfc}.pdf")).unwrap();
+        store
+            .set_meta(&nfc_path, &FileMeta::default())
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_dir(dir.join(nfd)).unwrap().count(), 1);
+        // Still a not-found when nothing matches.
+        let err = read(format!("{nfc}/Mai.pdf")).await.unwrap_err();
+        assert!(err.to_string().contains("does not exist"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

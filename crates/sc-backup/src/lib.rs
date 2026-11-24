@@ -270,7 +270,7 @@ pub fn start_backup_scheduler(
     let handle = scheduler.start();
     (scheduler, handle)
 }
-pub use write::{available, write_backup_stream, write_backup_to};
+pub use write::{Written, available, write_backup_stream, write_backup_to};
 
 /// Whether the backup at `path` is protected by a password, so the password
 /// can be asked for before it is [`inspect`]ed or restored. Reads only the

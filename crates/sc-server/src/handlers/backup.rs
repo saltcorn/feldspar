@@ -70,13 +70,17 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 // archive is never in memory; an error before the first byte is
                 // still the JSON error every other handler gives.
                 let spool = sc_backup::SpoolFile::new("backup");
-                let len = sc_backup::write_backup_to(
+                let written = sc_backup::write_backup_to(
                     &catalog,
                     &selection,
                     password.as_deref(),
                     spool.create()?,
                 )
                 .await?;
+                for line in &written.skipped {
+                    sc_log::log_warn!("backup download: left out {line}");
+                }
+                let len = written.size;
                 Ok(HandlerResponse::download(crate::handler::Download {
                     body: crate::handler::DownloadBody::File(crate::handler::SpooledFile::open(
                         spool, len,

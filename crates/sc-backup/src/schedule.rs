@@ -545,13 +545,16 @@ pub async fn run_schedule(
         }
         _ => super::SpoolFile::new("backup"),
     };
-    super::write_backup_to(
+    let written = super::write_backup_to(
         catalog,
         &schedule.selection(&available),
         schedule.password.as_ref().map(sc_error::Secret::expose_str),
         spool.create()?,
     )
     .await?;
+    for line in &written.skipped {
+        sc_log::log_warn!("automated backup `{name}`: left out {line}");
+    }
 
     let conn = schedule.destination.open().await?;
     let result = async {

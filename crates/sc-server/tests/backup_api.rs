@@ -5064,3 +5064,58 @@ async fn a_failed_automated_backup_emails_the_chosen_administrator() -> sc_error
     std::fs::remove_file(&dest).unwrap();
     Ok(())
 }
+
+/// A file named as a Mac names it (decomposed), or with a colon in it, backs
+/// up like any other; one the store cannot open — a name on disk that is not
+/// UTF-8 — is left out and named in the manifest, and the rest of the tenant
+/// is still backed up rather than the whole backup failing at it (#47).
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unreadable_file_is_left_out_rather_than_failing_the_backup() -> sc_error::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut server = setup().await?;
+    sc_catalog::save_file_store(
+        &server.catalog,
+        &FileStoreDef::local("cases", server.files.to_string_lossy()),
+    )
+    .await?;
+    sc_catalog::connect_file_store_def(
+        &server.catalog,
+        &sc_catalog::load_file_store_by_name(&server.catalog, "cases")
+            .await?
+            .expect("the store just saved"),
+    )?;
+    let nfd = "Ma\u{0308}rz.pdf";
+    std::fs::write(server.files.join(nfd), "decomposed").unwrap();
+    std::fs::write(server.files.join("scan 09:20:34.pdf"), "colon").unwrap();
+    std::fs::write(
+        server
+            .files
+            .join(std::ffi::OsStr::from_bytes(b"M\xe4rz.txt")),
+        "latin-1",
+    )
+    .unwrap();
+
+    let archive = backup_everything(&mut server).await;
+
+    assert_eq!(
+        entry(&archive, &format!("file-stores/cases/files/{nfd}")),
+        "decomposed"
+    );
+    assert_eq!(
+        entry(&archive, "file-stores/cases/files/scan 09:20:34.pdf"),
+        "colon"
+    );
+    let manifest: Value = serde_json::from_str(&entry(&archive, "manifest.json")).unwrap();
+    let skipped = manifest["skipped"].as_array().expect("a skipped list");
+    assert_eq!(skipped.len(), 1, "{skipped:?}");
+    let line = skipped[0].as_str().unwrap();
+    assert!(
+        line.contains("file store `cases`") && line.contains("rz.txt"),
+        "{line}"
+    );
+    // The rest of the tenant is there.
+    assert!(has_entry(&archive, "file-stores/cases/store.json"));
+    assert_eq!(manifest["contents"]["users"], json!(1));
+    Ok(())
+}

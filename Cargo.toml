@@ -454,6 +454,10 @@ regex-lite = "0.1"
 # Extension → MIME mapping for a `File` field's MIME allow-list (§3.5). Already in
 # the tree (tower-http's `fs` feature), pinned here as a first-class dependency.
 mime_guess = "2"
+# NFC/NFD-equivalent file names in a local file store: a name written on macOS
+# arrives decomposed while the row naming it is usually precomposed. Already in
+# the tree (`url` via `idna`).
+unicode-normalization = "0.1"
 # RFC 4180 CSV reader/writer for a table's bulk import/export (§13.1). A
 # hand-rolled splitter is a line of code until the first quoted field with an
 # embedded comma, newline or doubled quote in it — which is precisely what a

@@ -249,3 +249,63 @@ async fn a_backup_from_the_cli_restores_everything_but_tls_into_another_database
     assert!(stderr.contains("backup FILE"), "{stderr}");
     Ok(())
 }
+
+/// A file the store cannot open — here a name on disk that is not UTF-8 — is
+/// left out of `feldspar backup` rather than failing it, and the command says
+/// which file, on stderr beside its summary line.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_cli_names_each_file_a_backup_left_out() -> sc_error::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let tmp = TempDir::new();
+    let files = tmp.path().join("cases");
+    std::fs::create_dir_all(&files)?;
+    std::fs::write(files.join("scan 09:20:34.pdf"), "colon")?;
+    std::fs::write(
+        files.join(std::ffi::OsStr::from_bytes(b"M\xe4rz.txt")),
+        "latin-1",
+    )?;
+    let db = TestDb::new().await?;
+    let url = db.url();
+    let catalog = connect_catalog(&DbConfig::from_url(&url)).await?;
+    db.on_teardown(catalog.teardown_hook());
+    sc_catalog::save_file_store(
+        &catalog,
+        &sc_files::FileStoreDef::local("cases", files.to_string_lossy()),
+    )
+    .await?;
+
+    let file = tmp.path().join("site.zip");
+    let (ok, _, stderr) = feldspar(&[
+        "backup",
+        &file.display().to_string(),
+        "--database-url",
+        &url,
+    ]);
+    assert!(ok, "the backup still succeeds: {stderr}");
+    let warning = stderr
+        .lines()
+        .find(|l| l.starts_with("warning: left out"))
+        .unwrap_or_else(|| panic!("a warning for the skipped file: {stderr}"));
+    assert!(
+        warning.contains("file store `cases`") && warning.contains("rz.txt"),
+        "{warning}"
+    );
+    assert_eq!(
+        stderr.matches("left out `").count(),
+        1,
+        "said once: {stderr}"
+    );
+    assert!(
+        stderr.contains("1 file left out, see the warning above"),
+        "the summary counts it: {stderr}"
+    );
+    let (contents, _) = sc_backup::inspect(&file, None)?;
+    let store = contents
+        .file_stores
+        .iter()
+        .find(|s| s.name == "cases")
+        .expect("the store is in the backup");
+    assert_eq!(store.count, Some(1), "with the file it could read");
+    Ok(())
+}

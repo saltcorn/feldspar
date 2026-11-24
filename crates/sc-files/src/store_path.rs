@@ -12,9 +12,12 @@
 //!   `./`), so `"/a//b/"` is `a/b` and `""`, `"/"` and `"."` are the root. A
 //!   stored `File` value or a route's `dir + "/" + name` keeps working, and the
 //!   value has no empty segment once parsed;
-//! - **refuses** a `..` segment, a `\` (one more separator on Windows), a `:`
-//!   (a drive, or an NTFS stream), a NUL, and a segment of nothing but dots and
-//!   spaces (Windows trims `.. ` to `..` and `...` to nothing).
+//! - **refuses** a `..` segment, a `\` (one more separator on Windows), a NUL,
+//!   and a segment of nothing but dots and spaces (Windows trims `.. ` to `..`
+//!   and `...` to nothing). On a Windows server it refuses a `:` too (a drive,
+//!   or an NTFS stream); elsewhere a colon is an ordinary character, and files
+//!   are named with one (`report 09:20:34.pdf`), so refusing it there left
+//!   such a file unreachable and stopped a backup at it.
 //!
 //! It also decides, once, whether the path is inside a `.git` directory at any
 //! depth — `.git` in any case, with trailing dots and spaces ignored, or its
@@ -287,10 +290,12 @@ fn host_code_kind(path: &str, in_git: bool) -> Option<HostCode> {
 }
 
 /// One segment, which is neither empty nor `.`: refused when it could leave
-/// the store, here or on Windows.
+/// the store, here or on Windows. A `:` only on Windows, where it names a drive
+/// or a stream (see the module docs).
 fn check_segment(segment: &str, raw: &str) -> Result<()> {
     if segment == ".."
-        || segment.contains(['\\', ':', '\0'])
+        || segment.contains(['\\', '\0'])
+        || (cfg!(windows) && segment.contains(':'))
         || segment.trim_end_matches(['.', ' ']).is_empty()
     {
         return Err(Error::invalid(format!(
@@ -439,8 +444,6 @@ mod tests {
             "covers/..\\..\\Windows\\win.ini",
             "..\\x",
             "covers/C:\\x",
-            "C:/x",
-            "covers/a.png:stream",
             "covers/.. /x",
             "covers/.../x",
             "covers/. /x",
@@ -451,6 +454,20 @@ mod tests {
                 err.contains("escapes the file store root"),
                 "{bad:?}: {err}"
             );
+        }
+    }
+
+    /// A colon is a drive or an NTFS stream only on Windows; elsewhere it is
+    /// part of a name, as in a timestamp.
+    #[test]
+    fn a_colon_is_refused_only_on_windows() {
+        for colon in ["C:/x", "covers/a.png:stream", "scan 09:20:34.pdf"] {
+            let parsed = StorePath::parse(colon);
+            if cfg!(windows) {
+                assert!(parsed.is_err(), "{colon:?}");
+            } else {
+                assert_eq!(parsed.unwrap().as_str(), colon);
+            }
         }
     }
 

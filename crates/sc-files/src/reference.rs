@@ -191,7 +191,6 @@ mod tests {
         for bad in [
             "covers/..\\..\\Windows\\win.ini",
             "covers/C:\\x",
-            "covers/a.png:stream",
             "covers/.. /x",
             "covers/.../x",
             "covers/a\0b",
@@ -201,6 +200,11 @@ mod tests {
                 "{bad:?}"
             );
         }
+        // A colon is a stream only on Windows; elsewhere it is in a name.
+        assert_eq!(
+            validate_file_path("covers/a.png:stream", Some("covers"), &[]).is_err(),
+            cfg!(windows)
+        );
         // A plain relative path is fine.
         assert!(validate_file_path("covers/a.png", None, &[]).is_ok());
     }

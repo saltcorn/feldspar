@@ -99,7 +99,7 @@ pub(crate) async fn backup_command(args: &[String]) -> Result<()> {
         ssl: false,
         ..sc_backup::Selection::everything(&available)
     };
-    let size = match &file {
+    let written = match &file {
         Some(file) => {
             write_whole(file, |out| {
                 sc_backup::write_backup_to(&catalog, &selection, password.as_deref(), out)
@@ -116,8 +116,13 @@ pub(crate) async fn backup_command(args: &[String]) -> Result<()> {
             .await?
         }
     };
+    // What could not be read is left out rather than failing the backup;
+    // each is said here, as well as in the archive's manifest.
+    for line in &written.skipped {
+        eprintln!("warning: left out {line}");
+    }
     eprintln!(
-        "feldspar: wrote {}{} ({} tables, {} applications, {} file stores, {})",
+        "feldspar: wrote {}{} ({} tables, {} applications, {} file stores, {}){}",
         file.as_ref().map_or_else(
             || "the backup to stdout".to_owned(),
             |f| f.display().to_string()
@@ -130,7 +135,12 @@ pub(crate) async fn backup_command(args: &[String]) -> Result<()> {
         selection.tables.len(),
         selection.applications.len(),
         selection.file_stores.len(),
-        human_size(size)
+        human_size(written.size),
+        match written.skipped.len() {
+            0 => String::new(),
+            1 => "; 1 file left out, see the warning above".to_owned(),
+            n => format!("; {n} files left out, see the warnings above"),
+        }
     );
     Ok(())
 }
@@ -212,10 +222,10 @@ async fn structure_backup(args: &[String]) -> Result<()> {
 /// streams into, then a rename, so an interrupted backup leaves the previous
 /// file at `path` rather than half of a new one — the automated backups'
 /// arrangement. The partial file is removed when anything fails.
-pub(crate) async fn write_whole<F, Fut>(path: &std::path::Path, write: F) -> Result<u64>
+pub(crate) async fn write_whole<T, F, Fut>(path: &std::path::Path, write: F) -> Result<T>
 where
     F: FnOnce(std::fs::File) -> Fut,
-    Fut: std::future::Future<Output = Result<u64>>,
+    Fut: std::future::Future<Output = Result<T>>,
 {
     let name = path
         .file_name()

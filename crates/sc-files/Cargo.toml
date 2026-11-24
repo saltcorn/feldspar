@@ -30,6 +30,9 @@ chrono.workspace = true
 regex-lite.workspace = true
 # Extension → MIME mapping for a `File` field's MIME allow-list (§3.5).
 mime_guess.workspace = true
+# A name that differs from the one on disk only in its Unicode normalisation
+# (NFC against macOS's NFD) still finds the file (`LocalFileStore::lexical`).
+unicode-normalization.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
 uuid.workspace = true

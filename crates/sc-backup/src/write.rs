@@ -41,7 +41,7 @@ use sc_access::rows;
 use sc_catalog::{Catalog, FIELD_META_TABLE, Table, list_field_meta_for_table, list_file_stores};
 use sc_db::{Row, Transaction};
 use sc_error::{Error, Result};
-use sc_files::StorePath;
+use sc_files::{FileStore, StorePath};
 use sc_query::{BinOp, Expr, OrderBy, Projection, Select, Source, Statement, Value};
 use serde_json::{Map, Value as Json, json};
 use tokio::io::AsyncReadExt;
@@ -240,7 +240,8 @@ async fn kept_fits(
         .collect())
 }
 
-/// Write the zip for `selection` into `file`, returning its length.
+/// Write the zip for `selection` into `file`, returning its length and what it
+/// left out ([`Written`]).
 ///
 /// The file is the whole answer: what went into it is *in* it, in the
 /// manifest, which is the same thing a restore reads back with
@@ -257,24 +258,26 @@ pub async fn write_backup_to(
     selection: &Selection,
     password: Option<&str>,
     file: std::fs::File,
-) -> Result<u64> {
+) -> Result<Written> {
     let zip =
         ZipBuilder::new(std::io::BufWriter::with_capacity(OUT_BUFFER, file)).encrypted(password)?;
-    let file = write_archive(catalog, selection, zip)
-        .await?
+    let (file, skipped) = write_archive(catalog, selection, zip).await?;
+    let file = file
         .into_inner()
         .map_err(|e| zip_error("the archive", &e.error().to_string()))?;
     // On disk before anyone is told it is there: the CLI and the scheduler
     // rename it into place next, and a rename can reach the disk first.
     file.sync_all()
         .map_err(|e| zip_error("the archive", &e.to_string()))?;
-    file.metadata()
+    let size = file
+        .metadata()
         .map(|m| m.len())
-        .map_err(|e| zip_error("the archive", &e.to_string()))
+        .map_err(|e| zip_error("the archive", &e.to_string()))?;
+    Ok(Written { size, skipped })
 }
 
 /// Write the zip for `selection` into `out`, which need not seek — a pipe,
-/// stdout — returning its length. `feldspar backup -` is this, for a caller
+/// stdout — returning its length and what it left out. `feldspar backup -` is this, for a caller
 /// that streams the backup on to S3 without a copy on disk.
 ///
 /// The same entries and the same bounded memory as [`write_backup_to`]. What
@@ -286,31 +289,42 @@ pub async fn write_backup_stream<W: Write>(
     selection: &Selection,
     password: Option<&str>,
     out: W,
-) -> Result<u64> {
+) -> Result<Written> {
     let zip = ZipBuilder::new_stream(std::io::BufWriter::with_capacity(OUT_BUFFER, out))
         .encrypted(password)?;
-    let mut out = write_archive(catalog, selection, zip).await?;
-    let length = out
+    let (mut out, skipped) = write_archive(catalog, selection, zip).await?;
+    let size = out
         .stream_position()
         .map_err(|e| zip_error("the archive", &e.to_string()))?;
     out.flush()
         .map_err(|e| zip_error("the archive", &e.to_string()))?;
-    Ok(length)
+    Ok(Written { size, skipped })
 }
 
 /// The buffer between the zip writer and the file or pipe it writes to.
 const OUT_BUFFER: usize = 256 * 1024;
 
-/// Every entry of `selection` into `zip`, returning the writer it finished.
+/// What writing a backup produced: its length, and what it left out.
+#[derive(Debug, Clone, Default)]
+pub struct Written {
+    /// The archive's length in bytes.
+    pub size: u64,
+    /// One line per thing left out because it could not be read, saying what
+    /// and why — the manifest's `skipped`. Empty when nothing was.
+    pub skipped: Vec<String>,
+}
+
+/// Every entry of `selection` into `zip`, returning the writer it finished
+/// and what was left out.
 async fn write_archive<W: Write + Seek>(
     catalog: &Catalog,
     selection: &Selection,
     mut zip: ZipBuilder<W>,
-) -> Result<W> {
+) -> Result<(W, Vec<String>)> {
     let mut source = RowSource::open(catalog).await?;
-    write_entries(catalog, selection, &mut source, &mut zip).await?;
+    let skipped = write_entries(catalog, selection, &mut source, &mut zip).await?;
     source.finish().await;
-    zip.finish()
+    Ok((zip.finish()?, skipped))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -319,8 +333,10 @@ async fn write_entries<W: Write + Seek>(
     selection: &Selection,
     source: &mut RowSource<'_>,
     zip: &mut ZipBuilder<W>,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let mut contents = Available::default();
+    // What was left out because it could not be read, one line each.
+    let mut skipped: Vec<String> = Vec::new();
     // Whether a table's rows went in with Secret values in them, which is
     // what decides whether the key goes in too.
     let mut sealed_rows = false;
@@ -463,16 +479,40 @@ async fn write_entries<W: Write + Seek>(
         // A defined store that is not connected right now backs up as its
         // definition and no files, rather than failing the whole backup: the
         // definition is the part that is hard to recreate by hand.
+        //
+        // Likewise one file the store cannot name or open — a name on disk the
+        // path rules refuse, one that is not UTF-8, one removed since it was
+        // listed — is left out and named in the manifest's `skipped`, rather
+        // than costing the tenant its whole backup (#47). Each caller says so
+        // in its own way ([`Written::skipped`]).
         if let Ok(store) = catalog.require_file_store(&def.name, crate::BACKUP_TASKS) {
-            for (path, size) in walk(store.as_ref(), super::is_installed_dependency).await? {
-                let written = copy_file(
-                    store.as_ref(),
-                    &path,
-                    size,
-                    zip,
-                    &format!("{dir}/files/{path}"),
-                )
-                .await?;
+            let mut skip = |what: String| skipped.push(what);
+            let listed = walk(
+                store.as_ref(),
+                super::is_installed_dependency,
+                &mut |path, e| {
+                    skip(format!(
+                        "`{path}` in file store `{}`: {}",
+                        def.name,
+                        e.causes()
+                    ));
+                },
+            )
+            .await?;
+            for (path, size) in listed {
+                let reader = match store.open_read(&path, None).await {
+                    Ok(reader) => reader,
+                    Err(e) => {
+                        skip(format!(
+                            "`{path}` in file store `{}`: {}",
+                            def.name,
+                            e.causes()
+                        ));
+                        continue;
+                    }
+                };
+                let written =
+                    copy_file(reader, &path, size, zip, &format!("{dir}/files/{path}")).await?;
                 let meta = store.get_meta(&path).await.unwrap_or_default();
                 let mode = file_mode(store.as_ref(), &path);
                 files.push(backup_file_meta_json(
@@ -769,9 +809,12 @@ async fn write_entries<W: Write + Seek>(
             // about to press Restore can see what they picked up.
             "source": format!("Feldspar {}", super::PRODUCT_VERSION),
             "contents": contents.to_json(),
+            // Each thing that was left out because it could not be read, and
+            // why; absent when nothing was.
+            "skipped": (!skipped.is_empty()).then_some(&skipped),
         }),
     )?;
-    Ok(())
+    Ok(skipped)
 }
 
 /// Datasets, models and workspaces — and, when chosen, the models' fits.
@@ -983,8 +1026,19 @@ async fn write_module_source<W: Write + Seek>(
     };
     let prefix = format!("{}{}/files/", super::MODULE_SOURCES_DIR, module.id.0);
     let mut files = Vec::new();
-    for (path, size) in walk(&store, is_module_build_output).await? {
-        let written = copy_file(&store, &path, size, zip, &format!("{prefix}{path}")).await?;
+    // A module's source is code: one file missing from it restores a module
+    // that does not run, so here a name the walk passes over is an error.
+    let mut refused = None;
+    let listed = walk(&store, is_module_build_output, &mut |_, e| {
+        refused.get_or_insert(e);
+    })
+    .await?;
+    if let Some(e) = refused {
+        return Err(e);
+    }
+    for (path, size) in listed {
+        let reader = store.open_read(&path, None).await?;
+        let written = copy_file(reader, &path, size, zip, &format!("{prefix}{path}")).await?;
         files.push(json!({
             "path": path.as_str(),
             "size": written,
@@ -1013,9 +1067,13 @@ fn is_module_build_output(path: &str) -> bool {
 /// restore could not recreate, and every non-empty one is implied by the paths of
 /// the files in it. A path `skip` says yes to is not descended into — for a
 /// file store, a `node_modules` ([`super::is_installed_dependency`]).
+///
+/// An entry whose name is not a store path goes to `refused` and is passed
+/// over, so one odd name does not stop the walk.
 async fn walk(
     store: &dyn sc_files::FileStore,
     skip: fn(&str) -> bool,
+    refused: &mut (dyn FnMut(&str, Error) + Send),
 ) -> Result<Vec<(StorePath, Option<u64>)>> {
     let mut out = Vec::new();
     let mut pending = vec![StorePath::root()];
@@ -1024,7 +1082,13 @@ async fn walk(
             if skip(&entry.path) {
                 continue;
             }
-            let path = StorePath::parse(&entry.path)?;
+            let path = match StorePath::parse(&entry.path) {
+                Ok(path) => path,
+                Err(e) => {
+                    refused(&entry.path, e);
+                    continue;
+                }
+            };
             if entry.is_dir {
                 pending.push(path);
             } else {
@@ -1199,15 +1263,15 @@ async fn write_table_rows<W: Write + Seek>(
 /// The size one read of a file store's file copies.
 const CHUNK: usize = 64 * 1024;
 
-/// Copy one store file into the zip a chunk at a time, returning its length.
+/// Copy one store file, opened as `reader`, into the zip a chunk at a time,
+/// returning its length.
 async fn copy_file<W: Write + Seek>(
-    store: &dyn sc_files::FileStore,
+    mut reader: sc_files::BoxAsyncRead,
     path: &StorePath,
     size: Option<u64>,
     zip: &mut ZipBuilder<W>,
     entry: &str,
 ) -> Result<u64> {
-    let mut reader = store.open_read(path, None).await?;
     zip.start_file(entry, path.as_str(), size)?;
     let mut buffer = vec![0u8; CHUNK];
     let mut written = 0;

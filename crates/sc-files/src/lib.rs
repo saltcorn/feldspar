@@ -378,16 +378,15 @@ mod tests {
     }
 
     /// Security review #13: on Windows `PathBuf::push` reads `\` as a separator
-    /// and `C:` as a drive, so a segment holding either is refused on every
-    /// platform rather than pushed — as is one Windows trims to `..`.
+    /// and `C:` as a drive. A `\` is refused on every platform rather than
+    /// pushed — as is a segment Windows trims to `..` — and a `:` on Windows,
+    /// the one platform that reads it as more than a character.
     #[tokio::test]
     async fn windows_separators_and_drives_are_rejected() {
         let (_base, store) = temp_store();
         for bad in [
             "uploads/..\\..\\..\\Windows\\win.ini",
             "uploads/C:\\x",
-            "C:",
-            "uploads/a.txt:stream",
             "uploads/.. ",
             "uploads/...",
             "uploads/a\0b",
@@ -398,6 +397,9 @@ mod tests {
                 matches!(err.repr(), sc_error::Repr::Invalid(_)),
                 "{bad:?}: {err}"
             );
+        }
+        for colon in ["C:", "uploads/a.txt:stream"] {
+            assert_eq!(StorePath::parse(colon).is_err(), cfg!(windows), "{colon:?}");
         }
         // Dots inside a name are still a name.
         store

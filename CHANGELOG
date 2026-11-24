@@ -2,6 +2,38 @@
 
 Changes in reverse chronological order.
 
+## File stores: colons and macOS-decomposed names; a backup no longer fails at one bad file
+
+A bug report: case attachments migrated from a macOS system were 404 on the row file API, and the
+nightly `feldspar backup` failed for the whole tenant with `path "…" escapes the file store root`
+(`store_path.rs:296`).
+
+- **`:` in a name.** The store path validator refused a `:` on every platform, as a Windows drive
+  or NTFS stream. It now refuses one only on a Windows server; elsewhere `scan 09:20:34.pdf` is an
+  ordinary name that reads, lists and backs up (`check_segment` in `sc-files/src/store_path.rs`).
+  `\`, NUL, `..` and dot/space-only segments are still refused everywhere. This was what stopped
+  the backup.
+- **NFC vs NFD.** A decomposed name was never refused by the validator; the 404 is the row and the
+  disk spelling the name differently (the row precomposed, the file decomposed as a Mac writes it),
+  which on Linux are two different names. The local store (and so the git store) now resolves a
+  non-ASCII path that names nothing by matching each missing segment against its directory's
+  entries under NFC, as macOS's own file systems do (`LocalFileStore::lexical`, new dependency
+  `unicode-normalization`). ASCII paths, and paths that exist as spelled, take no extra I/O.
+- **Backups.** A file a store lists but cannot name or open (a name the path rules refuse, a name
+  on disk that is not UTF-8, a file removed mid-backup) is left out, logged as a warning and listed
+  in the manifest's new `skipped` array, instead of failing the backup (#47). A module's source
+  directory is still strict: a module missing a file would restore broken.
+- **Saying so.** `write_backup_to` and `write_backup_stream` now return `sc_backup::Written`
+  (`size` and `skipped`) rather than the bare length, and each caller reports what was left out:
+  `feldspar backup` prints `warning: left out …` per file on stderr and adds "N files left out" to
+  its summary line; the automated backup and the admin download log a warning per file; the
+  deploy's safety backup relies on its manifest.
+
+Tests: `a_colon_is_refused_only_on_windows` (store_path), `a_name_finds_its_file_whatever_its_normalisation`
+(local), the Windows-spelling tests in `lib.rs`/`reference.rs` updated, and
+`an_unreadable_file_is_left_out_rather_than_failing_the_backup` in `sc-server/tests/backup_api.rs`,
+`the_cli_names_each_file_a_backup_left_out` in `sc-cli/tests/backup.rs`.
+
 ## Admin UI: the Analytics sidebar entry opens in a new tab
 
 The Analytics UI is an application of its own, so its sidebar entry now opens it in a new tab
