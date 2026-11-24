@@ -60,6 +60,12 @@ pub(super) fn register(set: &mut EndpointSet) {
                 // run, and what is it running" — and two requests to answer it
                 // would be two loading states for one screen.
                 StructField::new("bundled", TypeSchema::array(bundled_module_schema())),
+                // Whether this server was started with
+                // `FELDSPAR_ALLOW_UNSAFE_MODULES=1`, without which a module that
+                // declares itself unsafe (a bundled entry's `unsafe`) is refused
+                // at install and not loaded. Asked so the card can say so before
+                // the click rather than after it.
+                StructField::new("unsafe_allowed", TypeSchema::bool()),
             ]))
             // Tagged (§13.6) behind the modules area, which is off unless a
             // token or an agent was explicitly given it: what is installed is
@@ -353,6 +359,11 @@ fn bundled_module_schema() -> TypeSchema {
         // module's own permissions have, so one renderer draws both. Always
         // closed for a Python module — there is nothing to enforce it (§10).
         StructField::new("permissions", TypeSchema::json()),
+        // Why it is **unsafe** — what it can do that no permission bounds, such
+        // as run any program on the server — or absent for every other module.
+        // An unsafe module installs only on a server whose `unsafe_allowed` is
+        // true.
+        StructField::new("unsafe", TypeSchema::optional(TypeSchema::text())),
         // Whether a module with this name is already installed, which is what
         // decides whether the card carries a button or a tick.
         StructField::new("installed", TypeSchema::bool()),

@@ -81,6 +81,7 @@ mod mcp_proxy;
 mod mcp_servers;
 mod models;
 mod module_routes;
+mod module_traits;
 mod modules;
 mod notices;
 mod oauth;

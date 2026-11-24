@@ -43,6 +43,7 @@ import {
   bundledSubtitle,
   catalogOrder,
   grantSentence,
+  unsafeSentence,
   installsSentence,
   choiceFor,
   choiceValue,
@@ -587,6 +588,28 @@ describe("the bundled catalog", () => {
     expect(bundledBlocked(js, tools({ pip: false }))).toBeNull();
     expect(bundledBlocked(py, tools({ pip: false }))).toMatch(/pip/);
     expect(bundledBlocked(js, tools({ npm: false }))).toMatch(/npm/);
+  });
+
+  it("marks an unsafe entry and blocks it on a server not started to allow one", () => {
+    const bash = bundled({
+      id: "bash",
+      name: "@feldspar/bash",
+      installs: [],
+      permissions: {},
+      unsafe: "its action runs any bash script on the server",
+    });
+    expect(unsafeSentence(bash)).toMatch(/^Unsafe: its action runs any bash script/);
+    expect(unsafeSentence(bundled())).toBeNull();
+    expect(unsafeSentence(bundled({ unsafe: null }))).toBeNull();
+    // The switch decides only the unsafe card: an ordinary module installs
+    // either way, and the blocked card names the variable that would allow it.
+    expect(bundledBlocked(bash, tools())).toBeNull();
+    expect(bundledBlocked(bash, tools({ unsafeAllowed: false }))).toMatch(
+      /FELDSPAR_ALLOW_UNSAFE_MODULES=1/,
+    );
+    expect(bundledBlocked(bundled(), tools({ unsafeAllowed: false }))).toBeNull();
+    // A missing toolchain is still the first thing to fix.
+    expect(bundledBlocked(bash, tools({ npm: false, unsafeAllowed: false }))).toMatch(/npm/);
   });
 
   it("puts what a server can still add above what it already has", () => {

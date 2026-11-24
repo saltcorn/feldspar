@@ -1817,5 +1817,6 @@
   "Readers": "读者",
   "Uploader and admins": "上传者和管理员",
   "Uploader and {role}": "上传者和 {role}",
-  "The folder's readers": "文件夹的读者"
+  "The folder's readers": "文件夹的读者",
+  "Unsafe": "不安全"
 }

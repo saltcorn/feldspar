@@ -1947,5 +1947,6 @@
   "Readers": "القرّاء",
   "Uploader and admins": "الرافع والمسؤولون",
   "Uploader and {role}": "الرافع و{role}",
-  "The folder's readers": "قرّاء المجلد"
+  "The folder's readers": "قرّاء المجلد",
+  "Unsafe": "غير آمن"
 }

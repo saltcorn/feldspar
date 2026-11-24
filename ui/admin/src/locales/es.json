@@ -1869,5 +1869,6 @@
   "Readers": "Lectores",
   "Uploader and admins": "Quien sube y administradores",
   "Uploader and {role}": "Quien sube y {role}",
-  "The folder's readers": "Los lectores de la carpeta"
+  "The folder's readers": "Los lectores de la carpeta",
+  "Unsafe": "Inseguro"
 }

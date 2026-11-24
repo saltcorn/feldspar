@@ -21,6 +21,8 @@ mod common;
 
 #[path = "bundled_astro.rs"]
 mod bundled_astro;
+#[path = "bundled_bash.rs"]
+mod bundled_bash;
 #[path = "bundled_catalog.rs"]
 mod bundled_catalog;
 #[path = "bundled_react_native.rs"]

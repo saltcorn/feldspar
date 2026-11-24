@@ -152,7 +152,7 @@ pub fn base_action_registry(
     let mut registry = builtin_actions().context("registering the built-in actions")?;
     sc_agent_builtins::register_agent_actions(
         &mut registry,
-        Arc::clone(agents.registry()),
+        agents.live_registry().clone(),
         Arc::clone(agents.providers()),
     )
     .context("registering the agent action")?;

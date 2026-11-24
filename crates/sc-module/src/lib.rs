@@ -36,10 +36,14 @@
 //! - [`install`] — npm, and what it turned out to have installed.
 //! - [`bounds`] — the four bounds a module call is under, and the pool's size.
 //! - [`permissions`] — what a module's worker may reach, and what it may not.
+//! - [`unsafe_modules`] — modules that declare they can run any program, and
+//!   `FELDSPAR_ALLOW_UNSAFE_MODULES`, the operator's switch that allows them.
 //! - [`host`] — the module host as the rest of the server sees it.
 //! - [`deno`] — the in-process worker pool (feature `deno-host`).
 //! - [`spec`] — v1's `configFields` translated into this system's `FormField`.
 //! - [`action`] — a module's action as an `Action`.
+//! - [`agent_skills`] — a module's agent skills (v1's `exchange.agent_skills`),
+//!   which the server makes agent traits.
 //! - [`functions`] — a module's functions, as `sc-expr`'s fifth host surface.
 //! - [`table_providers`] — a module's table providers, as `sc-catalog`'s seam.
 //! - [`tables`] — the tables a module declares, created through the schema
@@ -65,6 +69,7 @@ pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
     sc_catalog::Unchecked::system("sc-module: the module store");
 
 pub mod action;
+pub mod agent_skills;
 pub mod bounds;
 pub mod bundled;
 pub mod consent;
@@ -91,10 +96,14 @@ pub mod store;
 pub mod stream_providers;
 pub mod table_providers;
 pub mod tables;
+pub mod unsafe_modules;
 pub mod view_runtime;
 pub mod webhooks;
 
 pub use action::ModuleAction;
+pub use agent_skills::{
+    ModuleAgentSkill, SkillCaller, SkillDescription, SkillTool, module_agent_skills,
+};
 pub use bounds::{
     DEFAULT_CALL_TIMEOUT, DEFAULT_MODULE_JS_SLICE, DEFAULT_MODULE_MAX_HEAP, DEFAULT_MODULE_WORKERS,
 };
@@ -106,7 +115,7 @@ pub use deno::{DenoModuleHost, PoolBounds};
 pub use frameworks::ModuleFrameworks;
 pub use functions::ModuleFunctions;
 pub use host::{
-    ActionManifest, Ask, AskSurface, Asks, CallHosts, CheckStepManifest, FrameworkManifest,
+    ActionManifest, AgentSkillManifest, Ask, AskSurface, Asks, CallHosts, CheckStepManifest, FrameworkManifest,
     FunctionArg, FunctionManifest, ModelProviderManifest, ModuleHost, ModuleManifest,
     RouteManifest, ServiceManifest, TableProviderManifest, UnsupportedEntity, WebhookManifest,
     prime_v8,
@@ -137,6 +146,9 @@ pub use store::{
 pub use stream_providers::ModuleStreamProviders;
 pub use table_providers::ModuleTableProviders;
 pub use tables::{FieldDecl, MODULE_TABLE_KEY, SyncReport, TableDecl};
+pub use unsafe_modules::{
+    ALLOW_UNSAFE_MODULES, ModuleShell, declared_unsafe, unsafe_modules_allowed,
+};
 pub use view_runtime::{BUILTIN_VIEW_RUNTIME, ModuleViewRuntime};
 pub use webhooks::{
     HOOKS_PREFIX, WEBHOOK_MAX_BODY, WebhookRequest, WebhookResponse, hook_path, hook_segment,

@@ -25,7 +25,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 // from the screen that exists to repair it.
                 let services = agents_of(&apps)?;
                 let stored = sc_agent::list_agents(&catalog).await?;
-                let live = sc_agent::validate::Agents::load(&catalog, services.registry()).await?;
+                let live = sc_agent::validate::Agents::load(&catalog, &services.registry()).await?;
                 let out: Vec<Json> = stored
                     .iter()
                     .map(|agent| {
@@ -51,7 +51,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             async move {
                 let services = agents_of(&apps)?;
                 let agent = agent_from_body(sc_agent::AgentId::new(), &ctx.body)?;
-                sc_agent::save_agent(&catalog, services.registry(), &agent).await?;
+                sc_agent::save_agent(&catalog, &services.registry(), &agent).await?;
                 Ok(HandlerResponse::ok(agent_json(&agent, None)).with_status(201))
             }
         }
@@ -77,7 +77,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 if agent.name != stored.name {
                     refuse_if_exposed(&catalog, &stored.name, "renamed").await?;
                 }
-                sc_agent::save_agent(&catalog, services.registry(), &agent).await?;
+                sc_agent::save_agent(&catalog, &services.registry(), &agent).await?;
                 Ok(HandlerResponse::ok(agent_json(&agent, None)))
             }
         }

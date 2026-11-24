@@ -292,7 +292,7 @@ async fn setup() -> sc_error::Result<Server> {
     let agents = sc_server::install_agents(&catalog)
         .await?
         .with_providers(Arc::new(Scripted));
-    sc_agent::save_agent(&catalog, agents.registry(), &summariser()).await?;
+    sc_agent::save_agent(&catalog, &agents.registry(), &summariser()).await?;
 
     let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;
     let dispatcher = install_triggers(&catalog, evaluator.clone(), &agents, &models).await?;

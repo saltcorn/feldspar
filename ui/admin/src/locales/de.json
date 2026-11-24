@@ -1843,5 +1843,6 @@
   "Readers": "Leser",
   "Uploader and admins": "Hochladender und Admins",
   "Uploader and {role}": "Hochladender und {role}",
-  "The folder's readers": "Die Leser des Ordners"
+  "The folder's readers": "Die Leser des Ordners",
+  "Unsafe": "Unsicher"
 }

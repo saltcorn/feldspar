@@ -281,7 +281,7 @@ async fn serve(provider: Arc<dyn LlmProvider>, tools: sc_app::ToolDetail) -> Res
     let services = sc_server::AgentServices::new(Arc::new(registry))
         .with_providers(Arc::new(Scripted(provider)));
     for agent in [helpdesk(), greeter(), interviewer()] {
-        sc_agent::save_agent(&catalog, services.registry(), &agent).await?;
+        sc_agent::save_agent(&catalog, &services.registry(), &agent).await?;
     }
     let apps = Arc::new(AppMounts::new(catalog.clone()).with_agents(services));
     let app = shop(tools);

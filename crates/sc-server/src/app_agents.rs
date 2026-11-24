@@ -284,7 +284,7 @@ async fn answer(
 
     // The agent as it is now, and the agent's own floor: the one rule about who
     // may talk to an agent, wherever it is reached from.
-    let agents = Agents::load(&catalog, services.registry()).await?;
+    let agents = Agents::load(&catalog, &services.registry()).await?;
     let mut agent = agents
         .require(&exposure.name)
         .map_err(|e| Error::invalid(format!("agent `{}` is not available: {e}", exposure.name)))?
@@ -328,7 +328,7 @@ async fn answer(
             let controls = sc_agent::composer_controls_for(
                 &ctx.catalog,
                 &ctx.asker.caller,
-                ctx.services.registry(),
+                &ctx.services.registry(),
                 &ctx.agent,
             )
             .await?;
@@ -612,9 +612,10 @@ async fn drive_turn(
         tx: tx.clone(),
         tools: ctx.exposure.tools,
     };
+    let registry = ctx.services.registry();
     let mut runner = Runner::new(
         &ctx.catalog,
-        ctx.services.registry(),
+        &registry,
         agent,
         executor,
         ctx.asker.caller.clone(),

@@ -1,0 +1,13 @@
+{
+  "name": "@feldspar/bash",
+  "language": "javascript",
+  "title": "Bash scripts",
+  "description": "Run a bash script on the server from a trigger, or let an agent run bash commands here or over SSH. Unsafe: a script can do anything the server's user can, so this server installs it only when started with FELDSPAR_ALLOW_UNSAFE_MODULES=1.",
+  "supplies": [
+    "An action, \"run_bash_script\": runs the script typed into the trigger or held in a field of the row, with the row's fields as ROW_* variables, and answers its exit code, stdout and stderr, optionally writing them back to fields of the row.",
+    "An agent trait, \"run_bash\" (v1's \"Run Bash command\" skill): the agent's run_bash tool runs a command the model writes, on the server or on another machine over SSH (ssh -o BatchMode=yes, so only hosts reached without a password). Offered only to an administrator's chat at the admin console."
+  ],
+  "installs": [],
+  "unsafe": "its action and its agent trait run any bash command on the server, as the server's own user",
+  "permissions": {}
+}

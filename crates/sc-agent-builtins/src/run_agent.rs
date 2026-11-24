@@ -53,7 +53,7 @@ use sc_action::{
     Action, ActionContext, ConfigCheck, EVENT_SCOPE, check_formula, event_formula_value,
     required_formula,
 };
-use sc_agent::{AgentRegistry, Conclusion, ProviderConnector, RunCaller, Runner, save_run};
+use sc_agent::{Conclusion, LiveRegistry, ProviderConnector, RunCaller, Runner, save_run};
 use sc_error::{Error, Result};
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Value as Json, json};
@@ -105,14 +105,17 @@ fn trusted_input(config: &Attrs) -> bool {
 /// connected. The second is the seam that lets every test here drive a whole run
 /// against a script rather than a vendor (decision 7).
 pub struct RunAgent {
-    traits: Arc<AgentRegistry>,
+    traits: LiveRegistry,
     providers: Arc<dyn ProviderConnector>,
 }
 
 impl RunAgent {
     /// The action, over `traits`, connecting providers through `providers`.
-    pub fn new(traits: Arc<AgentRegistry>, providers: Arc<dyn ProviderConnector>) -> RunAgent {
-        RunAgent { traits, providers }
+    pub fn new(traits: impl Into<LiveRegistry>, providers: Arc<dyn ProviderConnector>) -> RunAgent {
+        RunAgent {
+            traits: traits.into(),
+            providers,
+        }
     }
 }
 
@@ -199,8 +202,10 @@ impl Action for RunAgent {
 
         // The live set, so an agent whose provider vanished or whose trait was
         // configured against a dropped table says *that* rather than failing
-        // somewhere inside the loop.
-        let agents = sc_agent::Agents::load(ctx.catalog, &self.traits)
+        // somewhere inside the loop — over the traits as they stand now, a
+        // module's included.
+        let traits = self.traits.current();
+        let agents = sc_agent::Agents::load(ctx.catalog, &traits)
             .await
             .map_err(named)?;
         let agent = agents.require(&name).map_err(named)?;
@@ -241,7 +246,7 @@ impl Action for RunAgent {
             .connect(ctx.catalog, agent, sc_agent::ModelRole::Executor)
             .await
             .map_err(named)?;
-        let mut runner = Runner::new(ctx.catalog, &self.traits, agent, executor, caller)
+        let mut runner = Runner::new(ctx.catalog, &traits, agent, executor, caller)
             // The connector this action already holds, handed on so an agent a
             // trigger started can delegate exactly as one a person is chatting with
             // does. Unlike the dispatcher — which is *running* this action and

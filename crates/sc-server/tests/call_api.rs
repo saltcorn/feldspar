@@ -199,7 +199,7 @@ impl Env {
     ) -> Result<String> {
         let registry = sc_agent_builtins::builtin_traits().unwrap();
         let coding_trait = registry.require("coding").unwrap().clone();
-        let services = self.agents.registry().view_services();
+        let services = self.agents.view_services();
         let requests = services.requests().expect("installed").as_ref();
         let mut state = Json::Null;
         let mut ctx = TraitContext {
@@ -389,7 +389,7 @@ async fn call_api_needs_someone_to_send_as_and_a_served_application() -> Result<
     // admin routes its host would otherwise fall through to.
     let registry = sc_agent_builtins::builtin_traits().unwrap();
     let coding_trait = registry.require("coding").unwrap().clone();
-    let services = env.agents.registry().view_services();
+    let services = env.agents.view_services();
     let requests = services.requests().unwrap().as_ref();
     let mut config = coding();
     config.insert("application".to_owned(), json!("elsewhere"));

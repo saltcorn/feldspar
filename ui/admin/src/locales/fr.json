@@ -1869,5 +1869,6 @@
   "Readers": "Lecteurs",
   "Uploader and admins": "Auteur du téléversement et administrateurs",
   "Uploader and {role}": "Auteur du téléversement et {role}",
-  "The folder's readers": "Les lecteurs du dossier"
+  "The folder's readers": "Les lecteurs du dossier",
+  "Unsafe": "Non sûr"
 }

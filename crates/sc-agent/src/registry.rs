@@ -8,7 +8,7 @@
 //! [`config_spec`](crate::AgentTrait::config_spec) alone.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use sc_error::{Error, Result};
 
@@ -125,6 +125,60 @@ impl AgentRegistry {
     }
 }
 
+/// The trait registry **as it stands**, on a server where it changes: a
+/// module supplies agent traits ([`sc_module::agent_skills`]-style), so
+/// installing, configuring or removing one replaces the registry while the
+/// server runs.
+///
+/// Replaced whole rather than mutated — the action registry's and the model
+/// registry's rule, for their reason: a run that has started keeps the
+/// registry it started with ([`current`](Self::current) is an `Arc`), and the
+/// next one sees the new set. Cloning shares the slot, so everything built over
+/// one handle — the admin API, the chat socket, the `run_agent` action — sees
+/// the same replacement at the same moment.
+#[derive(Clone)]
+pub struct LiveRegistry(Arc<RwLock<Arc<AgentRegistry>>>);
+
+impl LiveRegistry {
+    /// A handle holding `registry`.
+    pub fn new(registry: Arc<AgentRegistry>) -> LiveRegistry {
+        LiveRegistry(Arc::new(RwLock::new(registry)))
+    }
+
+    /// The registry as it stands now.
+    pub fn current(&self) -> Arc<AgentRegistry> {
+        match self.0.read() {
+            Ok(guard) => Arc::clone(&guard),
+            // A panic during a read cannot have left the value half-written:
+            // it is replaced whole.
+            Err(poisoned) => Arc::clone(&poisoned.into_inner()),
+        }
+    }
+
+    /// Replace it, for every holder of this handle.
+    pub fn set(&self, registry: Arc<AgentRegistry>) {
+        match self.0.write() {
+            Ok(mut guard) => *guard = registry,
+            Err(poisoned) => *poisoned.into_inner() = registry,
+        }
+    }
+}
+
+impl From<Arc<AgentRegistry>> for LiveRegistry {
+    /// A handle on a registry nothing will replace — a test's, a CLI's.
+    fn from(registry: Arc<AgentRegistry>) -> LiveRegistry {
+        LiveRegistry::new(registry)
+    }
+}
+
+impl std::fmt::Debug for LiveRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("LiveRegistry")
+            .field(&self.current())
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for AgentRegistry {
     /// Names only: a trait is an object with no meaningful `Debug`, and the names
     /// are the whole of what a reader wants from a registry.
@@ -214,6 +268,17 @@ mod tests {
         let err = reg.register(Arc::new(Named("query_table"))).unwrap_err();
         assert!(err.to_string().contains("query_table"), "{err}");
         assert_eq!(reg.len(), 1);
+    }
+
+    #[test]
+    fn a_live_registry_is_replaced_for_every_holder() {
+        let live = LiveRegistry::new(Arc::new(registry(&["query_table"])));
+        let held = live.clone();
+        let started = live.current();
+        live.set(Arc::new(registry(&["query_table", "run_bash"])));
+        assert!(held.current().get("run_bash").is_some());
+        // What a run already holds is what it started with.
+        assert!(started.get("run_bash").is_none());
     }
 
     #[test]

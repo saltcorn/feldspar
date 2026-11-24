@@ -42,6 +42,7 @@ import {
   PERMISSION_KINDS,
   PYTHON_RELOAD,
   bundledBlocked,
+  unsafeSentence,
   bundledSubtitle,
   catalogOrder,
   choiceFor,
@@ -99,6 +100,7 @@ export function ModulesTab() {
         node: response.node,
         python: response.python,
         pip: response.pip,
+        unsafeAllowed: response.unsafe_allowed,
       });
     } catch (e) {
       setError(errorMessage(e, "Could not read the installed modules."));
@@ -460,6 +462,7 @@ function BundledCard({
 }) {
   const downloads = installsSentence(entry);
   const grant = grantSentence(entry);
+  const danger = unsafeSentence(entry);
   return (
     <div className="col-md-6">
       <div className="card h-100">
@@ -467,6 +470,7 @@ function BundledCard({
           <h4 className="card-title mb-1">
             {entry.title}{" "}
             {entry.installed && <StatusBadge tone="green"><T text="Installed" /></StatusBadge>}
+            {entry.unsafe && <StatusBadge tone="red"><T text="Unsafe" /></StatusBadge>}
           </h4>
           <div className="text-secondary mb-2">{bundledSubtitle(entry)}</div>
           <p className="mb-2">{entry.description}</p>
@@ -515,6 +519,7 @@ function BundledCard({
             </div>
           )}
           {grant && <div className="text-secondary mb-1">{grant}</div>}
+          {danger && <div className="text-danger mb-1">{danger}</div>}
           {blocked && <div className="text-secondary mb-1">{blocked}</div>}
         </div>
         <div className="card-footer">

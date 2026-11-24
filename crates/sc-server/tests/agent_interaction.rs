@@ -257,7 +257,7 @@ async fn serve(own: Vec<Reply>, fast: Vec<Reply>) -> Result<Server> {
         .await?
         .with_providers(providers);
     for agent in [asker(), buttons(), picker()] {
-        sc_agent::save_agent(&catalog, services.registry(), &agent).await?;
+        sc_agent::save_agent(&catalog, &services.registry(), &agent).await?;
     }
     let evaluator = default_js_evaluator();
     let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;
@@ -897,7 +897,7 @@ async fn a_pickable_model_that_does_not_resolve_is_refused_on_save() -> Result<(
         sc_agent::ATTR_PICKABLE_MODELS,
         json!([{ "provider": "house", "model": "no-such-model" }]),
     );
-    let err = sc_agent::save_agent(&catalog, services.registry(), &agent)
+    let err = sc_agent::save_agent(&catalog, &services.registry(), &agent)
         .await
         .unwrap_err()
         .to_string();
@@ -909,7 +909,7 @@ async fn a_pickable_model_that_does_not_resolve_is_refused_on_save() -> Result<(
         sc_agent::ATTR_PICKABLE_MODELS,
         json!([{ "provider": "elsewhere" }]),
     );
-    let err = sc_agent::save_agent(&catalog, services.registry(), &agent)
+    let err = sc_agent::save_agent(&catalog, &services.registry(), &agent)
         .await
         .unwrap_err()
         .to_string();

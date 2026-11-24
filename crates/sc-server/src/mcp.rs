@@ -687,7 +687,7 @@ async fn checklist_tool(
 ) -> Result<Json> {
     let flags = sc_api::mcp::token_flags(&caller.token.grants);
     let registry = sc_check::StepRegistry::installed();
-    let services = state.apps.agents().map(|a| a.registry().view_services());
+    let services = state.apps.agents().map(|a| a.view_services());
     let requests = services
         .and_then(|s| s.requests())
         .map(|r| r.as_ref() as &dyn sc_agent::AppRequester);

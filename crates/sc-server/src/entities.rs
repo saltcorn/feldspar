@@ -293,7 +293,7 @@ async fn list_entities(
     // An installation without the agent services still lists its stored
     // agents; it just cannot say which are broken.
     let issues = match agents_of(apps) {
-        Ok(services) => sc_agent::validate::Agents::load(catalog, services.registry())
+        Ok(services) => sc_agent::validate::Agents::load(catalog, &services.registry())
             .await?
             .issues()
             .to_vec(),

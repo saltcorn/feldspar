@@ -59,6 +59,11 @@ export type Toolchains = {
   node: boolean;
   python: boolean;
   pip: boolean;
+  /** Whether the server was started with `FELDSPAR_ALLOW_UNSAFE_MODULES=1`,
+   * without which a module that declares itself unsafe is refused at install.
+   * Not a toolchain, but the same kind of answer: something about the server
+   * that decides whether an Install button can work. */
+  unsafeAllowed: boolean;
 };
 
 /** Everything present, which is what a form assumes until `listModules` has
@@ -69,6 +74,7 @@ export const ALL_TOOLCHAINS: Toolchains = {
   node: true,
   python: true,
   pip: true,
+  unsafeAllowed: true,
 };
 
 /** A blank install form. JavaScript from npm first, because that is where a
@@ -596,7 +602,22 @@ export function permissionProblems(set: ModulePermissionSet): string[] {
  * per language: on a server with npm and no pip, the JavaScript entries have
  * buttons and the Python ones say why they do not. */
 export function bundledBlocked(entry: BundledModule, tools: Toolchains): string | null {
-  return toolchainMissing(entry.language === "python" ? "python" : "javascript", tools);
+  const missing = toolchainMissing(entry.language === "python" ? "python" : "javascript", tools);
+  if (missing !== null) return missing;
+  if (entry.unsafe && !tools.unsafeAllowed) {
+    return "This module is unsafe, and this server was not started with FELDSPAR_ALLOW_UNSAFE_MODULES=1, so it cannot be installed here.";
+  }
+  return null;
+}
+
+/** Why an entry is unsafe, as the card's warning — or `null` for every module
+ * whose permissions say all it can do.
+ *
+ * Its own sentence rather than one more line of the grant, because what an
+ * unsafe module does is exactly what the grant cannot describe. */
+export function unsafeSentence(entry: BundledModule): string | null {
+  if (!entry.unsafe) return null;
+  return `Unsafe: ${entry.unsafe}. No permission limits it; install it only if every admin of this server may do the same.`;
 }
 
 /** The line under a bundled entry's heading: its language, and its package. */

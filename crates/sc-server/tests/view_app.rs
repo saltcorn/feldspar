@@ -599,7 +599,7 @@ async fn a_planned_features_pages_are_looked_at_on_the_planners_preview() -> Res
         ])))
         .role(ModelRole::Strong, ModelRef::new("main", None))
         .min_role(Role::of(80));
-    sc_agent::save_agent(&env.catalog, env.agents.registry(), &agent).await?;
+    sc_agent::save_agent(&env.catalog, &env.agents.registry(), &agent).await?;
     // What `feldspar serve` installs at startup, so every run reaches them.
     env.agents
         .registry()
@@ -633,9 +633,10 @@ async fn a_planned_features_pages_are_looked_at_on_the_planners_preview() -> Res
     let admin = sc_auth::load_user_by_email(&env.catalog, "admin@example.com")
         .await?
         .expect("the admin");
+    let registry = env.agents.registry();
     let runner = Runner::new(
         &env.catalog,
-        env.agents.registry(),
+        &registry,
         &agent,
         sc_llm::ConnectedModel::unconfigured(executor.clone()),
         console(admin),

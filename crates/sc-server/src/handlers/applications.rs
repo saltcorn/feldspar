@@ -720,7 +720,7 @@ async fn create_builder_agent(
     }
     // The same save the Agents screen makes, so the same validation applies: a
     // builder agent this server would refuse to run is not one it quietly stores.
-    sc_agent::save_agent(catalog, services.registry(), &agent).await?;
+    sc_agent::save_agent(catalog, &services.registry(), &agent).await?;
     Ok(Some(agent.name))
 }
 
@@ -870,7 +870,7 @@ async fn retarget_builder_agent(
     {
         agent.name = new_name;
     }
-    sc_agent::save_agent(catalog, services.registry(), &agent).await?;
+    sc_agent::save_agent(catalog, &services.registry(), &agent).await?;
     Ok(Some(agent.name))
 }
 

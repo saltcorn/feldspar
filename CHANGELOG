@@ -2,6 +2,82 @@
 
 Changes in reverse chronological order.
 
+## Modules supply agent traits; the bash module's `run_bash`, locally or over SSH
+
+A module can now add **agent traits**, and the bundled bash module adds one (TODO UM1.5, UM1.6).
+
+- **Agent skills.** A JavaScript module exports Saltcorn v1 agent skills the way v1's agents
+  plugin collects them, as `exchange: { agent_skills: [...] }` or as `agent_skills` at the top
+  level. A skill is a class with `skill_name` (or `trait_name`, which is the name an agent
+  stores), `configFields`, `systemPrompt()` and `provideTools()`, and each skill becomes an agent
+  trait beside the built-in ones. The module host reads skills at load (`agent_skills` on the
+  manifest). It asks a configured instance for its tools and prompt when an agent is checked (on
+  save and on load) and keeps the answer. A call runs the tool's `process(args, { req, user,
+  shell })` on the module's worker. `exchange` is no longer listed as unsupported, though anything
+  in it other than `agent_skills` still is. The module side is `sc_module::agent_skills`, and the
+  trait is sc-server's `module_traits`.
+- **The registry follows module changes.** The agent trait registry used to be fixed when the
+  server started. Now every module change rebuilds it from the built-ins plus the modules' traits
+  and replaces it whole (`sc_agent::LiveRegistry`, `AgentServices::install_module_traits`). The
+  admin API, the chat socket and the `run_agent` and `consolidate_memory` actions all follow the
+  replacement. A run that has already started keeps the registry it started with. A module trait
+  whose name is taken (by a built-in or an earlier module) is reported and skipped.
+  `AgentServices::registry()` now returns an `Arc` rather than a reference. The boot report of
+  stored agents that are not usable now runs after the modules load
+  (`report_unusable_agents`), so an agent using a module's trait is not reported at every start.
+- **`run_bash`** (bash module), after v1's "Run Bash command" skill: the same prompt and the same
+  `run_bash` tool (`command`, `ssh_host`, `ssh_user`, `ssh_port`), with a `timeout` setting
+  (default 60 s, at most an hour). Without a host, the command runs on the server. With one, the
+  server runs `ssh -o BatchMode=yes -o ConnectTimeout=<timeout> [-p port] [user@]host "bash -s"`
+  with the command as ssh's stdin, as v1 does. This uses the new `shell.ssh` operation and
+  `sc_proc::HostCommand::stdin_file`. The host and user are checked so that neither can be read as
+  an ssh option, and `SSH_AUTH_SOCK` is passed on. The answer is stdout then stderr, plus
+  `[exit code N]` when the exit code is not 0. v1's `show_cmd` setting only changed how v1 drew
+  the tool call, and is not carried over.
+- **Who gets an unsafe module's tools.** They run programs as the server's user, so they follow
+  the coding trait's shell rule. They are offered, and run, only in a run whose caller is an
+  administrator at the admin console, in act mode. That run's console proof is the authority the
+  command runs on. A chat through an application's exposed agent, a run whose prompt a trigger
+  computed, and a plain chat turn nobody vouched was at the console get no such tools, no such
+  prompt, and a refusal naming why.
+
+## Unsafe modules, and a bundled bash module
+
+A module can now declare itself **unsafe** — it can do what no permission set bounds — and a
+server installs one only when the operator allows it (TODO UM1).
+
+- **The declaration.** `"feldspar": { "unsafe": "<why>" }` in the module's `package.json` (`true`
+  is accepted; a sentence is better, because the refusal prints it). A bundled module also says it
+  as `"unsafe"` in `feldspar-module.json`, so the catalog can refuse before anything is
+  downloaded; `bundled_catalog` asserts the two agree.
+- **The switch.** `FELDSPAR_ALLOW_UNSAFE_MODULES=1` in the server's environment. Without it,
+  installing an unsafe module is refused with a sentence naming the variable (a first install's
+  package is uninstalled again), an installed one does not load and its card says why, and a
+  script is refused on every call. An operator's setting, not an admin's: it is checked again at
+  load and on each call, so restarting without it takes the powers away.
+- **What an unsafe module gets.** Its actions' argument has `shell`:
+  `await shell.bash(script, { cwd, env, timeout_seconds })` answers `{ exitcode, stdout, stderr,
+  timed_out }`. The worker still cannot spawn anything; the server runs the script
+  (`sc_module::unsafe_modules::ModuleShell`, the new `shell` ask surface) through `sc_proc`: the
+  base environment plus the variables the module passes (none of the server's secrets), a 60 s
+  default timeout (at most an hour), its own process group, stdout and stderr cut at 1 MiB each. A
+  `#!` first line picks the interpreter. Listed in the system-authority inventory as
+  `UNSAFE_MODULE_SHELL`.
+- **`plugins/bash`** (`@feldspar/bash`), bundled: the action `run_bash_script`, after v1's
+  `@saltcorn/bash`. Settings: the script — typed into the trigger, or (`script_source` "Field")
+  read from a field of the row, as v1's — a working directory (blank is the home directory), a
+  timeout, and v1's `exitcode_field`, `stdout_field` and `stderr_field`, which write the answer
+  back to the triggering row through the call's `db`, on the trigger's authority. A trigger saved
+  without `script_source` runs its own script. The row's fields are `ROW_<FIELD>` variables, the
+  caller `SC_USER_ID` and `SC_USER_ROLE`.
+- **The Modules tab** marks an unsafe catalog entry with a red *Unsafe* badge and its reason, and
+  disables its Install, naming the variable, on a server not started with it. The listing
+  (`GET /api/modules`) carries `unsafe` on each bundled entry and `unsafe_allowed` for the server;
+  `client.ts` regenerated in the four UIs.
+- Nothing changes for an existing installation: no module declared itself unsafe before.
+- Tests: `unsafe_modules` and `bundled` unit tests, `tests/bundled_bash.rs` (installs the module,
+  runs the action on a worker, and checks the refusals), `plugins/bash/test`.
+
 ## Source control: an application's code libraries are exported inside the application
 
 A bug report: Source control (`/#/source-control`) failed for the whole instance with "two

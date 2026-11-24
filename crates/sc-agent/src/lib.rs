@@ -124,7 +124,7 @@ pub use meter::{
 pub use parts::{
     RUN_PARTS_TABLE, StoredPart, bootstrap_run_parts, load_display_part, save_display_part,
 };
-pub use registry::AgentRegistry;
+pub use registry::{AgentRegistry, LiveRegistry};
 pub use run::{ATTR_MODE, ATTR_ROLE, Run, RunId, RunKind, RunMode, RunState};
 pub use run_store::{
     RUNS_TABLE, abort_run, bootstrap_runs, delete_run, list_live_children, list_runs,

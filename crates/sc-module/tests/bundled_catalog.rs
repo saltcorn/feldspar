@@ -96,6 +96,39 @@ fn a_manifests_name_is_the_package_s_own() {
     }
 }
 
+/// An unsafe module says so twice: in its manifest, which is what the catalog
+/// refuses an install by before anything is downloaded, and in its package,
+/// which is what the load refuses it by. The two must agree, or a module the
+/// card calls safe would be refused at load, or one it calls unsafe would load
+/// without the switch.
+#[test]
+fn a_manifest_and_its_package_agree_on_whether_it_is_unsafe() {
+    for module in catalog().modules() {
+        if module.language != ModuleLanguage::JavaScript {
+            assert!(module.unsafe_reason.is_none(), "{}", module.id);
+            continue;
+        }
+        assert_eq!(
+            module.unsafe_reason,
+            sc_module::declared_unsafe(&module.directory),
+            "{}: feldspar-module.json and package.json disagree about `unsafe`",
+            module.id
+        );
+    }
+    let bash = catalog();
+    let bash = bash.get("bash").expect("the bash module ships");
+    assert_eq!(bash.name, "@feldspar/bash");
+    assert!(bash.unsafe_reason.is_some(), "the bash module is unsafe");
+    assert!(
+        bash.permissions.is_closed(),
+        "and it asks for no worker permission"
+    );
+    assert!(
+        bash.description.contains(sc_module::ALLOW_UNSAFE_MODULES),
+        "its card names the switch"
+    );
+}
+
 #[test]
 fn a_bundled_module_is_a_package_its_manager_can_install() {
     for module in catalog().modules() {

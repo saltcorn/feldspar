@@ -407,13 +407,14 @@ async fn start(
     agent: &str,
     run: Option<Uuid>,
 ) -> Result<(Option<Run>, Vec<sc_agent::ComposerControl>)> {
-    let agents = Agents::load(&ctx.catalog, ctx.services.registry()).await?;
+    let registry = ctx.services.registry();
+    let agents = Agents::load(&ctx.catalog, &registry).await?;
     let definition = agents.require(agent)?;
     may_chat(&ctx.caller, definition)?;
     let controls = sc_agent::composer_controls_for(
         &ctx.catalog,
         &ctx.caller,
-        ctx.services.registry(),
+        &registry,
         definition,
     )
     .await?;
@@ -495,7 +496,8 @@ async fn turn(
     // conversations exist, so a trait added between two messages is offered on
     // the second — and an agent that stopped validating stops answering, with
     // the reason the admin can act on.
-    let agents = Agents::load(&ctx.catalog, ctx.services.registry()).await?;
+    let registry = ctx.services.registry();
+    let agents = Agents::load(&ctx.catalog, &registry).await?;
     let agent = agents.require(name)?;
     may_chat(&ctx.caller, agent)?;
 
@@ -509,7 +511,7 @@ async fn turn(
     let observer = SocketObserver { tx: tx.clone() };
     let mut runner = Runner::new(
         &ctx.catalog,
-        ctx.services.registry(),
+        &registry,
         agent,
         executor,
         ctx.caller.clone(),

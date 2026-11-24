@@ -85,11 +85,13 @@ impl From<ProcError> for sc_error::Error {
 }
 
 /// How a child's stdin is connected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 enum Stdin {
     Null,
     Piped,
     Inherit,
+    /// Read from an open file — a script fed to `bash -s` or `ssh host bash -s`.
+    File(std::fs::File),
 }
 
 /// A program to run on the host, configured as the crate docs say: cleared
@@ -287,6 +289,13 @@ impl HostCommand {
         self
     }
 
+    /// Give the child `file` as its stdin, instead of `/dev/null`: what the
+    /// program reads is the file's contents, from where it is positioned.
+    pub fn stdin_file(&mut self, file: std::fs::File) -> &mut Self {
+        self.stdin = Stdin::File(file);
+        self
+    }
+
     /// Where the child's stdout goes. [`output`](Self::output) pipes it when
     /// this is not set; the others leave it as the server's.
     pub fn stdout(&mut self, stdout: impl Into<Stdio>) -> &mut Self {
@@ -348,10 +357,11 @@ impl HostCommand {
         if let Some(dir) = &self.cwd {
             command.current_dir(dir);
         }
-        command.stdin(match self.stdin {
+        command.stdin(match std::mem::replace(&mut self.stdin, Stdin::Null) {
             Stdin::Null => Stdio::null(),
             Stdin::Piped => Stdio::piped(),
             Stdin::Inherit => Stdio::inherit(),
+            Stdin::File(file) => Stdio::from(file),
         });
         if let Some(stdout) = self.stdout.take() {
             command.stdout(stdout);
@@ -804,6 +814,18 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
         std::thread::sleep(Duration::from_millis(1500));
         assert!(!marker.exists(), "the grandchild outlived the timeout");
+    }
+
+    #[tokio::test]
+    async fn a_file_given_as_stdin_is_what_the_child_reads() {
+        let path = std::env::temp_dir().join(format!("sc-proc-stdin-{}", std::process::id()));
+        std::fs::write(&path, "echo from-the-file\n").unwrap();
+        let mut cmd = HostCommand::new("sh", &TEST, Timeout::secs(10));
+        cmd.arg("-s")
+            .stdin_file(std::fs::File::open(&path).unwrap());
+        let out = cmd.output().await.unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "from-the-file\n");
     }
 
     #[test]

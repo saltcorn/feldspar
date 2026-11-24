@@ -859,6 +859,26 @@ async fn the_bundled_catalog_is_listed_before_anything_is_installed() -> sc_erro
         .map(|entry| entry["language"].as_str().unwrap())
         .collect();
     assert!(languages.contains(&"python"), "{languages:?}");
+
+    // An unsafe entry says why, every other entry says nothing, and the listing
+    // says whether this server may install one — what the card's badge and its
+    // disabled Install are drawn from (TODO UM1.4).
+    let bash = body["bundled"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == json!("bash"))
+        .expect("the bash module is in the catalog");
+    assert!(
+        bash["unsafe"].as_str().is_some_and(|why| !why.is_empty()),
+        "{bash}"
+    );
+    assert_eq!(rss["unsafe"], Value::Null);
+    assert_eq!(
+        body["unsafe_allowed"],
+        json!(sc_module::unsafe_modules_allowed()),
+        "{body}"
+    );
     Ok(())
 }
 

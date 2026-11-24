@@ -39,7 +39,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use sc_action::{Action, ActionContext, ConfigCheck};
 use sc_agent::{
-    AgentRegistry, AgentTrait, ModelRole, ProviderConnector, SessionContext, ToolsContext,
+    AgentTrait, LiveRegistry, ModelRole, ProviderConnector, SessionContext, ToolsContext,
     TraitCheck, TraitContext,
 };
 use sc_catalog::{
@@ -795,13 +795,16 @@ only.";
 /// with memories is consolidated. An event that carries a user (a trigger run
 /// by a person) consolidates only theirs.
 pub struct ConsolidateMemory {
-    traits: Arc<AgentRegistry>,
+    traits: LiveRegistry,
     providers: Arc<dyn ProviderConnector>,
 }
 
 impl ConsolidateMemory {
-    pub fn new(traits: Arc<AgentRegistry>, providers: Arc<dyn ProviderConnector>) -> Self {
-        ConsolidateMemory { traits, providers }
+    pub fn new(traits: impl Into<LiveRegistry>, providers: Arc<dyn ProviderConnector>) -> Self {
+        ConsolidateMemory {
+            traits: traits.into(),
+            providers,
+        }
     }
 }
 
@@ -843,7 +846,8 @@ impl Action for ConsolidateMemory {
         let limit = crate::files::config_count(ctx.config, CFG_MAX_MEMORIES, DEFAULT_MAX_MEMORIES)
             .map_err(named)?
             .max(1);
-        let agents = sc_agent::Agents::load(ctx.catalog, &self.traits)
+        let traits = self.traits.current();
+        let agents = sc_agent::Agents::load(ctx.catalog, &traits)
             .await
             .map_err(named)?;
         let agent = agents.require(&name).map_err(named)?;

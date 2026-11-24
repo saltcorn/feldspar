@@ -64,6 +64,10 @@ pub struct ModuleAction {
     /// (TODO-checklists C4.1) — a payment provider's API is called this way,
     /// from the module's own worker, past every hook the host has.
     network: bool,
+    /// Whether its module declared itself unsafe and was loaded under
+    /// `FELDSPAR_ALLOW_UNSAFE_MODULES` ([`crate::unsafe_modules`]): the call
+    /// then carries the `shell` ask.
+    shell: bool,
 }
 
 impl ModuleAction {
@@ -96,7 +100,17 @@ impl ModuleAction {
             payload: None,
             returns: None,
             network: false,
+            shell: false,
         }
+    }
+
+    /// The same action, able to run scripts on the server (the `shell` ask) —
+    /// for a module that declared itself unsafe, loaded on a server that
+    /// allows unsafe modules ([`crate::unsafe_modules`]).
+    #[must_use]
+    pub fn with_shell(mut self, shell: bool) -> ModuleAction {
+        self.shell = shell;
+        self
     }
 
     /// The same action, from a module that may reach the network
@@ -185,18 +199,16 @@ impl Action for ModuleAction {
             module: &self.module,
             user: ctx.event.user.as_ref(),
         };
-        self.host
-            .run(
-                &self.module,
-                &self.name,
-                args,
-                CallHosts::new(hosts.surfaces(), hosts.schema())
-                    .with_module_files(&files)
-                    .with_ask(AskSurface::Roles, &roles)
-                    .with_ask(AskSurface::Credits, &credits)
-                    .with_ask(AskSurface::OAuth, &oauth),
-            )
-            .await
+        let shell = crate::unsafe_modules::ModuleShell::new(&self.module);
+        let mut call = CallHosts::new(hosts.surfaces(), hosts.schema())
+            .with_module_files(&files)
+            .with_ask(AskSurface::Roles, &roles)
+            .with_ask(AskSurface::Credits, &credits)
+            .with_ask(AskSurface::OAuth, &oauth);
+        if self.shell {
+            call = call.with_ask(AskSurface::Shell, &shell);
+        }
+        self.host.run(&self.module, &self.name, args, call).await
     }
 }
 

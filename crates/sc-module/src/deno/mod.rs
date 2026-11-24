@@ -729,6 +729,25 @@ impl DenoModuleHost {
             .map_err(|e| denial(module, e))
     }
 
+    /// One request to one of a module's agent skills (`agent_skill_describe`,
+    /// `agent_skill_call`), on the worker the module is loaded on — the skill
+    /// is a class the module defined there.
+    pub async fn agent_skill(
+        &self,
+        module: &str,
+        request: Json,
+        call: CallHosts<'_>,
+    ) -> Result<Json> {
+        let index = self.worker_for(module).await;
+        let mut message = request;
+        if let Json::Object(map) = &mut message {
+            map.insert("module".to_owned(), json!(module));
+        }
+        self.send_with(index, message, None, call)
+            .await
+            .map_err(|e| denial(module, e))
+    }
+
     pub async fn run_webhook(
         &self,
         module: &str,

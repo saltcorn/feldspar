@@ -309,13 +309,18 @@ pub fn builtin_traits() -> Result<AgentRegistry> {
 /// against, and how this deployment connects a provider. A server calls
 /// [`builtin_traits`], puts the result in its agent services, and passes both
 /// here while building the action registry the trigger dispatcher will hold.
+///
+/// `traits` is a [`LiveRegistry`](sc_agent::LiveRegistry) — or an
+/// `Arc<AgentRegistry>` nothing replaces — so an agent given a module's trait
+/// after the actions were built still runs from a trigger.
 pub fn register_agent_actions(
     registry: &mut ActionRegistry,
-    traits: Arc<AgentRegistry>,
+    traits: impl Into<sc_agent::LiveRegistry>,
     providers: Arc<dyn ProviderConnector>,
 ) -> Result<()> {
+    let traits = traits.into();
     registry.register(Arc::new(RunAgent::new(
-        Arc::clone(&traits),
+        traits.clone(),
         Arc::clone(&providers),
     )))?;
     // Summarising users' memories into their preferences goes through an

@@ -375,6 +375,9 @@ pub(crate) async fn list_modules_json(services: &crate::ModuleServices, locale: 
             None => Json::Null,
         },
         "bundled": bundled,
+        // Whether an unsafe module may be installed and loaded here, asked
+        // once per listing: the switch is the process's environment.
+        "unsafe_allowed": sc_module::unsafe_modules_allowed(),
     })
 }
 
@@ -626,6 +629,9 @@ fn bundled_json(entry: &sc_module::BundledModule, installed: bool) -> Json {
         // permissions are reported in — so the card and the module's card draw
         // the same object with the same code.
         "permissions": Json::Object(entry.permissions.to_json()),
+        // Why it is unsafe, or null: the card marks it, and disables Install
+        // on a server not started with `FELDSPAR_ALLOW_UNSAFE_MODULES=1`.
+        "unsafe": entry.unsafe_reason,
         "installed": installed,
     })
 }

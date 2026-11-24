@@ -109,17 +109,26 @@ pub enum AskSurface {
     /// a module declares asks of the run it is a step of (TODO-checklists C3.5).
     /// The server answers it in the step's own context (`sc_check::declared`).
     Check,
+    /// `shell`: `{ op: "bash", script, cwd, env, timeout_seconds }`, a script
+    /// run on the server, or `{ op: "ssh", script, host, user, port, … }`, one
+    /// run on another machine over SSH — only for an action of a module that
+    /// declared itself unsafe, or one of its agent skills in an administrator's
+    /// run at the console, on a server started with
+    /// `FELDSPAR_ALLOW_UNSAFE_MODULES=1` (a
+    /// [`crate::unsafe_modules::ModuleShell`]).
+    Shell,
 }
 
 impl AskSurface {
     /// Every surface, in [`Asks`]' slot order.
-    pub const ALL: [AskSurface; 6] = [
+    pub const ALL: [AskSurface; 7] = [
         AskSurface::Service,
         AskSurface::Roles,
         AskSurface::Credits,
         AskSurface::OAuth,
         AskSurface::System,
         AskSurface::Check,
+        AskSurface::Shell,
     ];
 
     /// The name the host script asks it by.
@@ -131,6 +140,7 @@ impl AskSurface {
             AskSurface::OAuth => "oauth",
             AskSurface::System => "system",
             AskSurface::Check => "check",
+            AskSurface::Shell => "shell",
         }
     }
 
@@ -164,6 +174,12 @@ impl AskSurface {
                 "only a module's checklist step can ask for this (`ctx.browser`, `ctx.http`, \
                  `ctx.data`, `ctx.runStep`)"
             }
+            AskSurface::Shell => {
+                "this module cannot run scripts: only an action of a module that declares \
+                 itself unsafe (`\"feldspar\": { \"unsafe\": … }` in its package.json) can, \
+                 or one of its agent skills used by an administrator at the admin console, \
+                 on a server started with FELDSPAR_ALLOW_UNSAFE_MODULES=1"
+            }
         }
     }
 
@@ -175,7 +191,7 @@ impl AskSurface {
 /// The ask surfaces one call carries, one slot per [`AskSurface`]. Empty by
 /// default: a call carries only what it was given.
 #[derive(Clone, Copy, Default)]
-pub struct Asks<'a>([Option<&'a dyn Ask>; 6]);
+pub struct Asks<'a>([Option<&'a dyn Ask>; 7]);
 
 impl<'a> Asks<'a> {
     /// The same, answering `surface` with `ask`.
@@ -459,6 +475,57 @@ pub struct StreamProviderManifest {
     pub config_fields: Vec<Json>,
 }
 
+/// One **agent skill** a module supplies: an agent trait, in Saltcorn v1's
+/// shape.
+///
+/// v1's agents plugin collects skills from every plugin's
+/// `exchange.agent_skills`, and a module here may say the same — or
+/// `agent_skills` at the top level:
+///
+/// ```js
+/// class BashSkill {
+///   static skill_name = "Run Bash command";
+///   static trait_name = "run_bash";             // what an agent stores; else from skill_name
+///   static configFields = () => [{ name: "timeout", type: "Integer" }];
+///   constructor(cfg) { Object.assign(this, cfg); }
+///   systemPrompt() { return "If you would like to run a shell command, …"; }
+///   provideTools() {
+///     return { type: "function",
+///              function: { name: "run_bash", description: "…", parameters: { … } },
+///              process: async (args, { shell, user }) => … };
+///   }
+/// }
+/// module.exports = { exchange: { agent_skills: [BashSkill] } };
+/// ```
+///
+/// What crosses is the declaration and, for the configuration it was loaded
+/// with (none), its tools and prompt; the class stays in the worker, and a
+/// configured instance is described and called again through
+/// [`ModuleHost::agent_skill_describe`] and [`ModuleHost::agent_skill_call`].
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct AgentSkillManifest {
+    /// The name the trait is registered and an agent stores — `run_bash`.
+    /// Shares one namespace with the built-in traits and every other module's,
+    /// so a duplicate is refused by the registry.
+    pub name: String,
+    /// What the trait picker calls it: v1's `skill_label`, or `skill_name`.
+    #[serde(default)]
+    pub label: String,
+    /// One line for the trait picker.
+    #[serde(default)]
+    pub description: String,
+    /// Its settings, as v1 `configFields`.
+    #[serde(default)]
+    pub config_fields: Vec<Json>,
+    /// The tools an instance with no settings provides: `{ name, description,
+    /// parameters }` each.
+    #[serde(default)]
+    pub tools: Vec<Json>,
+    /// What an instance with no settings adds to the system prompt.
+    #[serde(default)]
+    pub prompt: Option<String>,
+}
+
 /// One **application framework** a module supplies (§13.3, §15.1).
 ///
 /// A module exports `frameworks` beside its `actions` and `table_providers`:
@@ -731,6 +798,16 @@ pub struct ModuleManifest {
     /// form offers beside `react` and `code`.
     #[serde(default)]
     pub frameworks: Vec<FrameworkManifest>,
+    /// The agent skills it supplies — v1's `exchange.agent_skills`, which
+    /// become agent traits beside the built-in ones ([`crate::agent_skills`]).
+    #[serde(default)]
+    pub agent_skills: Vec<AgentSkillManifest>,
+    /// Why the module declares itself unsafe, when it does
+    /// ([`crate::unsafe_modules`]): set on this side by the load, which only
+    /// gets this far for such a module on a server that allows them. Its
+    /// actions and agent skills then carry the `shell` ask.
+    #[serde(default)]
+    pub unsafe_reason: Option<String>,
     /// The view patterns it supplies (TODO "Saltcorn UI" §6) — v1's
     /// `viewtemplates`, described as data. The functions stay in the worker, in
     /// the view runtime's registry. After [`ModuleSet::load`](crate::ModuleSet)
@@ -1460,6 +1537,64 @@ impl ModuleHost {
         }
     }
 
+    /// Describe one of a module's **agent skills** as configured with
+    /// `configuration`: `{ tools: [{ name, description, parameters }], prompt }`
+    /// — what an agent with that skill is offered, which v1 computes from a
+    /// configured instance.
+    pub async fn agent_skill_describe(
+        &self,
+        module: &str,
+        skill: &str,
+        configuration: &Json,
+    ) -> Result<Json> {
+        #[cfg(feature = "deno-host")]
+        {
+            self.pool
+                .agent_skill(
+                    module,
+                    serde_json::json!({
+                        "op": "agent_skill_describe",
+                        "skill": skill,
+                        "configuration": configuration,
+                    }),
+                    CallHosts::default(),
+                )
+                .await
+        }
+        #[cfg(not(feature = "deno-host"))]
+        {
+            let _ = (module, skill, configuration);
+            Err(no_runtime())
+        }
+    }
+
+    /// Call one tool of one of a module's agent skills: `request` is `{
+    /// configuration, tool, args, user }`, answered with what the tool's
+    /// `process` returned. Over `call`, which carries the `shell` ask for an
+    /// unsafe module's skill used by an administrator at the console.
+    pub async fn agent_skill_call(
+        &self,
+        module: &str,
+        skill: &str,
+        request: Json,
+        call: CallHosts<'_>,
+    ) -> Result<Json> {
+        #[cfg(feature = "deno-host")]
+        {
+            let mut message = request;
+            if let Json::Object(map) = &mut message {
+                map.insert("op".to_owned(), Json::from("agent_skill_call"));
+                map.insert("skill".to_owned(), Json::from(skill));
+            }
+            self.pool.agent_skill(module, message, call).await
+        }
+        #[cfg(not(feature = "deno-host"))]
+        {
+            let _ = (module, skill, request, call);
+            Err(no_runtime())
+        }
+    }
+
     /// One call into Saltcorn UI's view runtime (TODO "Saltcorn UI" §3): `op` is
     /// the host script's `view_*` operation and `request` its fields.
     ///
@@ -1560,9 +1695,16 @@ mod tests {
     #[test]
     fn a_refusal_the_module_rethrew_stays_a_refusal() {
         let err = module_refusal("auth error: user `u` (role 30) may not act as user `v` (role 1)");
-        assert_eq!(err.auth_message(), Some("user `u` (role 30) may not act as user `v` (role 1)"));
+        assert_eq!(
+            err.auth_message(),
+            Some("user `u` (role 30) may not act as user `v` (role 1)")
+        );
         assert_eq!(err.to_string().matches("auth error").count(), 1, "{err}");
-        assert!(module_refusal("").to_string().contains("without saying why"));
+        assert!(
+            module_refusal("")
+                .to_string()
+                .contains("without saying why")
+        );
     }
 
     #[test]
@@ -1650,7 +1792,9 @@ mod tests {
         let names: Vec<&str> = AskSurface::ALL.iter().map(|s| s.name()).collect();
         assert_eq!(
             names,
-            ["service", "roles", "credits", "oauth", "system", "check"]
+            [
+                "service", "roles", "credits", "oauth", "system", "check", "shell"
+            ]
         );
         for surface in AskSurface::ALL {
             assert_eq!(AskSurface::from_name(surface.name()), Some(surface));
@@ -1682,6 +1826,7 @@ mod tests {
             AskSurface::Credits,
             AskSurface::OAuth,
             AskSurface::System,
+            AskSurface::Shell,
         ] {
             assert!(call.asks.get(absent).is_none(), "{absent:?}");
         }

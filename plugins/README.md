@@ -26,6 +26,7 @@ runs nothing extra.
 | `react-native/` | `@feldspar/react-native` | JavaScript | an application framework: an Expo (React Native) project served on the web, with Android and iOS apps as build targets |
 | `imap/` | `@feldspar/imap` | JavaScript | mail: IMAP mailboxes kept in four tables of its own, a sync service and mail actions (ingest and mirror mode, and sending: see [tutorial-mail.md](../docs/tutorial-mail.md); the live-server matrix is `test/live-matrix.mjs`; Outlook.com, Microsoft 365 and Gmail connect with OAuth2, tutorial Step 11) |
 | `payments/` | `@feldspar/payments` | JavaScript | payments: provider accounts, a mirror of the provider's objects and a log of payment events in three tables of its own, with an adapter per provider — Stripe, and `fake`, a test provider with its own checkout page; `pay_checkout` for an application's own rows, subscriptions that grant a plan's role and its monthly LLM credits (with a plan binding to the application's plans table, a customer portal and plan changes), credit packs and `pay_charge_saved` for one-click and automatic top-ups on a saved card, refunds, and a sweep for missed webhooks (see [tutorial-payments.md](../docs/tutorial-payments.md), [tutorial-payments-saas.md](../docs/tutorial-payments-saas.md) and [tutorial-payments-credits.md](../docs/tutorial-payments-credits.md)) |
+| `bash/` | `@feldspar/bash` | JavaScript | an action, `run_bash_script`: runs a bash script (the trigger's own, or one in a field of the row) on the server with the row as `ROW_*` variables, optionally writing exit code and output back to the row; and an agent trait, `run_bash` (v1's "Run Bash command" skill), whose tool runs the model's command on the server or over SSH, for an administrator's chat at the admin console. **Unsafe** (see below): installed only on a server started with `FELDSPAR_ALLOW_UNSAFE_MODULES=1` |
 | `markdown/` | `feldspar-markdown` | Python | two functions: Markdown to HTML, and a plain-text summary |
 | `sklearn/` | `feldspar-sklearn` | Python | five model providers: ridge, gradient boosting, SVM, DBSCAN and t-SNE |
 
@@ -68,6 +69,56 @@ the Modules tab prints this set beside the Install button so that the click
 which grants it is made by someone who read it. Python modules have no
 permission model at all (there is no sandbox — see §10 of the Python API), and
 the tab says so rather than showing a set that would mean nothing.
+
+## Unsafe modules
+
+A module that can do what no permission bounds — `bash/` runs any script as
+the server's user — **declares itself unsafe**, in its `package.json`:
+
+```json
+"feldspar": { "unsafe": "its action and its agent trait run any bash command on the server, as the server's own user" }
+```
+
+and, for a bundled one, the same sentence as `"unsafe"` in
+`feldspar-module.json` (the test asserts the two agree). A server installs,
+loads and runs an unsafe module only when the **operator** started it with
+`FELDSPAR_ALLOW_UNSAFE_MODULES=1`; otherwise the install is refused with a
+sentence naming the variable, an installed one does not load, and its card says
+why. This holds for any npm package that declares itself so, not only the
+bundled ones. What being unsafe gives a module is the `shell` argument of its
+actions (`shell.bash(script, { cwd, env, timeout_seconds })`, and
+`shell.ssh(script, { host, user, port, timeout_seconds })`, which runs it with
+`bash -s` on another machine), which the server answers through `sc_proc`
+(`crates/sc-module/src/unsafe_modules.rs`). Its agent skills' tools get the
+same `shell`, but only in a run of an administrator at the admin console.
+
+## Agent skills
+
+A JavaScript module adds **agent traits** by exporting Saltcorn v1 agent skills,
+as v1's agents plugin collects them — `exchange: { agent_skills: [Skill] }` (or
+`agent_skills: [Skill]`). A skill is a class:
+
+```js
+class Skill {
+  static skill_name = "Look up a word";       // the trait is `look_up_a_word`…
+  static trait_name = "dictionary";           // …unless it says otherwise
+  static configFields = () => [{ name: "language", type: "String" }];
+  constructor(cfg) { Object.assign(this, cfg); }
+  systemPrompt() { return "Use the define tool for definitions."; }
+  provideTools() {
+    return { type: "function",
+             function: { name: "define", description: "…", parameters: { type: "object", … } },
+             process: async (args, { user, shell }) => "…" };
+  }
+}
+```
+
+The agent screen offers it beside the built-in traits once the module is
+installed. The tools and the prompt are asked of an instance configured as the
+agent is (when the agent is saved, and when it loads), so they may depend on the
+settings; the prompt is asked without a row or a user. `process` gets the
+model's arguments and `{ req: { user }, user, shell }`; what it returns is the
+tool result.
 
 ## Adding one
 

@@ -87,6 +87,15 @@ impl LoadedModule {
             .unwrap_or_default()
     }
 
+    /// The agent skills this module supplies — the agent traits it adds to
+    /// the trait picker ([`crate::agent_skills`]).
+    pub fn agent_skill_names(&self) -> Vec<String> {
+        self.manifest
+            .as_ref()
+            .map(|m| m.agent_skills.iter().map(|s| s.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
     /// The content-security sources this module suggests (TODO-payments P1.4)
     /// — the valid ones; an invalid one was an issue when it loaded.
     pub fn csp_suggestions(&self) -> Vec<crate::csp::CspSuggestion> {
@@ -368,8 +377,24 @@ async fn load_one(
         };
     }
 
+    // A module that declares itself unsafe loads only on a server whose
+    // operator allowed them (`crate::unsafe_modules`) — checked here as well as
+    // at install, so taking the switch away takes the module away.
+    let unsafe_reason = crate::unsafe_modules::declared_unsafe(&dir);
+    if let Err(e) =
+        crate::unsafe_modules::refuse_unless_allowed(&module.name, unsafe_reason.as_deref())
+    {
+        issues.push(format!("it was not loaded: {}", sc_error::format_chain(&e)));
+        return LoadedModule {
+            module: module.clone(),
+            manifest: None,
+            config_spec: Vec::new(),
+            issues,
+        };
+    }
+
     let configuration = Json::Object(module.configuration.clone());
-    let manifest = match host
+    let mut manifest = match host
         .load(&module.name, &dir, &configuration, &module.permissions)
         .await
     {
@@ -385,6 +410,7 @@ async fn load_one(
         }
     };
     issues.extend(manifest.issues.iter().cloned());
+    manifest.unsafe_reason.clone_from(&unsafe_reason);
 
     let (config_spec, spec_issues) =
         config_fields_to_form_fields(&manifest.config_fields, "this module");
@@ -412,6 +438,7 @@ async fn load_one(
         .with_file_areas(Arc::clone(&areas))
         .with_role_ceiling(module.permissions.roles)
         .with_network(!module.permissions.net.is_empty())
+        .with_shell(unsafe_reason.is_some())
         .with_types(action.payload.clone(), action.returns.clone());
         // A type that does not lower is reported and dropped: the action still
         // runs, and its client method is `unknown` rather than wrong.
@@ -610,6 +637,8 @@ mod tests {
             reads: Vec::new(),
             csp: Vec::new(),
             frameworks: Vec::new(),
+            agent_skills: Vec::new(),
+            unsafe_reason: None,
             view_patterns: Vec::new(),
             headers: Vec::new(),
             config_fields: Vec::new(),

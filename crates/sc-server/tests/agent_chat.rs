@@ -174,7 +174,7 @@ async fn serve_with(
     let services = sc_server::install_agents(&catalog)
         .await?
         .with_providers(providers);
-    sc_agent::save_agent(&catalog, services.registry(), &agent).await?;
+    sc_agent::save_agent(&catalog, &services.registry(), &agent).await?;
 
     let sessions = Arc::new(SessionStore::default());
     let apps = Arc::new(AppMounts::new(catalog.clone()).with_agents(services));
@@ -780,7 +780,7 @@ async fn the_chat_and_the_admin_api_share_one_trait_registry() -> Result<()> {
     let stored = sc_agent::load_agent_by_name(&server.catalog, "librarian")
         .await?
         .expect("stored");
-    sc_agent::validate_agent(&server.catalog, services.registry(), &stored).await?;
+    sc_agent::validate_agent(&server.catalog, &services.registry(), &stored).await?;
     Ok(())
 }
 

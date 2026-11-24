@@ -823,6 +823,9 @@ const supportedKeys = new Set([
   "headers",
   // Checklist step types (TODO-checklists C3.5).
   "checklist_steps",
+  // Agent skills, which become agent traits; v1 spells them
+  // `exchange.agent_skills`, and `exchange` is censused for what else it has.
+  "agent_skills",
 ]);
 
 /** Keys that are metadata rather than an entity type — including `onLoad`,
@@ -1070,6 +1073,177 @@ async function evalModelProviders(plugin, configuration) {
     });
   }
   return { providers, set, issues };
+}
+
+/** The skills a plugin exports: v1's `exchange.agent_skills` and this
+ * system's top-level `agent_skills`, each an array of skill classes (v1's
+ * shape) or plain objects with the same members. */
+function exportedSkills(plugin) {
+  const listed = [];
+  for (const value of [plugin.exchange && plugin.exchange.agent_skills, plugin.agent_skills]) {
+    if (Array.isArray(value)) listed.push(...value);
+  }
+  return listed;
+}
+
+/** The name an agent stores a skill under: its `trait_name`, or its
+ * `skill_name` in snake case — "Run Bash command" is `run_bash_command`. */
+function skillTraitName(skill) {
+  const declared = typeof skill.trait_name === "string" ? skill.trait_name.trim() : "";
+  if (declared) return declared;
+  const label = typeof skill.skill_name === "string" ? skill.skill_name : "";
+  return label
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+/** A skill configured with `configuration`: v1 constructs its class with the
+ * configuration (`Object.assign(this, cfg)`), and a plain object gets the
+ * same through its prototype, so `this.timeout` reads the setting either
+ * way. */
+function skillInstance(skill, configuration) {
+  const cfg = { ...(configuration || {}) };
+  if (typeof skill === "function") return new skill(cfg);
+  return Object.assign(Object.create(skill), cfg);
+}
+
+/** The tools a configured skill provides, with their `process` functions:
+ * v1's `provideTools()` answers one tool or an array of them. */
+async function skillTools(instance) {
+  if (typeof instance.provideTools !== "function") return [];
+  const provided = await instance.provideTools();
+  const list = Array.isArray(provided) ? provided : provided ? [provided] : [];
+  return list.filter((tool) => tool && tool.function && typeof tool.function.name === "string");
+}
+
+/** What a configured skill offers an agent: its tools, declared, and its part
+ * of the system prompt. The prompt is asked with no row and no user, because
+ * on this side it is the cached part of the prompt and must not change from
+ * one turn to the next. */
+async function describeSkill(skill, configuration) {
+  const instance = skillInstance(skill, configuration);
+  const tools = (await skillTools(instance)).map((tool) => ({
+    name: tool.function.name,
+    description: tool.function.description || "",
+    parameters: tool.function.parameters || { type: "object", properties: {} },
+  }));
+  let prompt = null;
+  if (typeof instance.systemPrompt === "function") {
+    const said = await instance.systemPrompt({});
+    if (typeof said === "string" && said.trim()) prompt = said;
+  }
+  return { tools, prompt };
+}
+
+/** v1's agent skills (the agents plugin's `exchange.agent_skills`), read as
+ * agent traits: each a class with `skill_name`, static `configFields`, and
+ * `systemPrompt()` and `provideTools()` on an instance constructed with the
+ * trait's configuration.
+ *
+ * A skill with no name, or whose name another of the module's skills has, is
+ * **reported and skipped**; one whose tools cannot be described without
+ * settings still loads, with none until it is configured. */
+async function evalAgentSkills(plugin) {
+  const issues = [];
+  const skills = [];
+  const set = {};
+  for (const skill of exportedSkills(plugin)) {
+    if (!skill || (typeof skill !== "function" && typeof skill !== "object")) {
+      issues.push(`an agent skill it exports is ${JSON.stringify(skill)}, which is not a skill class`);
+      continue;
+    }
+    const name = skillTraitName(skill);
+    if (!name) {
+      issues.push("an agent skill it exports has neither a trait_name nor a skill_name");
+      continue;
+    }
+    if (set[name]) {
+      issues.push(`two of its agent skills are named "${name}"; the second is not available`);
+      continue;
+    }
+    let configFields = [];
+    try {
+      configFields = await evalConfigFields(skill.configFields, {});
+    } catch (e) {
+      issues.push(`the agent skill "${name}" could not declare its settings: ${e.message}`);
+    }
+    let described = { tools: [], prompt: null };
+    try {
+      described = await describeSkill(skill, {});
+    } catch (e) {
+      issues.push(`the agent skill "${name}" could not say what it offers without settings: ${e.message}`);
+    }
+    let label = typeof skill.skill_name === "string" ? skill.skill_name : name;
+    try {
+      const instance = skillInstance(skill, {});
+      if (typeof instance.skill_label === "string" && instance.skill_label) label = instance.skill_label;
+    } catch (_) {
+      // Already reported by the description above.
+    }
+    set[name] = skill;
+    skills.push({
+      name,
+      label,
+      description:
+        typeof skill.description === "string" && skill.description
+          ? skill.description
+          : typeof skill.skill_name === "string"
+            ? skill.skill_name
+            : "",
+      config_fields: configFields.map(fieldDeclaration),
+      tools: described.tools,
+      prompt: described.prompt,
+    });
+  }
+  return { skills, set, issues };
+}
+
+/** The loaded skill, or a sentence naming what is missing. */
+function requireSkill(name, skillName) {
+  const entry = loaded.get(name);
+  if (!entry) throw new Error(`the module ${name} is not loaded in this host`);
+  const skill = entry.agentSkills && entry.agentSkills[skillName];
+  if (!skill) throw new Error(`the module ${name} has no agent skill ${skillName}`);
+  return skill;
+}
+
+/** Describe one skill as configured (`agent_skill_describe`). */
+async function agentSkillDescribe({ module: name, skill: skillName, configuration }) {
+  return describeSkill(requireSkill(name, skillName), configuration);
+}
+
+/** Call one tool of one configured skill (`agent_skill_call`): v1's
+ * `process(args, { req })`, with what this host adds beside `req` — the
+ * caller as `user`, and `shell`, which runs a script on the server (or over
+ * SSH from it) for an unsafe module's skill used by an administrator at the
+ * console, and refuses saying why anywhere else. A string answer is the tool
+ * result as it stands; anything else is its JSON. */
+async function agentSkillCall({ module: name, skill: skillName, configuration, tool: toolName, args, user }) {
+  const instance = skillInstance(requireSkill(name, skillName), configuration);
+  const tools = await skillTools(instance);
+  const tool = tools.find((t) => t.function.name === toolName);
+  if (!tool) throw new Error(`the agent skill ${skillName} of module ${name} has no tool ${toolName}`);
+  if (typeof tool.process !== "function")
+    throw new Error(`the tool ${toolName} of agent skill ${skillName} has no process function`);
+  const store = running.getStore();
+  const callId = store && store.call;
+  const shell =
+    store && store.asks
+      ? moduleShell((plan) => askFor(callId, "shell", plan))
+      : moduleShell(() =>
+          Promise.reject(
+            new Error(
+              "this tool cannot run scripts: only an unsafe module's agent skill can, used by an " +
+                "administrator at the admin console, on a server started with " +
+                "FELDSPAR_ALLOW_UNSAFE_MODULES=1",
+            ),
+          ),
+        );
+  const caller = user || null;
+  const result = await tool.process(args || {}, { req: { user: caller }, user: caller, shell });
+  return result === undefined ? null : result;
 }
 
 /** v1 has no `streamproviders`; this is **this** system's key (TODO "Streams" §12).
@@ -2976,6 +3150,10 @@ async function loadModule({ module: name, dir, configuration }) {
   } = await evalFrameworks(plugin, configuration);
   issues.push(...frameworkIssues);
 
+  const { skills: agentSkills, set: agentSkillSet, issues: agentSkillIssues } =
+    await evalAgentSkills(plugin);
+  issues.push(...agentSkillIssues);
+
   const {
     patterns: viewPatterns,
     set: viewPatternSet,
@@ -2988,6 +3166,13 @@ async function loadModule({ module: name, dir, configuration }) {
   const unsupported = [];
   for (const [key, value] of Object.entries(plugin)) {
     if (supportedKeys.has(key) || metadataKeys.has(key)) continue;
+    if (key === "exchange" && value && typeof value === "object") {
+      // `agent_skills` is read; what else v1 exchanges is not.
+      for (const [inner, entities] of Object.entries(value)) {
+        if (inner !== "agent_skills") unsupported.push({ key: `exchange.${inner}`, count: entityCount(entities) });
+      }
+      continue;
+    }
     unsupported.push({ key, count: entityCount(value) });
   }
 
@@ -3004,6 +3189,7 @@ async function loadModule({ module: name, dir, configuration }) {
     webhooks: webhookSet,
     routes: routeSet,
     checkSteps: checkStepSet,
+    agentSkills: agentSkillSet,
     configuration: configuration || {},
   });
   // The registry may hold this module's previous patterns: rebuild it on the
@@ -3029,6 +3215,7 @@ async function loadModule({ module: name, dir, configuration }) {
     reads,
     csp,
     frameworks,
+    agent_skills: agentSkills,
     view_patterns: viewPatterns,
     headers,
     config_fields: configFields,
@@ -3274,6 +3461,36 @@ function moduleCredits(send) {
   };
 }
 
+/** `shell` of an action (and of an agent skill's tool): run a script **on
+ * the server**, which this worker cannot do itself (it may not spawn
+ * anything). Answered only for a module that declares itself unsafe
+ * (`"feldspar": { "unsafe": "…" }` in its package.json) on a server started
+ * with FELDSPAR_ALLOW_UNSAFE_MODULES=1; anywhere else the server refuses with
+ * a sentence saying so (`sc_module::unsafe_modules`).
+ *
+ *   const { exitcode, stdout, stderr, timed_out } =
+ *     await shell.bash("ls -l", { cwd: "/srv", env: { ROW_ID: "7" }, timeout_seconds: 60 });
+ *   // The same answer, from `bash -s` on another machine over SSH:
+ *   await shell.ssh("uptime", { host: "db1", user: "deploy", port: 22, timeout_seconds: 60 });
+ */
+function moduleShell(send) {
+  return {
+    bash(script, { cwd, env, timeout_seconds } = {}) {
+      return send({ op: "bash", script, cwd: cwd ?? null, env: env ?? null, timeout_seconds: timeout_seconds ?? null });
+    },
+    ssh(script, { host, user, port, timeout_seconds } = {}) {
+      return send({
+        op: "ssh",
+        script,
+        host: host ?? null,
+        user: user ?? null,
+        port: port ?? null,
+        timeout_seconds: timeout_seconds ?? null,
+      });
+    },
+  };
+}
+
 /** `callerFiles` of an action (TODO-imap M9.3): the application's file stores,
  * **read** as the action's caller — the code body's `fs(…).asUser()`, over the
  * call's own `files` surface. A module that sends a user's file somewhere (the
@@ -3318,6 +3535,7 @@ async function runAction({ module: name, action: actionName, args }) {
      * sends the browser; the granted tokens are written into the row
      * `request.store` names. */
     argument.oauth = { begin: (request) => askFor(callId, "oauth", request) };
+    argument.shell = moduleShell((plan) => askFor(callId, "shell", plan));
   }
   const result = await impl.run(argument);
   return result === undefined ? null : result;
@@ -5521,6 +5739,16 @@ async function handle(request) {
       const pending = loading.get(request.module);
       if (pending) await pending;
       return await runRoute(request);
+    }
+    case "agent_skill_describe": {
+      const pending = loading.get(request.module);
+      if (pending) await pending;
+      return await agentSkillDescribe(request);
+    }
+    case "agent_skill_call": {
+      const pending = loading.get(request.module);
+      if (pending) await pending;
+      return await agentSkillCall(request);
     }
     case "check_step_run": {
       const pending = loading.get(request.module);

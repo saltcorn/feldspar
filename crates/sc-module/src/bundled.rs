@@ -118,6 +118,14 @@ pub struct BundledModule {
     /// What it asks to be allowed to reach. Granted by the install, printed by
     /// the tab beside the button that does it.
     pub permissions: ModulePermissions,
+    /// Why the module is **unsafe** — it can do what no permission bounds,
+    /// such as run any program on the server — or `None` for a module that is
+    /// not ([`crate::unsafe_modules`]). Said on the card, and checked before
+    /// anything is installed: a server not started with
+    /// `FELDSPAR_ALLOW_UNSAFE_MODULES=1` refuses it. Its package must say the
+    /// same (`"feldspar": { "unsafe": … }` in `package.json`), which is what
+    /// the load checks; `tests/bundled_catalog.rs` asserts the two agree.
+    pub unsafe_reason: Option<String>,
     /// The directory the package is installed from.
     pub directory: PathBuf,
 }
@@ -293,6 +301,16 @@ fn read_manifest(dir: &Path) -> Result<BundledModule> {
         )));
     }
 
+    let unsafe_reason = match object.get("unsafe") {
+        None | Some(Json::Null) | Some(Json::Bool(false)) => None,
+        Some(value) => Some(crate::unsafe_modules::unsafe_reason(value).ok_or_else(|| {
+            Error::invalid(format!(
+                "{}: `unsafe` should be a sentence saying what makes the module unsafe",
+                where_()
+            ))
+        })?),
+    };
+
     let supplies = lines("supplies")?;
     let tables = lines("tables")?;
     for table in &tables {
@@ -328,6 +346,7 @@ fn read_manifest(dir: &Path) -> Result<BundledModule> {
         services: lines("services")?,
         webhooks: lines("webhooks")?,
         permissions,
+        unsafe_reason,
         directory: dir.to_path_buf(),
     })
 }
@@ -385,6 +404,29 @@ mod tests {
         assert_eq!(module.installs, ["rss-parser"]);
         assert!(module.permissions.any_host());
         assert!(module.directory.ends_with("rss"));
+    }
+
+    #[test]
+    fn an_unsafe_entry_says_why() {
+        let bash = RSS.replace("@feldspar/rss", "@feldspar/bash").replace(
+            r#""installs""#,
+            r#""unsafe": "runs any bash script", "installs""#,
+        );
+        let (_dir, catalog) = catalog_of(&[("rss", RSS), ("bash", &bash)]);
+        assert!(catalog.issues().is_empty(), "{:?}", catalog.issues());
+        assert_eq!(
+            catalog.get("bash").unwrap().unsafe_reason.as_deref(),
+            Some("runs any bash script")
+        );
+        assert_eq!(catalog.get("rss").unwrap().unsafe_reason, None);
+
+        let vague = RSS.replace(r#""installs""#, r#""unsafe": 1, "installs""#);
+        let (_dir, catalog) = catalog_of(&[("rss", &vague)]);
+        assert!(
+            catalog.issues()[0].contains("unsafe"),
+            "{:?}",
+            catalog.issues()
+        );
     }
 
     #[test]

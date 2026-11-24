@@ -1,0 +1,11 @@
+{
+  "name": "@feldspar/bash",
+  "version": "0.1.0",
+  "description": "Run a bash script on the server from a trigger, or from an agent (here or over SSH). Unsafe: needs FELDSPAR_ALLOW_UNSAFE_MODULES=1.",
+  "main": "index.js",
+  "license": "MIT",
+  "private": true,
+  "feldspar": {
+    "unsafe": "its action and its agent trait run any bash command on the server, as the server's own user"
+  }
+}

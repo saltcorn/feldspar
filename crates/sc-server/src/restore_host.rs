@@ -38,7 +38,7 @@ fn source_dir_name(name: &str) -> String {
 #[async_trait::async_trait]
 impl sc_backup::RestoreHost for AppMounts {
     fn agent_registry(&self) -> Result<Arc<sc_agent::AgentRegistry>> {
-        Ok(Arc::clone(agents_of(self)?.registry()))
+        Ok(agents_of(self)?.registry())
     }
 
     fn trigger_dispatcher(&self) -> Result<Arc<sc_action::TriggerDispatcher>> {
@@ -144,7 +144,7 @@ impl sc_sync::DeployHost for AppMounts {
             actions: triggers_of(self).map_or(builtin.actions, |d| d.registry()),
             streams: streams_of(self).map_or(builtin.streams, |s| s.registry()),
             agent_traits: agents_of(self)
-                .map_or(builtin.agent_traits, |a| Arc::clone(a.registry())),
+                .map_or(builtin.agent_traits, |a| a.registry()),
             modules: std::collections::BTreeMap::new(),
         })
     }

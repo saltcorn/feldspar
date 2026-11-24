@@ -1134,6 +1134,40 @@ saying where the screen sits or how to get back up.
   `crumbs`); root screens keep their group pre-title. The agent chat, which has no page header,
   shows it in its top bar. Test: `ui/admin/src/breadcrumbs.test.tsx`.
 
+## UM1 — Unsafe modules, and a bundled bash module (user request)
+
+Some modules exist to do what no permission set bounds, such as run any program on the server.
+They need a declaration, and an operator's switch that allows them.
+
+- [x] **UM1.1** A module declares itself unsafe with `"feldspar": { "unsafe": "<why>" }` in its
+  `package.json` (and a bundled one also with `"unsafe"` in `feldspar-module.json`). It is
+  installed, loaded and run only on a server started with `FELDSPAR_ALLOW_UNSAFE_MODULES=1`
+  (`sc_module::unsafe_modules`), checked at install (sc-server `install_module`), at load
+  (`modules::load_one`) and on each call. Tests: `unsafe_modules` unit tests, `bundled::tests`.
+- [x] **UM1.2** The `shell` ask surface: an unsafe module's actions get `shell.bash(script, { cwd,
+  env, timeout_seconds })`, run by the server through `sc_proc` (cleared environment, timeout,
+  process group). Inventory row `UNSAFE_MODULE_SHELL`.
+- [x] **UM1.3** `plugins/bash` (`@feldspar/bash`): the action `run_bash_script`, after v1's
+  `@saltcorn/bash`. Tests: `tests/bundled_bash.rs`, `bundled_catalog`'s agreement check,
+  `node --test plugins/bash/test`.
+- [x] **UM1.4** Say "unsafe" on the Modules tab's catalog card and disable Install when the switch
+  is off (`unsafe` on `bundled_module_schema`, `unsafe_allowed` on the listing, client.ts in the
+  four UIs). v1's script from a row field and write-back of exit code and output to fields.
+  Tests: `modules.test.ts`, `modules_api`'s catalog listing, `bundled_bash`, `node --test
+  plugins/bash/test`.
+- [x] **UM1.5** Modules supply **agent traits**: v1's `exchange.agent_skills` (or `agent_skills`)
+  — a skill class with `skill_name`, `configFields`, `systemPrompt()` and `provideTools()` — is
+  read at load (`AgentSkillManifest`), described per configuration on the worker
+  (`sc_module::agent_skills`), and made an `AgentTrait` in sc-server (`module_traits`). The agent
+  registry is now replaced on every module change (`sc_agent::LiveRegistry`,
+  `AgentServices::install_module_traits`), and `run_agent` follows it. Tests: `agent_skills` and
+  `module_traits` unit tests, `agents::tests`, `registry` tests.
+- [x] **UM1.6** The bash module's `run_bash` trait, after v1's "Run Bash command" skill: runs the
+  model's command locally, or over SSH (`shell.ssh`: `ssh -o BatchMode=yes … "bash -s"`, script
+  on stdin, `HostCommand::stdin_file`). An unsafe module's tools are offered only to an
+  administrator's run at the admin console, in act mode. Tests: `bundled_bash`, `unsafe_modules`
+  (ssh argument checks), sc-proc's stdin test, `node --test plugins/bash/test`.
+
 ---
 
 ## Open questions

@@ -346,7 +346,7 @@ where
     F: FnOnce(CheckEnv<'a>) -> Fut,
     Fut: std::future::Future<Output = Result<T>> + 'a,
 {
-    let services = apps.agents().map(|a| a.registry().view_services());
+    let services = apps.agents().map(|a| a.view_services());
     let requests = services
         .and_then(|s| s.requests())
         .map(|r| r.as_ref() as &dyn sc_agent::AppRequester);

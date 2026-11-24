@@ -248,6 +248,25 @@ impl ModuleServices {
         )
         .await?;
         self.dispatcher.set_registry(Arc::new(registry))?;
+        // And the **agent traits** the modules' agent skills are, beside the
+        // built-in ones: replaced whole, like the action registry, so an agent
+        // given a module's trait validates once the module is installed and
+        // stops when it is removed. A name already taken is reported and the
+        // rest installed.
+        for problem in self
+            .agents
+            .install_module_traits(crate::module_traits::module_agent_traits(
+                sc_module::module_agent_skills(&self.host, &set),
+            ))
+        {
+            eprintln!("feldspar: {problem}");
+        }
+        if let Err(e) = crate::agents::report_unusable_agents(&self.catalog, &self.agents).await {
+            eprintln!(
+                "feldspar: the stored agents could not be checked after a module change: {}",
+                sc_error::format_chain(&e)
+            );
+        }
         // The tables the modules declared (TODO-imap M4.3), which the load has
         // just created or brought up to date: claimed on the catalog, so the
         // schema editor refuses to drop them while their module is installed.
@@ -798,9 +817,38 @@ impl ModuleServices {
             )));
         }
 
+        // An unsafe module (`sc_module::unsafe_modules`) needs the operator's
+        // switch. A bundled one says so in the catalog, so it is refused before
+        // anything is downloaded; any other says so in its package.json, which
+        // is only there to read once npm has put it on the disk.
+        if let Some(entry) = bundled {
+            sc_module::unsafe_modules::refuse_unless_allowed(
+                &entry.name,
+                entry.unsafe_reason.as_deref(),
+            )?;
+        }
         let package = self.install_package(language, source, location).await?;
         let stored = sc_module::load_module_by_name(&self.catalog, &package.name).await?;
         let first_install = stored.is_none();
+        if language == sc_module::ModuleLanguage::JavaScript {
+            let declared = sc_module::declared_unsafe(&self.installer.package_dir(&package.name));
+            if let Err(refused) =
+                sc_module::unsafe_modules::refuse_unless_allowed(&package.name, declared.as_deref())
+            {
+                // Nobody asked for it to stay: a first install's package goes
+                // again. An upgrade's row stays, and the load refuses it with
+                // the same sentence on its card.
+                if first_install && let Err(e) = self.installer.uninstall(&package.name).await {
+                    sc_log::log_error!(
+                        "feldspar: the unsafe module `{}` was refused but its package could \
+                         not be uninstalled: {}",
+                        package.name,
+                        sc_error::format_chain(&e)
+                    );
+                }
+                return Err(refused);
+            }
+        }
         let mut module = match stored {
             Some(existing) => existing,
             None => sc_module::Module::new(&package.name, source, location),
