@@ -173,7 +173,7 @@ members = [
 
 # Shared package metadata inherited by every member crate via `field.workspace = true`.
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5-dev"
 edition = "2024"
 license = "MIT"
 authors = ["Saltcorn contributors"]

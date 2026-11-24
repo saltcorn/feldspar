@@ -8962,7 +8962,7 @@ dependencies = [
 
 [[package]]
 name = "sc-access"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "chrono",
  "sc-auth",
@@ -8984,7 +8984,7 @@ dependencies = [
 
 [[package]]
 name = "sc-action"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "chrono",
@@ -9007,7 +9007,7 @@ dependencies = [
 
 [[package]]
 name = "sc-action-builtins"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -9037,7 +9037,7 @@ dependencies = [
 
 [[package]]
 name = "sc-agent"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "chrono",
@@ -9066,7 +9066,7 @@ dependencies = [
 
 [[package]]
 name = "sc-agent-builtins"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -9113,7 +9113,7 @@ dependencies = [
 
 [[package]]
 name = "sc-analytics"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "chrono",
  "sc-catalog",
@@ -9136,7 +9136,7 @@ dependencies = [
 
 [[package]]
 name = "sc-api"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-graphql",
  "async-trait",
@@ -9182,7 +9182,7 @@ dependencies = [
 
 [[package]]
 name = "sc-app"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "bytes",
@@ -9214,7 +9214,7 @@ dependencies = [
 
 [[package]]
 name = "sc-auth"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "argon2 0.5.3",
  "base64 0.22.1",
@@ -9246,7 +9246,7 @@ dependencies = [
 
 [[package]]
 name = "sc-backup"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -9298,7 +9298,7 @@ dependencies = [
 
 [[package]]
 name = "sc-bayesreg"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "sc-dataset",
@@ -9314,7 +9314,7 @@ dependencies = [
 
 [[package]]
 name = "sc-catalog"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "aes-gcm 0.10.3",
  "async-trait",
@@ -9339,7 +9339,7 @@ dependencies = [
 
 [[package]]
 name = "sc-check"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "chrono",
@@ -9372,7 +9372,7 @@ dependencies = [
 
 [[package]]
 name = "sc-cli"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "axum",
@@ -9429,7 +9429,7 @@ dependencies = [
 
 [[package]]
 name = "sc-config"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "base64 0.22.1",
  "sc-catalog",
@@ -9448,7 +9448,7 @@ dependencies = [
 
 [[package]]
 name = "sc-config-file"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "libc",
  "sc-error",
@@ -9458,7 +9458,7 @@ dependencies = [
 
 [[package]]
 name = "sc-dataset"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "chrono",
@@ -9481,7 +9481,7 @@ dependencies = [
 
 [[package]]
 name = "sc-db"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "futures",
@@ -9495,7 +9495,7 @@ dependencies = [
 
 [[package]]
 name = "sc-db-postgres"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "bytes",
@@ -9516,7 +9516,7 @@ dependencies = [
 
 [[package]]
 name = "sc-db-sqlite"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "chrono",
@@ -9533,7 +9533,7 @@ dependencies = [
 
 [[package]]
 name = "sc-dns"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "hickory-resolver",
  "libc",
@@ -9543,7 +9543,7 @@ dependencies = [
 
 [[package]]
 name = "sc-docs"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "minijinja",
  "pulldown-cmark",
@@ -9553,7 +9553,7 @@ dependencies = [
 
 [[package]]
 name = "sc-email"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "lettre",
@@ -9572,7 +9572,7 @@ dependencies = [
 
 [[package]]
 name = "sc-error"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "serde",
  "serde_json",
@@ -9580,7 +9580,7 @@ dependencies = [
 
 [[package]]
 name = "sc-expr"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "argon2 0.5.3",
  "async-trait",
@@ -9608,7 +9608,7 @@ dependencies = [
 
 [[package]]
 name = "sc-files"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -9630,14 +9630,14 @@ dependencies = [
 
 [[package]]
 name = "sc-http"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "http",
 ]
 
 [[package]]
 name = "sc-i18n"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "icu_locale_core",
@@ -9653,7 +9653,7 @@ dependencies = [
 
 [[package]]
 name = "sc-live"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -9680,7 +9680,7 @@ dependencies = [
 
 [[package]]
 name = "sc-llm"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -9706,14 +9706,14 @@ dependencies = [
 
 [[package]]
 name = "sc-log"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "sc-error",
 ]
 
 [[package]]
 name = "sc-mcp"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -9732,7 +9732,7 @@ dependencies = [
 
 [[package]]
 name = "sc-migrate"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "chrono",
  "futures",
@@ -9748,7 +9748,7 @@ dependencies = [
 
 [[package]]
 name = "sc-model"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "chrono",
@@ -9774,7 +9774,7 @@ dependencies = [
 
 [[package]]
 name = "sc-module"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -9818,7 +9818,7 @@ dependencies = [
 
 [[package]]
 name = "sc-net"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "reqwest",
  "sc-error",
@@ -9827,7 +9827,7 @@ dependencies = [
 
 [[package]]
 name = "sc-proc"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "libc",
  "pty-process",
@@ -9838,7 +9838,7 @@ dependencies = [
 
 [[package]]
 name = "sc-python"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "futures",
@@ -9865,7 +9865,7 @@ dependencies = [
 
 [[package]]
 name = "sc-query"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "chrono",
  "rust_decimal",
@@ -9877,7 +9877,7 @@ dependencies = [
 
 [[package]]
 name = "sc-ratelimit"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "chrono",
  "sc-types",
@@ -9885,7 +9885,7 @@ dependencies = [
 
 [[package]]
 name = "sc-repomap"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "sha2 0.10.9",
  "tree-sitter",
@@ -9897,7 +9897,7 @@ dependencies = [
 
 [[package]]
 name = "sc-server"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "axum",
@@ -9982,7 +9982,7 @@ dependencies = [
 
 [[package]]
 name = "sc-stan"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "bytes",
@@ -10006,7 +10006,7 @@ dependencies = [
 
 [[package]]
 name = "sc-stream"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -10031,7 +10031,7 @@ dependencies = [
 
 [[package]]
 name = "sc-sync"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -10077,7 +10077,7 @@ dependencies = [
 
 [[package]]
 name = "sc-test-harness"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "deadpool-postgres",
  "sc-catalog",
@@ -10093,7 +10093,7 @@ dependencies = [
 
 [[package]]
 name = "sc-types"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -10110,7 +10110,7 @@ dependencies = [
 
 [[package]]
 name = "sc-viewpattern"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "bytes",
@@ -10138,7 +10138,7 @@ dependencies = [
 
 [[package]]
 name = "sc-workflow"
-version = "0.1.4"
+version = "0.1.5-dev"
 dependencies = [
  "async-trait",
  "chrono",
