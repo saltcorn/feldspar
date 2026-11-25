@@ -2,6 +2,25 @@
 
 Changes in reverse chronological order.
 
+## `--admin` and `--role` pass over disabled accounts
+
+From a user report: `feldspar auth token --admin` and `feldspar mcp-token create --admin` (and
+`api-token create --admin`) took the first admin by email even when that account was disabled.
+The mint printed success, and the server then refused every request made with the token
+("the user the API token … was minted for is disabled"), which left an MCP connection failing
+with nothing at the mint to explain why.
+
+- **`sc_auth::first_user_with_role`** now returns the first *enabled* holder (`disabled` is
+  `NULL` or `false`), still lowest email first. Only the CLI selectors call it.
+- **All holders disabled**: `--admin` / `--role` now say so and name the disabled accounts.
+  Before, this case errored with "no user has the role", which was wrong; now the error says to
+  enable one or name another user with `--email`.
+- **`--email` for a disabled account** is refused at the mint, with the `modify-user --enabled`
+  fix, rather than minting a credential the server will reject.
+- The CLI help and the scaffolded app docs now say "the first enabled user".
+- Test: `auth_token::admin_selection_skips_disabled_accounts` (a disabled admin that sorts first
+  is skipped; `--email` refuses it; all-disabled names them).
+
 ## Code bodies can write as an import (`db.asImport()`)
 
 From a user report: a delta sync written as a `run_js_code` trigger could not stop an

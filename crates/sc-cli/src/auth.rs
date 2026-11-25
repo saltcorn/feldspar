@@ -330,9 +330,9 @@ pub fn out_path(out: Option<&str>, format: SessionFormat) -> PathBuf {
 pub enum UserSelector {
     /// `--email EMAIL`: exactly this user.
     Email(String),
-    /// `--admin`: the first user holding the admin role.
+    /// `--admin`: the first enabled user holding the admin role.
     Admin,
-    /// `--role NAME`: the first user holding the role with this name.
+    /// `--role NAME`: the first enabled user holding the role with this name.
     Role(String),
 }
 
@@ -356,9 +356,21 @@ impl UserSelector {
 /// have answered.
 pub async fn resolve_user(catalog: &Catalog, selector: &UserSelector) -> Result<User> {
     match selector {
-        UserSelector::Email(email) => sc_auth::load_user_by_email(catalog, email)
-            .await?
-            .ok_or_else(|| Error::not_found(format!("no user with the email `{email}`"))),
+        UserSelector::Email(email) => {
+            let user = sc_auth::load_user_by_email(catalog, email)
+                .await?
+                .ok_or_else(|| Error::not_found(format!("no user with the email `{email}`")))?;
+            // Minting for a disabled account would "succeed" and then have every
+            // request it makes refused with a 401 — so refuse here instead.
+            if user.is_disabled() {
+                return Err(Error::invalid(format!(
+                    "the user `{email}` is disabled, so the server would refuse every \
+                     request made with its credentials. Enable it with \
+                     `feldspar modify-user {email} --enabled`, or name another user"
+                )));
+            }
+            Ok(user)
+        }
         UserSelector::Admin => {
             let role = role_by_number(catalog, Role::ADMIN).await?;
             first_holder(catalog, &role).await
@@ -416,16 +428,36 @@ async fn role_by_number(catalog: &Catalog, number: Role) -> Result<RoleDef> {
         .ok_or_else(|| Error::not_found(format!("this database has no role {number}")))
 }
 
-/// The first user holding `role`, or an error saying that nobody does.
+/// The first enabled user holding `role`, or an error saying that nobody does.
+///
+/// Disabled holders are skipped ([`sc_auth::first_user_with_role`]); when they
+/// are the only ones, the error names them, since "nobody has the role" would
+/// be false and the fix is to enable one of them or pick someone else.
 async fn first_holder(catalog: &Catalog, role: &RoleDef) -> Result<User> {
-    sc_auth::first_user_with_role(catalog, role.role)
+    if let Some(user) = sc_auth::first_user_with_role(catalog, role.role).await? {
+        return Ok(user);
+    }
+    let disabled: Vec<String> = sc_auth::users_with_base_role(catalog, role.role)
         .await?
-        .ok_or_else(|| {
-            Error::not_found(format!(
-                "no user has the role `{}` ({}), so there is no session to mint for it",
-                role.name, role.role
-            ))
-        })
+        .iter()
+        .filter(|u| u.is_disabled())
+        .filter_map(|u| u.get(sc_auth::COL_EMAIL).and_then(|e| e.as_text()))
+        .map(|email| format!("`{email}`"))
+        .collect();
+    if disabled.is_empty() {
+        return Err(Error::not_found(format!(
+            "no user has the role `{}` ({}), so there is no session to mint for it",
+            role.name, role.role
+        )));
+    }
+    Err(Error::not_found(format!(
+        "every user with the role `{}` ({}) is disabled ({}), and the server refuses a \
+         disabled user's credentials. Enable one with `feldspar modify-user EMAIL \
+         --enabled`, or name another user with --email",
+        role.name,
+        role.role,
+        disabled.join(", ")
+    )))
 }
 
 /// The roles, as an error message lists them: `Admin (1), Public (100)`.

@@ -376,3 +376,57 @@ fn the_wire_names_match_the_servers() {
     assert_eq!(sc_api::auth::SECURE_CSRF_COOKIE, "__Host-sc_csrf");
     assert_eq!(sc_api::auth::CSRF_HEADER, "x-csrf-token");
 }
+
+/// `--admin` passes over a disabled admin, even one whose email sorts first,
+/// and says so when the disabled ones are all there are; `--email` refuses a
+/// disabled account outright.
+///
+/// A session or token minted for a disabled account is one the server refuses
+/// on every request, so a "successful" mint for one is a 401 waiting to happen
+/// with nothing at the mint to explain it.
+#[tokio::test]
+async fn admin_selection_skips_disabled_accounts() -> sc_error::Result<()> {
+    let db = TestDb::new().await?;
+    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
+    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
+    sc_auth::bootstrap(&catalog).await?;
+    // Sorts before `admin@example.com`, so it would be "first" if disabled
+    // accounts counted.
+    const DORMANT: &str = "aardvark@example.com";
+    let enabled = sc_auth::create_user(&catalog, ADMIN, PASSWORD, Role::ADMIN).await?;
+    let dormant = sc_auth::create_user(&catalog, DORMANT, PASSWORD, Role::ADMIN).await?;
+    let _ = sc_auth::set_user_disabled(&catalog, dormant.id(), true).await?;
+
+    let chosen = auth::resolve_user(&catalog, &UserSelector::Admin).await?;
+    assert_eq!(
+        chosen.id(),
+        enabled.id(),
+        "the enabled admin, not the first"
+    );
+
+    let err = auth::resolve_user(&catalog, &UserSelector::Email(DORMANT.to_owned()))
+        .await
+        .expect_err("a disabled account is refused by email too");
+    assert!(err.to_string().contains("disabled"), "{err}");
+    assert!(err.to_string().contains(DORMANT), "{err}");
+
+    // When disabled admins are all there are — which the last-admin rule keeps
+    // the API from doing, but a hand-edited database can — the error names them
+    // rather than claiming nobody has the role.
+    db.client()
+        .await?
+        .batch_execute(&format!(
+            "UPDATE {} SET disabled = true",
+            sc_auth::USERS_TABLE
+        ))
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    let err = match auth::resolve_user(&catalog, &UserSelector::Admin).await {
+        Ok(user) => panic!("only disabled admins remain, got {:?}", user.id()),
+        Err(err) => err.to_string(),
+    };
+    assert!(err.contains("disabled"), "{err}");
+    assert!(err.contains(DORMANT) && err.contains(ADMIN), "{err}");
+    Ok(())
+}

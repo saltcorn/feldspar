@@ -341,7 +341,7 @@ fn print_usage() {
        browser would have got, so a script can screenshot the screens behind the
        sign-in page. It asks no password: this command already holds the
        database, which is more authority than any password buys. Say who the
-       session is for with --email EMAIL, with --admin (the first admin user) or
+       session is for with --email EMAIL, with --admin (the first enabled admin user) or
        with --role NAME (the first user holding that role — the error lists the
        roles when the name is not one). It forges nothing: the session is minted
        by the server, from a one-time grant, and can do exactly what that account
@@ -352,7 +352,7 @@ fn print_usage() {
   mcp-token: mints, lists and revokes the bearer tokens the administration MCP
        server (POST /mcp) accepts — the same tokens Settings → Development
        mints. A token runs as an administrator: name one with --email, or
-       --admin for the first. Each of the seven grants has a flag and its --no-
+       --admin for the first enabled one. Each of the seven grants has a flag and its --no-
        form; one left out is granted. --allow-all also grants every grant a
        later version adds, stored on the token, and --no-allow-… still takes
        single ones out (--allow-all --no-allow-drop). The secret is printed

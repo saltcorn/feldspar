@@ -583,10 +583,10 @@ fn testing_section(ctx: &ProjectContext<'_>) -> String {
          what it needs from you is not a secret but a *user*. Name one in \
          whichever of these three ways you can answer:\n\
          \n\
-         - `--admin` — the first user holding the `{admin_role}` role. The \
+         - `--admin` — the first enabled user holding the `{admin_role}` role. The \
          quickest way to see every screen, and the one to think about twice: a \
          script holding an admin session can do everything an admin can.\n\
-         - `--role NAME` — the first user holding that role. {roles_sentence}\n\
+         - `--role NAME` — the first enabled user holding that role. {roles_sentence}\n\
          - `--email you@example.com` — that user exactly. Give an agent **its own \
          account**, at the lowest role that can see the screens being \
          photographed, and name it here.\n\
@@ -741,7 +741,7 @@ fn testing_summary(ctx: &ProjectContext<'_>) -> String {
          without it, every screen behind the sign-in page photographs as the \
          sign-in page.\n\
          \n\
-         **It asks for no password**; it asks *who*. `--admin` takes the first \
+         **It asks for no password**; it asks *who*. `--admin` takes the first enabled \
          `{admin_role}` user, `--role NAME` the first user holding that role, and \
          `--email you@example.com` that person exactly. {roles_sentence} Prefer \
          the least privileged role that can see the screen being photographed.\n\

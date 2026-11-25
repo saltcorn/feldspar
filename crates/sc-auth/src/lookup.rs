@@ -8,7 +8,8 @@
 //! from the wire: the callers are the server redeeming a grant it was handed and
 //! a command line holding the database's own credentials.
 //!
-//! "First" means **lowest email**, in [`first_user_with_role`]. The users table
+//! "First" means **lowest email**, among the enabled accounts, in
+//! [`first_user_with_role`]. The users table
 //! records no creation time (§7.1 keeps it to the two guaranteed columns), so
 //! there is no order of arrival to sort by; sorting by the identifier is the
 //! next best thing, and unlike "whatever the database returns first" it gives
@@ -19,12 +20,12 @@ use chrono::{DateTime, Utc};
 use sc_catalog::Catalog;
 use sc_db::Row;
 use sc_error::Result;
-use sc_query::{Expr, OrderBy, Select, Source, Statement};
+use sc_query::{Expr, OrderBy, Select, Source, Statement, UnOp};
 use sc_types::Role;
 use uuid::Uuid;
 
 use crate::user::User;
-use crate::users::{COL_EMAIL, COL_ID, COL_ROLE, USERS_TABLE};
+use crate::users::{COL_DISABLED, COL_EMAIL, COL_ID, COL_ROLE, USERS_TABLE};
 
 /// The user with this id, if the row is still there, at their effective role
 /// (the base role and the grants in force, [`crate::effective_role`]).
@@ -48,10 +49,23 @@ pub async fn load_user_by_email(catalog: &Catalog, email: &str) -> Result<Option
     one(catalog, select).await
 }
 
-/// The first user holding `role` — lowest email — or `None` when nobody does.
+/// The first **enabled** user holding `role` — lowest email — or `None` when
+/// nobody enabled does.
+///
+/// A disabled account is passed over rather than returned: what the callers do
+/// with the answer is mint a session or token for it, and the server refuses
+/// every request a disabled user's credential makes — so returning one would
+/// turn "which admin?" into a mint that succeeds and a 401 on every call after.
 pub async fn first_user_with_role(catalog: &Catalog, role: Role) -> Result<Option<User>> {
+    // `NULL` is enabled, as in [`User::is_disabled`].
+    let enabled = Expr::unary(UnOp::IsNull, Expr::col(COL_DISABLED))
+        .or(Expr::col(COL_DISABLED).eq(Expr::lit(false)));
     let mut select = Select::from(Source::table(USERS_TABLE))
-        .filter(Expr::col(COL_ROLE).eq(Expr::lit(i64::from(role))))
+        .filter(
+            Expr::col(COL_ROLE)
+                .eq(Expr::lit(i64::from(role)))
+                .and(enabled),
+        )
         .limit(1);
     select.order = vec![OrderBy::asc(Expr::col(COL_EMAIL))];
     one(catalog, select).await
