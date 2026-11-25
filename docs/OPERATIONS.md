@@ -929,6 +929,7 @@ report the provider as missing until the admin points them at another one.
 | `CMDSTAN` | the server, `feldspar cmdstan status` | the CmdStan directory, when `--cmdstan` (or `cmdstan` in the file) is not given (§9.1) |
 | `CXX` | the server | the C++ compiler CmdStan's makefiles use. Passed through to the compile |
 | `STAN_*` | the server | CmdStan's own variables, passed through to its processes. Nothing else of the server's environment is (§9.6) |
+| `FELDSPAR_ALLOW_UNSAFE_MODULES` | the server, `feldspar module` | set to `1` to allow **unsafe modules**, ones that can run any program on the server, such as the bundled bash module (§8.2, *Unsafe modules*). Any other value, and leaving it unset, refuses them. There is no flag and no key in the configuration file for it |
 
 A daemon started with a **scrubbed environment** — no `SC_DATA_DIR`, no `HOME`,
 no `XDG_DATA_HOME` — is an error rather than a fallback to the current directory,
@@ -1628,6 +1629,84 @@ installed over it keeping its settings and grants, and granting what is granted
 or removing what is not installed is no error. A command fails if the module does
 not load afterwards, naming why.
 
+#### Unsafe modules
+
+A module can declare itself **unsafe**: it does things no permission grant can limit, because it
+runs programs on the server as the server's own user. The bundled bash module
+(`@feldspar/bash`) is one. Its `run_bash_script` action runs the script an administrator typed
+into a trigger, and its `run_bash` agent trait runs a command the model wrote, either on this
+machine or over `ssh` on another. A package declares it in its `package.json` as
+`"feldspar": { "unsafe": "<why>" }`, and a bundled module also says so in the catalog.
+
+Whether such a module may run on this server is **the operator's decision, not an
+administrator's**. An admin account is one password away from the web. The operator is the person
+who decides what runs on the machine. So the only switch is an environment variable on the
+server process:
+
+```bash
+FELDSPAR_ALLOW_UNSAFE_MODULES=1
+```
+
+Without it (or with any value other than `1`):
+
+- **Installing** an unsafe module is refused, with a sentence naming the variable. A bundled one
+  is refused before anything is downloaded. Any other is refused once npm has unpacked it and its
+  `package.json` can be read. On a first install the package is then uninstalled again.
+- **An unsafe module that is already installed does not load.** Its card on the Modules tab says
+  why, and its actions and agent traits are not available.
+- **Each script** checks the variable again before it runs.
+- The Modules tab shows a red *Unsafe* badge and the module's reason on the catalog entry, and
+  disables its **Install**, naming the variable.
+
+Because the variable is checked at install, at load and on every call, restarting without it takes
+an unsafe module's powers away without uninstalling anything. Starting the server with it again
+brings them back. It is part of the process environment, so **`SIGHUP` (§6.1) does not change
+it: setting or removing it needs a restart.**
+
+To turn it on under systemd, use a drop-in, which keeps the unit identical to README §2.6's:
+
+```bash
+sudo mkdir -p /etc/systemd/system/feldspar.service.d
+printf '[Service]\nEnvironment=FELDSPAR_ALLOW_UNSAFE_MODULES=1\n' \
+  | sudo tee /etc/systemd/system/feldspar.service.d/unsafe-modules.conf
+sudo systemctl daemon-reload && sudo systemctl restart feldspar
+```
+
+Under OpenRC, add `export FELDSPAR_ALLOW_UNSAFE_MODULES="1"` to `/etc/conf.d/feldspar` and
+restart the service. For the Docker image (§12), add it to the `feldspar` service's
+`environment:` in `compose.yml`. To turn it off, delete the drop-in (or the line) and restart.
+
+`feldspar module install` and the rest of the module commands (above) run the Modules tab's code
+in their own process, so they read the variable from **their own** environment. To install an
+unsafe module from a terminal, pass the variable on that command line too, for example
+`sudo -u feldspar FELDSPAR_ALLOW_UNSAFE_MODULES=1 feldspar module install --local …`.
+
+**What turning it on grants.** Even with the variable set, a module's worker still cannot start a
+process itself. It asks the server, and the server runs the script with these limits:
+
+- a cleared environment: the base set plus the variables the module passes, and none of the
+  server's secrets;
+- a timeout of 60 seconds unless the call asks for another, and never more than an hour;
+- its own process group;
+- stdout and stderr each cut at 1 MiB;
+- a log line naming `UNSAFE_MODULE_SHELL`.
+
+None of these limits stops the script from reading or changing whatever the server's user can.
+Under the systemd unit that is `/var/lib/feldspar`, which holds the file stores, the installed
+modules and `secrets.key`. The rest of the file system is read-only because of
+`ProtectSystem=strict`. A trigger's script is the configuration of an administrator who could
+install the module, so only turn the variable on for a server whose administrators you would
+trust with a shell as the `feldspar` user.
+
+An unsafe module's **agent tools**, such as the bash module's `run_bash`, run what a model wrote,
+and so have a further rule. They are offered and run only in a run whose caller is an
+administrator at the admin console, in act mode, and on that administrator's authority. A chat
+through an application's exposed agent, a run started by a trigger, and a chat turn nobody
+vouched was at the console get no such tools, and are told why. `run_bash` with an `ssh_host`
+runs `ssh -o BatchMode=yes …` as the server's user. It uses that user's keys and
+`~/.ssh/known_hosts` (`/var/lib/feldspar/.ssh` under the unit) and the `SSH_AUTH_SOCK` the server
+was started with, and never prompts for a password.
+
 #### A token for module routes only
 
 An ordinary API token is an administrator's credential: the MCP server accepts it
@@ -1919,6 +1998,7 @@ looking hung. Ctrl-C does the same interactively.
 | startup stops with "reading the LLM provider in the configuration file" | the `llm_provider` section (§4.4) is not accepted. The next line says why: an unknown backend, a missing `api_key`, an unknown model setting (the valid names are listed), a model listed twice, or a `default_model` that is not one of the listed models |
 | startup stops with "the admin has already added one by that name" | a provider stored in the database has the `name` the file gives its provider. Rename the one in the file, or have the admin rename or remove theirs |
 | an admin cannot edit or remove an LLM provider ("set by the server's configuration file") | it comes from `feldspar.toml` (§4.4). Change it there and restart. The admin can add another provider and make that the default |
+| installing a module says it "declares itself unsafe … and this server does not allow unsafe modules", or a module's card says it was not loaded for that reason | the module can run programs on the server, and the server process was not started with `FELDSPAR_ALLOW_UNSAFE_MODULES=1` (§8.2, *Unsafe modules*). Set it (a systemd drop-in) and restart: `SIGHUP` does not read it. For `feldspar module install`, set it on that command too |
 | `POST /mcp` answers 404 with a valid token | `mcp_enabled` is off, and off means absent (§7.1) |
 | MCP calls refused from another machine | `mcp_loopback_only` is on, which is its default |
 | a model fit says "the server restarted while this fit was running" | it did. A fit is a spawned job whose only record is its instance row, so boot marks a `fitting` row failed rather than leaving it running for ever (§3.4). Press **Fit** again |
