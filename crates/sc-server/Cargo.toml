@@ -223,6 +223,8 @@ sc-stream = { workspace = true, features = ["testing"] }
 # Verifies the identity provider's `id_token`s against its JWKS, as a relying
 # party would (TODO IP1).
 jsonwebtoken.workspace = true
+# And drives it end to end as an off-the-shelf relying party does (IP1.9).
+openidconnect.workspace = true
 # Decompresses a gzip response in the router test that checks responses are
 # compressed for a client that accepts it.
 flate2.workspace = true

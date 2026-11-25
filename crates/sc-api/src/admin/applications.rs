@@ -317,6 +317,86 @@ pub(super) fn register(set: &mut EndpointSet) {
     // token `createBuildHost` answers, once, on `/build-agent/*` and nothing
     // else. Deleting a host is how its token is revoked.
 
+    // The application as an OpenID Connect identity provider (TODO IP1.8).
+    // The switch is `identity_provider` on the application itself; these are
+    // its clients, the grants its users made to them and the instance's
+    // signing keys. Not MCP tools: a client secret is shown once, to the admin
+    // who made it, and no tool mints one.
+    let idp = || {
+        api()
+            .lit("applications")
+            .param("id", ValueType::Uuid)
+            .lit("identity-provider")
+    };
+    set.register(
+        Endpoint::new(ids::GET_IDENTITY_PROVIDER, Method::Get, idp())
+            .output(identity_provider_schema()),
+    );
+    set.register(
+        Endpoint::new(ids::CREATE_OAUTH_CLIENT, Method::Post, idp().lit("clients"))
+            .input(oauth_client_input_schema(true))
+            .output(TypeSchema::struct_of([
+                StructField::new("client", oauth_client_schema()),
+                // The secret, for a confidential client: shown this once.
+                StructField::new("secret", TypeSchema::optional(TypeSchema::text())),
+            ])),
+    );
+    set.register(
+        Endpoint::new(
+            ids::UPDATE_OAUTH_CLIENT,
+            Method::Put,
+            idp().lit("clients").param("client_id", ValueType::Text),
+        )
+        .input(oauth_client_input_schema(false))
+        .output(oauth_client_schema()),
+    );
+    set.register(
+        Endpoint::new(
+            ids::DELETE_OAUTH_CLIENT,
+            Method::Delete,
+            idp().lit("clients").param("client_id", ValueType::Text),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "deleted",
+            TypeSchema::bool(),
+        )])),
+    );
+    set.register(
+        Endpoint::new(
+            ids::REGENERATE_OAUTH_CLIENT_SECRET,
+            Method::Post,
+            idp()
+                .lit("clients")
+                .param("client_id", ValueType::Text)
+                .lit("secret"),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "secret",
+            TypeSchema::text(),
+        )])),
+    );
+    set.register(
+        Endpoint::new(
+            ids::REVOKE_OAUTH_GRANT,
+            Method::Delete,
+            idp().lit("grants").param("grant_id", ValueType::Uuid),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "revoked",
+            TypeSchema::bool(),
+        )])),
+    );
+    // The signing keys serve the whole instance: rotating them is not about
+    // one application.
+    set.register(
+        Endpoint::new(
+            ids::ROTATE_OIDC_SIGNING_KEYS,
+            Method::Post,
+            api().lit("identity-provider").lit("keys").lit("rotate"),
+        )
+        .output(TypeSchema::array(signing_key_schema())),
+    );
+
     set.register(
         Endpoint::new(ids::LIST_BUILD_HOSTS, Method::Get, api().lit("build-hosts"))
             .output(TypeSchema::array(build_host_schema())),
@@ -360,6 +440,89 @@ pub(super) fn register(set: &mut EndpointSet) {
 }
 
 /// A build host as the admin API answers it: never its token or the token's hash.
+/// One registered client, as everything but its secret sees it.
+fn oauth_client_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("client_id", TypeSchema::text()),
+        StructField::new("name", TypeSchema::text()),
+        StructField::new("confidential", TypeSchema::bool()),
+        StructField::new("redirect_uris", TypeSchema::array(TypeSchema::text())),
+        StructField::new("scopes", TypeSchema::array(TypeSchema::text())),
+        StructField::new("skip_consent", TypeSchema::bool()),
+        StructField::new("claim_fields", TypeSchema::array(claim_field_schema())),
+        StructField::new(
+            "post_logout_redirect_uris",
+            TypeSchema::array(TypeSchema::text()),
+        ),
+        StructField::new("created_at", TypeSchema::text()),
+    ])
+}
+
+/// A further claim a client is given: `claim`, from the user's `field`.
+fn claim_field_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("claim", TypeSchema::text()),
+        StructField::new("field", TypeSchema::text()),
+    ])
+}
+
+/// A client's settings as the form sends them. `confidential` only when it
+/// is made: a client cannot become public, nor a public one get a secret, by
+/// an edit.
+fn oauth_client_input_schema(creating: bool) -> TypeSchema {
+    let mut fields = vec![
+        StructField::new("name", TypeSchema::text()),
+        StructField::new("redirect_uris", TypeSchema::array(TypeSchema::text())),
+        // Empty: every scope the provider knows.
+        StructField::new("scopes", TypeSchema::array(TypeSchema::text())),
+        StructField::new("skip_consent", TypeSchema::bool()),
+        StructField::new("claim_fields", TypeSchema::array(claim_field_schema())),
+        StructField::new(
+            "post_logout_redirect_uris",
+            TypeSchema::array(TypeSchema::text()),
+        ),
+    ];
+    if creating {
+        fields.insert(1, StructField::new("confidential", TypeSchema::bool()));
+    }
+    TypeSchema::Struct(fields)
+}
+
+fn signing_key_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("kid", TypeSchema::text()),
+        StructField::new("alg", TypeSchema::text()),
+        StructField::new("created_at", TypeSchema::text()),
+        StructField::new("retired_at", TypeSchema::optional(TypeSchema::text())),
+    ])
+}
+
+/// The identity provider screen's data: the switch, the clients, the grants
+/// with whose they are, and the signing keys.
+fn identity_provider_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("enabled", TypeSchema::bool()),
+        StructField::new("clients", TypeSchema::array(oauth_client_schema())),
+        StructField::new(
+            "grants",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("id", TypeSchema::uuid()),
+                StructField::new("user_id", TypeSchema::uuid()),
+                // The account's email, or null when it is gone.
+                StructField::new("email", TypeSchema::optional(TypeSchema::text())),
+                StructField::new("client_id", TypeSchema::text()),
+                StructField::new("scopes", TypeSchema::array(TypeSchema::text())),
+                StructField::new("created_at", TypeSchema::text()),
+                StructField::new("updated_at", TypeSchema::text()),
+            ])),
+        ),
+        StructField::new("signing_keys", TypeSchema::array(signing_key_schema())),
+        // The users table's fields a claim may be mapped onto: `role` and the
+        // fields an administrator added.
+        StructField::new("claim_sources", TypeSchema::array(TypeSchema::text())),
+    ])
+}
+
 fn build_host_schema() -> TypeSchema {
     TypeSchema::struct_of([
         StructField::new("id", TypeSchema::uuid()),
@@ -491,6 +654,9 @@ fn application_fields() -> Vec<StructField> {
 fn application_schema() -> TypeSchema {
     let mut fields = vec![StructField::new("id", TypeSchema::uuid())];
     fields.extend(application_fields());
+    // Whether the application is an OpenID Connect identity provider (TODO
+    // IP1). Optional in the input, where leaving it out keeps it as it is.
+    fields.push(StructField::new("identity_provider", TypeSchema::bool()));
     fields.push(StructField::new(
         "source",
         TypeSchema::optional(app_source_schema()),
@@ -635,7 +801,14 @@ fn created_application_schema() -> TypeSchema {
 /// The body accepted when creating or updating an application: the same fields
 /// minus the id (server-assigned on create, taken from the path on update).
 fn application_input_schema() -> TypeSchema {
-    TypeSchema::Struct(application_fields())
+    let mut fields = application_fields();
+    // Left out, it is kept as stored: a caller that does not know of it does
+    // not turn the provider off.
+    fields.push(StructField::new(
+        "identity_provider",
+        TypeSchema::optional(TypeSchema::bool()),
+    ));
+    TypeSchema::Struct(fields)
 }
 
 /// One build of a target, as the admin UI polls it: where it has got to, where

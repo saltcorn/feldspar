@@ -13,6 +13,13 @@
 //!   each RFC 6749 §5.2 error, and issues an `id_token` that verifies against
 //!   the JWKS. A code used twice and a refresh token used twice revoke what
 //!   they were exchanged for.
+//! - `/userinfo` (IP1.6) gives the claims the token's scopes and the client's
+//!   mappings allow, to one of the provider's access tokens and nothing else;
+//!   `/mcp` and the application's API refuse such a token.
+//! - `/revoke` (IP1.7) ends a token; a credential change, a deleted account
+//!   and a deleted client end them too; `/logout` ends the session.
+//! - The admin API (IP1.8) registers, edits and deletes clients, shows a
+//!   secret once, revokes grants, rotates keys and refuses a non-admin.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -50,6 +57,7 @@ const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 const STAFF: &str = "staff@example.com";
 const MEMBER: &str = "member@example.com";
 const DISABLED: &str = "gone@example.com";
+const ADMIN: &str = "admin@example.com";
 const PASSWORD: &str = "correct-horse";
 const ROLE_STAFF: Role = Role::of(40);
 const ROLE_MEMBER: Role = Role::of(80);
@@ -201,6 +209,7 @@ async fn setup() -> sc_error::Result<Server> {
     save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
     create_user(&catalog, STAFF, PASSWORD, ROLE_STAFF).await?;
     create_user(&catalog, MEMBER, PASSWORD, ROLE_MEMBER).await?;
+    create_user(&catalog, ADMIN, PASSWORD, Role::ADMIN).await?;
     let gone = create_user(&catalog, DISABLED, PASSWORD, ROLE_STAFF).await?;
     let _disabled = sc_auth::set_user_disabled(&catalog, gone.id(), true).await?;
 
@@ -226,6 +235,8 @@ async fn setup() -> sc_error::Result<Server> {
         scopes: vec![],
         skip_consent: false,
         created_by: None,
+        claim_fields: vec![],
+        post_logout_redirect_uris: vec![],
     };
     let client = sc_auth::register_oauth_client(&catalog, register("Grafana")).await?;
     let other = sc_auth::register_oauth_client(&catalog, register("Wiki")).await?;
@@ -333,6 +344,12 @@ impl Browser<'_> {
     /// Post a page's form: its hidden fields, as the page wrote them, and
     /// `extra`.
     async fn submit(&mut self, page: &Answer, extra: &[(&str, &str)]) -> Answer {
+        self.submit_to("/_feldspar/oidc/authorize", page, extra)
+            .await
+    }
+
+    /// Post a page's form to `path`.
+    async fn submit_to(&mut self, path: &str, page: &Answer, extra: &[(&str, &str)]) -> Answer {
         let mut fields: Vec<(String, String)> = Vec::new();
         for input in page.body.split("<input type=\"hidden\" ").skip(1) {
             let attr = |name: &str| {
@@ -351,8 +368,7 @@ impl Browser<'_> {
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
-        self.request("POST", "/_feldspar/oidc/authorize", Some(form(&pairs)))
-            .await
+        self.request("POST", path, Some(form(&pairs))).await
     }
 
     /// Start an authorization request, arriving from another site: the
@@ -383,7 +399,14 @@ impl Browser<'_> {
 
     /// Sign in, allow, and return the code the client was sent.
     async fn code_for(&mut self, client_id: &str) -> String {
-        let params = authorize_params(client_id, &[]);
+        self.code_with(client_id, "openid email profile").await
+    }
+
+    /// [`code_for`](Browser::code_for), asking for `scope`.
+    async fn code_with(&mut self, client_id: &str, scope: &str) -> String {
+        let mut params = authorize_params(client_id, &[]);
+        params.retain(|(k, _)| *k != "scope");
+        params.push(("scope", scope));
         let page = self.authorize(&params).await;
         let consent = if page.body.contains("Sign in to Staff") {
             self.sign_in(&page, STAFF).await
@@ -1013,4 +1036,791 @@ async fn token_answer(server: &Server, client: (&str, &str), refresh: &str) -> A
         &[("grant_type", "refresh_token"), ("refresh_token", refresh)],
     )
     .await
+}
+
+// --- IP1.6: userinfo ----------------------------------------------------------
+
+async fn userinfo(server: &Server, access: &str) -> Answer {
+    send(
+        &server.router,
+        IDP_HOST,
+        "GET",
+        "/_feldspar/oidc/userinfo",
+        &[("authorization", format!("Bearer {access}"))],
+        None,
+    )
+    .await
+}
+
+async fn staff_app(server: &Server) -> sc_app::Application {
+    sc_app::load_application_by_subdomain(&server.catalog, "staff")
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+/// Run SQL against the test database, then reload the catalog.
+async fn sql(server: &Server, statement: &str) {
+    server
+        ._db
+        .client()
+        .await
+        .unwrap()
+        .batch_execute(statement)
+        .await
+        .unwrap();
+    server.catalog.reload().await.unwrap();
+}
+
+/// Change the first client's settings: its claims and logout URIs.
+async fn set_client(
+    server: &Server,
+    claim_fields: &[(&str, &str)],
+    logout: &[&str],
+) -> sc_error::Result<Option<sc_auth::OAuthClient>> {
+    sc_auth::update_oauth_client(
+        &server.catalog,
+        staff_app(server).await.id.0,
+        &server.client_id,
+        sc_auth::OAuthClientUpdate {
+            name: "Grafana".into(),
+            redirect_uris: vec![REDIRECT.into()],
+            scopes: vec![],
+            skip_consent: false,
+            claim_fields: claim_fields
+                .iter()
+                .map(|(claim, field)| sc_auth::ClaimField {
+                    claim: (*claim).into(),
+                    field: (*field).into(),
+                })
+                .collect(),
+            post_logout_redirect_uris: logout.iter().map(|u| (*u).to_owned()).collect(),
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn userinfo_gives_the_claims_the_scopes_and_the_client_s_mappings_allow()
+-> sc_error::Result<()> {
+    let server = setup().await?;
+    sql(
+        &server,
+        "ALTER TABLE users ADD COLUMN full_name text, ADD COLUMN department text; \
+         UPDATE users SET full_name = 'Sam Staff', department = 'Finance' \
+         WHERE email = 'staff@example.com'",
+    )
+    .await;
+    // A mapping onto a system column, onto no field, or onto a claim of the
+    // provider's own is refused.
+    for bad in [
+        [("dept", "password_hash")],
+        [("dept", "nosuch")],
+        [("email", "department")],
+        [("sub", "department")],
+    ] {
+        assert!(set_client(&server, &bad, &[]).await.is_err(), "{bad:?}");
+    }
+    set_client(
+        &server,
+        &[("department", "department"), ("role", "role")],
+        &[],
+    )
+    .await?
+    .unwrap();
+
+    let mut browser = Browser::new(&server);
+    let tokens = exchange(&server, &browser.code_for(&server.client_id).await)
+        .await
+        .json();
+    let access = tokens["access_token"].as_str().unwrap();
+    let answer = userinfo(&server, access).await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    assert_eq!(answer.header("cache-control"), Some("no-store"));
+    let claims = answer.json();
+    let staff = sc_auth::load_user_by_email(&server.catalog, STAFF)
+        .await?
+        .unwrap();
+    assert_eq!(claims["sub"], staff.id().to_string());
+    assert_eq!(claims["email"], STAFF);
+    assert_eq!(claims["email_verified"], true);
+    assert_eq!(claims["name"], "Sam Staff", "from full_name");
+    assert_eq!(claims["department"], "Finance");
+    assert_eq!(claims["role"], "Staff", "the role's name");
+    // The id_token says the same.
+    let id = verify_id_token(&server, tokens["id_token"].as_str().unwrap()).await;
+    assert_eq!(id["department"], "Finance");
+    assert_eq!(id["name"], "Sam Staff");
+
+    // `openid` alone: `sub` and the client's own claims, no email, no name.
+    let narrow = exchange(
+        &server,
+        &browser.code_with(&server.client_id, "openid").await,
+    )
+    .await
+    .json();
+    let claims = userinfo(&server, narrow["access_token"].as_str().unwrap())
+        .await
+        .json();
+    assert_eq!(claims["sub"], staff.id().to_string());
+    assert!(
+        claims.get("email").is_none() && claims.get("name").is_none(),
+        "{claims}"
+    );
+    assert_eq!(claims["department"], "Finance");
+
+    // POST works too.
+    let posted = send(
+        &server.router,
+        IDP_HOST,
+        "POST",
+        "/_feldspar/oidc/userinfo",
+        &[("authorization", format!("Bearer {access}"))],
+        Some(String::new()),
+    )
+    .await;
+    assert_eq!(posted.status, StatusCode::OK, "{}", posted.body);
+    Ok(())
+}
+
+#[tokio::test]
+async fn userinfo_refuses_anything_but_a_live_access_token_and_others_refuse_one()
+-> sc_error::Result<()> {
+    let server = setup().await?;
+    let mut browser = Browser::new(&server);
+    let tokens = exchange(&server, &browser.code_for(&server.client_id).await)
+        .await
+        .json();
+    let access = tokens["access_token"].as_str().unwrap().to_owned();
+    let refresh = tokens["refresh_token"].as_str().unwrap().to_owned();
+
+    // No token: a challenge with no error code (RFC 6750 §3.1).
+    let none = send(
+        &server.router,
+        IDP_HOST,
+        "GET",
+        "/_feldspar/oidc/userinfo",
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(none.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        none.header("www-authenticate"),
+        Some("Bearer realm=\"feldspar\"")
+    );
+    // A refresh token, a session cookie, a made-up token: not access tokens.
+    for wrong in [
+        refresh.as_str(),
+        "fdat_madeup",
+        &browser.cookies[SESSION_COOKIE],
+    ] {
+        let answer = userinfo(&server, wrong).await;
+        assert_eq!(answer.status, StatusCode::UNAUTHORIZED, "{wrong}");
+        assert!(
+            answer
+                .header("www-authenticate")
+                .unwrap()
+                .contains("invalid_token")
+        );
+    }
+    // The access token on another host is not one.
+    let elsewhere = send(
+        &server.router,
+        PLAIN_HOST,
+        "GET",
+        "/_feldspar/oidc/userinfo",
+        &[("authorization", format!("Bearer {access}"))],
+        None,
+    )
+    .await;
+    assert_eq!(elsewhere.status, StatusCode::NOT_FOUND);
+
+    // Its access tokens call neither the administration MCP server nor the
+    // application's API.
+    let mcp = send(
+        &server.router,
+        BASE_DOMAIN,
+        "POST",
+        "/mcp",
+        &[
+            ("authorization", format!("Bearer {access}")),
+            ("content-type", "application/json".to_owned()),
+        ],
+        None,
+    )
+    .await;
+    assert!(
+        mcp.status.is_client_error(),
+        "/mcp: {} {}",
+        mcp.status,
+        mcp.body
+    );
+    let api = send(
+        &server.router,
+        IDP_HOST,
+        "GET",
+        "/api/whoami",
+        &[("authorization", format!("Bearer {access}"))],
+        None,
+    )
+    .await;
+    assert!(
+        api.status.is_client_error() || api.json()["user"].is_null(),
+        "the app's API: {} {}",
+        api.status,
+        api.body
+    );
+    assert!(!api.body.contains(STAFF), "{}", api.body);
+
+    // Expired: refused.
+    server
+        .catalog
+        .primary(sc_catalog::Unchecked::system("test: age a token"))
+        .query(&sc_query::Statement::from(
+            sc_query::Update::new(
+                sc_auth::OAUTH_TOKENS_TABLE,
+                vec![sc_query::Assignment::new(
+                    "expires_at".to_owned(),
+                    sc_query::Expr::Lit(sc_query::Value::Timestamp(
+                        chrono::Utc::now() - chrono::Duration::seconds(1),
+                    )),
+                )],
+            )
+            .filter(
+                sc_query::Expr::col("hash")
+                    .eq(sc_query::Expr::lit(sc_auth::bearer_secret_hash(&access))),
+            ),
+        ))
+        .await?
+        .try_collect()
+        .await?;
+    assert_eq!(
+        userinfo(&server, &access).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    Ok(())
+}
+
+// --- IP1.7: revocation and logout ---------------------------------------------
+
+async fn revoke(server: &Server, client: (&str, &str), token: &str) -> Answer {
+    let basic = base64::engine::general_purpose::STANDARD.encode(format!(
+        "{}:{}",
+        encode(client.0),
+        encode(client.1)
+    ));
+    send(
+        &server.router,
+        IDP_HOST,
+        "POST",
+        "/_feldspar/oidc/revoke",
+        &[("authorization", format!("Basic {basic}"))],
+        Some(form(&[("token", token)])),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn revoking_a_refresh_token_ends_its_sign_in_and_an_access_token_ends_alone()
+-> sc_error::Result<()> {
+    let server = setup().await?;
+    let mine = (server.client_id.as_str(), server.secret.as_str());
+    let mut browser = Browser::new(&server);
+
+    let first = exchange(&server, &browser.code_for(&server.client_id).await)
+        .await
+        .json();
+    let access = first["access_token"].as_str().unwrap();
+    let refresh = first["refresh_token"].as_str().unwrap();
+    // The wrong client's credentials: refused, and nothing revoked.
+    let wrong = revoke(&server, (mine.0, "fdcs_wrong"), refresh).await;
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
+    // Another client's token, or none we know: 200, and nothing happens.
+    let theirs = revoke(
+        &server,
+        (&server.other_client_id, &server.other_secret),
+        refresh,
+    )
+    .await;
+    assert_eq!(theirs.status, StatusCode::OK);
+    assert_eq!(userinfo(&server, access).await.status, StatusCode::OK);
+    assert_eq!(
+        revoke(&server, mine, "fdrt_unknown").await.status,
+        StatusCode::OK
+    );
+
+    let done = revoke(&server, mine, refresh).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+    assert_eq!(
+        userinfo(&server, access).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        token_answer(&server, mine, refresh).await.json()["error"],
+        "invalid_grant"
+    );
+
+    // An access token alone: its refresh token goes on working.
+    let second = exchange(&server, &browser.code_for(&server.client_id).await)
+        .await
+        .json();
+    let access = second["access_token"].as_str().unwrap();
+    assert_eq!(revoke(&server, mine, access).await.status, StatusCode::OK);
+    assert_eq!(
+        userinfo(&server, access).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let refreshed = token_answer(&server, mine, second["refresh_token"].as_str().unwrap()).await;
+    assert_eq!(refreshed.status, StatusCode::OK, "{}", refreshed.body);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_credential_change_a_deleted_account_and_a_deleted_client_end_the_tokens()
+-> sc_error::Result<()> {
+    let server = setup().await?;
+    let mine = (server.client_id.as_str(), server.secret.as_str());
+    let staff = sc_auth::load_user_by_email(&server.catalog, STAFF)
+        .await?
+        .unwrap();
+    let sign_in = || async {
+        let mut browser = Browser::new(&server);
+        exchange(&server, &browser.code_for(&server.client_id).await)
+            .await
+            .json()
+    };
+    let ended = |tokens: Value| {
+        let server = &server;
+        async move { assert_ended(server, mine, &tokens).await }
+    };
+
+    // A new password.
+    let tokens = sign_in().await;
+    assert_eq!(
+        userinfo(&server, tokens["access_token"].as_str().unwrap())
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let _changed = sc_auth::set_user_password(&server.catalog, staff.id(), PASSWORD).await?;
+    ended(tokens).await;
+
+    // The account disabled (and enabled again: the old tokens stay ended).
+    let tokens = sign_in().await;
+    let _changed = sc_auth::set_user_disabled(&server.catalog, staff.id(), true).await?;
+    let _changed = sc_auth::set_user_disabled(&server.catalog, staff.id(), false).await?;
+    ended(tokens).await;
+
+    // The client deleted.
+    let tokens = sign_in().await;
+    let app = staff_app(&server).await;
+    assert!(sc_auth::delete_oauth_client(&server.catalog, app.id.0, &server.client_id).await?);
+    ended(tokens).await;
+
+    // The account deleted: its tokens and grants go with it.
+    let mut browser = Browser::new(&server);
+    let tokens = token(
+        &server,
+        (&server.other_client_id, &server.other_secret),
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &browser.code_for(&server.other_client_id).await),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ],
+    )
+    .await
+    .json();
+    let access = tokens["access_token"].as_str().unwrap();
+    assert_eq!(userinfo(&server, access).await.status, StatusCode::OK);
+    assert!(sc_auth::delete_user(&server.catalog, staff.id()).await?);
+    assert_eq!(
+        userinfo(&server, access).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(
+        sc_auth::list_oauth_grants(&server.catalog, app.id.0)
+            .await?
+            .is_empty()
+    );
+    Ok(())
+}
+
+/// Neither token of `tokens` works any more.
+async fn assert_ended(server: &Server, client: (&str, &str), tokens: &Value) {
+    let access = tokens["access_token"].as_str().unwrap();
+    assert_eq!(
+        userinfo(server, access).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let refresh = token_answer(server, client, tokens["refresh_token"].as_str().unwrap()).await;
+    assert!(refresh.status.is_client_error(), "{}", refresh.body);
+}
+
+const LOGGED_OUT: &str = "https://grafana.example.net/logged-out";
+
+#[tokio::test]
+async fn rp_initiated_logout_ends_the_session_and_returns_only_to_a_registered_uri()
+-> sc_error::Result<()> {
+    let server = setup().await?;
+    set_client(&server, &[], &[LOGGED_OUT]).await?.unwrap();
+    let mut browser = Browser::new(&server);
+    let tokens = exchange(&server, &browser.code_for(&server.client_id).await)
+        .await
+        .json();
+    let hint = tokens["id_token"].as_str().unwrap();
+    let logout = |pairs: &[(&str, &str)]| format!("/_feldspar/oidc/logout?{}", form(pairs));
+
+    // A URI not registered for the client: an error page, signed in still.
+    let refused = browser
+        .request(
+            "GET",
+            &logout(&[
+                ("id_token_hint", hint),
+                ("post_logout_redirect_uri", "https://evil.example/"),
+            ]),
+            None,
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert!(refused.header("location").is_none());
+    // A hint nobody here signed: refused too.
+    let forged = browser
+        .request("GET", &logout(&[("id_token_hint", "e30.e30.e30")]), None)
+        .await;
+    assert_eq!(forged.status, StatusCode::BAD_REQUEST);
+
+    // No hint: asked first, so a link elsewhere cannot sign anybody out.
+    let asked = browser.request("GET", &logout(&[]), None).await;
+    assert!(asked.body.contains("Sign out of Staff?"), "{}", asked.body);
+    let stay = browser
+        .submit_to("/_feldspar/oidc/logout", &asked, &[("decision", "stay")])
+        .await;
+    assert!(stay.body.contains("still signed in"), "{}", stay.body);
+    assert!(browser.cookies.contains_key(SESSION_COOKIE));
+
+    // With the hint: signed out at once, and back to the client with state.
+    let out = browser
+        .request(
+            "GET",
+            &logout(&[
+                ("id_token_hint", hint),
+                ("post_logout_redirect_uri", LOGGED_OUT),
+                ("state", "bye"),
+            ]),
+            None,
+        )
+        .await;
+    assert_eq!(out.status, StatusCode::SEE_OTHER, "{}", out.body);
+    assert_eq!(
+        out.header("location"),
+        Some(format!("{LOGGED_OUT}?state=bye").as_str())
+    );
+    assert!(
+        !browser.cookies.contains_key(SESSION_COOKIE),
+        "the session cookie is cleared"
+    );
+    let after = browser
+        .authorize(&authorize_params(&server.client_id, &[("prompt", "none")]))
+        .await;
+    assert_eq!(
+        query_of(after.header("location").unwrap())["error"],
+        "login_required"
+    );
+
+    // The confirmation form signs out too.
+    let mut browser = Browser::new(&server);
+    let _ = browser.code_for(&server.client_id).await;
+    let asked = browser.request("GET", &logout(&[]), None).await;
+    let out = browser
+        .submit_to(
+            "/_feldspar/oidc/logout",
+            &asked,
+            &[("decision", "sign_out")],
+        )
+        .await;
+    assert!(out.body.contains("You are signed out"), "{}", out.body);
+    assert!(!browser.cookies.contains_key(SESSION_COOKIE));
+
+    // The discovery document names the new endpoints.
+    let doc = send(
+        &server.router,
+        IDP_HOST,
+        "GET",
+        "/.well-known/openid-configuration",
+        &[],
+        None,
+    )
+    .await
+    .json();
+    assert_eq!(
+        doc["userinfo_endpoint"],
+        format!("{ISSUER}/_feldspar/oidc/userinfo")
+    );
+    assert_eq!(
+        doc["revocation_endpoint"],
+        format!("{ISSUER}/_feldspar/oidc/revoke")
+    );
+    assert_eq!(
+        doc["end_session_endpoint"],
+        format!("{ISSUER}/_feldspar/oidc/logout")
+    );
+    Ok(())
+}
+
+// --- IP1.8: the admin API -----------------------------------------------------
+
+/// A JSON client on the admin host, signed in as `email`.
+struct AdminClient<'a> {
+    server: &'a Server,
+    cookies: HashMap<String, String>,
+}
+
+impl AdminClient<'_> {
+    async fn signed_in<'a>(server: &'a Server, email: &str) -> AdminClient<'a> {
+        let mut client = AdminClient {
+            server,
+            cookies: HashMap::new(),
+        };
+        client.send("GET", "/api/auth/status", None).await;
+        let (status, body) = client
+            .send(
+                "POST",
+                "/api/login",
+                Some(serde_json::json!({ "email": email, "password": PASSWORD })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        client
+    }
+
+    async fn send(&mut self, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
+        let mut headers: Vec<(&str, String)> = Vec::new();
+        if !self.cookies.is_empty() {
+            let jar = self
+                .cookies
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            headers.push(("cookie", jar));
+        }
+        if method != "GET"
+            && let Some(csrf) = self.cookies.get(sc_api::auth::CSRF_COOKIE)
+        {
+            headers.push((sc_api::auth::CSRF_HEADER, csrf.clone()));
+        }
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::HOST, BASE_DOMAIN);
+        for (k, v) in &headers {
+            builder = builder.header(*k, v);
+        }
+        let request = match body {
+            Some(b) => builder
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&b).unwrap()))
+                .unwrap(),
+            None => builder.body(Body::empty()).unwrap(),
+        };
+        let response = self.server.router.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        for raw in response.headers().get_all(header::SET_COOKIE) {
+            if let Some((k, v)) = raw
+                .to_str()
+                .ok()
+                .and_then(|t| t.split(';').next())
+                .and_then(|p| p.split_once('='))
+            {
+                if v.is_empty() {
+                    self.cookies.remove(k);
+                } else {
+                    self.cookies.insert(k.to_owned(), v.to_owned());
+                }
+            }
+        }
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn the_admin_api_manages_clients_grants_and_keys_and_refuses_a_non_admin()
+-> sc_error::Result<()> {
+    let server = setup().await?;
+    let app = staff_app(&server).await;
+    let base = format!("/api/applications/{}/identity-provider", app.id.0);
+    // A grant to show and revoke.
+    let mut browser = Browser::new(&server);
+    let tokens = exchange(&server, &browser.code_for(&server.client_id).await)
+        .await
+        .json();
+
+    let mut admin = AdminClient::signed_in(&server, ADMIN).await;
+    let (status, idp) = admin.send("GET", &base, None).await;
+    assert_eq!(status, StatusCode::OK, "{idp}");
+    assert_eq!(idp["enabled"], true);
+    assert_eq!(idp["clients"].as_array().unwrap().len(), 2);
+    assert!(
+        !idp.to_string().contains("fdcs_"),
+        "no secret is ever listed"
+    );
+    assert!(
+        idp["claim_sources"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("role"))
+    );
+    let grant = &idp["grants"][0];
+    assert_eq!(grant["email"], STAFF);
+    assert_eq!(grant["client_id"], server.client_id.as_str());
+
+    // Register one: its secret comes back this once.
+    let (status, made) = admin
+        .send(
+            "POST",
+            &format!("{base}/clients"),
+            Some(serde_json::json!({
+                "name": "Nextcloud",
+                "confidential": true,
+                "redirect_uris": ["https://cloud.example.net/apps/oidc/redirect"],
+                "scopes": ["openid", "email"],
+                "skip_consent": true,
+                "claim_fields": [{ "claim": "groups", "field": "role" }],
+                "post_logout_redirect_uris": [],
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    assert!(made["secret"].as_str().unwrap().starts_with("fdcs_"));
+    let new_id = made["client"]["client_id"].as_str().unwrap().to_owned();
+    assert_eq!(made["client"]["claim_fields"][0]["claim"], "groups");
+    // A bad redirect URI is refused.
+    let (status, _) = admin
+        .send(
+            "POST",
+            &format!("{base}/clients"),
+            Some(serde_json::json!({
+                "name": "Bad", "confidential": true,
+                "redirect_uris": ["http://insecure.example.net/cb"],
+                "scopes": [], "skip_consent": false, "claim_fields": [],
+                "post_logout_redirect_uris": [],
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Edit it, and give it a new secret.
+    let (status, edited) = admin
+        .send(
+            "PUT",
+            &format!("{base}/clients/{new_id}"),
+            Some(serde_json::json!({
+                "name": "Nextcloud (prod)",
+                "redirect_uris": ["https://cloud.example.net/apps/oidc/redirect"],
+                "scopes": [], "skip_consent": false, "claim_fields": [],
+                "post_logout_redirect_uris": ["https://cloud.example.net/"],
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{edited}");
+    assert_eq!(edited["name"], "Nextcloud (prod)");
+    assert_eq!(edited["scopes"].as_array().unwrap().len(), 4, "none is all");
+    let (status, fresh) = admin
+        .send("POST", &format!("{base}/clients/{new_id}/secret"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{fresh}");
+    let fresh = fresh["secret"].as_str().unwrap();
+    assert!(
+        sc_auth::authenticate_oauth_client(&server.catalog, app.id.0, &new_id, Some(fresh))
+            .await?
+            .is_ok()
+    );
+
+    // Revoke the grant: its tokens end.
+    let grant_id = grant["id"].as_str().unwrap();
+    let (status, revoked) = admin
+        .send("DELETE", &format!("{base}/grants/{grant_id}"), None)
+        .await;
+    assert_eq!(
+        (status, revoked["revoked"].clone()),
+        (StatusCode::OK, Value::Bool(true))
+    );
+    assert_eq!(
+        userinfo(&server, tokens["access_token"].as_str().unwrap())
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Rotate the keys: two new live ones, the old two retired.
+    let (status, keys) = admin
+        .send("POST", "/api/identity-provider/keys/rotate", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{keys}");
+    let keys = keys.as_array().unwrap();
+    assert_eq!(keys.iter().filter(|k| k["retired_at"].is_null()).count(), 2);
+    assert_eq!(
+        keys.iter().filter(|k| !k["retired_at"].is_null()).count(),
+        2
+    );
+
+    // Delete.
+    let (status, deleted) = admin
+        .send("DELETE", &format!("{base}/clients/{new_id}"), None)
+        .await;
+    assert_eq!(
+        (status, deleted["deleted"].clone()),
+        (StatusCode::OK, Value::Bool(true))
+    );
+
+    // The application list says the provider is on.
+    let (_, listed) = admin.send("GET", "/api/applications", None).await;
+    let staff = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["subdomain"] == "staff")
+        .unwrap();
+    assert_eq!(staff["identity_provider"], true);
+
+    // Not an admin: refused, every one.
+    let mut member = AdminClient {
+        server: &server,
+        cookies: HashMap::new(),
+    };
+    member.send("GET", "/api/auth/status", None).await;
+    let _ = member
+        .send(
+            "POST",
+            "/api/login",
+            Some(serde_json::json!({ "email": STAFF, "password": PASSWORD })),
+        )
+        .await;
+    for (method, path) in [
+        ("GET", base.clone()),
+        ("POST", format!("{base}/clients")),
+        (
+            "POST",
+            format!("{base}/clients/{}/secret", server.client_id),
+        ),
+        ("POST", "/api/identity-provider/keys/rotate".to_owned()),
+    ] {
+        let (status, _) = member
+            .send(method, &path, Some(serde_json::json!({})))
+            .await;
+        assert!(
+            status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED,
+            "{method} {path}: {status}"
+        );
+    }
+    Ok(())
 }

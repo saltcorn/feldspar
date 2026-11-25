@@ -2,6 +2,120 @@
 
 Changes in reverse chronological order.
 
+## The identity provider, finished: userinfo, revocation, logout, admin screen, interop, docs
+
+The rest of TODO IP1 (IP1.6–IP1.10). An application that is an OpenID Connect identity provider
+now has every endpoint an off-the-shelf relying party uses. It has an admin screen, and has been
+checked by hand against a real oauth2-proxy.
+
+- **UserInfo** (`GET`/`POST /_feldspar/oidc/userinfo`, `Authorization: Bearer`). Its new route
+  kind `RouteAuth::OAuthAccessToken` ignores cookies, as the token endpoint's does.
+  - Only one of the provider's own access tokens, issued on this application, gets an answer;
+    the token must carry `openid` (otherwise `403 insufficient_scope`). Anything else is
+    `401` with an RFC 6750 `WWW-Authenticate` challenge: a refresh token, a session token,
+    another application's token, an expired or revoked token, or a token whose account is
+    disabled, gone or no longer admitted by the application's access settings.
+  - The claims come from one function, `sc_auth::oauth_user_claims`, which the `id_token` now
+    uses too. `sub` is always there. `email` gives `email` and `email_verified`. `profile` gives
+    `name` (falling back to `full_name`) and every standard profile claim the users table has a
+    column for; `locale` falls back to the account's language.
+  - **Mapped claims.** A client may have further claims, `claim = field` (`ClaimField`), from
+    `role` (given as the role's name) or an admin-added users column. They are checked when
+    saved: the protocol's own claims, `email` and a system column are refused. The consent page
+    lists them.
+  - Discovery now names `userinfo_endpoint`, `revocation_endpoint` and `end_session_endpoint`,
+    and lists the profile claims in `claims_supported`.
+- **Revocation** (`POST /_feldspar/oidc/revoke`, RFC 7009). The client authenticates as at the
+  token endpoint; that code is now one function, `authenticate_client`, shared by both. A
+  refresh token ends its whole family; an access token ends alone. The answer is `200` whether
+  or not the token was known.
+- **What else ends a token.**
+  - **The account's authentication epoch moving** (a password change, a second-factor change,
+    the account disabled). `bump_auth_epoch`, the one function every credential change goes
+    through, now revokes the account's tokens and deletes its codes. Codes and tokens also
+    record the epoch they were issued at, in new nullable `auth_epoch` columns. A code or token
+    from an earlier epoch is refused even if it was minted while the change ran. A
+    `NULL` epoch (a token from before this change) reads as the initial one.
+  - **The account deleted** (`delete_user` removes its grants, codes and tokens).
+  - **The application deleted** (its clients and everything they hold go).
+  - **An admin revoking a grant** (`revoke_oauth_grant`).
+  - Deleting a client already ended its tokens.
+- **RP-initiated logout** (`GET /_feldspar/oidc/logout`, route kind `AppSessionEnd`).
+  - The parameters are `id_token_hint`, `client_id`, `post_logout_redirect_uri` and `state`.
+    The hint must be a JWT this provider signed for this issuer (`sc_auth::verify_own_jwt`, which
+    ignores `exp`). The `client_id` must agree with the hint's audience.
+  - The return URI must be registered for the client, exactly. Clients have a new nullable
+    `post_logout_redirect_uris` column. A wrong return URI or a forged hint gets an error page,
+    never a redirect.
+  - With a hint for the user who is signed in, the session ends at once. Otherwise the user is
+    asked first, with a CSRF-checked form that posts back here. A cross-site arrival reloads
+    once to pick up the `Strict` cookie, as `/authorize` does.
+  - The client's tokens are not revoked by a logout; the client revokes them at `/revoke`.
+- **Admin API and UI** (IP1.8).
+  - **Schema.** `identity_provider` is in the application schema: always in an answer, optional
+    in a request (left out, it is kept).
+  - **New endpoints:** `getIdentityProvider` (clients, grants with each user's email, signing
+    keys, and the fields a claim may come from), `createOAuthClient` (answers the secret once),
+    `updateOAuthClient`, `deleteOAuthClient`, `regenerateOAuthClientSecret` (refused for a
+    public client), `revokeOAuthGrant`, and `rotateOidcSigningKeys`, which is instance-wide.
+    All are admin-only and none is an MCP tool. `describe_applications` gains
+    `identity_provider: { enabled, clients }`, a count only. `client.ts` is regenerated in the
+    four UIs.
+  - **The tab.** A new settings group, `identity_provider`, has its own "Identity provider" tab
+    in the default layout. Saltcorn UI's layout puts it on "Users & Security". The tab holds the
+    switch, which saves with the form.
+  - **The panel.** After the form comes a panel (`screens/IdentityProvider.tsx`). It shows the
+    issuer and discovery URL, and the clients, with a dialog to register or edit one: redirect
+    URIs, scopes, first-party, claims and logout URIs. A new secret is shown once. The panel
+    also lists the signed-in users with Revoke, and the signing keys with Rotate. The form logic
+    is in `identityProvider.ts`.
+- **Interoperability** (IP1.9). `tests/oidc_provider.rs` serves the router on a real port and
+  drives it with the `openidconnect` crate (4.0, a new **dev-dependency** without default
+  features, using the tree's own `reqwest`). It covers discovery, then authorize with PKCE and a
+  nonce, sign-in and consent over HTTP. It then checks the code exchange and the `id_token`
+  (signature against the JWKS, issuer, audience, nonce, `at_hash`). Last come userinfo, a
+  refresh (a rotated token and a nonce-less `id_token`), revocation (both tokens dead after) and
+  logout with the hint. The crate insists on an `https` revocation URL (RFC 7009 §2), so the
+  test gives it one and its HTTP client sends it as plain http.
+
+  The new dependency adds 11 crates to `Cargo.lock`, among them oauth2, serde_with and
+  second versions of darling, schemars, itertools and indexmap. All are MIT or Apache-2.0.
+  No service holds the catalog anew, so `catalog_teardown.rs` is unchanged.
+- **Checked by hand with oauth2-proxy 7.15.6 and Chromium.** The setup was a scratch database,
+  `feldspar serve --base-domain localhost` and an application `staff`. The client was registered
+  through the admin API, with `groups = role`, and oauth2-proxy ran in Docker with
+  `--provider=oidc --code-challenge-method=S256`.
+  - oauth2-proxy's discovery took the document as it was.
+  - In a real Chromium, `/oauth2/start` went to the sign-in page, then the consent page (which
+    listed `groups`), then back to the proxy as "Authenticated". The proxy's `/oauth2/userinfo`
+    showed `{"user": <the account's id>, "email": "admin@example.com", "groups": ["Admin"]}`.
+  - A logout link on the proxy's page arrived cross-site, reloaded itself, asked for
+    confirmation, and returned to `http://localhost:4180/?state=bye`. The next sign-in asked
+    for the password again.
+  - The Identity provider tab was looked at in the same browser. That is how an unreadable
+    "signing" badge and an awkward hint for a users table with no added fields were found and
+    fixed.
+
+  Grafana was not tried.
+- **Docs** (IP1.10). `TECHNICAL_DESIGN.md` §7.2's one line is replaced by the design: issuer,
+  endpoints, flow, tokens, claims, what ends a token, keys, admin, and what is deliberately not
+  supported. There is a new `docs/tutorial-identity-provider.md` (with oauth2-proxy as the
+  worked example), and the README links it.
+- **Database:** the new columns are all nullable and added by the bootstrap:
+  - `_fd_oauth_clients.claim_fields` and `.post_logout_redirect_uris`;
+  - `_fd_oauth_codes.auth_epoch` and `_fd_oauth_tokens.auth_epoch`.
+
+  There is no migration.
+- **Tests:**
+  - `identity_provider.rs` gains 6 tests: claims per scope and mapping; userinfo refusing
+    everything but a live access token, with `/mcp` and the app's API refusing one; revocation;
+    a password change, disabling, client deletion and account deletion each ending tokens;
+    logout; and the admin API, including a non-admin refused.
+  - `oidc_provider.rs` is the end-to-end test.
+  - `identityProvider.test.ts` has 5 vitest tests.
+  - `saltcorn_ui_admin_api.rs` pins the default layout's tabs, so its list now includes
+    `identity_provider`.
+
 ## An application as an OpenID Connect identity provider: storage, keys, discovery, authorize, token
 
 An application can now be an OAuth 2.0 / OpenID Connect identity provider. Another service (Grafana,

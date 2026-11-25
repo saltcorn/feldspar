@@ -1293,8 +1293,72 @@ pub struct User {
   `HandlerResponse::credentials_changed` (`SessionAction::CredentialsChanged`).
 - **Device recognition** ("Google-level"): remember known devices, email the user on a
   new-device login.
-- **OAuth2 server option**: Saltcorn can act as an identity provider (`sc-auth` exposes the
-  authorization-code/PKCE endpoints when enabled).
+- **OpenID Connect identity provider** (TODO IP1): an application can let other services sign
+  people in with its users. The storage is `sc_auth::oidc` and `sc_auth::oidc_keys`; the HTTP
+  half is `sc_server::oidc`. The tutorial is
+  [`tutorial-identity-provider.md`](tutorial-identity-provider.md).
+  - **Per application, off by default.** `Application::identity_provider` (a nullable column,
+    off when null) turns it on. The **issuer** is the application's own host as the request
+    named it (`https://staff.example.com`). Every endpoint answers 404 on an application that
+    has not turned it on, on a run's preview, and on the admin host, which is never an issuer.
+    F9's `min_role`, `max_role` and `access_if` decide who may sign in to a client through it,
+    at sign-in and again at every refresh and userinfo call.
+  - **Endpoints**, all raw routes with their own `RouteAuth`:
+    `/.well-known/openid-configuration` and `/.well-known/oauth-authorization-server` (one
+    document), `/_feldspar/oidc/jwks`, `authorize` (`AppSessionOrSignIn`), `token` and
+    `revoke` (`OAuthClient`), `userinfo` (`OAuthAccessToken`) and `logout` (`AppSessionEnd`).
+    `OAuthClient` and `OAuthAccessToken` **ignore cookies**: the CSRF middleware strips the
+    `Cookie` header and lets them through, so a client's own credentials are all they are judged
+    by.
+  - **Authorization code with PKCE `S256` only**, required of every client, confidential ones
+    included. The client and its **exact** redirect URI are checked before anything else, and a
+    bad one gets an error page, never a redirect. A sign-in on the authorize page goes through
+    the router's one session path (`apply_session`: throttle, second factor, F9). The consent
+    page is a CSRF-checked form, skipped when the user's grant already covers the scopes or the
+    client is first-party. `prompt=none|login|consent` are supported, and RFC 9207's `iss` comes
+    back with the code. Because the session cookie is `SameSite=Strict`, an authorize or logout
+    request that arrives cross-site with no cookie reloads itself once (`_fd_bounced`). Because
+    CSP has `form-action 'self'`, a form's last step is a page that goes on to the client, not a
+    redirect.
+  - **Tokens** are opaque bearer secrets with prefixes of their own (`fdac_` codes, `fdat_` access,
+    `fdrt_` refresh, `fdcs_` client secrets), stored as SHA-256 hashes in `_fd_oauth_codes` and
+    `_fd_oauth_tokens`. They are a separate kind that `/mcp`, the build host and the app API
+    never look up. A code lasts 60 s and is single-use. An access token lasts 10 minutes and is
+    good for `/userinfo` only, not the issuing application's API. A refresh token lasts 30 days
+    unused and rotates on every use. A code's or a refresh token's tokens form a **family**: a
+    code or refresh token used twice revokes the whole family. Codes and grants live in the
+    database, so the token request can land on any node.
+  - **Claims.** The `id_token` (RS256) and `/userinfo` give the same claims
+    (`sc_auth::oauth_user_claims`). `sub` is the user's id, not the email. `email` gives `email`
+    and `email_verified`. `profile` gives `name` (or `full_name`) and any standard profile claim
+    the users table has a column for. A client may map further claims, `claim = field`, onto
+    `role` (the role's name) or an admin-added users column, checked when saved; protocol
+    claims cannot be overridden.
+  - **What ends a token:** `/revoke` (RFC 7009; a refresh token ends its family, an access token
+    ends alone); the account's authentication epoch moving (`bump_auth_epoch` revokes the
+    account's tokens, and every code and token also records the epoch it was issued at, so one
+    minted during the change is refused too); the account deleted; the client or the application
+    deleted; an admin withdrawing the grant. RP-initiated logout ends the Feldspar session: at
+    once with a valid `id_token_hint`, after a confirmation form otherwise. It returns only to a
+    `post_logout_redirect_uri` registered for that client. It does not revoke the client's
+    tokens.
+  - **Signing keys** (`_fd_oidc_keys`): one RS256 and one ES256 key for the whole instance, made
+    on first use. The private key is stored sealed with the instance key, so a copy of the
+    database alone signs nothing. Rotation retires the live keys and makes new ones, and a
+    retired key stays in the JWKS for 24 hours. A key this instance cannot open (a database
+    restored under another instance key) is never served: it is retired and replaced, and the
+    log says so. Backups carry an application's clients and, for a provider, the sealed keys
+    together with `secrets.key`.
+  - **Admin:** the application's Identity provider tab (`getIdentityProvider`,
+    `createOAuthClient`, `updateOAuthClient`, `deleteOAuthClient`,
+    `regenerateOAuthClientSecret`, `revokeOAuthGrant`, `rotateOidcSigningKeys`). A secret is
+    shown once. MCP's `describe_applications` reports whether the provider is on and how many
+    clients it has. No tool reads or mints a secret.
+  - **Deliberately not supported:** the implicit and hybrid flows, the password and
+    client-credentials grants, dynamic client registration (an admin registers every client),
+    `plain` PKCE, encrypted or `none`-signed `id_token`s, pairwise subjects, `request` objects,
+    front- and back-channel logout, and using an access token on the issuing application's own
+    API.
 - **Session lifetime** (`session_ttl_hours`, Settings → Authentication, default 24, 1 to 8760).
   Live: every sign-in reads it from `_fd_config` (`AppMounts::current_session_ttl`) where
   the router starts a session (`SessionStore::start`). So the next sign-in after a save

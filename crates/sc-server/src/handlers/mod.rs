@@ -106,6 +106,7 @@ mod connections;
 mod fields;
 pub(crate) mod file_stores;
 mod files;
+mod identity_provider;
 mod llm;
 mod models;
 mod modules;
@@ -209,6 +210,7 @@ pub fn admin_handlers_with(
     registry::register(&mut reg, &state);
     source_control::register(&mut reg, &state);
     applications::register(&mut reg, &state);
+    identity_provider::register(&mut reg, &state);
     views::register(&mut reg, &state);
     translations::register(&mut reg, &state);
     users::register(&mut reg, &state);

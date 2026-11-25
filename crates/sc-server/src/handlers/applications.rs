@@ -38,6 +38,11 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 // `_fd_views.application` is not a foreign key (the schema layer
                 // renders no `ON DELETE`), so the views, pages and library go here.
                 sc_viewpattern::delete_application_views_pages_and_library(&catalog, id).await?;
+                // Nor are its identity provider's clients: they go, and with
+                // them what they were given (TODO IP1.7).
+                for client in sc_auth::list_oauth_clients(&catalog, id.0).await? {
+                    sc_auth::delete_oauth_client(&catalog, id.0, &client.client_id).await?;
+                }
                 if let Some(app) = &existing {
                     apps.unmount(&app.subdomain);
                 }

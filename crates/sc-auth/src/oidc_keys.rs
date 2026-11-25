@@ -235,6 +235,41 @@ pub async fn sign_jwt(catalog: &Catalog, alg: SigningAlg, claims: &Json) -> Resu
         .map_err(|e| Error::msg(format!("could not sign an {} token: {e}", alg.name())))
 }
 
+/// The claims of a JWT **this provider signed**, checked against the key its
+/// `kid` names — retired keys included, since what is checked is who signed
+/// it, not whether it is still good. Neither `exp` nor `aud` is checked: the
+/// caller decides what an expired token still proves (an `id_token_hint` at
+/// logout is usually expired). `None` for anything not signed by one of this
+/// instance's keys.
+pub async fn verify_own_jwt(catalog: &Catalog, token: &str) -> Result<Option<Json>> {
+    let Ok(header) = jsonwebtoken::decode_header(token) else {
+        return Ok(None);
+    };
+    let Some(kid) = header.kid else {
+        return Ok(None);
+    };
+    let rows = stored(catalog).await?;
+    let Some((key, _)) = rows.iter().find(|(k, _)| k.kid == kid) else {
+        return Ok(None);
+    };
+    if key.alg.jose() != header.alg {
+        return Ok(None);
+    }
+    let Ok(jwk) = serde_json::from_value::<Jwk>(key.public_jwk.clone()) else {
+        return Ok(None);
+    };
+    let Ok(decoding) = jsonwebtoken::DecodingKey::from_jwk(&jwk) else {
+        return Ok(None);
+    };
+    let mut validation = jsonwebtoken::Validation::new(header.alg);
+    validation.validate_exp = false;
+    validation.validate_aud = false;
+    validation.required_spec_claims.clear();
+    Ok(jsonwebtoken::decode::<Json>(token, &decoding, &validation)
+        .ok()
+        .map(|data| data.claims))
+}
+
 /// The left half of the SHA-256 of `token`, base64url: an `at_hash` or a
 /// `c_hash` for an `id_token` signed with RS256 or ES256 (OIDC Core §3.1.3.6).
 pub fn left_half_sha256(token: &str) -> String {

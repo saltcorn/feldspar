@@ -58,6 +58,14 @@ pub const LIST_BUILD_HOSTS: HandlerId<AdminOnly> = HandlerId::new("listBuildHost
 pub const CREATE_BUILD_HOST: HandlerId<AdminOnly> = HandlerId::new("createBuildHost");
 pub const UPDATE_BUILD_HOST: HandlerId<AdminOnly> = HandlerId::new("updateBuildHost");
 pub const DELETE_BUILD_HOST: HandlerId<AdminOnly> = HandlerId::new("deleteBuildHost");
+pub const GET_IDENTITY_PROVIDER: HandlerId<AdminOnly> = HandlerId::new("getIdentityProvider");
+pub const CREATE_OAUTH_CLIENT: HandlerId<AdminOnly> = HandlerId::new("createOAuthClient");
+pub const UPDATE_OAUTH_CLIENT: HandlerId<AdminOnly> = HandlerId::new("updateOAuthClient");
+pub const DELETE_OAUTH_CLIENT: HandlerId<AdminOnly> = HandlerId::new("deleteOAuthClient");
+pub const REGENERATE_OAUTH_CLIENT_SECRET: HandlerId<AdminOnly> =
+    HandlerId::new("regenerateOAuthClientSecret");
+pub const REVOKE_OAUTH_GRANT: HandlerId<AdminOnly> = HandlerId::new("revokeOAuthGrant");
+pub const ROTATE_OIDC_SIGNING_KEYS: HandlerId<AdminOnly> = HandlerId::new("rotateOidcSigningKeys");
 
 // --- `admin::auth` ---
 

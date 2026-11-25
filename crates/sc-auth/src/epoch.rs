@@ -151,7 +151,17 @@ pub async fn current_epoch(catalog: &Catalog, user: Uuid) -> Result<AuthEpoch> {
 /// An `UPDATE … RETURNING`, or the first row at 1 for an account that has none.
 /// Two first bumps racing both try the insert; the loser's primary-key conflict
 /// sends it back to the update, so neither bump is lost.
+///
+/// Whatever the identity provider gave the account's relying parties ends with
+/// it (TODO IP1.7): its access and refresh tokens are revoked here, the one
+/// place every credential change passes.
 pub(crate) async fn bump_auth_epoch(catalog: &Catalog, user: Uuid) -> Result<CredentialsChanged> {
+    let changed = raise_epoch(catalog, user).await?;
+    crate::oidc::end_user_oauth_tokens(catalog, user).await?;
+    Ok(changed)
+}
+
+async fn raise_epoch(catalog: &Catalog, user: Uuid) -> Result<CredentialsChanged> {
     if catalog.get(AUTH_EPOCHS_TABLE)?.is_none() {
         bootstrap_auth_epochs(catalog).await?;
     }

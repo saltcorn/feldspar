@@ -332,6 +332,9 @@ data-encoding = "2"
 # same provider, so no second implementation of RSA or ECDSA joins the tree.
 aws-lc-rs = "1"
 jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs", "use_pem"] }
+# A relying party in the identity provider's end-to-end test (TODO IP1.9).
+# No default features: the test gives it the tree's own `reqwest`.
+openidconnect = { version = "4", default-features = false }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 # Line and character diffs for the coding trait (TODO §6): the run's unified
 # diff and diffstat from the change ledger, and the similarity ratio the edit

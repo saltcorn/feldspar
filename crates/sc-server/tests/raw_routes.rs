@@ -108,6 +108,13 @@ const EXPECTED: &[(&str, &[&str], RouteAuth)] = &[
         AppSessionOrSignIn,
     ),
     ("/_feldspar/oidc/token", &["POST"], OAuthClient),
+    (
+        "/_feldspar/oidc/userinfo",
+        &["GET", "POST"],
+        OAuthAccessToken,
+    ),
+    ("/_feldspar/oidc/revoke", &["POST"], OAuthClient),
+    ("/_feldspar/oidc/logout", &["GET", "POST"], AppSessionEnd),
 ];
 
 #[test]

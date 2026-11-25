@@ -72,6 +72,8 @@ export function settingsTabLabel(label: string, t: Translator["t"]): string {
       return t("API");
     case "Security":
       return t("Security");
+    case "Identity provider":
+      return t("Identity provider");
     case "Users & Security":
       return t("Users & Security");
     case "Development":

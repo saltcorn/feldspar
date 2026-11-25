@@ -82,6 +82,9 @@ pub const GROUP_AGENTS: &str = "agents";
 pub const GROUP_ACCESS: &str = "access";
 /// Guest sessions.
 pub const GROUP_GUEST_SESSIONS: &str = "guest_sessions";
+/// Whether it is an OpenID Connect identity provider, and its clients (TODO
+/// IP1.8).
+pub const GROUP_IDENTITY_PROVIDER: &str = "identity_provider";
 /// Its content-security policy and the modules' suggestions for it.
 pub const GROUP_CSP: &str = "csp";
 /// Which coding agent the sidebar opens.
@@ -99,7 +102,7 @@ pub const GROUP_TRANSLATIONS: &str = "translations";
 
 /// The parts of the application record, each of which a resolved layout puts
 /// on exactly one tab.
-pub const RECORD_GROUPS: [&str; 17] = [
+pub const RECORD_GROUPS: [&str; 18] = [
     GROUP_IDENTITY,
     GROUP_FRAMEWORK,
     GROUP_TARGETS,
@@ -115,6 +118,7 @@ pub const RECORD_GROUPS: [&str; 17] = [
     GROUP_ACCESS,
     GROUP_GUEST_SESSIONS,
     GROUP_CSP,
+    GROUP_IDENTITY_PROVIDER,
     GROUP_CODING_AGENT,
     GROUP_CHECKLISTS,
 ];
@@ -128,7 +132,8 @@ pub const SCREEN_GROUPS: [&str; 4] = [GROUP_VIEWS, GROUP_PAGES, GROUP_LIBRARY, G
 pub const VIEW_SCREENS: [&str; 3] = [GROUP_VIEWS, GROUP_PAGES, GROUP_LIBRARY];
 
 /// The layout every framework gets unless it declares one: Framework, Data,
-/// Triggers & Streams, API, Security, Development, Translations — with a
+/// Triggers & Streams, API, Security, Identity provider, Development,
+/// Translations — with a
 /// framework that has views getting Views, Pages and Library after Framework.
 pub fn default_settings_tabs(has_views: bool) -> Vec<SettingsTab> {
     let mut tabs = vec![SettingsTab::new(
@@ -166,6 +171,11 @@ pub fn default_settings_tabs(has_views: bool) -> Vec<SettingsTab> {
             "security",
             "Security",
             &[GROUP_ACCESS, GROUP_GUEST_SESSIONS, GROUP_CSP],
+        ),
+        SettingsTab::new(
+            "identity_provider",
+            "Identity provider",
+            &[GROUP_IDENTITY_PROVIDER],
         ),
         SettingsTab::new(
             "development",
@@ -363,6 +373,7 @@ mod tests {
                 "Triggers & Streams",
                 "API",
                 "Security",
+                "Identity provider",
                 "Development",
                 "Translations"
             ]

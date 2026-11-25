@@ -43,6 +43,7 @@ use sc_types::{BasicType, TypeRef};
 use serde_json::Value as Json;
 use uuid::Uuid;
 
+use crate::epoch::{AuthEpoch, current_epoch};
 use crate::tokens::{bearer_secret_hash, new_bearer_secret};
 
 /// The registered clients.
@@ -119,6 +120,9 @@ const COL_USED_AT: &str = "used_at";
 const COL_KIND: &str = "kind";
 const COL_GRANT: &str = "grant_id";
 const COL_REVOKED_AT: &str = "revoked_at";
+const COL_CLAIM_FIELDS: &str = "claim_fields";
+const COL_LOGOUT_URIS: &str = "post_logout_redirect_uris";
+const COL_AUTH_EPOCH: &str = "auth_epoch";
 
 /// A token row's kind.
 const KIND_ACCESS: &str = "access";
@@ -138,6 +142,9 @@ fn timestamp_type() -> TypeRef {
 }
 fn bool_type() -> TypeRef {
     TypeRef::Basic(BasicType::Bool)
+}
+fn int_type() -> TypeRef {
+    TypeRef::Basic(BasicType::Int)
 }
 
 /// The clients table. `app_id` and the users the other tables name are not
@@ -160,6 +167,12 @@ fn client_fields() -> Vec<DataField> {
         DataField::plain(COL_SKIP_CONSENT, bool_type()).required(),
         DataField::plain(COL_CREATED_BY, uuid_type()),
         DataField::plain(COL_CREATED_AT, timestamp_type()).required(),
+        // IP1.6: further claims, `[{claim, field}]`. `NULL` (a client
+        // registered before) is none.
+        DataField::plain(COL_CLAIM_FIELDS, json_type()),
+        // IP1.7: where RP-initiated logout may send the browser. `NULL` is
+        // nowhere.
+        DataField::plain(COL_LOGOUT_URIS, json_type()),
     ]
 }
 
@@ -178,6 +191,9 @@ fn code_fields() -> Vec<DataField> {
         DataField::plain(COL_FAMILY, uuid_type()).required(),
         DataField::plain(COL_EXPIRES_AT, timestamp_type()).required(),
         DataField::plain(COL_USED_AT, timestamp_type()),
+        // The account's authentication epoch when the user signed in
+        // (`crate::epoch`): a code from an earlier one is not honoured.
+        DataField::plain(COL_AUTH_EPOCH, int_type()),
     ]
 }
 
@@ -214,6 +230,9 @@ fn token_fields() -> Vec<DataField> {
         // A refresh token's one use.
         DataField::plain(COL_USED_AT, timestamp_type()),
         DataField::plain(COL_REVOKED_AT, timestamp_type()),
+        // Carried from the code. `NULL` (a token from before the column) is
+        // the initial epoch.
+        DataField::plain(COL_AUTH_EPOCH, int_type()),
     ]
 }
 
@@ -263,6 +282,12 @@ pub struct OAuthClient {
     pub created_by: Option<Uuid>,
     /// When.
     pub created_at: DateTime<Utc>,
+    /// Further claims it is given, each from a field of the user
+    /// ([`ClaimField`]).
+    pub claim_fields: Vec<ClaimField>,
+    /// Where RP-initiated logout may send the browser afterwards, compared
+    /// exactly as the redirect URIs are.
+    pub post_logout_redirect_uris: Vec<String>,
 }
 
 impl OAuthClient {
@@ -272,6 +297,183 @@ impl OAuthClient {
     pub fn allows_redirect(&self, uri: &str) -> bool {
         self.redirect_uris.iter().any(|allowed| allowed == uri)
     }
+
+    /// Whether `uri` is one of its post-logout redirect URIs, exactly.
+    pub fn allows_logout_redirect(&self, uri: &str) -> bool {
+        self.post_logout_redirect_uris
+            .iter()
+            .any(|allowed| allowed == uri)
+    }
+}
+
+/// One further claim a client is given (TODO IP1.6): `claim` in the
+/// `id_token` and at `/userinfo`, from the user's `field`. The field is
+/// [`ROLE_CLAIM_FIELD`] (the role's name) or a field an administrator added to
+/// the users table.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ClaimField {
+    /// The claim's name.
+    pub claim: String,
+    /// The user's field it comes from.
+    pub field: String,
+}
+
+/// The field a [`ClaimField`] names for the user's role, given as the role's
+/// name (`"admin"`, `"staff"`), not its number.
+pub const ROLE_CLAIM_FIELD: &str = "role";
+
+/// The claims a mapping may not set: the protocol's own, and the ones the
+/// scopes give, whose meaning a relying party relies on.
+pub const RESERVED_CLAIMS: &[&str] = &[
+    "iss",
+    "sub",
+    "aud",
+    "exp",
+    "iat",
+    "nbf",
+    "jti",
+    "auth_time",
+    "nonce",
+    "at_hash",
+    "c_hash",
+    "azp",
+    "sid",
+    "acr",
+    "amr",
+    "email",
+    "email_verified",
+];
+
+/// The standard `profile` claims (OIDC Core §5.1) a users table may have a
+/// field of the same name for. `name` falls back to `full_name`, and `locale`
+/// to the account's language.
+pub const PROFILE_CLAIMS: &[&str] = &[
+    "name",
+    "given_name",
+    "family_name",
+    "middle_name",
+    "nickname",
+    "preferred_username",
+    "profile",
+    "picture",
+    "website",
+    "gender",
+    "birthdate",
+    "zoneinfo",
+    "locale",
+];
+
+/// Check a client's claim mappings against the users table as it is now:
+/// each claim named once, none of [`RESERVED_CLAIMS`], each field
+/// [`ROLE_CLAIM_FIELD`] or a field an administrator added. A field dropped
+/// later is left out of the claims rather than refusing a sign-in.
+pub fn check_claim_fields(catalog: &Catalog, fields: &[ClaimField]) -> Result<()> {
+    if fields.is_empty() {
+        return Ok(());
+    }
+    let users = catalog.require(crate::USERS_TABLE)?;
+    let mut seen: Vec<&str> = Vec::new();
+    for ClaimField { claim, field } in fields {
+        let claim_ok = !claim.is_empty()
+            && claim
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':' | '/'));
+        if !claim_ok {
+            return Err(Error::invalid(format!(
+                "`{claim}` is not a claim name: letters, digits and `_ - . : /` only"
+            )));
+        }
+        if RESERVED_CLAIMS.contains(&claim.as_str()) {
+            return Err(Error::invalid(format!(
+                "the claim `{claim}` is the provider's own and cannot be mapped"
+            )));
+        }
+        if seen.contains(&claim.as_str()) {
+            return Err(Error::invalid(format!(
+                "the claim `{claim}` is mapped twice"
+            )));
+        }
+        seen.push(claim);
+        let field_ok = field == ROLE_CLAIM_FIELD
+            || (!crate::is_system_user_column(field) && users.field(field).is_some());
+        if !field_ok {
+            return Err(Error::invalid(format!(
+                "the claim `{claim}` is mapped onto `{field}`, which is neither `role` nor a \
+                 field added to the users table"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The claims about `user` a client holding `scopes` is given, in an
+/// `id_token` and at `/userinfo` alike (OIDC Core §5.4): `sub` always — the
+/// user's id, stable for as long as the account exists, not the email address,
+/// which can change; for `email`, `email` and `email_verified`; for `profile`,
+/// the [`PROFILE_CLAIMS`] the users table has; and the client's
+/// [`ClaimField`]s whenever `openid` was granted.
+pub async fn oauth_user_claims(
+    catalog: &Catalog,
+    user: &crate::User,
+    client: &OAuthClient,
+    scopes: &[String],
+) -> Result<serde_json::Map<String, Json>> {
+    let mut claims = serde_json::Map::new();
+    claims.insert("sub".to_owned(), Json::String(user.id().to_string()));
+    let has = |scope: &str| scopes.iter().any(|s| s == scope);
+    let value = |field: &str| match user.get(field) {
+        None | Some(Value::Null) => None,
+        Some(Value::Text(t)) if t.trim().is_empty() => None,
+        Some(v) => Some(sc_types::value_to_json(v)),
+    };
+    if has(SCOPE_EMAIL)
+        && let Some(email) = value(crate::COL_EMAIL)
+    {
+        claims.insert("email".to_owned(), email);
+        // `false` only for an address a self-service signup gave and nobody
+        // has proven since; an account an administrator made is vouched for.
+        claims.insert(
+            "email_verified".to_owned(),
+            Json::Bool(!user.email_unproven()),
+        );
+    }
+    if has(SCOPE_PROFILE) {
+        for claim in PROFILE_CLAIMS {
+            let found = match *claim {
+                "name" => value("name").or_else(|| value("full_name")),
+                "locale" => value("locale").or_else(|| user.language().map(Json::from)),
+                other => value(other),
+            };
+            if let Some(found) = found {
+                claims.insert((*claim).to_owned(), found);
+            }
+        }
+    }
+    if has(SCOPE_OPENID) && !client.claim_fields.is_empty() {
+        let mut role_name = None;
+        for ClaimField { claim, field } in &client.claim_fields {
+            let found = if field == ROLE_CLAIM_FIELD {
+                if role_name.is_none() {
+                    role_name = Some(
+                        crate::list_roles(catalog)
+                            .await?
+                            .into_iter()
+                            .find(|r| r.role == user.role())
+                            .map_or_else(|| user.role().get().to_string(), |r| r.name),
+                    );
+                }
+                role_name.clone().map(Json::String)
+            } else if crate::is_system_user_column(field) {
+                None
+            } else {
+                value(field)
+            };
+            if let Some(found) = found {
+                claims.insert(claim.clone(), found);
+            }
+        }
+    }
+    Ok(claims)
 }
 
 /// What [`register_oauth_client`] is asked for.
@@ -291,6 +493,28 @@ pub struct NewOAuthClient {
     pub skip_consent: bool,
     /// The administrator registering it.
     pub created_by: Option<Uuid>,
+    /// Further claims ([`ClaimField`]), checked against the users table.
+    pub claim_fields: Vec<ClaimField>,
+    /// Where RP-initiated logout may return to.
+    pub post_logout_redirect_uris: Vec<String>,
+}
+
+/// What [`update_oauth_client`] changes: everything but the id, the
+/// application, whether it is confidential and the secret.
+#[derive(Debug, Clone)]
+pub struct OAuthClientUpdate {
+    /// What to call it.
+    pub name: String,
+    /// Its redirect URIs.
+    pub redirect_uris: Vec<String>,
+    /// The scopes it may ask for; empty means all of [`SUPPORTED_SCOPES`].
+    pub scopes: Vec<String>,
+    /// Whether its users skip the consent page.
+    pub skip_consent: bool,
+    /// Further claims.
+    pub claim_fields: Vec<ClaimField>,
+    /// Where RP-initiated logout may return to.
+    pub post_logout_redirect_uris: Vec<String>,
 }
 
 /// A client just registered, and the **one** time its secret is available.
@@ -386,29 +610,17 @@ pub async fn register_oauth_client(
     catalog: &Catalog,
     new: NewOAuthClient,
 ) -> Result<RegisteredOAuthClient> {
-    let name = new.name.trim().to_owned();
-    if name.is_empty() {
-        return Err(Error::invalid(
-            "a client needs a name: the consent page shows it to the person signing in",
-        ));
-    }
-    if new.redirect_uris.is_empty() {
-        return Err(Error::invalid(
-            "a client needs at least one redirect URI: it is the only place a sign-in can \
-             send the browser back to",
-        ));
-    }
-    for uri in &new.redirect_uris {
-        check_redirect_uri(uri)?;
-    }
-    let mut scopes = if new.scopes.is_empty() {
-        SUPPORTED_SCOPES.iter().map(|s| (*s).to_owned()).collect()
-    } else {
-        new.scopes.clone()
-    };
-    check_scopes(&scopes)?;
-    scopes.dedup();
-
+    let checked = checked_settings(
+        catalog,
+        OAuthClientUpdate {
+            name: new.name,
+            redirect_uris: new.redirect_uris,
+            scopes: new.scopes,
+            skip_consent: new.skip_consent,
+            claim_fields: new.claim_fields,
+            post_logout_redirect_uris: new.post_logout_redirect_uris,
+        },
+    )?;
     let secret = new
         .confidential
         .then(|| new_bearer_secret(CLIENT_SECRET_PREFIX));
@@ -416,15 +628,17 @@ pub async fn register_oauth_client(
         id: Uuid::new_v4(),
         client_id: format!("{CLIENT_ID_PREFIX}{}", Uuid::new_v4().simple()),
         app_id: new.app_id,
-        name,
+        name: checked.name,
         confidential: new.confidential,
-        redirect_uris: new.redirect_uris,
-        scopes,
-        skip_consent: new.skip_consent,
+        redirect_uris: checked.redirect_uris,
+        scopes: checked.scopes,
+        skip_consent: checked.skip_consent,
         created_by: new.created_by,
         // To the microsecond, as the column keeps it, so what is returned is
         // what a read gives back.
         created_at: Utc::now().trunc_subsecs(6),
+        claim_fields: checked.claim_fields,
+        post_logout_redirect_uris: checked.post_logout_redirect_uris,
     };
     let values = vec![
         Value::Uuid(client.id),
@@ -440,9 +654,105 @@ pub async fn register_oauth_client(
         Value::Bool(client.skip_consent),
         client.created_by.map_or(Value::Null, Value::Uuid),
         Value::Timestamp(client.created_at),
+        Value::Json(claim_fields_json(&client.claim_fields)),
+        Value::Json(strings_json(&client.post_logout_redirect_uris)),
     ];
     insert(catalog, OAUTH_CLIENTS_TABLE, &client_fields(), values).await?;
     Ok(RegisteredOAuthClient { client, secret })
+}
+
+/// A client's settings checked as registering or editing one checks them:
+/// a name, at least one well-formed redirect URI, known scopes (none meaning
+/// all), claim mappings that fit the users table, and well-formed logout URIs.
+fn checked_settings(catalog: &Catalog, settings: OAuthClientUpdate) -> Result<OAuthClientUpdate> {
+    let name = settings.name.trim().to_owned();
+    if name.is_empty() {
+        return Err(Error::invalid(
+            "a client needs a name: the consent page shows it to the person signing in",
+        ));
+    }
+    if settings.redirect_uris.is_empty() {
+        return Err(Error::invalid(
+            "a client needs at least one redirect URI: it is the only place a sign-in can \
+             send the browser back to",
+        ));
+    }
+    for uri in settings
+        .redirect_uris
+        .iter()
+        .chain(&settings.post_logout_redirect_uris)
+    {
+        check_redirect_uri(uri)?;
+    }
+    let mut scopes: Vec<String> = Vec::new();
+    let asked: Vec<String> = if settings.scopes.is_empty() {
+        SUPPORTED_SCOPES.iter().map(|s| (*s).to_owned()).collect()
+    } else {
+        settings.scopes
+    };
+    check_scopes(&asked)?;
+    for scope in asked {
+        if !scopes.contains(&scope) {
+            scopes.push(scope);
+        }
+    }
+    check_claim_fields(catalog, &settings.claim_fields)?;
+    Ok(OAuthClientUpdate {
+        name,
+        scopes,
+        ..settings
+    })
+}
+
+/// Change a client's settings ([`OAuthClientUpdate`]), checked as
+/// registering one is. A scope taken away is not taken from grants already
+/// made: `/authorize` refuses it from now on, and what was granted lapses with
+/// its tokens. `None` when there is no such client on the application.
+pub async fn update_oauth_client(
+    catalog: &Catalog,
+    app_id: Uuid,
+    client_id: &str,
+    update: OAuthClientUpdate,
+) -> Result<Option<OAuthClient>> {
+    let checked = checked_settings(catalog, update)?;
+    let statement = Update {
+        returning: vec![Projection::all()],
+        ..Update::new(
+            OAUTH_CLIENTS_TABLE,
+            vec![
+                Assignment::new(COL_NAME.to_owned(), Expr::lit(checked.name.as_str())),
+                Assignment::new(
+                    COL_REDIRECT_URIS.to_owned(),
+                    Expr::Lit(Value::Json(strings_json(&checked.redirect_uris))),
+                ),
+                Assignment::new(
+                    COL_SCOPES.to_owned(),
+                    Expr::Lit(Value::Json(strings_json(&checked.scopes))),
+                ),
+                Assignment::new(COL_SKIP_CONSENT.to_owned(), Expr::lit(checked.skip_consent)),
+                Assignment::new(
+                    COL_CLAIM_FIELDS.to_owned(),
+                    Expr::Lit(Value::Json(claim_fields_json(&checked.claim_fields))),
+                ),
+                Assignment::new(
+                    COL_LOGOUT_URIS.to_owned(),
+                    Expr::Lit(Value::Json(strings_json(
+                        &checked.post_logout_redirect_uris,
+                    ))),
+                ),
+            ],
+        )
+        .filter(
+            Expr::col(COL_CLIENT_ID)
+                .eq(Expr::lit(client_id))
+                .and(Expr::col(COL_APP).eq(Expr::lit(app_id))),
+        )
+    };
+    rows(catalog, Statement::from(statement))
+        .await?
+        .first()
+        .map(client_from_row)
+        .transpose()
 }
 
 /// The application's clients, oldest first.
@@ -603,6 +913,8 @@ pub async fn export_oauth_clients(catalog: &Catalog, app_id: Uuid) -> Result<Vec
             "skip_consent": client.skip_consent,
             "created_by": client.created_by,
             "created_at": client.created_at.to_rfc3339(),
+            "claim_fields": client.claim_fields,
+            "post_logout_redirect_uris": client.post_logout_redirect_uris,
         }));
     }
     Ok(out)
@@ -648,6 +960,14 @@ pub async fn import_oauth_clients(
         }
         let scopes = strings_of("scopes");
         check_scopes(&scopes)?;
+        let logout_uris = strings_of("post_logout_redirect_uris");
+        for uri in &logout_uris {
+            check_redirect_uri(uri)?;
+        }
+        // Kept as the backup has them: a field the users table here lacks is
+        // left out of the claims, as one dropped later would be.
+        let claim_fields: Vec<ClaimField> =
+            serde_json::from_value(field("claim_fields")).unwrap_or_default();
         let created_at = field("created_at")
             .as_str()
             .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
@@ -669,6 +989,8 @@ pub async fn import_oauth_clients(
                 .and_then(|u| Uuid::parse_str(u).ok())
                 .map_or(Value::Null, Value::Uuid),
             Value::Timestamp(created_at),
+            Value::Json(claim_fields_json(&claim_fields)),
+            Value::Json(strings_json(&logout_uris)),
         ];
         insert(catalog, OAUTH_CLIENTS_TABLE, &client_fields(), values).await?;
         restored.push(client_id);
@@ -689,6 +1011,19 @@ fn client_from_row(row: &Row) -> Result<OAuthClient> {
         skip_consent: boolean(row, t, COL_SKIP_CONSENT)?,
         created_by: optional_uuid(row, t, COL_CREATED_BY)?,
         created_at: timestamp(row, t, COL_CREATED_AT)?,
+        claim_fields: match row.get(COL_CLAIM_FIELDS) {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Json(json)) => serde_json::from_value(json.clone()).map_err(|e| {
+                Error::invalid(format!(
+                    "{t}.{COL_CLAIM_FIELDS} is not a claim mapping: {e}"
+                ))
+            })?,
+            other => return Err(bad(t, COL_CLAIM_FIELDS, "json", other)),
+        },
+        post_logout_redirect_uris: match row.get(COL_LOGOUT_URIS) {
+            None | Some(Value::Null) => Vec::new(),
+            _ => strings(row, t, COL_LOGOUT_URIS)?,
+        },
     })
 }
 
@@ -732,6 +1067,8 @@ pub struct RedeemedCode {
     pub issuer: String,
     /// The token family every token from this code belongs to.
     pub family: Uuid,
+    /// The account's authentication epoch when the user signed in.
+    pub auth_epoch: AuthEpoch,
 }
 
 /// Why a code or a refresh token was not honoured: `invalid_grant` on the
@@ -763,6 +1100,7 @@ pub async fn issue_authorization_code(
 ) -> Result<String> {
     let code = new_bearer_secret(CODE_PREFIX);
     let now = Utc::now();
+    let epoch = current_epoch(catalog, new.user_id).await?;
     let values = vec![
         Value::Text(bearer_secret_hash(&code)),
         Value::Text(new.client_id),
@@ -777,6 +1115,7 @@ pub async fn issue_authorization_code(
         Value::Uuid(Uuid::new_v4()),
         Value::Timestamp(now + Duration::seconds(CODE_TTL_SECONDS)),
         Value::Null,
+        Value::Int(epoch.value()),
     ];
     insert(catalog, OAUTH_CODES_TABLE, &code_fields(), values).await?;
     // A spent code is kept until it lapses, so a second use is recognised
@@ -886,13 +1225,21 @@ pub async fn redeem_authorization_code(
     if !constant_time_eq(&pkce_s256(verifier), &text_col(row, t, COL_CHALLENGE)?) {
         return refused("code_verifier does not match the code_challenge");
     }
+    let user_id = uuid(row, t, COL_USER)?;
+    let auth_epoch = AuthEpoch::of_column(row.get(COL_AUTH_EPOCH))?;
+    if auth_epoch != current_epoch(catalog, user_id).await? {
+        return refused(
+            "the account's password, second factor or status changed after this sign-in",
+        );
+    }
     Ok(Ok(RedeemedCode {
-        user_id: uuid(row, t, COL_USER)?,
+        user_id,
         scopes: strings(row, t, COL_SCOPES)?,
         nonce: optional_text(row, t, COL_NONCE)?,
         auth_time: optional_timestamp(row, t, COL_AUTH_TIME)?,
         issuer: text_col(row, t, COL_ISSUER)?,
         family: uuid(row, t, COL_FAMILY)?,
+        auth_epoch,
     }))
 }
 
@@ -1056,6 +1403,10 @@ pub struct TokenSubject {
     pub auth_time: Option<DateTime<Utc>>,
     /// The issuer.
     pub issuer: String,
+    /// The account's authentication epoch at the sign-in they descend from:
+    /// once the account's moves on, they are nobody's
+    /// ([`authenticate_oauth_access_token`], [`redeem_refresh_token`]).
+    pub auth_epoch: AuthEpoch,
 }
 
 /// Mint an access token and a refresh token for `subject`.
@@ -1092,6 +1443,7 @@ pub async fn issue_oauth_tokens(catalog: &Catalog, subject: &TokenSubject) -> Re
             Value::Timestamp(expires_at),
             Value::Null,
             Value::Null,
+            Value::Int(subject.auth_epoch.value()),
         ];
         insert(catalog, OAUTH_TOKENS_TABLE, &token_fields(), values).await?;
     }
@@ -1176,6 +1528,14 @@ pub async fn redeem_refresh_token(
         }
         return refused("the refresh token has expired");
     };
+    let user_id = uuid(row, t, COL_USER)?;
+    let auth_epoch = AuthEpoch::of_column(row.get(COL_AUTH_EPOCH))?;
+    if auth_epoch != current_epoch(catalog, user_id).await? {
+        revoke_family(catalog, uuid(row, t, COL_FAMILY)?).await?;
+        return refused(
+            "the account's password, second factor or status changed since this sign-in",
+        );
+    }
     let granted = strings(row, t, COL_SCOPES)?;
     let scopes = match narrower {
         Some(asked) if !asked.is_empty() => {
@@ -1194,12 +1554,13 @@ pub async fn redeem_refresh_token(
     Ok(Ok(TokenSubject {
         client_id: client.client_id.clone(),
         app_id: client.app_id,
-        user_id: uuid(row, t, COL_USER)?,
+        user_id,
         scopes,
         family: uuid(row, t, COL_FAMILY)?,
         grant_id: uuid(row, t, COL_GRANT)?,
         auth_time: optional_timestamp(row, t, COL_AUTH_TIME)?,
         issuer: text_col(row, t, COL_ISSUER)?,
+        auth_epoch,
     }))
 }
 
@@ -1221,6 +1582,143 @@ pub async fn revoke_family(catalog: &Catalog, family: Uuid) -> Result<usize> {
         )
     };
     Ok(rows(catalog, Statement::from(update)).await?.len())
+}
+
+/// Revoke a token `client` holds (RFC 7009): a refresh token ends its whole
+/// family, the access tokens issued with it included; an access token ends
+/// alone. Returns whether `presented` was one of the client's tokens — the
+/// endpoint answers the same either way, so this is for the tests and the log.
+pub async fn revoke_oauth_token(
+    catalog: &Catalog,
+    client: &OAuthClient,
+    presented: &str,
+) -> Result<bool> {
+    let select = Select::from(Source::table(OAUTH_TOKENS_TABLE))
+        .filter(
+            Expr::col(COL_HASH)
+                .eq(Expr::lit(bearer_secret_hash(presented)))
+                .and(Expr::col(COL_CLIENT_ID).eq(Expr::lit(client.client_id.as_str())))
+                .and(Expr::col(COL_APP).eq(Expr::lit(client.app_id))),
+        )
+        .limit(1);
+    let found = rows(catalog, Statement::from(select)).await?;
+    let Some(row) = found.first() else {
+        return Ok(false);
+    };
+    let t = OAUTH_TOKENS_TABLE;
+    if text_col(row, t, COL_KIND)? == KIND_REFRESH {
+        revoke_family(catalog, uuid(row, t, COL_FAMILY)?).await?;
+    } else {
+        let update = Update::new(
+            OAUTH_TOKENS_TABLE,
+            vec![Assignment::new(
+                COL_REVOKED_AT.to_owned(),
+                Expr::Lit(Value::Timestamp(Utc::now())),
+            )],
+        )
+        .filter(
+            Expr::col(COL_HASH)
+                .eq(Expr::lit(bearer_secret_hash(presented)))
+                .and(Expr::unary(UnOp::IsNull, Expr::col(COL_REVOKED_AT))),
+        );
+        run(catalog, Statement::from(update)).await?;
+    }
+    Ok(true)
+}
+
+/// End every token and code the account holds, on every application: its
+/// authentication epoch has moved (a new password, a second factor turned on
+/// or off, the account disabled — `crate::epoch`). The grants — what the user
+/// consented to — stay, so signing in again does not ask again. Returns how
+/// many tokens ended.
+pub(crate) async fn end_user_oauth_tokens(catalog: &Catalog, user: Uuid) -> Result<usize> {
+    if catalog.get(OAUTH_TOKENS_TABLE)?.is_none() {
+        return Ok(0);
+    }
+    let delete = Delete::from(OAUTH_CODES_TABLE).filter(Expr::col(COL_USER).eq(Expr::lit(user)));
+    run(catalog, Statement::from(delete)).await?;
+    let update = Update {
+        returning: vec![Projection::expr(Expr::col(COL_ID))],
+        ..Update::new(
+            OAUTH_TOKENS_TABLE,
+            vec![Assignment::new(
+                COL_REVOKED_AT.to_owned(),
+                Expr::Lit(Value::Timestamp(Utc::now())),
+            )],
+        )
+        .filter(
+            Expr::col(COL_USER)
+                .eq(Expr::lit(user))
+                .and(Expr::unary(UnOp::IsNull, Expr::col(COL_REVOKED_AT))),
+        )
+    };
+    Ok(rows(catalog, Statement::from(update)).await?.len())
+}
+
+/// Forget everything the identity provider holds for an account being
+/// deleted: its grants, codes and tokens.
+pub(crate) async fn delete_user_oauth(catalog: &Catalog, user: Uuid) -> Result<()> {
+    if catalog.get(OAUTH_TOKENS_TABLE)?.is_none() {
+        return Ok(());
+    }
+    for table in [OAUTH_CODES_TABLE, OAUTH_GRANTS_TABLE, OAUTH_TOKENS_TABLE] {
+        let delete = Delete::from(table).filter(Expr::col(COL_USER).eq(Expr::lit(user)));
+        run(catalog, Statement::from(delete)).await?;
+    }
+    Ok(())
+}
+
+/// Every grant made on the application, newest first: who consented to
+/// which client, for the admin screen.
+pub async fn list_oauth_grants(catalog: &Catalog, app_id: Uuid) -> Result<Vec<OAuthGrant>> {
+    let select = Select::from(Source::table(OAUTH_GRANTS_TABLE))
+        .filter(Expr::col(COL_APP).eq(Expr::lit(app_id)));
+    let mut grants: Vec<OAuthGrant> = rows(catalog, Statement::from(select))
+        .await?
+        .iter()
+        .map(grant_from_row)
+        .collect::<Result<_>>()?;
+    grants.sort_by_key(|g| std::cmp::Reverse(g.updated_at));
+    Ok(grants)
+}
+
+/// Withdraw a grant, as an administrator does: the consent is forgotten, and
+/// every token issued under it ends at once. The user is asked again at their
+/// next sign-in to the client. Returns whether there was one.
+pub async fn revoke_oauth_grant(catalog: &Catalog, app_id: Uuid, grant_id: Uuid) -> Result<bool> {
+    let delete = Delete {
+        returning: vec![Projection::expr(Expr::col(COL_ID))],
+        ..Delete::from(OAUTH_GRANTS_TABLE).filter(
+            Expr::col(COL_ID)
+                .eq(Expr::lit(grant_id))
+                .and(Expr::col(COL_APP).eq(Expr::lit(app_id))),
+        )
+    };
+    if rows(catalog, Statement::from(delete)).await?.is_empty() {
+        return Ok(false);
+    }
+    let update = Update::new(
+        OAUTH_TOKENS_TABLE,
+        vec![Assignment::new(
+            COL_REVOKED_AT.to_owned(),
+            Expr::Lit(Value::Timestamp(Utc::now())),
+        )],
+    )
+    .filter(
+        Expr::col(COL_GRANT)
+            .eq(Expr::lit(grant_id))
+            .and(Expr::unary(UnOp::IsNull, Expr::col(COL_REVOKED_AT))),
+    );
+    run(catalog, Statement::from(update)).await?;
+    Ok(true)
+}
+
+/// How many clients an application has registered, for a summary.
+pub async fn count_oauth_clients(catalog: &Catalog, app_id: Uuid) -> Result<usize> {
+    if catalog.get(OAUTH_CLIENTS_TABLE)?.is_none() {
+        return Ok(0);
+    }
+    Ok(list_oauth_clients(catalog, app_id).await?.len())
 }
 
 /// What a live access token says, for `/userinfo`.
@@ -1268,8 +1766,14 @@ pub async fn authenticate_oauth_access_token(
         return Ok(None);
     };
     let t = OAUTH_TOKENS_TABLE;
+    let user_id = uuid(row, t, COL_USER)?;
+    // Belt and braces: a credential change revokes the account's tokens
+    // ([`end_user_oauth_tokens`]), and one minted while that ran is caught here.
+    if AuthEpoch::of_column(row.get(COL_AUTH_EPOCH))? != current_epoch(catalog, user_id).await? {
+        return Ok(None);
+    }
     Ok(Some(OAuthAccess {
-        user_id: uuid(row, t, COL_USER)?,
+        user_id,
         client_id: text_col(row, t, COL_CLIENT_ID)?,
         scopes: strings(row, t, COL_SCOPES)?,
         expires_at: timestamp(row, t, COL_EXPIRES_AT)?,
@@ -1294,6 +1798,10 @@ async fn sweep_expired_tokens(catalog: &Catalog, now: DateTime<Utc>) -> Result<(
 pub fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+fn claim_fields_json(fields: &[ClaimField]) -> Json {
+    serde_json::to_value(fields).unwrap_or(Json::Array(Vec::new()))
 }
 
 fn strings_json(items: &[String]) -> Json {
@@ -1448,6 +1956,8 @@ mod tests {
             skip_consent: false,
             created_by: None,
             created_at: Utc::now(),
+            claim_fields: vec![],
+            post_logout_redirect_uris: vec![],
         };
         assert!(client.allows_redirect("https://rp.example.com/cb"));
         for near in [
@@ -1478,10 +1988,10 @@ mod tests {
     #[test]
     fn each_table_s_values_line_up_with_its_columns() {
         // The inserts pair columns with values by position.
-        assert_eq!(client_fields().len(), 11);
-        assert_eq!(code_fields().len(), 13);
+        assert_eq!(client_fields().len(), 13);
+        assert_eq!(code_fields().len(), 14);
         assert_eq!(grant_fields().len(), 7);
-        assert_eq!(token_fields().len(), 15);
+        assert_eq!(token_fields().len(), 16);
     }
 
     #[test]
@@ -1498,6 +2008,8 @@ mod tests {
                 skip_consent: false,
                 created_by: None,
                 created_at: Utc::now(),
+                claim_fields: vec![],
+                post_logout_redirect_uris: vec![],
             },
             secret: Some(new_bearer_secret(CLIENT_SECRET_PREFIX)),
         };

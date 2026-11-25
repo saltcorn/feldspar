@@ -293,6 +293,8 @@ pub async fn delete_user(catalog: &Catalog, id: Uuid) -> Result<bool> {
     // So is a second factor: a later account must not inherit the secret.
     crate::second_factor::remove_second_factor(catalog, id).await?;
     crate::epoch::delete_auth_epoch(catalog, id).await?;
+    // What it consented to as an identity provider's user, and its tokens.
+    crate::oidc::delete_user_oauth(catalog, id).await?;
     let delete = Delete {
         returning: vec![Projection::expr(Expr::col(COL_ID))],
         ..Delete::from(USERS_TABLE).filter(Expr::col(COL_ID).eq(Expr::lit(id)))

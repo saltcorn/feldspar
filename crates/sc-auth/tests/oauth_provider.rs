@@ -60,6 +60,8 @@ async fn client(
             scopes: vec![],
             skip_consent: false,
             created_by: None,
+            claim_fields: vec![],
+            post_logout_redirect_uris: vec![],
         },
     )
     .await?;
@@ -163,6 +165,8 @@ async fn a_client_belongs_to_one_application_and_its_secret_is_shown_once() -> R
                 scopes: vec![],
                 skip_consent: false,
                 created_by: None,
+                claim_fields: vec![],
+                post_logout_redirect_uris: vec![],
             },
         )
         .await;
@@ -216,6 +220,7 @@ async fn a_code_is_single_use_and_bound_to_its_client_uri_and_challenge() -> Res
             grant_id: grant.id,
             auth_time: None,
             issuer: redeemed.issuer.clone(),
+            auth_epoch: redeemed.auth_epoch,
         },
     )
     .await?;
@@ -309,6 +314,7 @@ async fn a_refresh_token_rotates_and_a_reused_one_revokes_its_family() -> Result
         grant_id: grant.id,
         auth_time: None,
         issuer: "https://blog.example.com".into(),
+        auth_epoch: sc_auth::AuthEpoch::INITIAL,
     };
     let first = issue_oauth_tokens(&f.catalog, &subject).await?;
 

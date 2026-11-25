@@ -100,6 +100,7 @@ import {
 import { CustomQueries } from "./CustomQueries";
 import { ApplicationTabs } from "./ApplicationViews";
 import { ApplicationTranslations } from "./Translations";
+import { IdentityProviderPanel } from "./IdentityProvider";
 import { Autosaver, TYPING_DELAY_MS, type SaveState } from "../autosave";
 import { SaveStatus } from "../SaveStatus";
 import { fieldsOnTab, formTab, groupsToRender, type SettingsTab } from "../settingsTabs";
@@ -260,6 +261,8 @@ export function ApplicationForm({
   const [minRole, setMinRole] = useState(100);
   const [maxRole, setMaxRole] = useState(1);
   const [accessIf, setAccessIf] = useState("");
+  // Whether it is an OpenID Connect identity provider (TODO IP1.8).
+  const [identityProvider, setIdentityProvider] = useState(false);
   // Guest sessions (TODO-payments P1.5): off unless switched on, and how long
   // one lasts — its cookie's age — in days.
   const [guestSessions, setGuestSessions] = useState(false);
@@ -362,6 +365,7 @@ export function ApplicationForm({
           setMinRole(existing.min_role);
           setMaxRole(existing.max_role);
           setAccessIf(existing.access_if);
+          setIdentityProvider(existing.identity_provider);
         } else {
           setFrameworkName(fws[0]?.name ?? "");
         }
@@ -478,6 +482,7 @@ export function ApplicationForm({
     min_role: minRole,
     max_role: maxRole,
     access_if: accessIf.trim(),
+    identity_provider: identityProvider,
   };
   const bodyKey = JSON.stringify(body);
 
@@ -1255,6 +1260,23 @@ export function ApplicationForm({
             </Form.Group>
           </>
         );
+      case "identity_provider":
+        return (
+          <Form.Group className="mb-3" controlId="appIdentityProvider">
+            <h5 className="mt-2">
+              <T text="Identity provider" />
+            </h5>
+            <Form.Check
+              type="switch"
+              checked={identityProvider}
+              onChange={(e) => setIdentityProvider(e.target.checked)}
+              label={t("Let other services sign people in with this application's users (OpenID Connect)")}
+            />
+            <Form.Text muted>
+              <T text="Registered services send people here to sign in, and get their identity back. Who may sign in is what this application's access settings allow." />
+            </Form.Text>
+          </Form.Group>
+        );
       case "guest_sessions":
         return (
           <Form.Group className="mb-3" controlId="appGuestSessions">
@@ -1347,6 +1369,9 @@ export function ApplicationForm({
   // The translations editor has its own form and Save, so it goes after this
   // one rather than inside it.
   const showTranslations = Boolean(appId) && groups.includes("translations");
+  // So is the identity provider's clients panel: its actions are requests of
+  // their own, not fields of the application.
+  const showIdentityProvider = Boolean(appId) && groups.includes("identity_provider");
 
   return (
     <>
@@ -1394,6 +1419,13 @@ export function ApplicationForm({
           )}
         </Form>
 
+        {showIdentityProvider && appId && stored && (
+          <IdentityProviderPanel
+            appId={appId}
+            subdomain={stored.subdomain}
+            enabled={identityProvider}
+          />
+        )}
         {showTranslations && appId && <ApplicationTranslations appId={appId} embedded />}
       </PageBody>
     </>

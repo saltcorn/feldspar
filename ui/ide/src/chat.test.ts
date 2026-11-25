@@ -82,6 +82,7 @@ function application(
     min_role: 100,
     max_role: 1,
     access_if: "",
+    identity_provider: false,
     source,
     builds: true,
     framework_known: true,

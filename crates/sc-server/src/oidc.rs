@@ -79,6 +79,12 @@ pub const JWKS_ROUTE: &str = "/_feldspar/oidc/jwks";
 pub const AUTHORIZE_ROUTE: &str = "/_feldspar/oidc/authorize";
 /// The token endpoint.
 pub const TOKEN_ROUTE: &str = "/_feldspar/oidc/token";
+/// The UserInfo endpoint.
+pub const USERINFO_ROUTE: &str = "/_feldspar/oidc/userinfo";
+/// The revocation endpoint (RFC 7009).
+pub const REVOKE_ROUTE: &str = "/_feldspar/oidc/revoke";
+/// The end-session endpoint (OpenID Connect RP-Initiated Logout).
+pub const LOGOUT_ROUTE: &str = "/_feldspar/oidc/logout";
 
 /// Marks the second arrival of an authorize request (module docs).
 pub const BOUNCED_PARAM: &str = "_fd_bounced";
@@ -157,6 +163,11 @@ pub fn metadata(issuer: &str) -> Value {
         "authorization_endpoint": format!("{issuer}{AUTHORIZE_ROUTE}"),
         "token_endpoint": format!("{issuer}{TOKEN_ROUTE}"),
         "jwks_uri": format!("{issuer}{JWKS_ROUTE}"),
+        "userinfo_endpoint": format!("{issuer}{USERINFO_ROUTE}"),
+        "revocation_endpoint": format!("{issuer}{REVOKE_ROUTE}"),
+        "revocation_endpoint_auth_methods_supported":
+            ["client_secret_basic", "client_secret_post", "none"],
+        "end_session_endpoint": format!("{issuer}{LOGOUT_ROUTE}"),
         "response_types_supported": ["code"],
         "response_modes_supported": ["query"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
@@ -168,12 +179,29 @@ pub fn metadata(issuer: &str) -> Value {
             ["client_secret_basic", "client_secret_post", "none"],
         "code_challenge_methods_supported": ["S256"],
         "prompt_values_supported": ["none", "login", "consent"],
-        "claims_supported": [
-            "iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "at_hash",
-            "email", "email_verified", "name",
-        ],
+        "claims_supported": claims_supported(),
         "authorization_response_iss_parameter_supported": true,
     })
+}
+
+/// The claims this provider can give: the protocol's, `email`'s and the
+/// standard profile claims. A client's mapped claims are its own.
+fn claims_supported() -> Vec<&'static str> {
+    [
+        "iss",
+        "sub",
+        "aud",
+        "exp",
+        "iat",
+        "auth_time",
+        "nonce",
+        "at_hash",
+        "email",
+        "email_verified",
+    ]
+    .into_iter()
+    .chain(sc_auth::PROFILE_CLAIMS.iter().copied())
+    .collect()
 }
 
 /// `GET /.well-known/openid-configuration` and
@@ -949,6 +977,18 @@ fn consent_page(app: &MountedApp, request: &AuthorizeRequest, user: &User, csrf:
     for sentence in request.scopes.iter().filter_map(|s| scope_sentence(s)) {
         items.push(&safe_html!("<li>{}</li>", SafeHtml::escape(sentence)));
     }
+    if request.scopes.iter().any(|s| s == SCOPE_OPENID) && !request.client.claim_fields.is_empty() {
+        let names: Vec<&str> = request
+            .client
+            .claim_fields
+            .iter()
+            .map(|c| c.claim.as_str())
+            .collect();
+        items.push(&safe_html!(
+            "<li>see these details of your account: {}</li>",
+            SafeHtml::escape(&names.join(", "))
+        ));
+    }
     let email = user
         .get(sc_auth::COL_EMAIL)
         .and_then(|v| match v {
@@ -1043,6 +1083,117 @@ fn basic_credentials(headers: &HeaderMap) -> Option<Result<(String, String), ()>
     })
 }
 
+/// A form-encoded body, every parameter at most once (RFC 6749 §3.2).
+fn token_form(headers: &HeaderMap, body: &Bytes) -> Result<Vec<(String, String)>, Box<Response>> {
+    let form_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("application/x-www-form-urlencoded"));
+    if !form_type {
+        return Err(Box::new(invalid_request(
+            "the body must be application/x-www-form-urlencoded",
+        )));
+    }
+    let form = parse_form(&String::from_utf8_lossy(body));
+    let mut seen: Vec<&str> = Vec::new();
+    for (k, _) in &form {
+        if seen.contains(&k.as_str()) {
+            return Err(Box::new(invalid_request(&format!(
+                "the parameter `{k}` was sent twice"
+            ))));
+        }
+        seen.push(k);
+    }
+    Ok(form)
+}
+
+/// The non-empty value of a form's parameter.
+fn form_field<'a>(form: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    form.iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v.as_str())
+        .filter(|v| !v.is_empty())
+}
+
+/// The client a token or revocation request is from, authenticated
+/// (`client_secret_basic`, `client_secret_post`, or none for a public client)
+/// and rate-limited per address and per client.
+async fn authenticate_client(
+    state: &AppState,
+    catalog: &Catalog,
+    app: &MountedApp,
+    peer: Option<std::net::SocketAddr>,
+    headers: &HeaderMap,
+    form: &[(String, String)],
+) -> Result<OAuthClient, Box<Response>> {
+    let field = |name: &str| form_field(form, name);
+    if let Some(ip) = request_client_ip(state, peer, headers)
+        && let Err(limited) =
+            sc_ratelimit::global().hit(&format!("oidc-token:ip:{ip}"), TOKEN_PER_IP)
+    {
+        return Err(Box::new(slow_down(limited.retry_after_secs())));
+    }
+
+    // Who is asking: one way of saying so, not two (RFC 6749 §2.3).
+    let (client_id, secret, used_basic) = match basic_credentials(headers) {
+        Some(Err(())) => {
+            return Err(Box::new(token_error(
+                StatusCode::UNAUTHORIZED,
+                "invalid_client",
+                "the Authorization header is not client_id:client_secret in base64",
+            )));
+        }
+        Some(Ok((id, secret))) => {
+            if field("client_secret").is_some() {
+                return Err(Box::new(invalid_request(
+                    "send the client secret one way, not two",
+                )));
+            }
+            if field("client_id").is_some_and(|body_id| body_id != id) {
+                return Err(Box::new(invalid_request(
+                    "client_id does not match the Authorization header",
+                )));
+            }
+            (id, Some(secret), true)
+        }
+        None => {
+            let Some(id) = field("client_id") else {
+                return Err(Box::new(token_error(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_client",
+                    "the request does not say which client it is from",
+                )));
+            };
+            (
+                id.to_owned(),
+                field("client_secret").map(str::to_owned),
+                false,
+            )
+        }
+    };
+    if let Err(limited) =
+        sc_ratelimit::global().hit(&format!("oidc-token:client:{client_id}"), TOKEN_PER_CLIENT)
+    {
+        return Err(Box::new(slow_down(limited.retry_after_secs())));
+    }
+    match sc_auth::authenticate_oauth_client(catalog, app.app.id.0, &client_id, secret.as_deref())
+        .await
+    {
+        Ok(Ok(client)) => Ok(client),
+        Ok(Err(refused)) => {
+            let mut out = token_error(StatusCode::UNAUTHORIZED, "invalid_client", &refused.0);
+            if used_basic {
+                out.headers_mut().insert(
+                    header::WWW_AUTHENTICATE,
+                    HeaderValue::from_static("Basic realm=\"feldspar\""),
+                );
+            }
+            Err(Box::new(out))
+        }
+        Err(e) => Err(Box::new(server_error(&e))),
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 /// `POST /_feldspar/oidc/token`. Takes no cookie jar: the route ignores
 /// cookies (module docs).
@@ -1058,95 +1209,18 @@ pub(crate) async fn token(
     let Some(catalog) = catalog(&state).cloned() else {
         return not_found();
     };
-    let form_type = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|ct| ct.starts_with("application/x-www-form-urlencoded"));
-    if !form_type {
-        return invalid_request("the body must be application/x-www-form-urlencoded");
-    }
-    let form = parse_form(&String::from_utf8_lossy(&body));
-    let mut seen: Vec<&str> = Vec::new();
-    for (k, _) in &form {
-        if seen.contains(&k.as_str()) {
-            return invalid_request(&format!("the parameter `{k}` was sent twice"));
-        }
-        seen.push(k);
-    }
-    let field = |name: &str| {
-        form.iter()
-            .find(|(k, _)| k == name)
-            .map(|(_, v)| v.as_str())
-            .filter(|v| !v.is_empty())
+    let form = match token_form(&headers, &body) {
+        Ok(form) => form,
+        Err(response) => return *response,
     };
-
-    if let Some(ip) = request_client_ip(&state, peer.map(|p| p.0.0), &headers)
-        && let Err(limited) =
-            sc_ratelimit::global().hit(&format!("oidc-token:ip:{ip}"), TOKEN_PER_IP)
-    {
-        return slow_down(limited.retry_after_secs());
-    }
-
-    // Who is asking: one way of saying so, not two (RFC 6749 §2.3).
-    let basic = basic_credentials(&headers);
-    let (client_id, secret, used_basic) = match basic {
-        Some(Err(())) => {
-            return token_error(
-                StatusCode::UNAUTHORIZED,
-                "invalid_client",
-                "the Authorization header is not client_id:client_secret in base64",
-            );
-        }
-        Some(Ok((id, secret))) => {
-            if field("client_secret").is_some() {
-                return invalid_request("send the client secret one way, not two");
-            }
-            if field("client_id").is_some_and(|body_id| body_id != id) {
-                return invalid_request("client_id does not match the Authorization header");
-            }
-            (id, Some(secret), true)
-        }
-        None => {
-            let Some(id) = field("client_id") else {
-                return token_error(
-                    StatusCode::UNAUTHORIZED,
-                    "invalid_client",
-                    "the request does not say which client it is from",
-                );
-            };
-            (
-                id.to_owned(),
-                field("client_secret").map(str::to_owned),
-                false,
-            )
-        }
-    };
-    if let Err(limited) =
-        sc_ratelimit::global().hit(&format!("oidc-token:client:{client_id}"), TOKEN_PER_CLIENT)
-    {
-        return slow_down(limited.retry_after_secs());
-    }
-    let client = match sc_auth::authenticate_oauth_client(
-        &catalog,
-        app.app.id.0,
-        &client_id,
-        secret.as_deref(),
-    )
-    .await
-    {
-        Ok(Ok(client)) => client,
-        Ok(Err(refused)) => {
-            let mut out = token_error(StatusCode::UNAUTHORIZED, "invalid_client", &refused.0);
-            if used_basic {
-                out.headers_mut().insert(
-                    header::WWW_AUTHENTICATE,
-                    HeaderValue::from_static("Basic realm=\"feldspar\""),
-                );
-            }
-            return out;
-        }
-        Err(e) => return server_error(&e),
-    };
+    let field = |name: &str| form_field(&form, name);
+    let client =
+        match authenticate_client(&state, &catalog, &app, peer.map(|p| p.0.0), &headers, &form)
+            .await
+        {
+            Ok(client) => client,
+            Err(response) => return *response,
+        };
 
     let subject = match field("grant_type") {
         None => return invalid_request("grant_type is required"),
@@ -1234,6 +1308,7 @@ pub(crate) async fn token(
             grant_id: grant.id,
             auth_time: redeemed.auth_time,
             issuer: redeemed.issuer.clone(),
+            auth_epoch: redeemed.auth_epoch,
         },
         Subject::Refresh(ref subject) => subject.clone(),
     };
@@ -1253,11 +1328,15 @@ pub(crate) async fn token(
             Subject::Code(redeemed) => redeemed.nonce.clone(),
             Subject::Refresh(_) => None,
         };
+        let about = match sc_auth::oauth_user_claims(&catalog, &user, &client, &tokens.scopes).await
+        {
+            Ok(about) => about,
+            Err(e) => return server_error(&e),
+        };
         let claims = id_token_claims(&IdToken {
             issuer: &token_subject.issuer,
             client_id: &client.client_id,
-            user: &user,
-            scopes: &tokens.scopes,
+            about,
             auth_time: token_subject.auth_time,
             nonce: nonce.as_deref(),
             access_token: &tokens.access_token,
@@ -1307,51 +1386,454 @@ impl Subject {
 struct IdToken<'a> {
     issuer: &'a str,
     client_id: &'a str,
-    user: &'a User,
-    scopes: &'a [String],
+    /// The claims about the user ([`sc_auth::oauth_user_claims`]): `sub`, and
+    /// what the scopes and the client's mappings add.
+    about: serde_json::Map<String, Value>,
     auth_time: Option<chrono::DateTime<Utc>>,
     nonce: Option<&'a str>,
     access_token: &'a str,
     now: i64,
 }
 
-/// The `id_token`'s claims (OIDC Core §2, §5.4). `sub` is the user's id: stable
-/// for as long as the account exists, and not the email address, which an
-/// account can change.
+/// The `id_token`'s claims (OIDC Core §2): the protocol's, then the claims
+/// about the user, which are what `/userinfo` answers with too. A mapped
+/// claim never overwrites one of the protocol's (`sc_auth::RESERVED_CLAIMS`).
 fn id_token_claims(token: &IdToken<'_>) -> Value {
-    let mut claims = json!({
-        "iss": token.issuer,
-        "sub": token.user.id().to_string(),
-        "aud": token.client_id,
-        "exp": token.now + ID_TOKEN_TTL_SECONDS,
-        "iat": token.now,
-        "at_hash": sc_auth::left_half_sha256(token.access_token),
-    });
+    let mut claims = serde_json::Map::new();
+    for (k, v) in &token.about {
+        claims.insert(k.clone(), v.clone());
+    }
+    claims.insert("iss".to_owned(), json!(token.issuer));
+    claims.insert("aud".to_owned(), json!(token.client_id));
+    claims.insert("exp".to_owned(), json!(token.now + ID_TOKEN_TTL_SECONDS));
+    claims.insert("iat".to_owned(), json!(token.now));
+    claims.insert(
+        "at_hash".to_owned(),
+        json!(sc_auth::left_half_sha256(token.access_token)),
+    );
     if let Some(at) = token.auth_time {
-        claims["auth_time"] = json!(at.timestamp());
+        claims.insert("auth_time".to_owned(), json!(at.timestamp()));
     }
     if let Some(nonce) = token.nonce {
-        claims["nonce"] = json!(nonce);
+        claims.insert("nonce".to_owned(), json!(nonce));
     }
-    let has = |scope: &str| token.scopes.iter().any(|s| s == scope);
-    let text = |field: &str| match token.user.get(field) {
-        Some(sc_query::Value::Text(t)) if !t.trim().is_empty() => Some(t.clone()),
-        _ => None,
+    Value::Object(claims)
+}
+
+// --- userinfo -----------------------------------------------------------------
+
+/// An RFC 6750 §3 answer to a bearer request that did not authenticate.
+fn bearer_error(status: StatusCode, code: Option<&str>, why: &str) -> Response {
+    let challenge = match code {
+        Some(code) => format!(
+            "Bearer realm=\"feldspar\", error=\"{code}\", error_description=\"{}\"",
+            why.replace(['"', '\\'], "'")
+        ),
+        None => "Bearer realm=\"feldspar\"".to_owned(),
     };
-    if has(SCOPE_EMAIL)
-        && let Some(email) = text(sc_auth::COL_EMAIL)
-    {
-        claims["email"] = json!(email);
-        // `false` only for an address a self-service signup gave and nobody
-        // has proven since; an account an administrator made is vouched for.
-        claims["email_verified"] = json!(!token.user.email_unproven());
+    let mut out = match code {
+        Some(code) => (
+            status,
+            Json(json!({ "error": code, "error_description": why })),
+        )
+            .into_response(),
+        None => status.into_response(),
+    };
+    no_store(&mut out);
+    if let Ok(value) = HeaderValue::from_str(&challenge) {
+        out.headers_mut().insert(header::WWW_AUTHENTICATE, value);
     }
-    if has(SCOPE_PROFILE)
-        && let Some(name) = text("name").or_else(|| text("full_name"))
-    {
-        claims["name"] = json!(name);
+    out
+}
+
+fn invalid_token(why: &str) -> Response {
+    bearer_error(StatusCode::UNAUTHORIZED, Some("invalid_token"), why)
+}
+
+/// `GET` / `POST /_feldspar/oidc/userinfo` (OIDC Core §5.3): the claims about
+/// the user an access token is for, with `Authorization: Bearer`. The route
+/// ignores cookies, so the token is all a request is judged by, and only one
+/// of this provider's access tokens, issued on this application, is one:
+/// an API token, a session token or a refresh token is not.
+pub(crate) async fn userinfo(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let Some((app, _)) = issuer_of(&state, &headers, &CookieJar::new()) else {
+        return not_found();
+    };
+    let Some(catalog) = catalog(&state).cloned() else {
+        return not_found();
+    };
+    let Some(presented) = crate::security::bearer_token(&headers) else {
+        return bearer_error(StatusCode::UNAUTHORIZED, None, "");
+    };
+    let access =
+        match sc_auth::authenticate_oauth_access_token(&catalog, app.app.id.0, &presented).await {
+            Ok(Some(access)) => access,
+            Ok(None) => {
+                return invalid_token(
+                    "the access token is not one this provider issued here, or it has expired \
+                     or been revoked",
+                );
+            }
+            Err(e) => return server_error(&e),
+        };
+    if !access.scopes.iter().any(|s| s == SCOPE_OPENID) {
+        return bearer_error(
+            StatusCode::FORBIDDEN,
+            Some("insufficient_scope"),
+            "the access token was not granted the openid scope",
+        );
     }
-    claims
+    let user = match sc_auth::load_user(&catalog, access.user_id).await {
+        Ok(Some(user)) if !user.is_disabled() => user,
+        Ok(_) => return invalid_token("the account is disabled or no longer exists"),
+        Err(e) => return server_error(&e),
+    };
+    if refuse_sign_in(&state, &app.app, &user).await.is_some() {
+        return invalid_token("this account may no longer use this application");
+    }
+    let client = match sc_auth::load_oauth_client(&catalog, app.app.id.0, &access.client_id).await {
+        Ok(Some(client)) => client,
+        Ok(None) => return invalid_token("the client the token was issued to is gone"),
+        Err(e) => return server_error(&e),
+    };
+    match sc_auth::oauth_user_claims(&catalog, &user, &client, &access.scopes).await {
+        Ok(claims) => {
+            let mut out = Json(Value::Object(claims)).into_response();
+            no_store(&mut out);
+            out
+        }
+        Err(e) => server_error(&e),
+    }
+}
+
+// --- revocation ---------------------------------------------------------------
+
+/// `POST /_feldspar/oidc/revoke` (RFC 7009): a client gives up a token. The
+/// client authenticates as at the token endpoint. A refresh token ends every
+/// token of its sign-in; an access token ends alone. `token_type_hint` is a
+/// hint only: both kinds are looked for. The answer is `200` whether or not
+/// the token was one (§2.2), so it tells nobody which tokens exist.
+pub(crate) async fn revoke(
+    State(state): State<AppState>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some((app, _)) = issuer_of(&state, &headers, &CookieJar::new()) else {
+        return not_found();
+    };
+    let Some(catalog) = catalog(&state).cloned() else {
+        return not_found();
+    };
+    let form = match token_form(&headers, &body) {
+        Ok(form) => form,
+        Err(response) => return *response,
+    };
+    let client =
+        match authenticate_client(&state, &catalog, &app, peer.map(|p| p.0.0), &headers, &form)
+            .await
+        {
+            Ok(client) => client,
+            Err(response) => return *response,
+        };
+    let Some(token) = form_field(&form, "token") else {
+        return invalid_request("token is required");
+    };
+    match sc_auth::revoke_oauth_token(&catalog, &client, token).await {
+        Ok(_) => {
+            let mut out = StatusCode::OK.into_response();
+            no_store(&mut out);
+            out
+        }
+        Err(e) => server_error(&e),
+    }
+}
+
+// --- RP-initiated logout ------------------------------------------------------
+
+/// The end-session parameters this endpoint reads.
+const LOGOUT_PARAMS: &[&str] = &[
+    "id_token_hint",
+    "client_id",
+    "post_logout_redirect_uri",
+    "state",
+];
+
+/// A checked logout request.
+struct LogoutRequest {
+    /// The client it came from, when the hint or `client_id` names one.
+    client: Option<OAuthClient>,
+    /// The `sub` of a valid `id_token_hint`: who the client thinks is signed in.
+    hint_sub: Option<String>,
+    /// Where to go afterwards: a registered post-logout redirect URI.
+    redirect: Option<String>,
+    state: Option<String>,
+    /// The parameters as sent, for the confirmation page's form.
+    raw: Vec<(String, String)>,
+}
+
+/// Check a logout request: an `id_token_hint` must be one this provider
+/// signed for this issuer, a `client_id` must agree with it and be registered
+/// here, and a `post_logout_redirect_uri` must be registered **exactly** for
+/// that client — anything else is an error page, never a redirect.
+async fn check_logout(
+    catalog: &Catalog,
+    app: &MountedApp,
+    issuer: &str,
+    params: &[(String, String)],
+) -> Result<LogoutRequest, Box<Response>> {
+    let mut raw: Vec<(String, String)> = Vec::new();
+    for (k, v) in params {
+        if !LOGOUT_PARAMS.contains(&k.as_str()) || v.is_empty() {
+            continue;
+        }
+        if raw.iter().any(|(seen, _)| seen == k) {
+            return Err(Box::new(error_page(
+                "a parameter of the sign-out request was sent twice",
+            )));
+        }
+        raw.push((k.clone(), v.clone()));
+    }
+    let get = |name: &str| raw.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
+    let mut client_id = get("client_id");
+    let mut hint_sub = None;
+    if let Some(hint) = get("id_token_hint") {
+        let claims = match sc_auth::verify_own_jwt(catalog, &hint).await {
+            Ok(Some(claims)) => claims,
+            Ok(None) => {
+                return Err(Box::new(error_page(
+                    "the sign-out request's id_token_hint was not issued by this provider",
+                )));
+            }
+            Err(e) => {
+                log_failure("could not check an id_token_hint", &e);
+                return Err(Box::new(error_page("the sign-out could not be checked")));
+            }
+        };
+        if claims.get("iss").and_then(Value::as_str) != Some(issuer) {
+            return Err(Box::new(error_page(
+                "the sign-out request's id_token_hint was issued for another application",
+            )));
+        }
+        let aud = match claims.get("aud") {
+            Some(Value::String(one)) => Some(one.clone()),
+            Some(Value::Array(many)) => many.first().and_then(Value::as_str).map(str::to_owned),
+            _ => None,
+        };
+        if let (Some(asked), Some(aud)) = (&client_id, &aud)
+            && asked != aud
+        {
+            return Err(Box::new(error_page(
+                "the sign-out request's client_id is not the one its id_token_hint was issued to",
+            )));
+        }
+        client_id = client_id.or(aud);
+        hint_sub = claims.get("sub").and_then(Value::as_str).map(str::to_owned);
+    }
+    let client = match &client_id {
+        Some(id) => match sc_auth::load_oauth_client(catalog, app.app.id.0, id).await {
+            Ok(Some(client)) => Some(client),
+            Ok(None) => {
+                return Err(Box::new(error_page(
+                    "the service asking you to sign out is not registered here",
+                )));
+            }
+            Err(e) => {
+                log_failure("could not read an OAuth client", &e);
+                return Err(Box::new(error_page("the sign-out could not be checked")));
+            }
+        },
+        None => None,
+    };
+    let redirect = match get("post_logout_redirect_uri") {
+        None => None,
+        Some(uri) => {
+            if !client
+                .as_ref()
+                .is_some_and(|c| c.allows_logout_redirect(&uri))
+            {
+                return Err(Box::new(error_page(
+                    "the sign-out request's post_logout_redirect_uri is not one registered for \
+                     this service, so it is not followed",
+                )));
+            }
+            Some(uri)
+        }
+    };
+    Ok(LogoutRequest {
+        client,
+        hint_sub,
+        redirect,
+        state: get("state"),
+        raw,
+    })
+}
+
+/// `GET /_feldspar/oidc/logout`: a relying party sends the browser here to
+/// sign out. With an `id_token_hint` for the user signed in, the session ends
+/// at once; without one, the user is asked first (a CSRF-checked form posts
+/// back here), so another site cannot sign anybody out by linking here. The
+/// tokens the client holds are its own business and stay; it revokes them
+/// at `/revoke`.
+pub(crate) async fn logout(
+    State(state): State<AppState>,
+    uri: Uri,
+    headers: HeaderMap,
+    jar: CookieJar,
+    csrf: Option<Extension<CsrfToken>>,
+) -> Response {
+    let Some((app, issuer)) = issuer_of(&state, &headers, &jar) else {
+        return not_found();
+    };
+    let Some(catalog) = catalog(&state).cloned() else {
+        return not_found();
+    };
+    let params = parse_query(&uri);
+    let request = match check_logout(&catalog, &app, &issuer, &params).await {
+        Ok(request) => request,
+        Err(page) => return *page,
+    };
+    // As at `/authorize`: a cross-site arrival carries no `Strict` cookie.
+    let bounced = params.iter().any(|(k, _)| k == BOUNCED_PARAM);
+    if jar.get(SESSION_COOKIE).is_some() || bounced {
+        let user = match signed_in(&state, &app, &jar).await {
+            Ok(session) => session.map(|(user, _)| user),
+            Err(response) => return response,
+        };
+        let Some(user) = user else {
+            return signed_out(&request, false);
+        };
+        if request.hint_sub.as_deref() != Some(user.id().to_string().as_str()) {
+            return logout_page(&app, &request, &user, &csrf_of(csrf));
+        }
+        return end_session(&state, &app, &request, jar, &headers, false).await;
+    }
+    let mut pairs: Vec<(&str, &str)> = request
+        .raw
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    pairs.push((BOUNCED_PARAM, "1"));
+    continue_page(&format!("{LOGOUT_ROUTE}?{}", crate::oauth::form(&pairs)))
+}
+
+/// `POST /_feldspar/oidc/logout`: the confirmation page's form. The CSRF
+/// middleware has checked its token, so a relying party's own logout is a
+/// `GET`.
+pub(crate) async fn logout_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    jar: CookieJar,
+    body: Bytes,
+) -> Response {
+    let Some((app, issuer)) = issuer_of(&state, &headers, &jar) else {
+        return not_found();
+    };
+    let Some(catalog) = catalog(&state).cloned() else {
+        return not_found();
+    };
+    let form = parse_form(&String::from_utf8_lossy(&body));
+    let request = match check_logout(&catalog, &app, &issuer, &form).await {
+        Ok(request) => request,
+        Err(page) => return *page,
+    };
+    if form_field(&form, "decision") != Some("sign_out") {
+        return page(
+            "Still signed in",
+            safe_html!(
+                "<h1>You are still signed in to {}</h1>",
+                SafeHtml::escape(&app.app.name)
+            ),
+            StatusCode::OK,
+        );
+    }
+    end_session(&state, &app, &request, jar, &headers, true).await
+}
+
+/// End the application's session, then go on as [`signed_out`] does.
+async fn end_session(
+    state: &AppState,
+    app: &std::sync::Arc<MountedApp>,
+    request: &LogoutRequest,
+    jar: CookieJar,
+    headers: &HeaderMap,
+    after_form: bool,
+) -> Response {
+    let session_token = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned());
+    let client = SessionClient::of(headers).for_app(app);
+    match apply_session(state, jar, session_token, client, SessionAction::End).await {
+        Ok(cookies) => {
+            (cookies.jar, cookies.stale, signed_out(request, after_form)).into_response()
+        }
+        Err(response) => *response,
+    }
+}
+
+/// Back to the client's post-logout redirect URI, with its `state`, or a page
+/// saying so when it named none.
+fn signed_out(request: &LogoutRequest, after_form: bool) -> Response {
+    let Some(redirect) = &request.redirect else {
+        return page(
+            "Signed out",
+            safe_html!("<h1>You are signed out</h1>"),
+            StatusCode::OK,
+        );
+    };
+    let target = match &request.state {
+        Some(state) => {
+            let sep = if redirect.contains('?') { '&' } else { '?' };
+            format!(
+                "{redirect}{sep}{}",
+                crate::oauth::form(&[("state", state.as_str())])
+            )
+        }
+        None => redirect.clone(),
+    };
+    go(&target, after_form)
+}
+
+fn logout_page(app: &MountedApp, request: &LogoutRequest, user: &User, csrf: &str) -> Response {
+    let email = match user.get(sc_auth::COL_EMAIL) {
+        Some(sc_query::Value::Text(t)) => t.clone(),
+        _ => String::new(),
+    };
+    let from = match &request.client {
+        Some(client) => safe_html!(
+            "<p>{} asks you to sign out.</p>",
+            SafeHtml::escape(&client.name)
+        ),
+        None => SafeHtml::default(),
+    };
+    let mut hidden = SafeHtml::default();
+    let pairs = request
+        .raw
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .chain([(CSRF_FORM_FIELD, csrf)]);
+    for (name, value) in pairs {
+        hidden.push(&safe_html!(
+            "<input type=\"hidden\" name=\"{}\" value=\"{}\">",
+            SafeHtml::escape(name),
+            SafeHtml::escape(value)
+        ));
+    }
+    page(
+        &format!("Sign out of {}?", app.app.name),
+        safe_html!(
+            "<h1>Sign out of {app}?</h1>{from}<p>Signed in as {email}.</p>\
+             <form method=\"post\" action=\"{action}\">{hidden}\
+             <div class=\"actions\">\
+             <button type=\"submit\" name=\"decision\" value=\"sign_out\">Sign out</button>\
+             <button type=\"submit\" name=\"decision\" value=\"stay\" class=\"secondary\">Stay signed in</button>\
+             </div></form>",
+            app = SafeHtml::escape(&app.app.name),
+            from = from,
+            email = SafeHtml::escape(&email),
+            action = SafeHtml::trusted(LOGOUT_ROUTE),
+            hidden = hidden,
+        ),
+        StatusCode::OK,
+    )
 }
 
 fn slow_down(retry_after: u64) -> Response {

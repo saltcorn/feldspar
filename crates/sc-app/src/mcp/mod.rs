@@ -277,7 +277,10 @@ fn describe_apps_description() -> String {
          client uploads to and its `effective_max_bytes`: its own `max_bytes` \
          capped by the server's `max_upload_bytes`, which only the server's \
          operator can raise), its Content-Security-Policy (`csp`) and who may use \
-         it at all (`access`: `min_role`, `max_role`, `access_if`).\n\n\
+         it at all (`access`: `min_role`, `max_role`, `access_if`), and whether \
+         it is an OpenID Connect identity provider and how many clients are \
+         registered on it (`identity_provider`; clients are registered by an \
+         administrator in the admin UI, never by a tool).\n\n\
          Call this before `{TOOL_SAVE_QUERY}`: it tells you the application's \
          subdomain, which API a query goes on, and whether the name you have in \
          mind is already taken. For the tables a query's SQL can read, call \
@@ -316,11 +319,24 @@ async fn describe_apps(ctx: &ToolContext<'_>, args: &Json) -> Result<Json> {
         return Err(unknown_application(subdomain, &stored));
     }
     let ceiling = crate::upload_ceiling(ctx.catalog);
+    // Whether each is an identity provider, and how many clients it has. A
+    // count, not the clients: no tool reads or mints a client secret.
+    let mut client_counts = std::collections::HashMap::new();
+    for app in &stored {
+        client_counts.insert(
+            app.id.0,
+            sc_auth::count_oauth_clients(ctx.catalog, app.id.0).await?,
+        );
+    }
     let described: Result<Vec<Json>> = stored
         .iter()
         .filter(|a| only.is_none_or(|subdomain| a.subdomain == subdomain))
         .map(|app| {
             let mut out = application_json(app, ceiling)?;
+            out["identity_provider"] = json!({
+                "enabled": app.identity_provider,
+                "clients": client_counts.get(&app.id.0).copied().unwrap_or(0),
+            });
             // Where its code is, so an external agent can go on building
             // there, and which agent builds it, so the copilot can delegate.
             out["project_dir"] = match crate::app_project_dir(ctx.catalog, app) {

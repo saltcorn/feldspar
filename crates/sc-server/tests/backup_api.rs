@@ -5162,6 +5162,8 @@ async fn an_identity_provider_travels_with_its_application_and_its_keys() -> sc_
             scopes: vec![],
             skip_consent: false,
             created_by: None,
+            claim_fields: vec![],
+            post_logout_redirect_uris: vec![],
         },
     )
     .await?;

@@ -1247,7 +1247,7 @@ Decisions this milestone takes (change them here before starting, not halfway th
   `identity_provider` is a nullable boolean column. The keys are made on first use, not on
   enable. The `id_token`'s `auth_time` comes from a new nullable `_fd_sessions.started_at`
   column. Clients and keys travel in the backup with the application that is a provider.
-- [ ] **IP1.6** `GET`/`POST /_feldspar/oidc/userinfo` with `Authorization: Bearer`. Add
+- [x] **IP1.6** `GET`/`POST /_feldspar/oidc/userinfo` with `Authorization: Bearer`. Add
   `userinfo_endpoint` to `sc_server::oidc::metadata` when it exists (discovery leaves it out
   until then); `sc_auth::authenticate_oauth_access_token` is the lookup. Claims
   follow the scopes: `sub`; `email` and `email_verified`; and for `profile`, `name` and the
@@ -1255,12 +1255,12 @@ Decisions this milestone takes (change them here before starting, not halfway th
   department), set on the client and validated against the users table. Tests: claims per scope,
   an expired token, a revoked token, and an IdP access token refused at `/mcp` and at the app's
   REST API.
-- [ ] **IP1.7** Revocation. `POST /_feldspar/oidc/revoke` (RFC 7009). A grant ends when the
+- [x] **IP1.7** Revocation. `POST /_feldspar/oidc/revoke` (RFC 7009). A grant ends when the
   account's authentication epoch moves (`sc_auth::epoch`: password change, second factor change,
   disabled), when the account is deleted, and when the client is deleted. RP-initiated logout
   (`end_session_endpoint`) ends the Feldspar session and returns to a registered
   `post_logout_redirect_uri`. Tests: each of these ends a refresh token and an access token.
-- [ ] **IP1.8** Admin API and UI. `identity_provider` is already in the codec's JSON
+- [x] **IP1.8** Admin API and UI. `identity_provider` is already in the codec's JSON
   (`application_json` / `application_from_body`) and kept by `updateApplication` when absent, but
   not yet in `sc-api`'s application schema or the generated clients. The storage functions are
   in `sc_auth` (`register_oauth_client`, `list_oauth_clients`, `regenerate_oauth_client_secret`,
@@ -1271,16 +1271,23 @@ Decisions this milestone takes (change them here before starting, not halfway th
   the four UIs. MCP: `describe_applications` shows whether the provider is on and how many
   clients it has, but **no tool mints a client secret**. Tests: admin API tests, including a
   non-admin refused, and the UI's vitest.
-- [ ] **IP1.9** Interoperability. An end-to-end test in `sc-server/tests/oidc_provider.rs` drives
+- [x] **IP1.9** Interoperability. An end-to-end test in `sc-server/tests/oidc_provider.rs` drives
   the assembled router on a real port with the `openidconnect` crate as a dev-dependency: the
   discovery document, then authorize, sign-in, consent, token, `id_token` verification against
   the JWKS, userinfo, refresh and revoke. Also check by hand with one real relying party (e.g.
   oauth2-proxy or Grafana) and record it in the CHANGELOG. Extend `catalog_teardown.rs` if a new
   service holds the catalog.
-- [ ] **IP1.10** Docs. Replace §7.2's one line in TECHNICAL_DESIGN with the design: issuer,
+- [x] **IP1.10** Docs. Replace §7.2's one line in TECHNICAL_DESIGN with the design: issuer,
   endpoints, storage, keys, what is deliberately not supported. Add a tutorial, "Let another
   service sign in with your application's users" (registering a client, then oauth2-proxy or
   Grafana as the worked example).
+  Done (CHANGELOG has the details). A few choices differ from the text above or fill it in:
+  - Mapped claims are given whenever `openid` is granted.
+  - An epoch change revokes tokens but keeps the consent.
+  - Logout does not revoke the client's tokens.
+  - The `/revoke` and `/logout` POST are cookie-less and CSRF-checked respectively.
+  - The admin tab is a settings group of its own.
+  - The hand check was oauth2-proxy 7.15.6 in Chromium. Grafana was not tried.
 
 ---
 

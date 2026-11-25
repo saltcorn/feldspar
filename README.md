@@ -58,6 +58,10 @@ own, for every other kind of box. (Design and planning docs live under
   Layouts are edited in Saltcorn 1's own drag-and-drop builder, and a library of shared
   components lets one layout fragment be placed in many views and pages. See
   [`docs/tutorial-saltcorn-ui.md`](docs/tutorial-saltcorn-ui.md).
+- **An application can be an OpenID Connect identity provider**, so that Grafana, a wiki or
+  anything behind oauth2-proxy signs people in with the application's own users and access
+  rules. It is off by default and switched on per application; an admin registers each service
+  as a client. See [`docs/tutorial-identity-provider.md`](docs/tutorial-identity-provider.md).
 
 What is still out of scope, and what each milestone since the MVP added, is in
 [`TODO.md`](TODO.md) and the archived lists it links.

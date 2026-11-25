@@ -288,6 +288,7 @@ async fn an_applications_views_and_pages_are_managed_over_http() -> sc_error::Re
             "triggers",
             "api",
             "security",
+            "identity_provider",
             "development",
             "translations"
         ]

@@ -75,7 +75,17 @@ pub enum RouteAuth {
     /// credentials — its secret, or for a public client the PKCE verifier —
     /// and **no cookie**. [`ignores_cookies`](RouteAuth::ignores_cookies):
     /// the CSRF middleware strips the request's cookies and lets it through.
+    /// The revocation endpoint (TODO IP1.7) too.
     OAuthClient,
+    /// The identity provider's UserInfo endpoint (TODO IP1.6): one of its own
+    /// access tokens in `Authorization: Bearer`, and **no cookie**
+    /// ([`ignores_cookies`](RouteAuth::ignores_cookies)).
+    OAuthAccessToken,
+    /// The identity provider's end-session endpoint (TODO IP1.7): the
+    /// application's session ([`AppSession`](crate::session::AppSession)),
+    /// which the request ends — at once for a valid `id_token_hint`, after a
+    /// CSRF-checked confirmation form otherwise.
+    AppSessionEnd,
 }
 
 impl RouteAuth {
@@ -86,7 +96,7 @@ impl RouteAuth {
     /// The bearer-token kinds are exempt from the check by their header
     /// instead.
     pub fn ignores_cookies(self) -> bool {
-        matches!(self, RouteAuth::OAuthClient)
+        matches!(self, RouteAuth::OAuthClient | RouteAuth::OAuthAccessToken)
     }
 
     /// Whether an anonymous request is refused before anything is done: the
@@ -480,6 +490,24 @@ pub const RAW_ROUTES: &[RawRoute] = &[
         methods: POST,
         auth: RouteAuth::OAuthClient,
         route: || post(crate::oidc::token),
+    },
+    RawRoute {
+        path: crate::oidc::USERINFO_ROUTE,
+        methods: GET_POST,
+        auth: RouteAuth::OAuthAccessToken,
+        route: || get(crate::oidc::userinfo).post(crate::oidc::userinfo),
+    },
+    RawRoute {
+        path: crate::oidc::REVOKE_ROUTE,
+        methods: POST,
+        auth: RouteAuth::OAuthClient,
+        route: || post(crate::oidc::revoke),
+    },
+    RawRoute {
+        path: crate::oidc::LOGOUT_ROUTE,
+        methods: GET_POST,
+        auth: RouteAuth::AppSessionEnd,
+        route: || get(crate::oidc::logout).post(crate::oidc::logout_form),
     },
 ];
 

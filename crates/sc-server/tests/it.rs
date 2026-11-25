@@ -262,6 +262,8 @@ mod app_public_endpoints;
 mod catalog_teardown;
 #[path = "oauth_sign_in.rs"]
 mod oauth_sign_in;
+#[path = "oidc_provider.rs"]
+mod oidc_provider;
 #[path = "saltcorn_ui_admin_api.rs"]
 mod saltcorn_ui_admin_api;
 #[path = "saltcorn_ui_configure.rs"]

@@ -260,11 +260,11 @@ export type GetPythonStatusResponse = { state: string; version?: string | null; 
 export type GetSystemInfoResponse = { version: string; version_line: string; build_time?: string | null; commit?: string | null; platform: string; pid: number; started_at: string; uptime_seconds: number; database: { product?: string | null; version?: string | null; error?: string | null }; memory?: { process_bytes?: number | null; total_bytes?: number | null; available_bytes?: number | null } | null; cpu?: { process_percent: number; system_percent: number; cores: number; load_average: Array<number> } | null; disk?: { path: string; total_bytes: number; available_bytes: number } | null };
 export type GetClaudeCodeStatusResponse = { enabled: boolean; path?: string | null; source?: string | null; version?: string | null; problem?: string | null };
 export type RestartServerResponse = { restarting: boolean };
-export type ListApplicationsResponse = Array<{ id: string; name: string; description: string; subdomain: string; framework: { name: string; config: unknown }; extra_frameworks: Array<{ name: string; config: unknown }>; tables: Array<string>; api_tables: Array<string>; file_stores: Array<string>; triggers: Array<string>; streams: Array<string>; apis: Array<{ provider: string; mount: string; config: unknown }>; static_dirs: Array<{ mount: string; store: string; path: string }>; uploads: Array<{ name: string; store: string; folder: string; min_role: number; read_role?: number | null; max_bytes: number; mime_allow: Array<string>; hook?: string | null }>; agents: Array<{ name: string; chat: boolean; prompt: boolean; anonymous: boolean; tools: string; prompt_template?: string | null }>; csp: unknown; attributes: unknown; min_role: number; max_role: number; access_if: string; source?: { store: string; path: string } | null; builds: boolean; framework_known: boolean; installs: boolean; has_views: boolean; settings_tabs: Array<{ id: string; label: string; groups: Array<string> }>; targets: Array<{ name: string; label: string; readiness: { ready: boolean; missing: Array<string>; from_environment: Array<string>; build_host?: string | null } }>; claude: { available: boolean; reason?: string | null } }>;
-export type CreateApplicationRequest = { name: string; description: string; subdomain: string; framework: { name: string; config: unknown }; extra_frameworks: Array<{ name: string; config: unknown }>; tables: Array<string>; api_tables: Array<string>; file_stores: Array<string>; triggers: Array<string>; streams: Array<string>; apis: Array<{ provider: string; mount: string; config: unknown }>; static_dirs: Array<{ mount: string; store: string; path: string }>; uploads: Array<{ name: string; store: string; folder: string; min_role: number; read_role?: number | null; max_bytes: number; mime_allow: Array<string>; hook?: string | null }>; agents: Array<{ name: string; chat: boolean; prompt: boolean; anonymous: boolean; tools: string; prompt_template?: string | null }>; csp: unknown; attributes: unknown; min_role: number; max_role: number; access_if: string };
-export type CreateApplicationResponse = { id: string; name: string; description: string; subdomain: string; framework: { name: string; config: unknown }; extra_frameworks: Array<{ name: string; config: unknown }>; tables: Array<string>; api_tables: Array<string>; file_stores: Array<string>; triggers: Array<string>; streams: Array<string>; apis: Array<{ provider: string; mount: string; config: unknown }>; static_dirs: Array<{ mount: string; store: string; path: string }>; uploads: Array<{ name: string; store: string; folder: string; min_role: number; read_role?: number | null; max_bytes: number; mime_allow: Array<string>; hook?: string | null }>; agents: Array<{ name: string; chat: boolean; prompt: boolean; anonymous: boolean; tools: string; prompt_template?: string | null }>; csp: unknown; attributes: unknown; min_role: number; max_role: number; access_if: string; source?: { store: string; path: string } | null; builds: boolean; framework_known: boolean; installs: boolean; has_views: boolean; settings_tabs: Array<{ id: string; label: string; groups: Array<string> }>; targets: Array<{ name: string; label: string; readiness: { ready: boolean; missing: Array<string>; from_environment: Array<string>; build_host?: string | null } }>; scaffolded?: string | null; scaffold_error?: string | null; agent?: string | null; agent_error?: string | null; building?: boolean | null; created_file_stores?: Array<string> | null };
-export type UpdateApplicationRequest = { name: string; description: string; subdomain: string; framework: { name: string; config: unknown }; extra_frameworks: Array<{ name: string; config: unknown }>; tables: Array<string>; api_tables: Array<string>; file_stores: Array<string>; triggers: Array<string>; streams: Array<string>; apis: Array<{ provider: string; mount: string; config: unknown }>; static_dirs: Array<{ mount: string; store: string; path: string }>; uploads: Array<{ name: string; store: string; folder: string; min_role: number; read_role?: number | null; max_bytes: number; mime_allow: Array<string>; hook?: string | null }>; agents: Array<{ name: string; chat: boolean; prompt: boolean; anonymous: boolean; tools: string; prompt_template?: string | null }>; csp: unknown; attributes: unknown; min_role: number; max_role: number; access_if: string };
-export type UpdateApplicationResponse = { id: string; name: string; description: string; subdomain: string; framework: { name: string; config: unknown }; extra_frameworks: Array<{ name: string; config: unknown }>; tables: Array<string>; api_tables: Array<string>; file_stores: Array<string>; triggers: Array<string>; streams: Array<string>; apis: Array<{ provider: string; mount: string; config: unknown }>; static_dirs: Array<{ mount: string; store: string; path: string }>; uploads: Array<{ name: string; store: string; folder: string; min_role: number; read_role?: number | null; max_bytes: number; mime_allow: Array<string>; hook?: string | null }>; agents: Array<{ name: string; chat: boolean; prompt: boolean; anonymous: boolean; tools: string; prompt_template?: string | null }>; csp: unknown; attributes: unknown; min_role: number; max_role: number; access_if: string; source?: { store: string; path: string } | null; builds: boolean; framework_known: boolean; installs: boolean; has_views: boolean; settings_tabs: Array<{ id: string; label: string; groups: Array<string> }>; targets: Array<{ name: string; label: string; readiness: { ready: boolean; missing: Array<string>; from_environment: Array<string>; build_host?: string | null } }> };
+export type ListApplicationsResponse = Array<{ id: string; name: string; description: string; subdomain: string; framework: { name: string; config: unknown }; extra_frameworks: Array<{ name: string; config: unknown }>; tables: Array<string>; api_tables: Array<string>; file_stores: Array<string>; triggers: Array<string>; streams: Array<string>; apis: Array<{ provider: string; mount: string; config: unknown }>; static_dirs: Array<{ mount: string; store: string; path: string }>; uploads: Array<{ name: string; store: string; folder: string; min_role: number; read_role?: number | null; max_bytes: number; mime_allow: Array<string>; hook?: string | null }>; agents: Array<{ name: string; chat: boolean; prompt: boolean; anonymous: boolean; tools: string; prompt_template?: string | null }>; csp: unknown; attributes: unknown; min_role: number; max_role: number; access_if: string; identity_provider: boolean; source?: { store: string; path: string } | null; builds: boolean; framework_known: boolean; installs: boolean; has_views: boolean; settings_tabs: Array<{ id: string; label: string; groups: Array<string> }>; targets: Array<{ name: string; label: string; readiness: { ready: boolean; missing: Array<string>; from_environment: Array<string>; build_host?: string | null } }>; claude: { available: boolean; reason?: string | null } }>;
+export type CreateApplicationRequest = { name: string; description: string; subdomain: string; framework: { name: string; config: unknown }; extra_frameworks: Array<{ name: string; config: unknown }>; tables: Array<string>; api_tables: Array<string>; file_stores: Array<string>; triggers: Array<string>; streams: Array<string>; apis: Array<{ provider: string; mount: string; config: unknown }>; static_dirs: Array<{ mount: string; store: string; path: string }>; uploads: Array<{ name: string; store: string; folder: string; min_role: number; read_role?: number | null; max_bytes: number; mime_allow: Array<string>; hook?: string | null }>; agents: Array<{ name: string; chat: boolean; prompt: boolean; anonymous: boolean; tools: string; prompt_template?: string | null }>; csp: unknown; attributes: unknown; min_role: number; max_role: number; access_if: string; identity_provider?: boolean | null };
+export type CreateApplicationResponse = { id: string; name: string; description: string; subdomain: string; framework: { name: string; config: unknown }; extra_frameworks: Array<{ name: string; config: unknown }>; tables: Array<string>; api_tables: Array<string>; file_stores: Array<string>; triggers: Array<string>; streams: Array<string>; apis: Array<{ provider: string; mount: string; config: unknown }>; static_dirs: Array<{ mount: string; store: string; path: string }>; uploads: Array<{ name: string; store: string; folder: string; min_role: number; read_role?: number | null; max_bytes: number; mime_allow: Array<string>; hook?: string | null }>; agents: Array<{ name: string; chat: boolean; prompt: boolean; anonymous: boolean; tools: string; prompt_template?: string | null }>; csp: unknown; attributes: unknown; min_role: number; max_role: number; access_if: string; identity_provider: boolean; source?: { store: string; path: string } | null; builds: boolean; framework_known: boolean; installs: boolean; has_views: boolean; settings_tabs: Array<{ id: string; label: string; groups: Array<string> }>; targets: Array<{ name: string; label: string; readiness: { ready: boolean; missing: Array<string>; from_environment: Array<string>; build_host?: string | null } }>; scaffolded?: string | null; scaffold_error?: string | null; agent?: string | null; agent_error?: string | null; building?: boolean | null; created_file_stores?: Array<string> | null };
+export type UpdateApplicationRequest = { name: string; description: string; subdomain: string; framework: { name: string; config: unknown }; extra_frameworks: Array<{ name: string; config: unknown }>; tables: Array<string>; api_tables: Array<string>; file_stores: Array<string>; triggers: Array<string>; streams: Array<string>; apis: Array<{ provider: string; mount: string; config: unknown }>; static_dirs: Array<{ mount: string; store: string; path: string }>; uploads: Array<{ name: string; store: string; folder: string; min_role: number; read_role?: number | null; max_bytes: number; mime_allow: Array<string>; hook?: string | null }>; agents: Array<{ name: string; chat: boolean; prompt: boolean; anonymous: boolean; tools: string; prompt_template?: string | null }>; csp: unknown; attributes: unknown; min_role: number; max_role: number; access_if: string; identity_provider?: boolean | null };
+export type UpdateApplicationResponse = { id: string; name: string; description: string; subdomain: string; framework: { name: string; config: unknown }; extra_frameworks: Array<{ name: string; config: unknown }>; tables: Array<string>; api_tables: Array<string>; file_stores: Array<string>; triggers: Array<string>; streams: Array<string>; apis: Array<{ provider: string; mount: string; config: unknown }>; static_dirs: Array<{ mount: string; store: string; path: string }>; uploads: Array<{ name: string; store: string; folder: string; min_role: number; read_role?: number | null; max_bytes: number; mime_allow: Array<string>; hook?: string | null }>; agents: Array<{ name: string; chat: boolean; prompt: boolean; anonymous: boolean; tools: string; prompt_template?: string | null }>; csp: unknown; attributes: unknown; min_role: number; max_role: number; access_if: string; identity_provider: boolean; source?: { store: string; path: string } | null; builds: boolean; framework_known: boolean; installs: boolean; has_views: boolean; settings_tabs: Array<{ id: string; label: string; groups: Array<string> }>; targets: Array<{ name: string; label: string; readiness: { ready: boolean; missing: Array<string>; from_environment: Array<string>; build_host?: string | null } }> };
 export type DeleteApplicationResponse = { deleted: boolean; agent?: string | null };
 export type BuildApplicationQuery = { quick?: boolean };
 export type BuildApplicationResponse = { built: boolean; git_repo: boolean; log: string; checks?: Array<{ id: string; checklist: string; checklist_name: string; status: string }> | null };
@@ -280,6 +280,15 @@ export type ListFrameworksResponse = Array<{ name: string; label: string; descri
 export type ListApiProvidersResponse = Array<{ name: string; label: string; description: string; default_mount: string; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; option_labels?: Array<string> | null; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; tab?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; supports_custom_queries: boolean }>;
 export type DescribeCustomQueryRequest = { name: string; description?: string | null; method: string; path: string; language?: string | null; code: string; params: Array<{ name: string; type: string; required?: boolean | null }>; min_role?: number | null; body_type?: string | null; response_type?: string | null; returns?: unknown | null; rate_limit?: { per_ip?: string | null; per_user?: string | null } | null; tables?: Array<string> | null };
 export type DescribeCustomQueryResponse = { columns: Array<{ name: string; type: string }> };
+export type GetIdentityProviderResponse = { enabled: boolean; clients: Array<{ client_id: string; name: string; confidential: boolean; redirect_uris: Array<string>; scopes: Array<string>; skip_consent: boolean; claim_fields: Array<{ claim: string; field: string }>; post_logout_redirect_uris: Array<string>; created_at: string }>; grants: Array<{ id: string; user_id: string; email?: string | null; client_id: string; scopes: Array<string>; created_at: string; updated_at: string }>; signing_keys: Array<{ kid: string; alg: string; created_at: string; retired_at?: string | null }>; claim_sources: Array<string> };
+export type CreateOAuthClientRequest = { name: string; confidential: boolean; redirect_uris: Array<string>; scopes: Array<string>; skip_consent: boolean; claim_fields: Array<{ claim: string; field: string }>; post_logout_redirect_uris: Array<string> };
+export type CreateOAuthClientResponse = { client: { client_id: string; name: string; confidential: boolean; redirect_uris: Array<string>; scopes: Array<string>; skip_consent: boolean; claim_fields: Array<{ claim: string; field: string }>; post_logout_redirect_uris: Array<string>; created_at: string }; secret?: string | null };
+export type UpdateOAuthClientRequest = { name: string; redirect_uris: Array<string>; scopes: Array<string>; skip_consent: boolean; claim_fields: Array<{ claim: string; field: string }>; post_logout_redirect_uris: Array<string> };
+export type UpdateOAuthClientResponse = { client_id: string; name: string; confidential: boolean; redirect_uris: Array<string>; scopes: Array<string>; skip_consent: boolean; claim_fields: Array<{ claim: string; field: string }>; post_logout_redirect_uris: Array<string>; created_at: string };
+export type DeleteOAuthClientResponse = { deleted: boolean };
+export type RegenerateOAuthClientSecretResponse = { secret: string };
+export type RevokeOAuthGrantResponse = { revoked: boolean };
+export type RotateOidcSigningKeysResponse = Array<{ kid: string; alg: string; created_at: string; retired_at?: string | null }>;
 export type ListBuildHostsResponse = Array<{ id: string; name: string; targets: Array<string>; created_at: string; last_seen_at?: string | null; online: boolean; report?: unknown | null }>;
 export type CreateBuildHostRequest = { name: string; targets: Array<string> };
 export type CreateBuildHostResponse = { host: { id: string; name: string; targets: Array<string>; created_at: string; last_seen_at?: string | null; online: boolean; report?: unknown | null }; token: string };
@@ -776,6 +785,13 @@ export interface ApiClient {
   listFrameworks(): Promise<ListFrameworksResponse>;
   listApiProviders(): Promise<ListApiProvidersResponse>;
   describeCustomQuery(body: DescribeCustomQueryRequest): Promise<DescribeCustomQueryResponse>;
+  getIdentityProvider(id: string): Promise<GetIdentityProviderResponse>;
+  createOAuthClient(id: string, body: CreateOAuthClientRequest): Promise<CreateOAuthClientResponse>;
+  updateOAuthClient(id: string, client_id: string, body: UpdateOAuthClientRequest): Promise<UpdateOAuthClientResponse>;
+  deleteOAuthClient(id: string, client_id: string): Promise<DeleteOAuthClientResponse>;
+  regenerateOAuthClientSecret(id: string, client_id: string): Promise<RegenerateOAuthClientSecretResponse>;
+  revokeOAuthGrant(id: string, grant_id: string): Promise<RevokeOAuthGrantResponse>;
+  rotateOidcSigningKeys(): Promise<RotateOidcSigningKeysResponse>;
   listBuildHosts(): Promise<ListBuildHostsResponse>;
   createBuildHost(body: CreateBuildHostRequest): Promise<CreateBuildHostResponse>;
   updateBuildHost(id: string, body: UpdateBuildHostRequest): Promise<UpdateBuildHostResponse>;
@@ -2622,6 +2638,64 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("describeCustomQuery", res);
       return (await res.json()) as DescribeCustomQueryResponse;
+    },
+    async getIdentityProvider(id) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/identity-provider`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getIdentityProvider", res);
+      return (await res.json()) as GetIdentityProviderResponse;
+    },
+    async createOAuthClient(id, body) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/identity-provider/clients`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("createOAuthClient", res);
+      return (await res.json()) as CreateOAuthClientResponse;
+    },
+    async updateOAuthClient(id, client_id, body) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/identity-provider/clients/${encodeURIComponent(client_id)}`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("updateOAuthClient", res);
+      return (await res.json()) as UpdateOAuthClientResponse;
+    },
+    async deleteOAuthClient(id, client_id) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/identity-provider/clients/${encodeURIComponent(client_id)}`, {
+        method: "DELETE",
+        headers: requestHeaders("DELETE", false),
+      });
+      if (!res.ok) throw await clientError("deleteOAuthClient", res);
+      return (await res.json()) as DeleteOAuthClientResponse;
+    },
+    async regenerateOAuthClientSecret(id, client_id) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/identity-provider/clients/${encodeURIComponent(client_id)}/secret`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("regenerateOAuthClientSecret", res);
+      return (await res.json()) as RegenerateOAuthClientSecretResponse;
+    },
+    async revokeOAuthGrant(id, grant_id) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/identity-provider/grants/${encodeURIComponent(grant_id)}`, {
+        method: "DELETE",
+        headers: requestHeaders("DELETE", false),
+      });
+      if (!res.ok) throw await clientError("revokeOAuthGrant", res);
+      return (await res.json()) as RevokeOAuthGrantResponse;
+    },
+    async rotateOidcSigningKeys() {
+      const res = await doFetch(`${baseUrl}/api/identity-provider/keys/rotate`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("rotateOidcSigningKeys", res);
+      return (await res.json()) as RotateOidcSigningKeysResponse;
     },
     async listBuildHosts() {
       const res = await doFetch(`${baseUrl}/api/build-hosts`, {
