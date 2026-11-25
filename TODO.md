@@ -1435,3 +1435,79 @@ Decisions (taken as proposed; see TECHNICAL_DESIGN §13.3 "Interactive pages"):
   - **A fix along the way.** A page whose `<script>` spans several lines and imports something
     failed to render (`$$module1 is not defined`). The build's metadata strip only matched a
     one-line export.
+
+## ST1 — Schema editing from application code: a bundled schema module (user request)
+
+An application whose users define their own tables (the Structured Social Wiki design: every
+user table is a real table, made by any signed-in user) has to change the schema from a custom
+query, on behalf of an ordinary user. Today only the admin API and the copilot's `edit_schema`
+reach `sc_api::schema_edit`, and a code body's v1 `Table.create` throws (`v1_api.js`
+`NOT_IMPLEMENTED`). This milestone puts `schema_edit` behind a module **action**, so the path is
+custom query → `trigger("…")` (an unexposed trigger, at admin authority; the event still records
+the user) → the module's action → a new `schema` ask surface → `schema_edit::apply`.
+
+Decisions (from the design discussion):
+
+- **Safe, not unsafe.** "Unsafe" means "no permission set bounds it" (UM1). Schema editing is
+  bounded: `schema_edit` validates, applies in one transaction and refuses a batch whole by
+  `Grants`. It is a **granted permission** instead, like `roles` (§15.1e).
+- **Actions, not functions.** Module functions are called with no authority
+  (`sc_module::functions`, `CallHosts::default()`) because formulas hoist them. Only actions carry
+  the caller's context and ask surfaces.
+- **The application decides who may; the server bounds what can.** The custom query checks the
+  app's own rules (owner, members, quotas). The server enforces the table prefix and the grant,
+  because a check inside the module's JavaScript or the query is on the wrong side of the boundary.
+- **Additive.** A new ask surface, a new permission key (absent or empty means none), a new
+  bundled module. Nothing changes for an installation that does not install it.
+
+- [ ] **ST1.1** The `schema` permission on `_fd_modules.permissions`:
+  `{ "schema": { "create": bool, "edit": bool, "drop": bool, "prefix": "<prefix>" } }`, read into
+  `ModulePermissions` and **left out of the set the worker pool pins by** (it is the server's, as
+  `roles` is). `prefix` is required and non-empty whenever any grant is on, and must be a valid
+  table-name prefix. The permission screen shows it in words ("may create and change tables
+  whose names start with `ut_`; may not drop them"). A bundled manifest may request it, granted
+  on first install only (§15.1a). Tests: parsing (missing prefix refused, empty means none),
+  the reinstall that keeps a narrowed grant, the permission screen's text.
+- [ ] **ST1.2** `AskSurface::Schema`: `{ op: "apply", operations: [...] }`, the same operation
+  JSON as MCP `edit_schema`, answered by `schema_edit::apply` with `Grants` from the module's
+  permission. Carried only by the **actions** of a module granted it, and served only when the
+  action runs at admin authority (from a code body's or a trigger's elevation), so a trigger an
+  application exposes and opens to a lower `min_role` cannot reach it. Every operation is
+  checked against the prefix before anything is applied: the table it creates, alters, renames
+  (both names) or drops must match. A key may **point at** a table outside the prefix (`users`, the
+  app's own tables) but may not change it. System tables, provider tables and tables in another
+  database are refused by name. The answer lists what was created (tables, fields, constraints) and
+  the catalog generation after the reload. Inventory row `MODULE_SCHEMA_EDIT`, naming the module,
+  its grant and the originating user. Tests: each grant on and off, a prefix escape in each
+  operation kind (including `RenameTable` to an unprefixed name), a key to `users` allowed, the
+  exposed-trigger refusal, the batch rolled back whole.
+- [ ] **ST1.3** Connect created tables to the calling application. When the event that ran the
+  action carries an application (a custom query's, or a trigger it ran), a table the batch creates
+  is added to that application's `tables` in the same act, and a table it drops is removed. There is
+  no `api_tables` change: the row API stays off. With no application in the event, nothing is
+  connected and the answer says so. Tests: create from a custom query, then a second query in the same
+  app names the table; another application cannot name it; dropping removes it.
+- [ ] **ST1.4** The rest of the run sees the new schema. After a `schema` ask, the calling body's
+  schema snapshot is refreshed to the generation the answer carries, so `db.<new table>` and
+  v1's `Table.findOne` resolve it in the same run. If that is not possible across the trigger
+  boundary, the answer and the docs say plainly that the table is visible from the next run.
+  Tests: create, then insert into the table in the same custom query (or the documented refusal).
+- [ ] **ST1.5** `plugins/schema` (`@feldspar/schema`), bundled, not unsafe. Its manifest requests
+  `create` and `edit` with an admin-chosen prefix (default `ut_`; `drop` off) and lists what it supplies.
+  Actions:
+  - `schema_apply`: the operations from the payload, passed through;
+  - `create_table`, `add_field`, `alter_field`, `rename_table`, `drop_field`, `drop_table`:
+    convenience forms with v1-shaped arguments, each lowering to one operation.
+
+  Each action answers the surface's answer. Configuration: defaults applied to every created table,
+  so the application need not repeat them: `history` (`{ enabled, keep_days }`), `min_role_read` and
+  `min_role_write` (default admin), `rls` (default off, because the app's queries elevate and an
+  explicit `asAdmin()` is refused on an RLS table). Tests: `tests/bundled_schema.rs` (custom query →
+  trigger → action → table exists, history on, connected to the app), `bundled_catalog`'s agreement
+  check, and `node --test plugins/schema/test`. Every test that builds a catalog registers
+  `catalog.teardown_hook()`.
+- [ ] **ST1.6** Docs: TECHNICAL_DESIGN §15.1h "The schema module", the authority inventory, the row
+  in `plugins/README.md`, and a tutorial step in `docs/tutorial-modules.md`: a table-builder app where
+  signed-in users create tables through a custom query that checks a quota and then runs the
+  trigger. The tutorial should say what the app must still enforce itself (who may change which
+  table), and that the application's `max_role` must not cap the query's `asAdmin()`.
