@@ -142,7 +142,13 @@ async fn answer(
     let Some(catalog) = state.apps.catalog() else {
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "no catalog");
     };
-    let caller = match app_caller(state, &app.app, jar, anonymous).await {
+    let slot_path = format!("_upload/{}", route.slot.name);
+    let bearer = crate::router::Bearer {
+        headers,
+        method: method.as_str(),
+        path: &slot_path,
+    };
+    let caller = match app_caller(state, &app.app, jar, Some(bearer), anonymous).await {
         Ok(caller) => caller,
         Err(rejection) => return *rejection,
     };

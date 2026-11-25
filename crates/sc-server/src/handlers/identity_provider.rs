@@ -10,6 +10,47 @@ use super::*;
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
 
+    // An application's users' API tokens (TODO AT1): listed with whose they
+    // are, and revoked; never minted here.
+    reg.handle(sc_api::handler_ids::LIST_APPLICATION_API_TOKENS, {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let app = require_app(&catalog, ctx.path_param("id")?).await?;
+                let mut out = Vec::new();
+                for token in sc_auth::list_app_api_tokens(&catalog, app.id.0, None).await? {
+                    let email =
+                        sc_auth::load_user(&catalog, token.user_id)
+                            .await?
+                            .and_then(|user| match user.get(sc_auth::COL_EMAIL) {
+                                Some(sc_query::Value::Text(t)) => Some(t.clone()),
+                                _ => None,
+                            });
+                    let mut row = crate::api_tokens::token_json(&token);
+                    row["user_id"] = json!(token.user_id);
+                    row["email"] = json!(email);
+                    out.push(row);
+                }
+                Ok(HandlerResponse::ok(Json::Array(out)))
+            }
+        }
+    });
+
+    reg.handle(sc_api::handler_ids::REVOKE_APPLICATION_API_TOKEN, {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let app = require_app(&catalog, ctx.path_param("id")?).await?;
+                let id = uuid::Uuid::parse_str(ctx.path_param("token_id")?)
+                    .map_err(|_| Error::invalid("not a token id"))?;
+                let revoked = sc_auth::revoke_app_api_token(&catalog, app.id.0, id, None).await?;
+                Ok(HandlerResponse::ok(json!({ "revoked": revoked })))
+            }
+        }
+    });
+
     reg.handle(sc_api::handler_ids::GET_IDENTITY_PROVIDER, {
         let catalog = catalog.clone();
         move |ctx| {

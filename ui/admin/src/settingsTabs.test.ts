@@ -16,7 +16,7 @@ const REACT: SettingsTab[] = [
   { id: "data", label: "Data", groups: ["tables", "file_stores"] },
   { id: "triggers", label: "Triggers & Streams", groups: ["triggers", "streams"] },
   { id: "api", label: "API", groups: ["apis", "row_api", "agents", "uploads", "static_dirs"] },
-  { id: "security", label: "Security", groups: ["access", "guest_sessions", "csp"] },
+  { id: "security", label: "Security", groups: ["access", "guest_sessions", "api_tokens", "csp"] },
   { id: "development", label: "Development", groups: ["coding_agent", "checklists"] },
   { id: "translations", label: "Translations", groups: ["translations"] },
 ];
@@ -28,7 +28,7 @@ const SALTCORN_UI: SettingsTab[] = [
   { id: "pages", label: "Pages", groups: ["pages"] },
   { id: "library", label: "Library", groups: ["library"] },
   { id: "data", label: "Data", groups: ["tables", "file_stores", "settings", "triggers", "streams"] },
-  { id: "users", label: "Users & Security", groups: ["settings", "access", "guest_sessions", "csp"] },
+  { id: "users", label: "Users & Security", groups: ["settings", "access", "guest_sessions", "api_tokens", "csp"] },
   { id: "advanced", label: "Advanced", groups: ["apis", "row_api", "coding_agent", "translations"] },
 ];
 

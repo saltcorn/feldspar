@@ -15,6 +15,8 @@
 mod agent_eval;
 #[path = "api_queries.rs"]
 mod api_queries;
+#[path = "api_token.rs"]
+mod api_token;
 #[path = "auth_token.rs"]
 mod auth_token;
 #[path = "backup.rs"]

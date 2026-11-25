@@ -110,9 +110,10 @@ pub use api::{
 };
 pub use app_tables::{TableChange, change_app_api_tables, change_app_tables, validate_api_tables};
 pub use application::{
-    ApiConfig, AppFileUrls, AppId, Application, CSP_SOURCES_ATTRIBUTE, CspPolicy, FRAME_ANCESTORS,
-    FrameworkRef, GUEST_SESSION_DAYS_ATTRIBUTE, GUEST_SESSIONS_ATTRIBUTE, StaticDir, StreamRef,
-    TriggerRef, allow_admin_framing, follow_admin_host,
+    API_TOKEN_MIN_ROLE_ATTRIBUTE, API_TOKENS_ATTRIBUTE, ApiConfig, AppFileUrls, AppId, Application,
+    CSP_SOURCES_ATTRIBUTE, CspPolicy, FRAME_ANCESTORS, FrameworkRef, GUEST_SESSION_DAYS_ATTRIBUTE,
+    GUEST_SESSIONS_ATTRIBUTE, StaticDir, StreamRef, TriggerRef, allow_admin_framing,
+    follow_admin_host,
 };
 pub use applications::{
     APPLICATIONS_TABLE, COL_AGENTS, COL_APIS, COL_ATTRIBUTES, COL_CSP, COL_DESCRIPTION,
@@ -205,8 +206,8 @@ pub use server_render::{
     ServerRendered, check_server_entry, mount_code_framework, prerender as prerender_site,
 };
 pub use settings_tabs::{
-    GROUP_ACCESS, GROUP_AGENTS, GROUP_APIS, GROUP_CHECKLISTS, GROUP_CODING_AGENT, GROUP_CSP,
-    GROUP_FILE_STORES, GROUP_FRAMEWORK, GROUP_GUEST_SESSIONS, GROUP_IDENTITY,
+    GROUP_ACCESS, GROUP_AGENTS, GROUP_API_TOKENS, GROUP_APIS, GROUP_CHECKLISTS, GROUP_CODING_AGENT,
+    GROUP_CSP, GROUP_FILE_STORES, GROUP_FRAMEWORK, GROUP_GUEST_SESSIONS, GROUP_IDENTITY,
     GROUP_IDENTITY_PROVIDER, GROUP_LIBRARY, GROUP_PAGES, GROUP_ROW_API, GROUP_SETTINGS,
     GROUP_STATIC_DIRS, GROUP_STREAMS, GROUP_TABLES, GROUP_TARGETS, GROUP_TRANSLATIONS,
     GROUP_TRIGGERS, GROUP_UPLOADS, GROUP_VIEWS, RECORD_GROUPS, SCREEN_GROUPS, SettingsTab,

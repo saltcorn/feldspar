@@ -386,6 +386,30 @@ pub(super) fn register(set: &mut EndpointSet) {
             TypeSchema::bool(),
         )])),
     );
+    // The API tokens an application's users minted for themselves (TODO AT1).
+    // An admin sees and revokes them; minting is the user's own, on the
+    // application (`/_feldspar/api-tokens`), or the operator's CLI.
+    let tokens = || {
+        api()
+            .lit("applications")
+            .param("id", ValueType::Uuid)
+            .lit("api-tokens")
+    };
+    set.register(
+        Endpoint::new(ids::LIST_APPLICATION_API_TOKENS, Method::Get, tokens())
+            .output(TypeSchema::array(app_api_token_schema())),
+    );
+    set.register(
+        Endpoint::new(
+            ids::REVOKE_APPLICATION_API_TOKEN,
+            Method::Post,
+            tokens().param("token_id", ValueType::Uuid).lit("revoke"),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "revoked",
+            TypeSchema::bool(),
+        )])),
+    );
     // The signing keys serve the whole instance: rotating them is not about
     // one application.
     set.register(
@@ -494,6 +518,24 @@ fn signing_key_schema() -> TypeSchema {
         StructField::new("alg", TypeSchema::text()),
         StructField::new("created_at", TypeSchema::text()),
         StructField::new("retired_at", TypeSchema::optional(TypeSchema::text())),
+    ])
+}
+
+/// One of an application's API tokens, as the admin lists it: whose it is,
+/// never the secret or its hash.
+fn app_api_token_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::uuid()),
+        StructField::new("label", TypeSchema::text()),
+        // `live`, `expired` or `revoked`.
+        StructField::new("state", TypeSchema::text()),
+        StructField::new("user_id", TypeSchema::uuid()),
+        // The account's email, or null when it is gone.
+        StructField::new("email", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("created_at", TypeSchema::text()),
+        StructField::new("expires_at", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("last_used_at", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("revoked_at", TypeSchema::optional(TypeSchema::text())),
     ])
 }
 

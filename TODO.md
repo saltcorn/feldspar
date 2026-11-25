@@ -1291,6 +1291,54 @@ Decisions this milestone takes (change them here before starting, not halfway th
 
 ---
 
+## AT1 — API tokens for an application's users (user feedback)
+
+A Saltcorn 1 user could generate an API token and call the REST API with it as themselves.
+Feldspar has `_fd_api_tokens`, but only an admin can mint one, only for themselves, and it reaches
+only `/mcp` and module routes. An application's API (`router::app_caller`) reads the session
+cookie and nothing else, and IP1's access tokens are for `/userinfo` only. A script can log in and
+replay the cookie and the CSRF token, but that ties it to a password and fails under 2FA.
+
+Decisions (approved):
+
+- **One table, a new kind.** `_fd_api_tokens` gains a nullable `application_id` (additive, so the
+  bootstrap adds it; no migration). An application token has its own prefix, `fsat_`, so an older
+  Feldspar, which requires `fspk_`, refuses it outright. `/mcp` and module routes refuse it; an
+  application host accepts nothing else, and only its own application's.
+- **It names a user.** On an application's host, `Authorization: Bearer` is read before the
+  cookie. A token that authenticates goes through the application's admission (`min_role`,
+  `max_role`, `access_if`) as a session's user does; one that does not is a `401` saying why,
+  never the public. **A bearer request's cookie is ignored**, so the CSRF exemption bearer
+  requests already have cannot lend a cookie's authority to anybody.
+- **Off by default, per application**: the `api_tokens` attribute, and `api_token_min_role`, the
+  least privileged role that may mint one (default: any signed-in user).
+- **The user mints their own**, with a session the application's host issued, at
+  `/_feldspar/api-tokens` (list, create, revoke) and on a page there. A token cannot mint tokens.
+  The generated client gets `apiTokens`. An admin lists and revokes an application's tokens on
+  its Security tab, and does not mint as somebody else there.
+- **The CLI mints for anybody** (`feldspar api-token create --app SUBDOMAIN --email …`): the
+  operator's tool, as `create-user` is.
+- **Header only.** No `?access_token=`, which ends up in logs. Saltcorn 1 tokens are not imported.
+- **No live socket** for now.
+- **Audit:** one `Info` line per request — label, application, method, path, status.
+
+- [x] **AT1.1** sc-auth: the `application_id` column, the `fsat_` prefix, `mint_app_api_token`,
+  `authenticate_app_token`, listing and revoking per application and per user; `/mcp` and module
+  routes refuse an application token. Tests in `sc-auth/tests/db_api_tokens.rs`.
+- [x] **AT1.2** sc-app: the `api_tokens` and `api_token_min_role` attributes. sc-server:
+  `app_caller` reads a bearer token (ignoring the cookie), refuses a bad one with a `401`, and
+  logs the audit line.
+- [x] **AT1.3** The self-service routes and page (`/_feldspar/api-tokens`, own application
+  session only), the generated client's `apiTokens`, and the admin's list and revoke on the
+  Security tab (sc-api schema, client.ts in the four UIs).
+- [x] **AT1.4** CLI: `feldspar api-token create|list|revoke`.
+- [x] **AT1.5** End-to-end tests in `sc-server/tests/app_api_tokens.rs`: REST and GraphQL as the
+  token's user with ownership kept, a POST with no CSRF token, another application's token, an
+  MCP token on an application and an application token on `/mcp`, the setting off, revoked,
+  expired, a disabled user, a cookie beside a bearer header, a token at the minting routes.
+- [x] **AT1.6** Docs: TECHNICAL_DESIGN (§13.6's sibling), a tutorial, the operations manual,
+  CHANGELOG.
+
 ## Open questions
 
 - F9: should a refused but signed-in caller of a Saltcorn UI application be shown "your account

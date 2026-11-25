@@ -82,6 +82,8 @@ pub const GROUP_AGENTS: &str = "agents";
 pub const GROUP_ACCESS: &str = "access";
 /// Guest sessions.
 pub const GROUP_GUEST_SESSIONS: &str = "guest_sessions";
+/// Its users' API tokens: whether they may have them, and the list (TODO AT1).
+pub const GROUP_API_TOKENS: &str = "api_tokens";
 /// Whether it is an OpenID Connect identity provider, and its clients (TODO
 /// IP1.8).
 pub const GROUP_IDENTITY_PROVIDER: &str = "identity_provider";
@@ -102,7 +104,7 @@ pub const GROUP_TRANSLATIONS: &str = "translations";
 
 /// The parts of the application record, each of which a resolved layout puts
 /// on exactly one tab.
-pub const RECORD_GROUPS: [&str; 18] = [
+pub const RECORD_GROUPS: [&str; 19] = [
     GROUP_IDENTITY,
     GROUP_FRAMEWORK,
     GROUP_TARGETS,
@@ -117,6 +119,7 @@ pub const RECORD_GROUPS: [&str; 18] = [
     GROUP_AGENTS,
     GROUP_ACCESS,
     GROUP_GUEST_SESSIONS,
+    GROUP_API_TOKENS,
     GROUP_CSP,
     GROUP_IDENTITY_PROVIDER,
     GROUP_CODING_AGENT,
@@ -170,7 +173,12 @@ pub fn default_settings_tabs(has_views: bool) -> Vec<SettingsTab> {
         SettingsTab::new(
             "security",
             "Security",
-            &[GROUP_ACCESS, GROUP_GUEST_SESSIONS, GROUP_CSP],
+            &[
+                GROUP_ACCESS,
+                GROUP_GUEST_SESSIONS,
+                GROUP_API_TOKENS,
+                GROUP_CSP,
+            ],
         ),
         SettingsTab::new(
             "identity_provider",

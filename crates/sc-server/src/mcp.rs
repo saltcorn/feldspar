@@ -316,6 +316,7 @@ pub(crate) async fn terminal_caller(
             expires_at: None,
             last_used_at: None,
             revoked_at: None,
+            application_id: None,
         },
         user,
     })

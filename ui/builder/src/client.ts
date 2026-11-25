@@ -288,6 +288,8 @@ export type UpdateOAuthClientResponse = { client_id: string; name: string; confi
 export type DeleteOAuthClientResponse = { deleted: boolean };
 export type RegenerateOAuthClientSecretResponse = { secret: string };
 export type RevokeOAuthGrantResponse = { revoked: boolean };
+export type ListApplicationApiTokensResponse = Array<{ id: string; label: string; state: string; user_id: string; email?: string | null; created_at: string; expires_at?: string | null; last_used_at?: string | null; revoked_at?: string | null }>;
+export type RevokeApplicationApiTokenResponse = { revoked: boolean };
 export type RotateOidcSigningKeysResponse = Array<{ kid: string; alg: string; created_at: string; retired_at?: string | null }>;
 export type ListBuildHostsResponse = Array<{ id: string; name: string; targets: Array<string>; created_at: string; last_seen_at?: string | null; online: boolean; report?: unknown | null }>;
 export type CreateBuildHostRequest = { name: string; targets: Array<string> };
@@ -574,6 +576,21 @@ export type SecondFactorEnabled = {
   user?: { id: string; email: string; role: number; email_verified: boolean };
 };
 
+/** One of the signed-in user's API tokens on this application. The secret is
+ * not here: it is shown once, by `apiTokenCreate`. */
+export type ApiTokenInfo = {
+  id: string;
+  label: string;
+  state: "live" | "expired" | "revoked";
+  created_at: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+};
+/** The signed-in user's API tokens. `enabled`: the application takes tokens;
+ * `may_create`: this user may create one. */
+export type ApiTokenList = { enabled: boolean; may_create: boolean; tokens: ApiTokenInfo[] };
+
 export interface ApiClient {
   /** The external identity providers this application offers people to sign in with. */
   oauthProviders(): Promise<OAuthProvider[]>;
@@ -602,6 +619,14 @@ export interface ApiClient {
   secondFactorDisable(code: string): Promise<{ ok: boolean }>;
   /** Replace the recovery codes; it takes a current code. */
   secondFactorRecoveryCodes(code: string): Promise<{ recovery_codes: string[] }>;
+  /** The signed-in user's API tokens on this application. */
+  apiTokenList(): Promise<ApiTokenList>;
+  /** Create an API token: a script sends `secret` as `Authorization: Bearer`
+   * to call this application's API as the signed-in user. The secret is in
+   * this answer and nowhere else, ever. */
+  apiTokenCreate(token: { label: string; expires_in_days?: number }): Promise<{ token: ApiTokenInfo; secret: string }>;
+  /** Revoke one of the signed-in user's API tokens. */
+  apiTokenRevoke(id: string): Promise<{ revoked: boolean }>;
   authStatus(): Promise<AuthStatusResponse>;
   finishOnboarding(): Promise<FinishOnboardingResponse>;
   createFirstUser(body: CreateFirstUserRequest): Promise<CreateFirstUserResponse>;
@@ -791,6 +816,8 @@ export interface ApiClient {
   deleteOAuthClient(id: string, client_id: string): Promise<DeleteOAuthClientResponse>;
   regenerateOAuthClientSecret(id: string, client_id: string): Promise<RegenerateOAuthClientSecretResponse>;
   revokeOAuthGrant(id: string, grant_id: string): Promise<RevokeOAuthGrantResponse>;
+  listApplicationApiTokens(id: string): Promise<ListApplicationApiTokensResponse>;
+  revokeApplicationApiToken(id: string, token_id: string): Promise<RevokeApplicationApiTokenResponse>;
   rotateOidcSigningKeys(): Promise<RotateOidcSigningKeysResponse>;
   listBuildHosts(): Promise<ListBuildHostsResponse>;
   createBuildHost(body: CreateBuildHostRequest): Promise<CreateBuildHostResponse>;
@@ -1031,6 +1058,32 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("secondFactorRecoveryCodes", res);
       return (await res.json()) as { recovery_codes: string[] };
+    },
+    async apiTokenList() {
+      const res = await doFetch(`${baseUrl}/_feldspar/api-tokens`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("apiTokenList", res);
+      return (await res.json()) as ApiTokenList;
+    },
+    async apiTokenCreate(token: { label: string; expires_in_days?: number }) {
+      const res = await doFetch(`${baseUrl}/_feldspar/api-tokens`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(token),
+      });
+      if (!res.ok) throw await clientError("apiTokenCreate", res);
+      return (await res.json()) as { token: ApiTokenInfo; secret: string };
+    },
+    async apiTokenRevoke(id: string) {
+      const res = await doFetch(`${baseUrl}/_feldspar/api-tokens/${encodeURIComponent(id)}/revoke`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: "{}",
+      });
+      if (!res.ok) throw await clientError("apiTokenRevoke", res);
+      return (await res.json()) as { revoked: boolean };
     },
     async authStatus() {
       const res = await doFetch(`${baseUrl}/api/auth/status`, {
@@ -2688,6 +2741,22 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("revokeOAuthGrant", res);
       return (await res.json()) as RevokeOAuthGrantResponse;
+    },
+    async listApplicationApiTokens(id) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/api-tokens`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listApplicationApiTokens", res);
+      return (await res.json()) as ListApplicationApiTokensResponse;
+    },
+    async revokeApplicationApiToken(id, token_id) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/api-tokens/${encodeURIComponent(token_id)}/revoke`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("revokeApplicationApiToken", res);
+      return (await res.json()) as RevokeApplicationApiTokenResponse;
     },
     async rotateOidcSigningKeys() {
       const res = await doFetch(`${baseUrl}/api/identity-provider/keys/rotate`, {

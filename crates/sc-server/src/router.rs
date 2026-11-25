@@ -1672,7 +1672,7 @@ async fn dispatch_app(
     if let Some(request) = sc_app::agent_route(&app.app, path) {
         return with_csp(
             crate::app_agents::handle(
-                state, app, request, &method, uri, &jar, anonymous, client_ip, body,
+                state, app, request, &method, uri, headers, &jar, anonymous, client_ip, body,
             )
             .await,
             &csp,
@@ -1709,7 +1709,15 @@ async fn dispatch_app(
             user,
             refused,
             ..
-        } = match app_caller(state, &app.app, &jar, anonymous).await {
+        } = match app_caller(
+            state,
+            &app.app,
+            &jar,
+            Some(Bearer::of(headers, method.as_str(), uri)),
+            anonymous,
+        )
+        .await
+        {
             Ok(caller) => caller,
             Err(rejection) => return with_csp(*rejection, &csp),
         };
@@ -1899,7 +1907,15 @@ async fn dispatch_app(
         user,
         refused,
         ..
-    } = match app_caller(state, &app.app, &jar, false).await {
+    } = match app_caller(
+        state,
+        &app.app,
+        &jar,
+        Some(Bearer::of(headers, method.as_str(), uri)),
+        false,
+    )
+    .await
+    {
         Ok(caller) => caller,
         Err(rejection) => return with_csp(*rejection, &csp),
     };
@@ -2057,7 +2073,15 @@ async fn dispatch_analytics_api(
         user,
         signed_in,
         refused,
-    } = match app_caller(state, &app.app, &jar, anonymous).await {
+    } = match app_caller(
+        state,
+        &app.app,
+        &jar,
+        Some(Bearer::of(headers, api_method.as_str(), uri)),
+        anonymous,
+    )
+    .await
+    {
         Ok(caller) => caller,
         Err(rejection) => return *rejection,
     };
@@ -2227,7 +2251,15 @@ async fn serve_static_dir(
     // A caller the application does not let in (TODO F9) is served as nobody:
     // a file open to the public role is part of the sign-in surface (a page
     // and the assets it is drawn with), and every other file is refused.
-    let signed_in = match app_caller(state, &app.app, jar, false).await {
+    let signed_in = match app_caller(
+        state,
+        &app.app,
+        jar,
+        Some(Bearer::of(headers, method.as_str(), uri)),
+        false,
+    )
+    .await
+    {
         Ok(caller) => caller.signed_in,
         Err(rejection) => return *rejection,
     };
@@ -2424,8 +2456,23 @@ pub(crate) async fn app_caller(
     state: &AppState,
     app: &sc_app::Application,
     jar: &CookieJar,
+    bearer: Option<Bearer<'_>>,
     anonymous: bool,
 ) -> std::result::Result<AppCaller, Box<Response>> {
+    // An API token (TODO AT1), before the cookie and **instead of** it: a
+    // bearer request is exempt from the CSRF check, so a cookie beside it must
+    // lend it nothing, or the exemption would be a way round the check.
+    //
+    // Only a credential of ours is one: a proxy in front of an application
+    // (oauth2-proxy) may forward a bearer token of its own, and such a request
+    // is served by its cookie, as it was before applications took tokens.
+    if let Some(bearer) = bearer
+        && let Some(presented) = crate::security::bearer_token(bearer.headers)
+        && is_feldspar_token(&presented)
+    {
+        let signed_in = app_token_user(state, app, bearer, &presented).await?;
+        return Ok(admitted(state, app, None, Some(signed_in)).await);
+    }
     let session = jar
         .get(SESSION_COOKIE)
         .filter(|_| !anonymous)
@@ -2440,6 +2487,115 @@ pub(crate) async fn app_caller(
             .map(crate::session::AppSession::into_user),
         None => None,
     };
+    Ok(admitted(state, app, session, signed_in).await)
+}
+
+/// Whether a bearer credential is one of this server's API tokens, of either
+/// kind, by its prefix.
+fn is_feldspar_token(presented: &str) -> bool {
+    presented.starts_with(sc_auth::APP_API_TOKEN_PREFIX)
+        || presented.starts_with(sc_auth::TOKEN_PREFIX)
+}
+
+/// Where [`app_caller`] reads an API token from: the request's headers, with
+/// its method and path for the audit line. `None` for a surface that takes a
+/// session only — the live socket.
+#[derive(Clone, Copy)]
+pub(crate) struct Bearer<'a> {
+    pub(crate) headers: &'a axum::http::HeaderMap,
+    pub(crate) method: &'a str,
+    pub(crate) path: &'a str,
+}
+
+impl<'a> Bearer<'a> {
+    pub(crate) fn of(headers: &'a axum::http::HeaderMap, method: &'a str, uri: &'a Uri) -> Self {
+        Bearer {
+            headers,
+            method,
+            path: uri.path(),
+        }
+    }
+}
+
+/// The user an application token presented to `app` runs as, or the `401`
+/// that says why it does not. An application that does not take tokens says
+/// so without reading the token table.
+async fn app_token_user(
+    state: &AppState,
+    app: &sc_app::Application,
+    bearer: Bearer<'_>,
+    presented: &str,
+) -> std::result::Result<sc_auth::AuthenticatedUser, Box<Response>> {
+    let locale = crate::i18n::locale_for_user(None);
+    if !app.api_tokens_enabled() {
+        return Err(Box::new(bearer_refusal(t!(
+            locale,
+            "this application does not accept API tokens; an administrator can turn them on in its Security settings"
+        ))));
+    }
+    let Some(catalog) = state.apps.catalog() else {
+        return Err(Box::new(json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "no catalog for application APIs",
+        )));
+    };
+    match sc_auth::authenticate_app_token(catalog, app.id.0, presented).await {
+        Ok(caller) => {
+            sc_log::log_info!(
+                "API token [{}] ({}) of user {} on {}: {} {}",
+                caller.token.label,
+                caller.token.id,
+                caller.user.id(),
+                app.subdomain,
+                bearer.method,
+                bearer.path
+            );
+            Ok(caller.user)
+        }
+        Err(e) if e.auth_message().is_some() => {
+            let why = e.auth_message().unwrap_or_default().to_owned();
+            sc_log::log_info!(
+                "API token refused on {}: {} {}: {why}",
+                app.subdomain,
+                bearer.method,
+                bearer.path
+            );
+            Err(Box::new(bearer_refusal(why)))
+        }
+        Err(e) => {
+            log_failure("could not check an API token", &e);
+            Err(Box::new(json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not check the API token",
+            )))
+        }
+    }
+}
+
+/// A `401` for a bearer credential that did not authenticate, with the
+/// challenge RFC 6750 asks for.
+fn bearer_refusal(why: impl Into<String>) -> Response {
+    let why = why.into();
+    let mut response = json_error(StatusCode::UNAUTHORIZED, why.clone());
+    let challenge = format!(
+        "Bearer realm=\"feldspar\", error=\"invalid_token\", error_description=\"{}\"",
+        why.replace(['"', '\\'], "'")
+    );
+    if let Ok(value) = HeaderValue::from_str(&challenge) {
+        response
+            .headers_mut()
+            .insert(header::WWW_AUTHENTICATE, value);
+    }
+    response
+}
+
+/// The caller `signed_in` is once `app` has admitted them (or not).
+async fn admitted(
+    state: &AppState,
+    app: &sc_app::Application,
+    session: Option<String>,
+    signed_in: Option<sc_auth::AuthenticatedUser>,
+) -> AppCaller {
     let (user, refused) = admit_caller(
         state,
         app,
@@ -2456,12 +2612,12 @@ pub(crate) async fn app_caller(
     if let Some(changeset) = sc_catalog::changeset::current() {
         changeset.set_application(app.id.0);
     }
-    Ok(AppCaller {
+    AppCaller {
         session,
         user,
         signed_in,
         refused,
-    })
+    }
 }
 
 /// The public id of the guest session a request to `app` carries, when it may
@@ -2607,7 +2763,7 @@ async fn app_live(
         user,
         refused,
         ..
-    } = match app_caller(state, &app.app, jar, false).await {
+    } = match app_caller(state, &app.app, jar, None, false).await {
         Ok(caller) => caller,
         Err(rejection) => return *rejection,
     };

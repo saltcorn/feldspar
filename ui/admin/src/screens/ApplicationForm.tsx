@@ -51,7 +51,7 @@ import { IconArrowLeft } from "../icons";
 import { applicationsCrumbs } from "../breadcrumbs";
 import { PageBody, PageHeader, PublicBadge } from "../layout";
 import { isPublic, roleName, roleOptions, useRoles } from "../roles";
-import { RoleSelect } from "../roleSelect";
+import { OptionalRoleSelect, RoleSelect } from "../roleSelect";
 import { setNotice } from "../notice";
 import {
   SettingsFields,
@@ -101,6 +101,7 @@ import { CustomQueries } from "./CustomQueries";
 import { ApplicationTabs } from "./ApplicationViews";
 import { ApplicationTranslations } from "./Translations";
 import { IdentityProviderPanel } from "./IdentityProvider";
+import { ApplicationApiTokensPanel } from "./ApplicationApiTokens";
 import { Autosaver, TYPING_DELAY_MS, type SaveState } from "../autosave";
 import { SaveStatus } from "../SaveStatus";
 import { fieldsOnTab, formTab, groupsToRender, type SettingsTab } from "../settingsTabs";
@@ -266,6 +267,10 @@ export function ApplicationForm({
   // Guest sessions (TODO-payments P1.5): off unless switched on, and how long
   // one lasts — its cookie's age — in days.
   const [guestSessions, setGuestSessions] = useState(false);
+  // Its users' API tokens (TODO AT1): the switch, and the least privileged
+  // role that may create one (`null`: any signed-in user).
+  const [apiTokens, setApiTokens] = useState(false);
+  const [apiTokenMinRole, setApiTokenMinRole] = useState<number | null>(null);
   const [guestDays, setGuestDays] = useState("30");
   // Run the application's checklists after each build (TODO-checklists C4.3).
   const [checkAfterBuild, setCheckAfterBuild] = useState(false);
@@ -355,6 +360,10 @@ export function ApplicationForm({
           setCspSources(cspSourcesOf(existing.attributes));
           const attributes = attributesOf(existing.attributes);
           setGuestSessions(attributes.guest_sessions === true);
+          setApiTokens(attributes.api_tokens === true);
+          setApiTokenMinRole(
+            typeof attributes.api_token_min_role === "number" ? attributes.api_token_min_role : null,
+          );
           setCheckAfterBuild(attributes.check_after_build === true);
           const builder = builderAgentFor(existing, agentList);
           setBuilderAgent(builder);
@@ -475,6 +484,8 @@ export function ApplicationForm({
         csp_sources: cspSources,
         guest_sessions: guestSessions,
         guest_session_days: Number.parseInt(guestDays, 10) || 30,
+        api_tokens: apiTokens,
+        api_token_min_role: apiTokenMinRole,
         check_after_build: checkAfterBuild,
       },
       codingAgent,
@@ -1313,6 +1324,40 @@ export function ApplicationForm({
             </Form.Text>
           </Form.Group>
         );
+      case "api_tokens":
+        return (
+          <Form.Group className="mb-3" controlId="appApiTokens">
+            <h5 className="mt-2">
+              <T text="API tokens" />
+            </h5>
+            <Form.Check
+              type="switch"
+              checked={apiTokens}
+              onChange={(e) => setApiTokens(e.target.checked)}
+              label={t("Users may create API tokens to call this application's API from a script, as themselves")}
+            />
+            {apiTokens && (
+              <Row className="mt-2">
+                <Col md={6}>
+                  <OptionalRoleSelect
+                    id="appApiTokenMinRole"
+                    label={t("Who may create one")}
+                    value={apiTokenMinRole}
+                    blank={t("Any signed-in user")}
+                    roles={roles}
+                    onChange={setApiTokenMinRole}
+                  />
+                </Col>
+              </Row>
+            )}
+            <Form.Text muted>
+              <T
+                text="A script sends the token as {header}. It can do what its user can do here, no more: the access settings above and each table's rules still decide."
+                values={{ header: <code>Authorization: Bearer fsat_…</code> }}
+              />
+            </Form.Text>
+          </Form.Group>
+        );
       case "coding_agent":
         if (!stored || !codingAgent) return null;
         return (
@@ -1372,6 +1417,8 @@ export function ApplicationForm({
   // So is the identity provider's clients panel: its actions are requests of
   // their own, not fields of the application.
   const showIdentityProvider = Boolean(appId) && groups.includes("identity_provider");
+  // And the users' API tokens, which an admin revokes one at a time.
+  const showApiTokens = Boolean(appId) && groups.includes("api_tokens");
 
   return (
     <>
@@ -1424,6 +1471,13 @@ export function ApplicationForm({
             appId={appId}
             subdomain={stored.subdomain}
             enabled={identityProvider}
+          />
+        )}
+        {showApiTokens && appId && stored && (
+          <ApplicationApiTokensPanel
+            appId={appId}
+            subdomain={stored.subdomain}
+            enabled={apiTokens}
           />
         )}
         {showTranslations && appId && <ApplicationTranslations appId={appId} embedded />}

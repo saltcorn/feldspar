@@ -15,6 +15,7 @@
 //! live here so integration tests can drive the same boot path the CLI uses.
 
 pub mod api;
+pub mod api_token;
 pub mod app;
 pub mod auth;
 pub mod backup_password;

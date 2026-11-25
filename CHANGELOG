@@ -2,6 +2,62 @@
 
 Changes in reverse chronological order.
 
+## API tokens for an application's users
+
+TODO AT1, from user feedback: "in saltcorn v1 users had the possibility to create an API token.
+In feldspar not." A user can now create a token on an application and call its API from a
+script with it, as themselves. It is off by default and switched on per application.
+
+- **Storage** (`sc_auth::tokens`). `_fd_api_tokens` gains a nullable `application_id`, which the
+  bootstrap adds (no migration). An application token has its own prefix, `fsat_`, and no grants.
+  `mint_app_api_token`, `authenticate_app_token`, `list_app_api_tokens` and
+  `revoke_app_api_token` are new. `authenticate_api_token` and `authenticate_route_token` (the
+  MCP server and module routes) refuse an application token by its prefix and by its row.
+  `list_api_tokens` (the MCP panel, `mcp-token list`) leaves application tokens out. A revoked or
+  expired application token's message says "mint a new one", not "an administrator has to".
+- **Authentication** (`router::app_caller`). On an application's host, `Authorization: Bearer
+  fsat_…` (or `fspk_…`, to be refused by name) is read before the session cookie, and the cookie
+  is then ignored. A token that authenticates goes through the application's admission like a
+  session's user. One that does not is a `401` with a `WWW-Authenticate: Bearer` challenge and
+  the reason: not accepted here, another application's, an administration token, revoked,
+  expired, disabled or deleted user. This covers REST, GraphQL, code queries, pages, static
+  directories, uploads and exposed agents. The live socket still takes sessions only.
+  - **Compatibility:** a bearer token without a Feldspar prefix (one an oauth2-proxy in front of
+    an application forwards) is left alone, and the request is served by its cookie as before.
+  - Each request under a token, and each refusal, writes an `Info` line: label, id, user,
+    application, method, path.
+- **Settings.** The application attributes `api_tokens` (on/off) and `api_token_min_role` (who
+  may create one; absent for any signed-in user). They are in a new `api_tokens` settings group,
+  on the Security tab by default and on Saltcorn UI's Users & Security tab (and the React Native
+  plugin's layout). The admin screen lists every user's tokens with a Revoke button
+  (`ApplicationApiTokens.tsx`, new admin endpoints `listApplicationApiTokens` and
+  `revokeApplicationApiToken`, which are not MCP tools). `client.ts` is regenerated in the four
+  UIs.
+- **Self-service** (`sc-server/src/api_tokens.rs`). `GET`/`POST /_feldspar/api-tokens`, `POST
+  /_feldspar/api-tokens/{id}/revoke`, and a server-rendered page at `/_feldspar/api-tokens/page`
+  with forms. They take only a session the application itself issued. A visiting session is
+  refused, and so is any request with an `Authorization` header, so a token cannot mint tokens.
+  Creating also needs the switch on, the caller admitted, and the minting role. Listing and
+  revoking do not. The secret is shown once.
+- **Generated client.** `apiTokenList`, `apiTokenCreate` and `apiTokenRevoke`, emitted beside the
+  second-factor methods, with the types `ApiTokenInfo` and `ApiTokenList`. The names are chosen
+  so that no table's generated names (`listApiTokens`, `ApiToken`) collide with them.
+- **CLI.** `feldspar api-token create --app SUBDOMAIN --label L (--email E | --admin)
+  [--expires-in-days N] [--url ORIGIN]` mints a token for a user of any role and prints only the
+  secret on stdout. It warns if the application has tokens off. `api-token list [--app] [--json]`
+  and `api-token revoke ID` complete it. `mcp-token revoke` and `api-token revoke` each refuse the
+  other kind and name the right command.
+- **Docs.** TECHNICAL_DESIGN §13.7, `docs/tutorial-api-tokens.md`, OPERATIONS.md §8.2 ("API tokens
+  for an application's users"), README.
+- **Tests.** `sc-auth/tests/db_api_tokens.rs` (4 new: runs as its user, the kinds do not cross,
+  listing and revoking per application and user, follows its account).
+  `sc-server/tests/app_api_tokens.rs` (12: REST and GraphQL under ownership, writes with no
+  CSRF token, a cookie beside a token, a foreign bearer token, the refusals, admission, minting
+  by own session only, the switch and the role, the page's form, the admin list and revoke, the
+  MCP server refusing an application token, expiry). `sc-cli/tests/api_token.rs` drives the
+  binary, plus parser unit tests. A generated-client test covers the name collision. The
+  raw-routes pin lists the three new routes.
+
 ## The identity provider, finished: userinfo, revocation, logout, admin screen, interop, docs
 
 The rest of TODO IP1 (IP1.6–IP1.10). An application that is an OpenID Connect identity provider

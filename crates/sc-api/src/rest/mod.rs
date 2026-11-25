@@ -3154,6 +3154,25 @@ mod tests {
     }
 
     #[test]
+    fn a_client_that_signs_in_can_manage_its_users_api_tokens() {
+        // TODO AT1: beside the second factor, over `/_feldspar/api-tokens`,
+        // under names no table's operations can take.
+        let tables = [table("api_tokens", AccessRules::default())];
+        let ts = crate::generate_client(RestProvider::project("/api", &tables).endpoints());
+        for wanted in [
+            "apiTokenList(): Promise<ApiTokenList>;",
+            "apiTokenCreate(token: { label: string; expires_in_days?: number })",
+            "apiTokenRevoke(id: string)",
+            "`${baseUrl}/_feldspar/api-tokens`",
+            "export type ApiTokenInfo = {",
+        ] {
+            assert!(ts.contains(wanted), "{wanted} in {ts}");
+        }
+        // The table keeps its own operations.
+        assert!(ts.contains("listApiTokens"), "{ts}");
+    }
+
+    #[test]
     fn email_verification_is_projected_only_where_the_settings_turn_it_on() {
         let tables = [table("posts", AccessRules::default())];
         let mut config = Attrs::new();

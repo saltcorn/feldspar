@@ -47,6 +47,7 @@ pub(crate) const ADMIN_TASKS: sc_catalog::Unchecked<'static> = sc_catalog::Unche
 mod admin_host;
 mod admin_session;
 mod agents;
+mod api_tokens;
 // An application's exposed agents: chat, prompts and history (§11.7).
 mod analytics;
 mod analytics_app;

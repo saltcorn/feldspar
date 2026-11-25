@@ -66,6 +66,10 @@ pub const REGENERATE_OAUTH_CLIENT_SECRET: HandlerId<AdminOnly> =
     HandlerId::new("regenerateOAuthClientSecret");
 pub const REVOKE_OAUTH_GRANT: HandlerId<AdminOnly> = HandlerId::new("revokeOAuthGrant");
 pub const ROTATE_OIDC_SIGNING_KEYS: HandlerId<AdminOnly> = HandlerId::new("rotateOidcSigningKeys");
+pub const LIST_APPLICATION_API_TOKENS: HandlerId<AdminOnly> =
+    HandlerId::new("listApplicationApiTokens");
+pub const REVOKE_APPLICATION_API_TOKEN: HandlerId<AdminOnly> =
+    HandlerId::new("revokeApplicationApiToken");
 
 // --- `admin::auth` ---
 

@@ -16,6 +16,7 @@ use std::process::ExitCode;
 
 use commands::agent::{agent_command, build_agent_command};
 use commands::api::{api_command, build_app_command};
+use commands::api_token::api_token_command;
 use commands::app::app_command;
 use commands::auth::auth_command;
 use commands::backup::{backup_command, restore_command};
@@ -92,6 +93,7 @@ async fn run(args: &[String]) -> Result<()> {
         Some("set-cfg") => set_cfg_command(&args[1..]).await,
         Some("auth") => auth_command(&args[1..]).await,
         Some("mcp-token") => mcp_token_command(&args[1..]).await,
+        Some("api-token") => api_token_command(&args[1..]).await,
         Some("build-agent") => build_agent_command(&args[1..]).await,
         Some("add-user") => add_user_command(&args[1..]).await,
         Some("modify-user") => modify_user_command(&args[1..]).await,
@@ -205,6 +207,10 @@ fn print_usage() {
     eprintln!("                      [--insecure-http] [--once]");
     eprintln!("                      (or the token in FELDSPAR_BUILD_TOKEN)");
     eprintln!("  feldspar mcp-token revoke ID [database flags]");
+    eprintln!("  feldspar api-token create --app SUBDOMAIN --label TEXT (--email EMAIL | --admin)");
+    eprintln!("                      [--expires-in-days N] [--url ORIGIN] [database flags]");
+    eprintln!("  feldspar api-token list [--app SUBDOMAIN] [--json] [database flags]");
+    eprintln!("  feldspar api-token revoke ID [database flags]");
     eprintln!(
         "  feldspar add-user EMAIL --role ROLE [--password [VALUE] | --random-password] \
          [database flags]"
@@ -352,6 +358,14 @@ fn print_usage() {
        single ones out (--allow-all --no-allow-drop). The secret is printed
        once, alone on stdout; the id to revoke it by and the `claude mcp add`
        line go to stderr. Turn the server on with `set-cfg mcp_enabled true`.
+
+  api-token: mints, lists and revokes the API tokens an application's users
+       call its API with (Authorization: Bearer fsat_…), as themselves. A user
+       mints their own on the application; this mints one for somebody: any
+       role will do, since the application's access settings and its tables'
+       rules decide what the token may do. The application must have API tokens
+       turned on in its Security settings. The secret is printed once, alone on
+       stdout; the id to revoke it by goes to stderr.
 
   add-user / modify-user: create an account, or change one's role or password,
        straight in the database — the way back in for an admin who has forgotten

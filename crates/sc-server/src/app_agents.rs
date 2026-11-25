@@ -209,13 +209,14 @@ pub(crate) async fn handle(
     request: AgentRequest,
     method: &Method,
     uri: &Uri,
+    headers: &axum::http::HeaderMap,
     jar: &CookieJar,
     anonymous: bool,
     client_ip: Option<std::net::IpAddr>,
     body: &Bytes,
 ) -> Response {
     match answer(
-        state, app, request, method, uri, jar, anonymous, client_ip, body,
+        state, app, request, method, uri, headers, jar, anonymous, client_ip, body,
     )
     .await
     {
@@ -256,6 +257,7 @@ async fn answer(
     request: AgentRequest,
     method: &Method,
     uri: &Uri,
+    headers: &axum::http::HeaderMap,
     jar: &CookieJar,
     anonymous: bool,
     client_ip: Option<std::net::IpAddr>,
@@ -272,9 +274,20 @@ async fn answer(
             "this server has no agents installed",
         ));
     };
-    let caller = app_caller(state, &app.app, jar, anonymous)
-        .await
-        .map_err(|_| Error::msg("session lookup failed"))?;
+    let caller = match app_caller(
+        state,
+        &app.app,
+        jar,
+        Some(crate::router::Bearer::of(headers, method.as_str(), uri)),
+        anonymous,
+    )
+    .await
+    {
+        Ok(caller) => caller,
+        // A token that did not authenticate is told why (a 401), as on every
+        // other surface of the application.
+        Err(rejection) => return Ok(*rejection),
+    };
     // An agent is not part of anybody's sign-in (TODO F9).
     if let Some(refused) = caller.refused {
         return Ok(refused.response());

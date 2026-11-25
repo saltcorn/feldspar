@@ -177,6 +177,13 @@ pub(crate) async fn mcp_token_revoke_command(args: &[String]) -> Result<()> {
     let token = sc_auth::load_api_token(&catalog, id)
         .await?
         .ok_or_else(|| sc_error::Error::not_found(format!("no MCP token with id {id}")))?;
+    if token.application_id.is_some() {
+        return Err(sc_error::Error::invalid(format!(
+            "`{}` ({id}) is an application's API token; `feldspar api-token revoke {id}` \
+             revokes it",
+            token.label
+        )));
+    }
     match sc_auth::revoke_api_token(&catalog, id).await? {
         true => eprintln!("feldspar: revoked MCP token `{}` ({id})", token.label),
         false => eprintln!(

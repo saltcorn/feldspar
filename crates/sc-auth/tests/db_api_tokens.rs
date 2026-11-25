@@ -17,9 +17,11 @@ use std::sync::Arc;
 
 use chrono::{Duration, Utc};
 use sc_auth::{
-    API_TOKENS_TABLE, COL_TOKEN_ID, NewApiToken, TOKEN_PREFIX, User, UserUpdate,
-    authenticate_api_token, bootstrap, create_user, delete_user, list_api_tokens, mint_api_token,
-    revoke_api_token, set_user_disabled, update_user,
+    API_TOKENS_TABLE, APP_API_TOKEN_PREFIX, COL_TOKEN_ID, NewApiToken, NewAppApiToken,
+    TOKEN_PREFIX, User, UserUpdate, authenticate_api_token, authenticate_app_token,
+    authenticate_route_token, bootstrap, create_user, delete_user, list_api_tokens,
+    list_app_api_tokens, mint_api_token, mint_app_api_token, revoke_api_token,
+    revoke_app_api_token, set_user_disabled, update_user,
 };
 use sc_catalog::Catalog;
 use sc_error::Result;
@@ -37,6 +39,9 @@ struct Fixture {
 async fn fixture() -> Result<Fixture> {
     let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     bootstrap(&catalog).await?;
+    // Roles for an application's users, whose tokens are any role's.
+    sc_auth::save_role(&catalog, &sc_auth::RoleDef::new(Role::of(40), "Staff")).await?;
+    sc_auth::save_role(&catalog, &sc_auth::RoleDef::new(Role::of(80), "Member")).await?;
     Ok(Fixture { catalog, db })
 }
 
@@ -367,6 +372,182 @@ async fn a_token_needs_a_label() -> Result<()> {
         .expect_err("a blank label is not a label");
     assert!(err.to_string().contains("label"), "{err}");
     assert!(list_api_tokens(&f.catalog).await?.is_empty());
+    Ok(())
+}
+
+/// An application token (TODO AT1) as its user mints it.
+fn app_token(application: uuid::Uuid, user: &User, label: &str) -> NewAppApiToken {
+    NewAppApiToken {
+        application_id: application,
+        user_id: user.id(),
+        label: label.to_owned(),
+        expires_at: None,
+    }
+}
+
+/// An application token runs as its user, whatever their role, on the
+/// application it was minted for — and is stored as a hash, like the other kind.
+#[tokio::test]
+async fn an_application_token_runs_as_its_user_on_its_application() -> Result<()> {
+    let f = fixture().await?;
+    let user = create_user(&f.catalog, "member@example.com", "pw", Role::of(80)).await?;
+    let app = uuid::Uuid::new_v4();
+
+    let minted = mint_app_api_token(&f.catalog, app_token(app, &user, "nightly export")).await?;
+    assert!(minted.secret.starts_with(APP_API_TOKEN_PREFIX));
+    assert_eq!(minted.token.application_id, Some(app));
+    assert!(minted.token.grants.is_empty());
+
+    let caller = authenticate_app_token(&f.catalog, app, &minted.secret).await?;
+    assert_eq!(caller.user.id(), user.id());
+    assert_eq!(caller.user.role(), Role::of(80));
+    assert_eq!(caller.token.label, "nightly export");
+    assert!(caller.token.last_used_at.is_some(), "a use is recorded");
+
+    let rows = raw_rows(&f.catalog).await?;
+    assert_eq!(rows.len(), 1);
+    assert!(!format!("{:?}", rows[0]).contains(&minted.secret));
+    assert_eq!(rows[0].get("application_id"), Some(&Value::Uuid(app)));
+    Ok(())
+}
+
+/// The two kinds never stand in for each other, and an application token
+/// works on its own application only.
+#[tokio::test]
+async fn application_and_administration_tokens_do_not_cross() -> Result<()> {
+    let f = fixture().await?;
+    let boss = admin(&f.catalog, "boss@example.com").await?;
+    let app = uuid::Uuid::new_v4();
+    let other = uuid::Uuid::new_v4();
+
+    // An admin's application token is still only an application token.
+    let theirs = mint_app_api_token(&f.catalog, app_token(app, &boss, "script")).await?;
+    let err = authenticate_api_token(&f.catalog, &theirs.secret)
+        .await
+        .expect_err("the MCP server takes no application token");
+    assert!(err.to_string().contains("application"), "{err}");
+    let err = authenticate_route_token(&f.catalog, &theirs.secret)
+        .await
+        .expect_err("nor does a module route");
+    assert!(err.to_string().contains("application"), "{err}");
+    let err = authenticate_app_token(&f.catalog, other, &theirs.secret)
+        .await
+        .expect_err("another application's token");
+    assert!(err.to_string().contains("another application"), "{err}");
+
+    // And an administration token on an application.
+    let mcp = mint_api_token(&f.catalog, new_token(&boss, "claude")).await?;
+    let err = authenticate_app_token(&f.catalog, app, &mcp.secret)
+        .await
+        .expect_err("an application takes no administration token");
+    assert!(err.to_string().contains(TOKEN_PREFIX), "{err}");
+
+    // A row that says application under the other prefix is refused too: the
+    // prefix and the row must agree.
+    let disguised = format!(
+        "{TOKEN_PREFIX}{}",
+        &theirs.secret[APP_API_TOKEN_PREFIX.len()..]
+    );
+    assert!(
+        authenticate_api_token(&f.catalog, &disguised)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+/// The lists keep the kinds apart: the MCP panel never shows an application's
+/// tokens, and a user's list shows their own.
+#[tokio::test]
+async fn application_tokens_are_listed_and_revoked_per_application_and_user() -> Result<()> {
+    let f = fixture().await?;
+    let boss = admin(&f.catalog, "boss@example.com").await?;
+    let ann = create_user(&f.catalog, "ann@example.com", "pw", Role::of(80)).await?;
+    let bob = create_user(&f.catalog, "bob@example.com", "pw", Role::of(80)).await?;
+    let app = uuid::Uuid::new_v4();
+    let other = uuid::Uuid::new_v4();
+
+    mint_api_token(&f.catalog, new_token(&boss, "claude")).await?;
+    let anns = mint_app_api_token(&f.catalog, app_token(app, &ann, "ann's")).await?;
+    let bobs = mint_app_api_token(&f.catalog, app_token(app, &bob, "bob's")).await?;
+    mint_app_api_token(&f.catalog, app_token(other, &ann, "elsewhere")).await?;
+
+    let admin_list = list_api_tokens(&f.catalog).await?;
+    assert_eq!(admin_list.len(), 1);
+    assert_eq!(admin_list[0].label, "claude");
+    assert_eq!(list_app_api_tokens(&f.catalog, app, None).await?.len(), 2);
+    let own = list_app_api_tokens(&f.catalog, app, Some(ann.id())).await?;
+    assert_eq!(own.len(), 1);
+    assert_eq!(own[0].label, "ann's");
+
+    // Ann cannot revoke Bob's, nor her own through another application.
+    assert!(!revoke_app_api_token(&f.catalog, app, bobs.token.id, Some(ann.id())).await?);
+    assert!(!revoke_app_api_token(&f.catalog, other, anns.token.id, Some(ann.id())).await?);
+    authenticate_app_token(&f.catalog, app, &bobs.secret).await?;
+    // Her own, she can; an admin (no user) can revoke anybody's.
+    assert!(revoke_app_api_token(&f.catalog, app, anns.token.id, Some(ann.id())).await?);
+    assert!(revoke_app_api_token(&f.catalog, app, bobs.token.id, None).await?);
+    for secret in [&anns.secret, &bobs.secret] {
+        let err = authenticate_app_token(&f.catalog, app, secret)
+            .await
+            .expect_err("revoked");
+        assert!(err.to_string().contains("revoked"), "{err}");
+        assert!(err.to_string().contains("mint a new one"), "{err}");
+        assert!(!err.to_string().contains("administrator"), "{err}");
+    }
+    Ok(())
+}
+
+/// The account is read on every call, as for the other kind: disabled and
+/// deleted stop the token. A role change does not — its user may have any role.
+#[tokio::test]
+async fn an_application_token_follows_its_account() -> Result<()> {
+    let f = fixture().await?;
+    admin(&f.catalog, "keeper@example.com").await?;
+    let app = uuid::Uuid::new_v4();
+
+    let user = create_user(&f.catalog, "u@example.com", "pw", Role::of(80)).await?;
+    let minted = mint_app_api_token(&f.catalog, app_token(app, &user, "t")).await?;
+    let _changed = update_user(
+        &f.catalog,
+        user.id(),
+        UserUpdate {
+            role: Some(Role::of(40)),
+            ..UserUpdate::default()
+        },
+    )
+    .await?;
+    let caller = authenticate_app_token(&f.catalog, app, &minted.secret).await?;
+    assert_eq!(caller.user.role(), Role::of(40), "the role is read now");
+
+    let _changed = set_user_disabled(&f.catalog, user.id(), true).await?;
+    let err = authenticate_app_token(&f.catalog, app, &minted.secret)
+        .await
+        .expect_err("disabled");
+    assert!(err.to_string().contains("disabled"), "{err}");
+
+    let gone = create_user(&f.catalog, "gone@example.com", "pw", Role::of(80)).await?;
+    let minted = mint_app_api_token(&f.catalog, app_token(app, &gone, "t")).await?;
+    assert!(delete_user(&f.catalog, gone.id()).await?);
+    let err = authenticate_app_token(&f.catalog, app, &minted.secret)
+        .await
+        .expect_err("deleted");
+    assert!(err.to_string().contains("no longer exists"), "{err}");
+
+    let lapsing = mint_app_api_token(
+        &f.catalog,
+        NewAppApiToken {
+            expires_at: Some(Utc::now() + Duration::days(1)),
+            ..app_token(app, &user, "lapsing")
+        },
+    )
+    .await?;
+    expire(&f, lapsing.token.id, Utc::now() - Duration::seconds(1)).await?;
+    let _changed = set_user_disabled(&f.catalog, user.id(), false).await?;
+    let err = authenticate_app_token(&f.catalog, app, &lapsing.secret)
+        .await
+        .expect_err("expired");
+    assert!(err.to_string().contains("expired"), "{err}");
     Ok(())
 }
 

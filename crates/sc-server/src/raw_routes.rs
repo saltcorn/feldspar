@@ -426,6 +426,28 @@ pub const RAW_ROUTES: &[RawRoute] = &[
         auth: RouteAuth::Challenge,
         route: || get(crate::second_factor::page),
     },
+    // An application's users' own API tokens (TODO AT1): a session the
+    // application issued, never a token (`crate::api_tokens`). The page's
+    // path is listed before the revoke route's pattern, which it does not
+    // overlap.
+    RawRoute {
+        path: crate::api_tokens::ROUTE,
+        methods: GET_POST,
+        auth: RouteAuth::OwnSession,
+        route: || get(crate::api_tokens::list).post(crate::api_tokens::create),
+    },
+    RawRoute {
+        path: crate::api_tokens::PAGE_ROUTE,
+        methods: GET,
+        auth: RouteAuth::OwnSession,
+        route: || get(crate::api_tokens::page_route),
+    },
+    RawRoute {
+        path: crate::api_tokens::REVOKE_ROUTE,
+        methods: POST,
+        auth: RouteAuth::OwnSession,
+        route: || post(crate::api_tokens::revoke),
+    },
     // Module webhooks (TODO-payments P1.1): a provider's events, on every
     // host as the OAuth routes are. A route of their own because the
     // answer is whatever the module says, bytes and all, and with a body

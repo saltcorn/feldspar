@@ -208,14 +208,16 @@ pub use signin::{
     SecondFactorProof, SecondFactorWaiver,
 };
 pub use tokens::{
-    API_TOKENS_TABLE, ApiCaller, ApiToken, COL_CREATED_AT as COL_TOKEN_CREATED_AT,
+    API_TOKENS_TABLE, APP_API_TOKEN_PREFIX, ApiCaller, ApiToken,
+    COL_APPLICATION as COL_TOKEN_APPLICATION, COL_CREATED_AT as COL_TOKEN_CREATED_AT,
     COL_EXPIRES_AT as COL_TOKEN_EXPIRES_AT, COL_GRANTS as COL_TOKEN_GRANTS, COL_ID as COL_TOKEN_ID,
     COL_LABEL as COL_TOKEN_LABEL, COL_LAST_USED_AT as COL_TOKEN_LAST_USED_AT,
     COL_REVOKED_AT as COL_TOKEN_REVOKED_AT, COL_TOKEN_HASH as COL_API_TOKEN_HASH,
     COL_USER as COL_TOKEN_USER, GRANT_ROUTES_ONLY, LAST_USED_THROTTLE_SECONDS, MintedApiToken,
-    NewApiToken, TOKEN_BYTES, TOKEN_PREFIX, authenticate_api_token, authenticate_route_token,
-    bearer_secret_hash, list_api_tokens, load_api_token, mint_api_token, new_bearer_secret,
-    revoke_api_token,
+    NewApiToken, NewAppApiToken, TOKEN_BYTES, TOKEN_PREFIX, authenticate_api_token,
+    authenticate_app_token, authenticate_route_token, bearer_secret_hash, list_api_tokens,
+    list_app_api_tokens, load_api_token, mint_api_token, mint_app_api_token, new_bearer_secret,
+    revoke_api_token, revoke_app_api_token,
 };
 pub use user::{AuthenticatedUser, User, role_of};
 

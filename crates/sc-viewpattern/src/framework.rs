@@ -56,11 +56,12 @@ use sc_api::SessionAction;
 use sc_api::code_host::{FileStoreHost, TableHost, TriggerRunHost, schema_snapshot};
 use sc_app::{
     AppRequest, AppResponse, Application, BuildSpec, CspPolicy, Framework, FrameworkFactory,
-    FrameworkInfo, GROUP_ACCESS, GROUP_AGENTS, GROUP_APIS, GROUP_CHECKLISTS, GROUP_CODING_AGENT,
-    GROUP_CSP, GROUP_FILE_STORES, GROUP_FRAMEWORK, GROUP_GUEST_SESSIONS, GROUP_IDENTITY,
-    GROUP_IDENTITY_PROVIDER, GROUP_LIBRARY, GROUP_PAGES, GROUP_ROW_API, GROUP_SETTINGS,
-    GROUP_STATIC_DIRS, GROUP_STREAMS, GROUP_TABLES, GROUP_TARGETS, GROUP_TRANSLATIONS,
-    GROUP_TRIGGERS, GROUP_UPLOADS, GROUP_VIEWS, MountContext, RequestBody, SettingsTab, TriggerRef,
+    FrameworkInfo, GROUP_ACCESS, GROUP_AGENTS, GROUP_API_TOKENS, GROUP_APIS, GROUP_CHECKLISTS,
+    GROUP_CODING_AGENT, GROUP_CSP, GROUP_FILE_STORES, GROUP_FRAMEWORK, GROUP_GUEST_SESSIONS,
+    GROUP_IDENTITY, GROUP_IDENTITY_PROVIDER, GROUP_LIBRARY, GROUP_PAGES, GROUP_ROW_API,
+    GROUP_SETTINGS, GROUP_STATIC_DIRS, GROUP_STREAMS, GROUP_TABLES, GROUP_TARGETS,
+    GROUP_TRANSLATIONS, GROUP_TRIGGERS, GROUP_UPLOADS, GROUP_VIEWS, MountContext, RequestBody,
+    SettingsTab, TriggerRef,
 };
 use sc_auth::User;
 use sc_catalog::Catalog;
@@ -174,6 +175,7 @@ pub fn saltcorn_ui_settings_tabs() -> Vec<SettingsTab> {
                 GROUP_SETTINGS,
                 GROUP_ACCESS,
                 GROUP_GUEST_SESSIONS,
+                GROUP_API_TOKENS,
                 GROUP_CSP,
                 GROUP_IDENTITY_PROVIDER,
             ],

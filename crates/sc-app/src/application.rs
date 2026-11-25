@@ -455,6 +455,17 @@ pub const GUEST_SESSIONS_ATTRIBUTE: &str = "guest_sessions";
 /// absent.
 pub const GUEST_SESSION_DAYS_ATTRIBUTE: &str = "guest_session_days";
 
+/// The attribute that lets an application's users mint **API tokens** for
+/// themselves (TODO AT1): `true` and a script may call the application's API as
+/// the user who minted the token, with `Authorization: Bearer`. Off unless an
+/// admin turns it on.
+pub const API_TOKENS_ATTRIBUTE: &str = "api_tokens";
+
+/// The attribute naming the least privileged role that may mint an API token
+/// (its number); absent, any signed-in user may. Using a token is not held to
+/// it: a token works while its user may use the application.
+pub const API_TOKEN_MIN_ROLE_ATTRIBUTE: &str = "api_token_min_role";
+
 /// The attribute listing the content-security suggestions an application's
 /// admin has switched on, each `<module>:<name>` (TODO-payments P1.4).
 pub const CSP_SOURCES_ATTRIBUTE: &str = "csp_sources";
@@ -818,6 +829,31 @@ impl Application {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Whether the application accepts API tokens ([`API_TOKENS_ATTRIBUTE`]).
+    pub fn api_tokens_enabled(&self) -> bool {
+        self.attributes
+            .get(API_TOKENS_ATTRIBUTE)
+            .and_then(Json::as_bool)
+            .unwrap_or(false)
+    }
+
+    /// The least privileged role that may mint an API token
+    /// ([`API_TOKEN_MIN_ROLE_ATTRIBUTE`]), or `None` when any signed-in user
+    /// may. A value that is not a role reads as admins only: a malformed
+    /// setting must not hand out credentials.
+    pub fn api_token_min_role(&self) -> Option<Role> {
+        match self.attributes.get(API_TOKEN_MIN_ROLE_ATTRIBUTE)? {
+            Json::Null => None,
+            value => Some(
+                value
+                    .as_u64()
+                    .and_then(|n| u8::try_from(n).ok())
+                    .and_then(Role::new)
+                    .unwrap_or(Role::ADMIN),
+            ),
+        }
     }
 
     /// How many days a guest session of this application lasts, or `None` when

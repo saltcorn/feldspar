@@ -3,6 +3,7 @@
 
 pub(crate) mod agent;
 pub(crate) mod api;
+pub(crate) mod api_token;
 pub(crate) mod app;
 pub(crate) mod auth;
 pub(crate) mod backup;

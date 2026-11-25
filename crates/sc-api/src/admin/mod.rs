@@ -639,6 +639,9 @@ mod tests {
             "createApiToken",
             "listApiTokens",
             "revokeApiToken",
+            // Nor an application's users' tokens (TODO AT1).
+            "listApplicationApiTokens",
+            "revokeApplicationApiToken",
         ] {
             let endpoint = set.find(name).expect("endpoint should exist");
             assert!(

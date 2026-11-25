@@ -10018,6 +10018,74 @@ so it can delegate to one it did not create in this conversation. The builder ag
 says that, handed a whole application, its tables are already connected, it cannot change the
 schema, and it reports what is missing rather than inventing it.
 
+### 13.7 API tokens for an application's users (TODO AT1)
+
+A Saltcorn 1 user could generate an API token and call the REST API with it as themselves. The
+§13.6 token cannot do that: only an admin mints one, it must stay an admin's, and it reaches
+`/mcp` and module routes only. An application's own API read the session cookie and nothing
+else, and the identity provider's access tokens (§7.2) are for `/userinfo` only. So this is a
+second kind of token, built on the first.
+
+**The same table, a different kind.** `_fd_api_tokens` gains a nullable `application_id`
+(additive: the bootstrap adds it, and the rows already there are administration tokens). An
+application token is minted with `sc_auth::mint_app_api_token`, carries no grants, and has a
+prefix of its own, `fsat_`. The prefix is the first lock and the column the second:
+`authenticate_api_token` and `authenticate_route_token` take only `fspk_` and refuse a row
+with an application, and `authenticate_app_token` takes only `fsat_`, and only for the
+application the row names. An older Feldspar, which knows only `fspk_`, refuses an application
+token outright, so a downgrade cannot turn one into an MCP credential. `list_api_tokens`, what the
+MCP panel and `mcp-token list` show, leaves application tokens out.
+
+**It names a user, of any role.** §13.6's decision holds unchanged: a token resolves to a
+`User`, read on every call (so disabled, deleted, revoked and expired stop it at the next
+request), and from there nothing is different. Unlike the MCP kind the user need not be an
+admin. What the token can do is what the application admits that user to do.
+
+**Where it is read: `router::app_caller`**, the one function an application authenticates with
+for its REST and GraphQL providers, its pages, its static directories, its uploads and its
+exposed agents. So no surface takes a token more loosely than another. The live socket passes no
+`Bearer` source and takes sessions only. Three rules:
+
+- **The bearer header is read before the cookie and instead of it.** A bearer request is exempt
+  from the CSRF check (`security::is_bearer_authenticated`). If a cookie beside the header still
+  counted, the exemption would be a way round the check. The exemption was safe before only
+  because no CORS layer answers a cross-origin preflight; now it does not depend on that.
+- **Only a Feldspar credential is one.** A value without either prefix is left alone and the
+  request is served by its cookie, as it was before: an application behind oauth2-proxy
+  receives the proxy's own bearer token, and that must not start answering `401`.
+- **A token that does not authenticate is a `401`**, with RFC 6750's `WWW-Authenticate:
+  Bearer … error="invalid_token"` and the specific reason, and never the public. An application
+  whose `api_tokens` attribute is off says so without reading the token table. A token that does
+  authenticate then goes through `admit_caller` (`min_role`, `max_role`, `access_if`) exactly
+  as a session's user does.
+
+Every request under a token writes one `Info` line: the label, the token id, the user, the
+application, the method and the path. Every refusal writes one too.
+
+**Minting: the user's own, by session only.** `/_feldspar/api-tokens` (`GET` list, `POST`
+create, `POST …/{id}/revoke`, and a server-rendered page at `…/page` whose forms post to them)
+takes a `Session<AppScope>`, a session **this application** issued. A visiting session (the
+admin host's, or another application's, carried by a shared sign-in cookie) is refused for the
+second-factor routes' reason: the application's script, which that account's owner did not
+necessarily write, must not mint a credential for whoever visits it. A request carrying any
+`Authorization` header is refused before its cookie is read: a token cannot mint tokens, and the
+header would otherwise lift the CSRF check from the cookie. Creating needs the attribute on, the
+caller admitted, and their role to meet `api_token_min_role` (absent: any signed-in user;
+malformed: admins only). Listing and revoking need none of that, so a user can still take back
+what they handed out after the switch goes off. The generated client gets `apiTokenList`,
+`apiTokenCreate` and `apiTokenRevoke`. These are not `listApiTokens`, which a table called
+`api_tokens` would project, and the row type is `ApiTokenInfo`, not `ApiToken`.
+
+**An admin lists and revokes** an application's tokens (`listApplicationApiTokens`,
+`revokeApplicationApiToken`, on the Security tab's `api_tokens` group) but does not mint as
+somebody else there, §13.6's rule. The operator's CLI does (`feldspar api-token create --app …
+--email …`), as `add-user` and `auth token` act for somebody: it holds the database, which is
+more authority than any session. Neither admin endpoint is an MCP tool (tier 3).
+
+**Not done, deliberately:** `?access_token=` in the query string, which v1 took and which ends
+up in access logs; importing Saltcorn 1 tokens, which v1 stored in plain text and which have no
+prefix; and the live socket.
+
 ---
 
 ## 14. Files, models and streams (`sc-files`, `sc-model`, `sc-stream`)

@@ -83,6 +83,9 @@ const EXPECTED: &[(&str, &[&str], RouteAuth)] = &[
         SessionOrChallenge,
     ),
     ("/_feldspar/second-factor/sign-in", &["GET"], Challenge),
+    ("/_feldspar/api-tokens", &["GET", "POST"], OwnSession),
+    ("/_feldspar/api-tokens/page", &["GET"], OwnSession),
+    ("/_feldspar/api-tokens/{id}/revoke", &["POST"], OwnSession),
     (
         "/_feldspar/hooks/{module}/{name}",
         &["GET", "POST"],

@@ -136,7 +136,7 @@ const settings_tabs = [
     label: "API",
     groups: ["apis", "row_api", "agents", "uploads", "static_dirs"],
   },
-  { id: "security", label: "Security", groups: ["access", "guest_sessions", "csp"] },
+  { id: "security", label: "Security", groups: ["access", "guest_sessions", "api_tokens", "csp"] },
   { id: "development", label: "Development", groups: ["coding_agent", "checklists"] },
   { id: "translations", label: "Translations", groups: ["translations"] },
 ];

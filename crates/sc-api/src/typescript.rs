@@ -1331,11 +1331,13 @@ pub fn generate_app_client(
     if oauth {
         out.push_str(OAUTH_TYPES);
         out.push_str(SECOND_FACTOR_TYPES);
+        out.push_str(API_TOKEN_TYPES);
     }
     out.push_str("export interface ApiClient {\n");
     if oauth {
         out.push_str(OAUTH_SIGNATURES);
         out.push_str(SECOND_FACTOR_SIGNATURES);
+        out.push_str(API_TOKEN_SIGNATURES);
     }
     for ep in &loose {
         let _ = writeln!(out, "  {};", method_signature(ep));
@@ -1483,6 +1485,7 @@ pub fn generate_app_client(
     if oauth {
         out.push_str(OAUTH_METHODS);
         out.push_str(SECOND_FACTOR_METHODS);
+        out.push_str(API_TOKEN_METHODS);
     }
     for ep in &loose {
         if ep.stream_output {
@@ -1660,6 +1663,66 @@ const SECOND_FACTOR_METHODS: &str = r#"    async secondFactorStatus() {
       });
       if (!res.ok) throw await clientError("secondFactorRecoveryCodes", res);
       return (await res.json()) as { recovery_codes: string[] };
+    },
+"#;
+
+/// The signed-in user's own API tokens on this application (TODO AT1), over
+/// the server's `/_feldspar/api-tokens` routes. Named `apiToken…` rather than
+/// `listApiTokens`, which is what a table called `api_tokens` would project,
+/// and the row type is `ApiTokenInfo` rather than `ApiToken` (a table
+/// `api_token`'s).
+const API_TOKEN_TYPES: &str = r#"/** One of the signed-in user's API tokens on this application. The secret is
+ * not here: it is shown once, by `apiTokenCreate`. */
+export type ApiTokenInfo = {
+  id: string;
+  label: string;
+  state: "live" | "expired" | "revoked";
+  created_at: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+};
+/** The signed-in user's API tokens. `enabled`: the application takes tokens;
+ * `may_create`: this user may create one. */
+export type ApiTokenList = { enabled: boolean; may_create: boolean; tokens: ApiTokenInfo[] };
+
+"#;
+
+const API_TOKEN_SIGNATURES: &str = r#"  /** The signed-in user's API tokens on this application. */
+  apiTokenList(): Promise<ApiTokenList>;
+  /** Create an API token: a script sends `secret` as `Authorization: Bearer`
+   * to call this application's API as the signed-in user. The secret is in
+   * this answer and nowhere else, ever. */
+  apiTokenCreate(token: { label: string; expires_in_days?: number }): Promise<{ token: ApiTokenInfo; secret: string }>;
+  /** Revoke one of the signed-in user's API tokens. */
+  apiTokenRevoke(id: string): Promise<{ revoked: boolean }>;
+"#;
+
+const API_TOKEN_METHODS: &str = r#"    async apiTokenList() {
+      const res = await doFetch(`${baseUrl}/_feldspar/api-tokens`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("apiTokenList", res);
+      return (await res.json()) as ApiTokenList;
+    },
+    async apiTokenCreate(token: { label: string; expires_in_days?: number }) {
+      const res = await doFetch(`${baseUrl}/_feldspar/api-tokens`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(token),
+      });
+      if (!res.ok) throw await clientError("apiTokenCreate", res);
+      return (await res.json()) as { token: ApiTokenInfo; secret: string };
+    },
+    async apiTokenRevoke(id: string) {
+      const res = await doFetch(`${baseUrl}/_feldspar/api-tokens/${encodeURIComponent(id)}/revoke`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: "{}",
+      });
+      if (!res.ok) throw await clientError("apiTokenRevoke", res);
+      return (await res.json()) as { revoked: boolean };
     },
 "#;
 

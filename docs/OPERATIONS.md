@@ -1720,8 +1720,69 @@ feldspar add-user monitor@example.com --role 80
 feldspar mcp-token create --label monitors --email monitor@example.com --routes-only
 ```
 
-Only the MCP server and module routes accept API tokens; the admin HTTP API
-authenticates by session only.
+Only the MCP server and module routes accept these tokens; the admin HTTP API
+authenticates by session only. An application's API takes the other kind, below.
+
+#### API tokens for an application's users
+
+An application's users can call its API (REST, GraphQL, code queries, uploads, exposed
+agents) from a script with an **API token** of their own, as Saltcorn 1 users could. The
+token runs as the user who holds it: the application's access settings, each table's rules
+and ownership formulas decide what it may do, exactly as for that user signed in. Tokens begin
+`fsat_`. The MCP server and module routes refuse them, and an application refuses the `fspk_`
+kind.
+
+They are **off** until an admin turns them on for an application: **Applications → (the
+app) → Security → API tokens**. The same place sets who may create one (any signed-in user,
+or a minimum role) and lists every user's tokens with a **Revoke** button. Turning the switch
+off makes every token of that application stop working at once; users can still see and
+revoke theirs.
+
+A user creates their own while signed in to the application, at
+`https://<app host>/_feldspar/api-tokens/page`, or from the application's code with the
+generated client's `apiTokenCreate`. A request carrying a token cannot create tokens, and
+neither can a session that a shared sign-in cookie brought from the admin host or another
+application. The secret is shown once.
+
+A script sends it in a header (never in the URL, where it would end up in logs):
+
+```bash
+curl -H "Authorization: Bearer fsat_…" https://crm.example.com/api/customers
+```
+
+A bearer request needs no CSRF token. A session cookie sent with it is ignored. A token
+that is wrong, revoked, expired, another application's, or whose user is disabled or
+deleted gets a `401` saying which. A bearer token that is not Feldspar's (one a reverse
+proxy such as oauth2-proxy forwards) is ignored, and the request is served by its cookie,
+as before. The live socket does not take tokens.
+
+The operator can mint one **for** a user, for a service account or for a script set up
+before its owner has signed in. Any role will do:
+
+```bash
+feldspar add-user export-bot@example.com --role 80
+token=$(feldspar api-token create --app crm --label "nightly export" \
+  --email export-bot@example.com --expires-in-days 365)
+feldspar api-token list                 # every application's: id, state, app, user, label, last use
+feldspar api-token list --app crm --json
+feldspar api-token revoke 3f2c…
+```
+
+As with `mcp-token create`, only the secret goes to stdout. The command warns if the
+application has not turned tokens on yet. `mcp-token revoke` refuses an application's token,
+and `api-token revoke` refuses an MCP token, each naming the other command.
+
+Every request under a token writes one `info` line naming the token's **label** and id, the
+user, the application, the method and the path. A refusal writes one too:
+
+```
+API token [nightly export] (3f2c…) of user 9a1b… on crm: GET /api/customers
+API token refused on crm: GET /api/customers: the API token `nightly export` was revoked at …
+```
+
+```bash
+journalctl -u feldspar -f | grep '^API token'
+```
 
 #### Tables of an application
 

@@ -55,6 +55,26 @@
 //! read on every lookup rather than copied into the row. So a token whose user
 //! is deleted, disabled or demoted below [`Role::ADMIN`] stops working at the next
 //! call — the same rule, and the same argument, as the session cache's.
+//!
+//! # Application tokens
+//!
+//! The same table holds a second kind (TODO AT1): a token an application's user
+//! mints for themselves, to call **that application's** API as themselves — what
+//! a Saltcorn 1 user's API token was. It names the application
+//! ([`COL_APPLICATION`]) and has a prefix of its own ([`APP_API_TOKEN_PREFIX`]), and
+//! the two kinds never stand in for each other:
+//!
+//! - [`authenticate_api_token`] and [`authenticate_route_token`] take only
+//!   [`TOKEN_PREFIX`], so an application token reaches neither the MCP server
+//!   nor a module route — and neither does it on a Feldspar that predates it,
+//!   which knows no other prefix.
+//! - [`authenticate_app_token`] takes only [`APP_API_TOKEN_PREFIX`], and only for
+//!   the application it was minted for.
+//!
+//! Its user may have any role: the application's own admission and every
+//! endpoint's requirement decide what it may do, as they do for a session.
+//! [`list_api_tokens`] — what the MCP panel and `mcp-token list` show — leaves
+//! application tokens out; [`list_app_api_tokens`] lists them.
 
 use argon2::password_hash::rand_core::{OsRng, RngCore};
 use base64::Engine;
@@ -73,7 +93,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::lookup::load_user;
-use crate::user::AuthenticatedUser;
+use crate::user::{AuthenticatedUser, User};
 
 /// Name of the API token table in the primary database.
 pub const API_TOKENS_TABLE: &str = "_fd_api_tokens";
@@ -98,6 +118,10 @@ pub const COL_EXPIRES_AT: &str = "expires_at";
 pub const COL_LAST_USED_AT: &str = "last_used_at";
 /// When an admin revoked it, or `NULL` while it is live.
 pub const COL_REVOKED_AT: &str = "revoked_at";
+/// The application an application token was minted for, or `NULL` for an
+/// administration token (module docs). Nullable because rows from before it
+/// existed have none, and those are administration tokens.
+pub const COL_APPLICATION: &str = "application_id";
 
 /// What every API token starts with on the wire.
 ///
@@ -106,6 +130,11 @@ pub const COL_REVOKED_AT: &str = "revoked_at";
 /// a token" and "this token is not known", which are different things to tell
 /// somebody.
 pub const TOKEN_PREFIX: &str = "fspk_";
+
+/// What every **application** token starts with (module docs): a prefix of its
+/// own, so a secret scanner and a person can tell the two kinds apart, and so a
+/// Feldspar that knows only [`TOKEN_PREFIX`] refuses one outright.
+pub const APP_API_TOKEN_PREFIX: &str = "fsat_";
 
 /// How many random bytes a token carries: 256 bits, the same budget a session
 /// token has.
@@ -152,6 +181,9 @@ fn token_fields() -> Vec<DataField> {
         DataField::plain(COL_EXPIRES_AT, timestamp()),
         DataField::plain(COL_LAST_USED_AT, timestamp()),
         DataField::plain(COL_REVOKED_AT, timestamp()),
+        // Added by TODO AT1, so nullable: an existing table gains it with the
+        // rows it has, and those are administration tokens.
+        DataField::plain(COL_APPLICATION, uuid()),
     ]
 }
 
@@ -195,6 +227,9 @@ pub struct ApiToken {
     pub last_used_at: Option<DateTime<Utc>>,
     /// When it was revoked; `None` while it is live.
     pub revoked_at: Option<DateTime<Utc>>,
+    /// The application an application token is for; `None` for an
+    /// administration token (module docs).
+    pub application_id: Option<Uuid>,
 }
 
 impl ApiToken {
@@ -219,6 +254,20 @@ pub struct NewApiToken {
     pub label: String,
     /// The six flags, as the caller normalised them.
     pub grants: Attrs,
+    /// When it should lapse; `None` for a token that does not.
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// What [`mint_app_api_token`] is asked for: an application token (module
+/// docs). It carries no grants — its user's role and the application decide.
+#[derive(Debug, Clone)]
+pub struct NewAppApiToken {
+    /// The application it is for.
+    pub application_id: Uuid,
+    /// Whose authority the token runs under.
+    pub user_id: Uuid,
+    /// What to call it.
+    pub label: String,
     /// When it should lapse; `None` for a token that does not.
     pub expires_at: Option<DateTime<Utc>>,
 }
@@ -266,7 +315,44 @@ impl std::fmt::Debug for MintedApiToken {
 /// authenticates nobody, so the row's only remaining value was its line in a
 /// list.
 pub async fn mint_api_token(catalog: &Catalog, new: NewApiToken) -> Result<MintedApiToken> {
-    let label = new.label.trim().to_owned();
+    insert_token(
+        catalog,
+        TOKEN_PREFIX,
+        new.user_id,
+        &new.label,
+        new.grants,
+        new.expires_at,
+        None,
+    )
+    .await
+}
+
+/// Mint an **application** token (module docs) and return the one plaintext
+/// copy of it. Whether the application lets its users have tokens, and whether
+/// this user may mint one, are the caller's to decide; this writes the row.
+pub async fn mint_app_api_token(catalog: &Catalog, new: NewAppApiToken) -> Result<MintedApiToken> {
+    insert_token(
+        catalog,
+        APP_API_TOKEN_PREFIX,
+        new.user_id,
+        &new.label,
+        Attrs::new(),
+        new.expires_at,
+        Some(new.application_id),
+    )
+    .await
+}
+
+async fn insert_token(
+    catalog: &Catalog,
+    prefix: &str,
+    user_id: Uuid,
+    label: &str,
+    grants: Attrs,
+    expires_at: Option<DateTime<Utc>>,
+    application_id: Option<Uuid>,
+) -> Result<MintedApiToken> {
+    let label = label.trim().to_owned();
     if label.is_empty() {
         return Err(Error::invalid(
             "an API token needs a label: it is what the audit line names it by, \
@@ -274,7 +360,7 @@ pub async fn mint_api_token(catalog: &Catalog, new: NewApiToken) -> Result<Minte
         ));
     }
     let now = Utc::now();
-    if let Some(expires_at) = new.expires_at
+    if let Some(expires_at) = expires_at
         && expires_at <= now
     {
         return Err(Error::invalid(
@@ -283,16 +369,17 @@ pub async fn mint_api_token(catalog: &Catalog, new: NewApiToken) -> Result<Minte
         ));
     }
 
-    let secret = new_token();
+    let secret = new_bearer_secret(prefix);
     let token = ApiToken {
         id: Uuid::new_v4(),
-        user_id: new.user_id,
+        user_id,
         label,
-        grants: new.grants,
+        grants,
         created_at: now,
-        expires_at: new.expires_at,
+        expires_at,
         last_used_at: None,
         revoked_at: None,
+        application_id,
     };
 
     let insert = Insert::row(
@@ -309,13 +396,36 @@ pub async fn mint_api_token(catalog: &Catalog, new: NewApiToken) -> Result<Minte
     Ok(MintedApiToken { token, secret })
 }
 
-/// Every stored token, newest first — what the admin screen lists.
+/// Every stored **administration** token, newest first — what the admin screen
+/// lists. Application tokens are [`list_app_api_tokens`]'.
 ///
 /// Includes revoked and lapsed ones: an admin looking at this list is asking
 /// what has been handed out, and a row that has stopped working is part of the
 /// answer.
 pub async fn list_api_tokens(catalog: &Catalog) -> Result<Vec<ApiToken>> {
-    let select = Select::from(Source::table(API_TOKENS_TABLE));
+    list_where(
+        catalog,
+        Expr::unary(UnOp::IsNull, Expr::col(COL_APPLICATION)),
+    )
+    .await
+}
+
+/// An application's tokens, newest first: every user's, or only `user`'s.
+/// Revoked and lapsed ones are included, for [`list_api_tokens`]' reason.
+pub async fn list_app_api_tokens(
+    catalog: &Catalog,
+    application_id: Uuid,
+    user: Option<Uuid>,
+) -> Result<Vec<ApiToken>> {
+    let mut filter = Expr::col(COL_APPLICATION).eq(Expr::lit(application_id));
+    if let Some(user) = user {
+        filter = filter.and(Expr::col(COL_USER).eq(Expr::lit(user)));
+    }
+    list_where(catalog, filter).await
+}
+
+async fn list_where(catalog: &Catalog, filter: Expr) -> Result<Vec<ApiToken>> {
+    let select = Select::from(Source::table(API_TOKENS_TABLE)).filter(filter);
     let mut tokens: Vec<ApiToken> = rows(catalog, Statement::from(select))
         .await?
         .iter()
@@ -344,6 +454,29 @@ pub async fn load_api_token(catalog: &Catalog, id: Uuid) -> Result<Option<ApiTok
 /// does not move the timestamp: `false` means "nothing changed", which is the
 /// same answer a second logout gives.
 pub async fn revoke_api_token(catalog: &Catalog, id: Uuid) -> Result<bool> {
+    revoke_where(catalog, Expr::col(COL_ID).eq(Expr::lit(id))).await
+}
+
+/// Revoke one of an application's tokens — and, given a `user`, only if it is
+/// theirs — returning whether one was live to revoke. A token of another
+/// application, or of somebody else, is `false`, exactly as an unknown id is:
+/// the answer does not say whether it exists.
+pub async fn revoke_app_api_token(
+    catalog: &Catalog,
+    application_id: Uuid,
+    id: Uuid,
+    user: Option<Uuid>,
+) -> Result<bool> {
+    let mut filter = Expr::col(COL_ID)
+        .eq(Expr::lit(id))
+        .and(Expr::col(COL_APPLICATION).eq(Expr::lit(application_id)));
+    if let Some(user) = user {
+        filter = filter.and(Expr::col(COL_USER).eq(Expr::lit(user)));
+    }
+    revoke_where(catalog, filter).await
+}
+
+async fn revoke_where(catalog: &Catalog, filter: Expr) -> Result<bool> {
     let update = Update {
         returning: vec![Projection::expr(Expr::col(COL_ID))],
         ..Update::new(
@@ -353,11 +486,7 @@ pub async fn revoke_api_token(catalog: &Catalog, id: Uuid) -> Result<bool> {
                 Expr::Lit(Value::Timestamp(Utc::now())),
             )],
         )
-        .filter(
-            Expr::col(COL_ID)
-                .eq(Expr::lit(id))
-                .and(Expr::unary(UnOp::IsNull, Expr::col(COL_REVOKED_AT))),
-        )
+        .filter(filter.and(Expr::unary(UnOp::IsNull, Expr::col(COL_REVOKED_AT))))
     };
     Ok(!rows(catalog, Statement::from(update)).await?.is_empty())
 }
@@ -422,38 +551,85 @@ enum Reach {
     ModuleRoute,
 }
 
-async fn authenticate(catalog: &Catalog, presented: &str, reach: Reach) -> Result<ApiCaller> {
-    if !presented.starts_with(TOKEN_PREFIX) {
+/// Resolve a credential presented to **an application's API**: an application
+/// token ([`APP_API_TOKEN_PREFIX`]) minted for `application_id`, whose user still
+/// exists and is not disabled. The user may have any role; the application's
+/// admission and its endpoints decide, as for a session. Whether the
+/// application lets its users have tokens at all is the caller's to check,
+/// before this reads the table.
+///
+/// The refusals of [`authenticate_api_token`] — not one of ours, unknown,
+/// revoked, expired, no user, disabled — and two of its own: an administration
+/// token, and another application's.
+pub async fn authenticate_app_token(
+    catalog: &Catalog,
+    application_id: Uuid,
+    presented: &str,
+) -> Result<ApiCaller> {
+    if presented.starts_with(TOKEN_PREFIX) {
         return Err(Error::auth(format!(
-            "this is not a Feldspar API token: one begins with `{TOKEN_PREFIX}`"
+            "this is an administration API token (`{TOKEN_PREFIX}`), for the MCP \
+             server; an application takes a token its user minted for it, which \
+             begins with `{APP_API_TOKEN_PREFIX}`"
+        )));
+    }
+    if !presented.starts_with(APP_API_TOKEN_PREFIX) {
+        return Err(Error::auth(format!(
+            "this is not a Feldspar API token: one for an application begins with \
+             `{APP_API_TOKEN_PREFIX}`"
         )));
     }
     let hash = token_hash(presented);
-    let Some(token) = select_by_hash(catalog, &hash).await? else {
+    let token = live_token(catalog, &hash).await?;
+    if token.application_id != Some(application_id) {
+        return Err(Error::auth(format!(
+            "the API token `{}` was minted for another application; mint one \
+             on this application",
+            token.label
+        )));
+    }
+    let user = token_user(catalog, &token).await?;
+    let token = touch_last_used(catalog, &hash, token, Utc::now()).await?;
+    Ok(ApiCaller {
+        user: AuthenticatedUser::verified(user),
+        token,
+    })
+}
+
+/// The row for `hash`, if it names a token that is neither revoked nor
+/// expired: the refusals every kind shares.
+async fn live_token(catalog: &Catalog, hash: &str) -> Result<ApiToken> {
+    let Some(token) = select_by_hash(catalog, hash).await? else {
         return Err(Error::auth(
             "this API token is not recognised; it may have been swept after it \
              expired, or it may never have existed",
         ));
     };
-
-    let now = Utc::now();
+    // Who mints the next one: an application's user mints their own.
+    let remedy = if token.application_id.is_some() {
+        "mint a new one"
+    } else {
+        "an administrator has to mint a new one"
+    };
     if let Some(revoked_at) = token.revoked_at {
         return Err(Error::auth(format!(
-            "the API token `{}` was revoked at {revoked_at}; \
-             an administrator has to mint a new one",
+            "the API token `{}` was revoked at {revoked_at}; {remedy}",
             token.label
         )));
     }
     if let Some(expires_at) = token.expires_at
-        && expires_at <= now
+        && expires_at <= Utc::now()
     {
         return Err(Error::auth(format!(
-            "the API token `{}` expired at {expires_at}; \
-             an administrator has to mint a new one",
+            "the API token `{}` expired at {expires_at}; {remedy}",
             token.label
         )));
     }
+    Ok(token)
+}
 
+/// The user `token` runs as, read now: gone and disabled are refusals.
+async fn token_user(catalog: &Catalog, token: &ApiToken) -> Result<User> {
     let Some(user) = load_user(catalog, token.user_id).await? else {
         return Err(Error::auth(format!(
             "the user the API token `{}` was minted for no longer exists; \
@@ -467,6 +643,33 @@ async fn authenticate(catalog: &Catalog, presented: &str, reach: Reach) -> Resul
             token.label
         )));
     }
+    Ok(user)
+}
+
+async fn authenticate(catalog: &Catalog, presented: &str, reach: Reach) -> Result<ApiCaller> {
+    if presented.starts_with(APP_API_TOKEN_PREFIX) {
+        return Err(Error::auth(format!(
+            "this is an application's API token (`{APP_API_TOKEN_PREFIX}`): it calls \
+             the API of the application it was minted on, and nothing else"
+        )));
+    }
+    if !presented.starts_with(TOKEN_PREFIX) {
+        return Err(Error::auth(format!(
+            "this is not a Feldspar API token: one begins with `{TOKEN_PREFIX}`"
+        )));
+    }
+    let hash = token_hash(presented);
+    let token = live_token(catalog, &hash).await?;
+    // The prefix says which kind a token is; the row agreeing is the second
+    // lock on the same door.
+    if token.application_id.is_some() {
+        return Err(Error::auth(format!(
+            "the API token `{}` is an application's, and calls that \
+             application's API only",
+            token.label
+        )));
+    }
+    let user = token_user(catalog, &token).await?;
     match (token.routes_only(), reach) {
         (true, Reach::Mcp) => {
             return Err(Error::auth(format!(
@@ -488,7 +691,7 @@ async fn authenticate(catalog: &Catalog, presented: &str, reach: Reach) -> Resul
         (false, _) => {}
     }
 
-    let token = touch_last_used(catalog, &hash, token, now).await?;
+    let token = touch_last_used(catalog, &hash, token, Utc::now()).await?;
     Ok(ApiCaller {
         user: AuthenticatedUser::verified(user),
         token,
@@ -568,6 +771,7 @@ fn token_columns() -> Vec<String> {
         COL_EXPIRES_AT,
         COL_LAST_USED_AT,
         COL_REVOKED_AT,
+        COL_APPLICATION,
     ]
     .iter()
     .map(|c| (*c).to_owned())
@@ -588,6 +792,7 @@ fn token_values(hash: &str, token: &ApiToken) -> Vec<Value> {
         timestamp_or_null(token.expires_at),
         timestamp_or_null(token.last_used_at),
         timestamp_or_null(token.revoked_at),
+        token.application_id.map_or(Value::Null, Value::Uuid),
     ]
 }
 
@@ -610,6 +815,11 @@ fn token_from_row(row: &Row) -> Result<ApiToken> {
         expires_at: optional_timestamp(row, COL_EXPIRES_AT)?,
         last_used_at: optional_timestamp(row, COL_LAST_USED_AT)?,
         revoked_at: optional_timestamp(row, COL_REVOKED_AT)?,
+        application_id: match row.get(COL_APPLICATION) {
+            Some(Value::Uuid(u)) => Some(*u),
+            Some(Value::Null) | None => None,
+            other => return Err(bad_column(COL_APPLICATION, "a uuid or null", other)),
+        },
     })
 }
 
@@ -683,6 +893,7 @@ async fn rows(catalog: &Catalog, statement: Statement) -> Result<Vec<Row>> {
 ///
 /// Base64url rather than hex because this is retyped and pasted rather than read
 /// out, and unpadded because a `=` in a shell command is a thing to quote.
+#[cfg(test)]
 fn new_token() -> String {
     new_bearer_secret(TOKEN_PREFIX)
 }
@@ -760,6 +971,7 @@ mod tests {
             expires_at: None,
             last_used_at: None,
             revoked_at: None,
+            application_id: None,
         };
         assert_eq!(token_columns().len(), token_values("x", &token).len());
         assert_eq!(token_columns().len(), token_fields().len());
@@ -799,6 +1011,7 @@ mod tests {
             expires_at: None,
             last_used_at: None,
             revoked_at: None,
+            application_id: None,
         };
         let rendered = format!("{token:?}");
         assert!(!rendered.contains(TOKEN_PREFIX));
@@ -819,6 +1032,7 @@ mod tests {
                 expires_at: None,
                 last_used_at: None,
                 revoked_at: None,
+                application_id: None,
             },
             secret: new_token(),
         };
@@ -848,6 +1062,7 @@ mod tests {
             expires_at: None,
             last_used_at: None,
             revoked_at: None,
+            application_id: None,
         };
         assert!(base.is_live(now), "no expiry and no revocation is live");
 

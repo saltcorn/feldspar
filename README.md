@@ -62,6 +62,10 @@ own, for every other kind of box. (Design and planning docs live under
   anything behind oauth2-proxy signs people in with the application's own users and access
   rules. It is off by default and switched on per application; an admin registers each service
   as a client. See [`docs/tutorial-identity-provider.md`](docs/tutorial-identity-provider.md).
+- **API tokens for an application's users**, as Saltcorn 1 had: a user creates one on the
+  application and a script calls its API with it, as that user and with that user's rights. It
+  is off by default and switched on per application; `feldspar api-token` mints one for a
+  service account. See [`docs/tutorial-api-tokens.md`](docs/tutorial-api-tokens.md).
 
 What is still out of scope, and what each milestone since the MVP added, is in
 [`TODO.md`](TODO.md) and the archived lists it links.
