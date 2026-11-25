@@ -21,6 +21,8 @@ mod calc_fields;
 mod client_filters;
 #[path = "code_host_as_user.rs"]
 mod code_host_as_user;
+#[path = "code_host_import.rs"]
+mod code_host_import;
 #[path = "code_host_llm.rs"]
 mod code_host_llm;
 #[path = "code_host_reads.rs"]

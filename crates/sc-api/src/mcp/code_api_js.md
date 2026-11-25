@@ -351,6 +351,14 @@ const top = await db.sql("select owner, count(*) as n from books where pages > $
 `db.sql` does not go through the row layer: no ownership formula, and **a write in it fires no
 trigger**. Prefer the chain for writes.
 
+**Writing as an import.** `db.asImport()` (or `.asImport()` on one query) makes every write that
+follows an import: each statement runs with the setting `sc.import = '1'`, which an application's
+own audit trigger can read (`current_setting('sc.import', true) = '1'`) to leave an imported row's
+`updated_at` and `updated_by` alone. All of a run's imported writes are one changeset with source
+`import` in row history. They are still recorded there, because offline devices sync from the
+same log. It composes with the authority: `db.asAdmin().asImport().sql("update …", [...])`.
+`set_config` itself stays refused in `db.sql()`.
+
 ## `models`: a fitted model
 
 `models.get(name)` answers a **handle** on the model's active fit (or `{ fit: id }`'s). Every

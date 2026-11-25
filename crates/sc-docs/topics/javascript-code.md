@@ -76,7 +76,9 @@ Writes are validated, and fire the table's own triggers. In a trigger, code runs
 server; add `.asUser()` to run a query as the event's user, with their access rules. (A
 JavaScript **custom query** is the other way round: it runs as the person calling it, and
 `.asAdmin()` reads or writes as the server — see the code API reference.) For what the chain
-cannot say there is `await db.sql("select … where x > $1", [10])`.
+cannot say there is `await db.sql("select … where x > $1", [10])`. A data import or sync
+writes through `db.asImport()`: each statement then runs with `sc.import = '1'`, which your own
+audit triggers can read to keep the imported `updated_at`.
 {% if tables %}
 
 Tables on this server: {% for t in tables %}`db.{{ t.name }}`{% if not loop.last %}, {% endif %}{% endfor %}.

@@ -875,6 +875,10 @@ Object.defineProperty(globalThis, "__scMakeDb", {
       if (state.limit !== null) p.limit = state.limit;
       if (state.offset !== null) p.offset = state.offset;
       if (state.request !== null) p.request = state.request;
+      // `asImport()`: only a write is one, so a read's plan is as it was.
+      if (state.import && (op === "insert" || op === "update" || op === "delete")) {
+        p.import = true;
+      }
       return Object.assign(p, extra || {});
     };
     // A whole table rewritten or emptied is not something an omitted call
@@ -1028,6 +1032,7 @@ Object.defineProperty(globalThis, "__scMakeDb", {
       offset: (n) => derive({ offset: n }),
       asUser: (who) => derive({ authority: userAuthority(who) }),
       asAdmin: () => derive({ authority: "admin" }),
+      asImport: () => derive({ import: true }),
       // The values this query presents to the table's ownership formula as
       // `_request` (TODO-type-hardening H7.6): `{ token }` reaches the row
       // whose `token === _request.token`. Strings only; the host checks the
@@ -1099,11 +1104,11 @@ Object.defineProperty(globalThis, "__scMakeDb", {
       delete: (...args) => { byWhere("delete", args); bounded("delete"); return send(plan("delete")); },
     };
   };
-  const table = (authority, name) =>
+  const table = (authority, name, imp) =>
     query({
       table: name, authority: authority,
       where: [], select: [], order: [], group: [], having: [], aggregate: [],
-      limit: null, offset: null, request: null,
+      limit: null, offset: null, request: null, import: !!imp,
     });
   // `db.sql(text, params, options)`: the body's own SQL. The authority is the
   // handle's, unless the options object says otherwise — `{ asUser: true }` is
@@ -1111,7 +1116,7 @@ Object.defineProperty(globalThis, "__scMakeDb", {
   // fluently. Unknown option keys are refused rather than ignored, because an
   // option that silently does nothing is the worst way to learn it was spelled
   // wrong.
-  const sql = (authority, text, params, options) => {
+  const sql = (authority, imp, text, params, options) => {
     if (typeof text !== "string") {
       throw new Error('sql() takes the SQL text, e.g. db.sql("select 1 as n")');
     }
@@ -1132,20 +1137,28 @@ Object.defineProperty(globalThis, "__scMakeDb", {
       });
       if (options.asUser !== undefined) asUser = !!options.asUser;
     }
-    return send({
+    const p = {
       op: "sql",
       authority: asUser === null ? authority : (asUser ? "user" : "admin"),
       sql: text,
       params: params === undefined || params === null ? [] : params,
-    });
+    };
+    if (imp) p.import = true;
+    return send(p);
   };
   // `db.table("x")` is the general form; `db.x` is a Proxy over the same call.
-  const handle = (authority) => {
+  //
+  // `db.asImport()` is a handle whose writes are **an import**: made in the
+  // run's import changeset, which sets `sc.import = '1'` for each statement, so
+  // an application's audit trigger can keep an imported row's own `updated_at`.
+  // It composes with the authority either way round.
+  const handle = (authority, imp) => {
     const base = {
-      table: (name) => table(authority, name),
-      sql: (text, params, options) => sql(authority, text, params, options),
-      asUser: (who) => handle(userAuthority(who)),
-      asAdmin: () => handle("admin"),
+      table: (name) => table(authority, name, imp),
+      sql: (text, params, options) => sql(authority, imp, text, params, options),
+      asUser: (who) => handle(userAuthority(who), imp),
+      asAdmin: () => handle("admin", imp),
+      asImport: () => handle(authority, true),
       // The plan seam itself, and the one thing on this handle that is not the
       // fluent surface: one plan in, a promise of its answer out, over this
       // run's own token.
@@ -1163,7 +1176,7 @@ Object.defineProperty(globalThis, "__scMakeDb", {
       get: (target, prop) => {
         if (typeof prop !== "string") return undefined;
         if (Object.prototype.hasOwnProperty.call(target, prop)) return target[prop];
-        return table(authority, prop);
+        return table(authority, prop, imp);
       },
     });
   };

@@ -13956,6 +13956,16 @@ so the GUCs reach the trigger.
 `sc.change_log = 'off'` skips recording. Only a backup restore sets it: the log is backed up and
 restored as itself, and devices notice a restore by the database identity (S2.7).
 
+`sc.import` is `'1'` for a write whose changeset's source is `import` (a CSV import, or a code
+body's `db.asImport()`), and `''` for any other write; it is set with the rest of the caller
+context on every statement. Feldspar reads nothing from it. It is for an application's own audit
+triggers, which can then leave an imported row's `updated_at` alone, as they do for a `psql` load
+that says `SET LOCAL sc.import = '1'`. An import is still recorded: switching the log off would
+hide the imported rows from synced devices. `db.sql()` still refuses `set_config`, because each
+call is its own transaction and a guard that told a harmless setting from `sc.role` would have to
+parse the name out of arbitrary SQL. All of one code-body run's `asImport()` writes are one
+changeset, caused by the run's own.
+
 #### The trigger function, and the merge
 
 `_fd_record_change` is `SECURITY DEFINER` with a pinned `search_path` and is `CREATE OR

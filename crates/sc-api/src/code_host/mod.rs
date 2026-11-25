@@ -136,14 +136,15 @@ mod plan;
 pub mod schema;
 mod triggers;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use sc_access::Scoped;
 use sc_auth::User;
 use sc_catalog::{
-    AdminPrincipal, Authority as ScopedAuthority, Catalog, Principal, SharedTx, Table, Unchecked,
+    AdminPrincipal, Authority as ScopedAuthority, Catalog, Changeset, ChangesetSource, Principal,
+    SharedTx, Table, Unchecked,
 };
 use sc_error::{Error, Repr, Result};
 use sc_expr::{CodeHost, DEFAULT_MAX_HOST_CALLS, JsEvaluator};
@@ -243,6 +244,10 @@ pub struct TableHost<'a> {
     /// a trigger's action a person approved to run as system
     /// ([`acting_as`](TableHost::acting_as), TODO-type-hardening H8.10).
     admin: Option<AdminPrincipal>,
+    /// The changeset a `db.asImport()` write is made in: minted on the run's
+    /// first one, so all of a run's imported writes are one import in row
+    /// history, caused by the changeset the run itself is in.
+    import_changeset: OnceLock<Arc<Changeset>>,
 }
 
 impl<'a> TableHost<'a> {
@@ -258,6 +263,7 @@ impl<'a> TableHost<'a> {
             viewer_only: false,
             default_authority: Authority::Admin,
             admin: None,
+            import_changeset: OnceLock::new(),
         }
     }
 
@@ -374,6 +380,7 @@ impl<'a> TableHost<'a> {
         // delegated read of a table the caller may not reach through a key is
         // refused by the same guard a REST embed is.
         let actor = self.actor_on(&plan.authority, &plan.table).await?;
+        let actor = self.importing(actor, plan.import);
         if plan.render && !matches!(plan.op, Op::Select) {
             return Err(Error::invalid(format!(
                 "the statement of a `{}` of `{}` is not something to ask for: only a read \
@@ -509,6 +516,43 @@ impl<'a> TableHost<'a> {
                     user: Some(user),
                 })
             }
+        }
+    }
+
+    /// `actor`, writing **as an import** when `import` is set (`db.asImport()`):
+    /// in this run's import changeset ([`ChangesetSource::Import`]), which is
+    /// what sets `sc.import = '1'` for the statement
+    /// ([`sc_catalog::changeset::IMPORT_GUC`]). The authority is untouched.
+    ///
+    /// The change log is **not** switched off: it is also what offline devices
+    /// sync from (§14.11), and a device that never hears of an imported row
+    /// keeps a stale copy. The import's entries are told apart by their
+    /// changeset's source instead.
+    fn importing(&self, actor: Actor, import: bool) -> Actor {
+        if !import {
+            return actor;
+        }
+        let changeset = Some(Arc::clone(self.import_changeset.get_or_init(|| {
+            let cause = self
+                .caller
+                .changeset()
+                .cloned()
+                .or_else(sc_catalog::changeset::current);
+            let base = Changeset::new(ChangesetSource::Import);
+            Arc::new(match cause {
+                Some(cause) => base
+                    .cause(Some(cause.id))
+                    .session(cause.session.clone())
+                    .in_application(cause.application()),
+                None => base,
+            })
+        })));
+        match actor {
+            Actor::Admin(admin) => Actor::Admin(admin.in_changeset(changeset)),
+            Actor::Caller { principal, user } => Actor::Caller {
+                principal: principal.in_changeset(changeset),
+                user,
+            },
         }
     }
 
@@ -719,6 +763,7 @@ impl<'a> TableHost<'a> {
     async fn sql(&self, plan: &SqlPlan) -> Result<Json> {
         let statement = plan::statement(self.catalog, plan)?;
         let actor = self.actor(&plan.authority).await?;
+        let actor = self.importing(actor, plan.import);
         // The body's own statement, at the actor's role and user: the admin's
         // (who meets every floor) or, delegated, vouched for by the rule this
         // escape hatch is admitted on — admin-authored SQL whose only row rule

@@ -144,6 +144,11 @@ pub struct Plan {
     /// unless it passes the value on.
     #[serde(default)]
     pub request: Option<BTreeMap<String, String>>,
+    /// Whether a write is **an import** (`db.asImport()`): made in the run's
+    /// import changeset, so an application's audit triggers see `sc.import =
+    /// '1'` ([`TableHost::importing`](super::TableHost)). Nothing to a read.
+    #[serde(default)]
+    pub import: bool,
 }
 
 /// The **other** thing a terminal may send: SQL the code body wrote itself
@@ -176,6 +181,10 @@ pub struct SqlPlan {
     /// The values those placeholders stand for, in placeholder order.
     #[serde(default)]
     pub params: Vec<Json>,
+    /// Whether the statement is **an import** (`db.asImport().sql(…)`), as
+    /// [`Plan::import`].
+    #[serde(default)]
+    pub import: bool,
 }
 
 /// The one operation a [`SqlPlan`] may be — a unit enum rather than an ignored

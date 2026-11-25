@@ -1352,3 +1352,14 @@ Decisions (approved):
 - Should `lib()` also be visible to formulas, or only to code bodies? (Proposed: code bodies only.)
 - Should the 24 h abandoned-upload sweep be configurable per slot?
 - `returns` validation in production as an opt-in, for apps that want the contract enforced?
+
+## IM1 — Code bodies write as an import (user feedback)
+
+A delta sync written as a `run_js_code` trigger could not suppress an application's own audit
+trigger (which skips rows when `sc.import = '1'`), because `db.sql()` refuses `set_config`. A
+`psql` load can `SET LOCAL` it; a code body could not.
+
+- [x] **IM1.1** `sc.import` set with the caller context (`'1'` for an `import` changeset, `''`
+  otherwise); `db.asImport()` and `.asImport()` write in one `import` changeset per run. The
+  change log stays on (devices sync from it), and `set_config` stays refused. Tests in
+  `sc-api/tests/code_host_import.rs`.

@@ -23,7 +23,7 @@ use sc_query::{SqlDialect, Statement, render_policy_expr};
 
 use crate::caller::{Principal, Unchecked};
 use crate::catalog::Catalog;
-use crate::changeset::{self, CHANGESET_GUC};
+use crate::changeset::{self, CHANGESET_GUC, IMPORT_GUC};
 use crate::projection::SchemaProjection;
 use crate::table::Table;
 
@@ -124,6 +124,10 @@ pub async fn set_caller_context(
     // always set, so one writer's changeset is never the next one's.
     tx.set_local(CHANGESET_GUC, &context.changeset_json())
         .await?;
+    // Whether that changeset is an import, for an application's own audit
+    // triggers ([`IMPORT_GUC`]), on the same terms.
+    let import = context.changeset().map_or("", |c| c.import_guc_value());
+    tx.set_local(IMPORT_GUC, import).await?;
     Ok(())
 }
 
@@ -148,10 +152,14 @@ pub async fn clear_caller_context(tx: &mut dyn sc_db::Transaction) -> Result<()>
     for key in request_keys() {
         tx.set_local(&sc_expr::request_guc(&key), "").await?;
     }
-    let ambient = changeset::current()
+    let ambient = changeset::current();
+    let guc = ambient
+        .as_ref()
         .map(|c| c.guc_value(None))
         .unwrap_or_default();
-    tx.set_local(CHANGESET_GUC, &ambient).await?;
+    tx.set_local(CHANGESET_GUC, &guc).await?;
+    let import = ambient.as_ref().map_or("", |c| c.import_guc_value());
+    tx.set_local(IMPORT_GUC, import).await?;
     Ok(())
 }
 

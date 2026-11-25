@@ -41,6 +41,14 @@ pub const CHANGESET_GUC: &str = "sc.changeset";
 /// restore sets it: the log is backed up and restored as itself.
 pub const CHANGE_LOG_GUC: &str = "sc.change_log";
 
+/// `'1'` while the writer's changeset is an **import** ([`ChangesetSource::Import`]:
+/// a CSV import, a code body's `db.asImport()`), and `''` otherwise; set with the
+/// rest of the caller context on every statement. Feldspar reads nothing from
+/// it: it is there for an application's own triggers, so an audit trigger that
+/// stamps `updated_at` can leave an imported row's own value alone, as it does
+/// for a `psql` bulk load that says `SET LOCAL sc.import = '1'` itself.
+pub const IMPORT_GUC: &str = "sc.import";
+
 /// What started a changeset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangesetSource {
@@ -176,6 +184,15 @@ impl Changeset {
         self.application.get().copied()
     }
 
+    /// What [`IMPORT_GUC`] carries for a write in this changeset.
+    pub fn import_guc_value(&self) -> &'static str {
+        if self.source == ChangesetSource::Import {
+            "1"
+        } else {
+            ""
+        }
+    }
+
     /// What [`CHANGESET_GUC`] carries for a write by `user` (the writer's
     /// fields, `None` when anonymous): everything the trigger needs to write
     /// the `_fd_changesets` row, as a JSON object without its nulls.
@@ -289,6 +306,21 @@ mod tests {
         // Anonymous: no user, and so no session either.
         let value: Json = serde_json::from_str(&changeset.guc_value(None)).unwrap();
         assert!(value.get("user_id").is_none() && value.get("session").is_none());
+    }
+
+    #[test]
+    fn only_an_import_changeset_says_it_is_one() {
+        assert_eq!(
+            Changeset::new(ChangesetSource::Import).import_guc_value(),
+            "1"
+        );
+        for source in [
+            ChangesetSource::Request,
+            ChangesetSource::Workflow,
+            ChangesetSource::Sync,
+        ] {
+            assert_eq!(Changeset::new(source).import_guc_value(), "");
+        }
     }
 
     #[tokio::test]

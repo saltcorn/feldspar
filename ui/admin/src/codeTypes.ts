@@ -260,6 +260,9 @@ interface ScQuery<Row, Col extends string> {
   asUser(user?: string | { id: string }): ScQuery<Row, Col>;
   /** Run what follows as the server (the default). */
   asAdmin(): ScQuery<Row, Col>;
+  /** Make this query's write **an import**: it sets \`sc.import = '1'\` for an
+   * application's own audit triggers, and row history shows it as one. */
+  asImport(): ScQuery<Row, Col>;
 
   /** The matching rows. Every terminal answers a promise: \`await\` it. */
   rows(): Promise<Row[]>;
@@ -1056,7 +1059,12 @@ export function tableDeclarations(tables: TableInfo[]): string {
       `   * than whoever caused the run. */\n` +
       `  asUser(user?: string | { id: string }): ScDb;\n` +
       `  /** Act as the server (the default). */\n` +
-      `  asAdmin(): ScDb;\n${properties}\n}\n`,
+      `  asAdmin(): ScDb;\n` +
+      `  /** Make every write that follows **an import**: each statement runs\n` +
+      `   * with \`sc.import = '1'\`, so an application's own audit trigger can\n` +
+      `   * keep an imported row's \`updated_at\`, and row history shows the run's\n` +
+      `   * writes as one import. The change log still records them. */\n` +
+      `  asImport(): ScDb;\n${properties}\n}\n`,
   );
   return parts.join("\n");
 }

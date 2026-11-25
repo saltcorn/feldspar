@@ -2,6 +2,34 @@
 
 Changes in reverse chronological order.
 
+## Code bodies can write as an import (`db.asImport()`)
+
+From a user report: a delta sync written as a `run_js_code` trigger could not stop an
+application's own audit trigger from setting `updated_at = now()` on every row it wrote. The
+trigger skips rows when `current_setting('sc.import') = '1'`, and `db.sql()` refuses
+`set_config`. A `psql` backfill could `SET LOCAL sc.import = '1'`; a code body could not.
+
+- **`sc.import`** (`sc_catalog::changeset::IMPORT_GUC`). `set_caller_context` and
+  `clear_caller_context` now set it on every statement: `'1'` when the writer's changeset has
+  source `import`, `''` otherwise. Feldspar itself never reads it. CSV imports already use an
+  `import` changeset, so they now set it too. On an application with no trigger that reads it,
+  nothing changes. This adds one transaction-local setting per caller-context statement.
+- **`db.asImport()`**, and `.asImport()` on one query. Its writes (chain insert, update and delete,
+  and `db.sql()`) go in one `import` changeset per run, caused by the run's own changeset. It
+  composes with `asAdmin()` and `asUser()`, and does not change the authority. Reads are
+  unaffected. Typed in the editor's `codeTypes.ts`, and documented in the agents' code API and
+  the `javascript-code` help topic.
+- **Not done, on purpose:**
+  - `set_config` stays refused in `db.sql()`. Each call is its own transaction, so a
+    transaction-local setting would end with the statement anyway. Telling a harmless setting
+    from the row-level-security ones would mean parsing the name out of arbitrary SQL.
+  - The change log is not switched off for an import. Offline devices sync from the same
+    `_fd_changes`, so they would never see the imported rows. The import's entries are told
+    apart by their changeset's source (`_source` in `history()`).
+- Tests: `crates/sc-api/tests/code_host_import.rs` (an audit trigger of the reporter's shape, the
+  chain and `db.sql()` under `asImport()`, one `import` changeset recorded), and a unit test of
+  `Changeset::import_guc_value`.
+
 ## API tokens for an application's users
 
 TODO AT1, from user feedback: "in saltcorn v1 users had the possibility to create an API token.
