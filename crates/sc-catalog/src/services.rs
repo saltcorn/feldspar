@@ -40,6 +40,9 @@ pub struct Services {
     pub(crate) schema_observer: Option<Arc<dyn crate::observer::SchemaObserver>>,
     /// What follows a table being renamed into the rows other crates own.
     pub(crate) rename_hook: Option<Arc<dyn crate::observer::TableRenameHook>>,
+    /// What serves an application again after its stored record changed
+    /// below the admin API: `sc-server`'s mount registry.
+    pub(crate) application_hook: Option<Arc<dyn crate::observer::ApplicationHook>>,
     /// The module functions a formula may hoist and a code body may call:
     /// `sc-module`'s worker pool.
     pub(crate) module_functions: Option<Arc<dyn sc_expr::ModuleFnHost>>,

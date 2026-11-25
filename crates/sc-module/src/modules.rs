@@ -437,6 +437,7 @@ async fn load_one(
         )
         .with_file_areas(Arc::clone(&areas))
         .with_role_ceiling(module.permissions.roles)
+        .with_schema_grant(module.permissions.schema.clone())
         .with_network(!module.permissions.net.is_empty())
         .with_shell(unsafe_reason.is_some())
         .with_types(action.payload.clone(), action.returns.clone());

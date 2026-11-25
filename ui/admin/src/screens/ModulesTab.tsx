@@ -36,6 +36,7 @@ import { ApplyButton } from "../ApplyButton";
 import { AlertBody, StatusBadge } from "../layout";
 import {
   ALL_TOOLCHAINS,
+  DEFAULT_SCHEMA_PREFIX,
   EMPTY_INSTALL,
   INSTALL_CHOICES,
   NO_SANDBOX,
@@ -71,6 +72,7 @@ import {
   type InstallForm,
   type Module,
   type ModulePermissionSet,
+  type SchemaGrant,
   type Toolchains,
 } from "../modules";
 import { SettingsFields, buildConfig, initialValues, type FieldSpec } from "../settings";
@@ -884,6 +886,12 @@ function PermissionsForm({
       PERMISSION_KINDS.map(({ key }) => [key, permissionText(permissions[key])]),
     ),
   );
+  // The schema grant (TODO ST1.1): three switches and the prefix they reach.
+  // All three off is no grant, whatever the prefix says.
+  const [schema, setSchema] = useState<SchemaGrant>(
+    () =>
+      permissions.schema ?? { create: false, edit: false, drop: false, prefix: DEFAULT_SCHEMA_PREFIX },
+  );
   const edited: ModulePermissionSet = {
     net: parsePermissionText(text.net ?? ""),
     read: parsePermissionText(text.read ?? ""),
@@ -891,7 +899,15 @@ function PermissionsForm({
     env: parsePermissionText(text.env ?? ""),
     roles: parsePermissionText(text.roles ?? ""),
   };
+  if (schema.create || schema.edit || schema.drop) {
+    edited.schema = { ...schema, prefix: schema.prefix.trim() };
+  }
   const problems = permissionProblems(edited);
+  const switches: [keyof Omit<SchemaGrant, "prefix">, string][] = [
+    ["create", "Create tables"],
+    ["edit", "Change tables and their fields"],
+    ["drop", "Drop tables and fields"],
+  ];
 
   return (
     <form
@@ -928,6 +944,34 @@ function PermissionsForm({
           <Form.Text className="text-secondary">{kind.help}</Form.Text>
         </Form.Group>
       ))}
+      <fieldset className="mb-2">
+        <Form.Label as="legend" className="fs-6">
+          Tables it may change
+        </Form.Label>
+        {switches.map(([key, label]) => (
+          <Form.Check
+            key={key}
+            type="checkbox"
+            id={`module-${module.id}-schema-${key}`}
+            label={label}
+            checked={schema[key]}
+            onChange={(e) => setSchema((current) => ({ ...current, [key]: e.target.checked }))}
+          />
+        ))}
+        <Form.Group className="mt-1" controlId={`module-${module.id}-schema-prefix`}>
+          <Form.Label>Only tables whose names start with</Form.Label>
+          <Form.Control
+            value={schema.prefix}
+            placeholder={DEFAULT_SCHEMA_PREFIX}
+            onChange={(e) => setSchema((current) => ({ ...current, prefix: e.target.value }))}
+          />
+        </Form.Group>
+        <Form.Text className="text-secondary">
+          Schema edits the module's actions may make for an application's code, checked by the
+          server: only on tables whose names start with this prefix, never on this server's own
+          tables. Which user may change which table is the application's to check.
+        </Form.Text>
+      </fieldset>
       {problems.length > 0 && (
         <Alert variant="warning">
           <AlertBody>

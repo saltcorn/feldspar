@@ -176,6 +176,10 @@ pub fn admin_handlers_with(
     // and other definitions that name the table (`table_rename`), for the same
     // reason: the editor that renames it cannot name the crates that own them.
     catalog.set_table_rename_hook(Arc::clone(&apps) as Arc<dyn sc_catalog::TableRenameHook>);
+    // And what serves an application again when a module's `schema` ask
+    // connected a table to it (TODO ST1.3): the record changed below these
+    // handlers, so the mount has to be read again from what is stored.
+    catalog.set_application_hook(Arc::clone(&apps) as Arc<dyn sc_catalog::ApplicationHook>);
     // And the same for the trigger set, installed on the dispatcher rather than
     // the catalog because that is what holds it: a saved, renamed or deleted
     // trigger re-projects every app exposing one, whether the save came from

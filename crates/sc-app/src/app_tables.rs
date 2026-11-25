@@ -16,7 +16,7 @@
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 
-use crate::application::Application;
+use crate::application::{AppId, Application};
 
 /// What a change asks of the connected list: `set` replaces it, then `add`
 /// and `remove` change it.
@@ -72,6 +72,28 @@ pub fn change_app_tables(
     app.tables = tables;
     app.api_tables = api_tables;
     Ok(changed)
+}
+
+/// Apply `change` to the **stored** application `id`'s tables and save it:
+/// what a module's `schema` ask does with the tables a batch created and
+/// dropped (TODO ST1.3). Answers the application as stored and whether its
+/// list changed, or `None` when there is no such application.
+///
+/// This saves the record only. What is mounted is read again by whoever
+/// serves it ([`sc_catalog::Catalog::notify_application_changed`]).
+pub async fn change_stored_app_tables(
+    catalog: &Catalog,
+    id: AppId,
+    change: &TableChange,
+) -> Result<Option<(Application, bool)>> {
+    let Some(mut app) = crate::load_application(catalog, id).await? else {
+        return Ok(None);
+    };
+    if !change_app_tables(catalog, &mut app, change)? {
+        return Ok(Some((app, false)));
+    }
+    let saved = crate::save_application(catalog, &app).await?;
+    Ok(Some((saved, true)))
 }
 
 /// Apply `change` to `app.api_tables` — which connected tables serve their

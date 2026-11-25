@@ -701,6 +701,99 @@ https://js.provider.example`). Only `https://` and `wss://` hosts are accepted, 
 that load or reach something; a keyword such as `'unsafe-inline'` is refused, with an issue on the
 card. `csp` can also be a function of the module's configuration.
 
+## Step 12 — A table builder: letting users create tables
+
+Some applications are made of tables their users define: a wiki where every signed-in user can
+make a table of their own, say. The application's code has to change the schema on their behalf.
+The bundled **Schema editing** module (`@feldspar/schema`) is how. Its card says what installing
+grants:
+
+```
+Installing lets it create and change tables whose names start with ut_, but not drop them.
+```
+
+That is the **schema** permission. It is not a list like the others but three switches and a
+prefix, edited under **Permissions → Tables it may change**: create, change, drop, and "only
+tables whose names start with" `ut_`. The server holds the module to it. Every table an operation
+creates, changes, renames (both names) or drops must start with the prefix. A key may still
+*point at* a table outside it, such as `users`. This server's own tables (`users`, the `_fd_`
+tables, the role and credit tables) are refused whatever the prefix says. Leave **drop** off
+unless the application really deletes tables; an admin can turn it on later. A reinstall (how a
+new release upgrades the module) keeps what you set.
+
+The module's **settings** are the defaults every table it creates gets, unless the operation says
+otherwise: row history on or off and how many days to keep it, the read and write roles (the
+admin's by default), and row-level security (off by default: the application's queries reach
+these tables with `asAdmin()`, and `asAdmin()` is refused on a table with row-level security).
+
+**1. An admin-only trigger.** Make a trigger with no event (**When**: none), action
+`create_table` (from the module), and **no minimum role**. Call it `make table`. The module's
+actions change the schema only from a trigger that only an admin may run. A trigger you open to
+role 80, or expose to an application's users, is refused with a sentence naming its role, because
+then the caller, not your configuration, decided to run it. The event still records which user
+caused it, and the server's log names the module, its grant and that user for each change.
+
+**2. A custom query that checks the application's rules, then runs the trigger.** In the
+application's REST API, add a JavaScript query, `POST /tables`, minimum role 80:
+
+```js
+// The application's own rule: two tables each. `ut_owners` is the app's own table
+// (name, owner), made beforehand like any other.
+const mine = await db.asAdmin().ut_owners.where({ owner: user.id }).count();
+if (mine >= 2) return response({ status: 409, body: { error: "two tables each" } });
+if (!/^ut_[a-z0-9_]+$/.test(body.name)) {
+  return response({ status: 422, body: { error: "a table name is ut_ and lowercase letters" } });
+}
+let answer;
+try {
+  answer = await trigger("make table").asAdmin().run({
+    table: body.name,
+    fields: [
+      { name: "id", type: "Integer", primary_key: true },
+      { name: "title", type: "String", required: true },
+      { name: "author", type: "Key to users" },
+    ],
+  });
+} catch (e) {
+  return response({ status: 422, body: { refused: e.message } });
+}
+await db.asAdmin().ut_owners.insert({ name: body.name, owner: user.id });
+// The rest of this run reaches the new table.
+await db.asAdmin().table(body.name).insert({ id: 1, title: "Welcome", author: user.id });
+return answer;
+```
+
+`trigger(…).asAdmin()` is what runs the admin-only trigger from a query its users call. The
+answer is MCP `edit_schema`'s (`tables_created`, `fields_added`, …), with `connected` and the
+catalog's `generation` added. The other actions take the same Saltcorn 1 shaped arguments:
+`add_field` (`{ table, field: { name, type, required, is_unique, reftable_name } }`),
+`alter_field` (`{ table, field, label, required, rename_to, … }`), `rename_table` (`{ table, to }`),
+`drop_field` and `drop_table`. `schema_apply` takes a whole batch in `edit_schema`'s shape,
+`{ operations: [...] }`, applied in one transaction or not at all.
+
+**3. What the new table is connected to.** A table the trigger creates is added to the tables of
+the application whose query ran it, at once, and a table it drops is taken out. Its generic row
+API is **not** opened: the application reads and writes it through its own queries. Another
+application cannot reach it unless you connect it there.
+
+**What the application must still enforce itself.** The server bounds *what* the module can do:
+the prefix, the switches, its own tables. It knows nothing about *who* should be allowed to
+change *which* table. That is the query's job, and it must be done before the trigger runs:
+
+- who owns a table (`ut_owners` above), so that one user cannot add fields to, rename or drop
+  another user's table; a query that runs `add_field` must check the owner first;
+- how many tables, fields or rows a user may make (the quota);
+- which names a user may choose, beyond the prefix, so that one user cannot take a name
+  another is about to use, or a name your own code relies on;
+- who may read and write the rows: the tables are the admin's by default, so every read and write
+  goes through a query that checks the caller, as `ut_owners` is checked above.
+
+Two notes. The application's **Maximum role** caps the role a signed-in user holds while using
+it, not the query's `asAdmin()`: an application capped at role 90 still runs the admin-only
+trigger, so leave the cap as it is. And within the run that created a table, `db.<table>` reaches
+it at once, but Saltcorn 1's `Table.findOne` answers from the schema the run started with and
+sees the new table from the next run.
+
 ## Developing a module against a running server
 
 Point the **local directory** source at your checkout. The package is copied into the modules

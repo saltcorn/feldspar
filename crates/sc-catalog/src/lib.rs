@@ -126,7 +126,9 @@ pub use file_stores::{
 };
 pub use model_host::{ModelHost, ModelSummary, PredictRows, check_model_calls};
 pub use module_tables::{ModuleTableClaim, ModuleTables};
-pub use observer::{ReprojectedApp, SchemaChanged, SchemaObserver, TableRenameHook};
+pub use observer::{
+    ApplicationHook, ReprojectedApp, SchemaChanged, SchemaObserver, TableRenameHook,
+};
 pub use origin::{PublicBaseUrl, PublicOrigin, TrustedHost, is_valid_host};
 pub use prefetch::prefetch_bindings;
 pub use projection::SchemaProjection;

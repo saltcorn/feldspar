@@ -108,7 +108,10 @@ pub use api::{
     select_api, serves_custom_queries, validate_api_config, validate_api_mounts,
     validate_static_dirs,
 };
-pub use app_tables::{TableChange, change_app_api_tables, change_app_tables, validate_api_tables};
+pub use app_tables::{
+    TableChange, change_app_api_tables, change_app_tables, change_stored_app_tables,
+    validate_api_tables,
+};
 pub use application::{
     API_TOKEN_MIN_ROLE_ATTRIBUTE, API_TOKENS_ATTRIBUTE, ApiConfig, AppFileUrls, AppId, Application,
     CSP_SOURCES_ATTRIBUTE, CspPolicy, FRAME_ANCESTORS, FrameworkRef, GUEST_SESSION_DAYS_ATTRIBUTE,

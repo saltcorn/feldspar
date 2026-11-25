@@ -889,18 +889,7 @@ async fn edit(catalog: &Catalog, grants: &Grants, args: &Json) -> Result<Json> {
         }
     };
 
-    let mut operations = Vec::with_capacity(items.len());
-    for (index, item) in items.iter().enumerate() {
-        operations.push(
-            refuse_unsecret(catalog, item)
-                .and_then(|()| complete_file_alter(catalog, item))
-                .and_then(|item| parse_operation(&item))
-                .map_err(|e| Error::invalid(format!("operation {index}: {e}")))?,
-        );
-    }
-
-    check_file_stores(catalog, &operations)?;
-    check_attributes(catalog, &operations)?;
+    let operations = parse_operations(catalog, &items)?;
 
     let applied = schema_edit::apply(
         catalog,
@@ -917,10 +906,37 @@ async fn edit(catalog: &Catalog, grants: &Grants, args: &Json) -> Result<Json> {
         },
     )
     .await?;
+    Ok(applied_json(&applied))
+}
+
+/// The wire items of an `edit_schema` batch, as [`Operation`]s — every check
+/// that is about the wire shape and the catalog's registries (file stores, rich
+/// type attributes, secrets) rather than about the batch.
+///
+/// Public because it is **the** operation JSON: a module's `schema` ask (TODO
+/// ST1.2) speaks it too, so the two cannot drift.
+pub fn parse_operations(catalog: &Catalog, items: &[Json]) -> Result<Vec<Operation>> {
+    let mut operations = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        operations.push(
+            refuse_unsecret(catalog, item)
+                .and_then(|()| complete_file_alter(catalog, item))
+                .and_then(|item| parse_operation(&item))
+                .map_err(|e| Error::invalid(format!("operation {index}: {e}")))?,
+        );
+    }
+    check_file_stores(catalog, &operations)?;
+    check_attributes(catalog, &operations)?;
+    Ok(operations)
+}
+
+/// What an applied batch answers, as `edit_schema` says it: the lists of what
+/// changed, the applications it re-projected, and the notes.
+pub fn applied_json(applied: &schema_edit::Applied) -> Json {
     let mut notes = applied.notes.clone();
     notes.extend(applied.access.iter().cloned());
     notes.extend(rebuild_notes(&applied.applications));
-    Ok(json!({
+    json!({
         "applied": !applied.dry_run,
         "dry_run": applied.dry_run,
         "tables_created": applied.tables_created,
@@ -948,7 +964,7 @@ async fn edit(catalog: &Catalog, grants: &Grants, args: &Json) -> Result<Json> {
             })
             .collect::<Vec<Json>>(),
         "notes": notes,
-    }))
+    })
 }
 
 /// The sentence the applications half of the result needs, or none.

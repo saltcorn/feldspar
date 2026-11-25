@@ -254,6 +254,8 @@ pub(crate) fn logging_switches() -> &'static tokio::sync::Mutex<()> {
     &LOCK
 }
 
+#[path = "bundled_schema.rs"]
+mod bundled_schema;
 #[path = "app_none_framework.rs"]
 mod app_none_framework;
 #[path = "app_oauth.rs"]

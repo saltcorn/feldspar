@@ -3491,6 +3491,27 @@ function moduleShell(send) {
   };
 }
 
+/** `schema` of an action (TODO ST1.2): schema edits, in MCP `edit_schema`'s
+ * operation JSON, applied in one transaction and refused whole. The server
+ * serves it only to an action of a module granted the `schema` permission, run
+ * by a trigger only an admin may run, and only on tables whose names start with
+ * the granted prefix.
+ *
+ *   const answer = await schema.apply([
+ *     { op: "create_table", table: "ut_recipes",
+ *       fields: [{ field: "id", type: "Integer", primary_key: true }] },
+ *   ]);
+ *   // { tables_created: ["ut_recipes"], …, connected, generation, notes }
+ */
+function moduleSchema(send) {
+  return {
+    /** Apply `operations` (or, with `{ dry_run: true }`, only check them). */
+    apply(operations, { dry_run } = {}) {
+      return send({ op: "apply", operations, dry_run: dry_run === true });
+    },
+  };
+}
+
 /** `callerFiles` of an action (TODO-imap M9.3): the application's file stores,
  * **read** as the action's caller — the code body's `fs(…).asUser()`, over the
  * call's own `files` surface. A module that sends a user's file somewhere (the
@@ -3536,6 +3557,7 @@ async function runAction({ module: name, action: actionName, args }) {
      * `request.store` names. */
     argument.oauth = { begin: (request) => askFor(callId, "oauth", request) };
     argument.shell = moduleShell((plan) => askFor(callId, "shell", plan));
+    argument.schema = moduleSchema((plan) => askFor(callId, "schema", plan));
   }
   const result = await impl.run(argument);
   return result === undefined ? null : result;

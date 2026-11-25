@@ -155,7 +155,9 @@ pub(super) fn register(set: &mut EndpointSet) {
                 "Change an installed module's settings (`configuration`, an object of \
                  the fields its settings form has — `listModules` shows each module's \
                  current values, secrets as `••••••••`) and/or its `permissions` \
-                 (`{ net, read, write, env }`, lists of what its worker may reach). \
+                 (`{ net, read, write, env }`, lists of what its worker may reach; \
+                 `schema`, `{ create, edit, drop, prefix }`, the tables its actions may \
+                 change). \
                  `id` is the module's id from `listModules`. Each part is changed only \
                  when sent, and `configuration` replaces the whole object: send every \
                  setting, with a secret left as `••••••••` to keep it. The module is \

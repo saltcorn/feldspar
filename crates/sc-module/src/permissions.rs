@@ -62,6 +62,16 @@ pub const PERM_ENV: &str = "env";
 /// 99. Not a worker permission at all, but granted the way they are: by an
 /// admin, on the install card and the Modules tab, never by the package.
 pub const PERM_ROLES: &str = "roles";
+/// The schema edits the module may make (TODO ST1.1): an object,
+/// `{ "create": bool, "edit": bool, "drop": bool, "prefix": "ut_" }` — which
+/// of `schema_edit`'s three grants it has, over the tables whose names start
+/// with `prefix`. Like [`PERM_ROLES`], the server's to check when the module
+/// asks, never the worker's.
+pub const PERM_SCHEMA: &str = "schema";
+
+/// The longest a [`SchemaGrant::prefix`] may be: a prefix leaves room for a
+/// name after it, inside the 63 bytes a Postgres identifier has.
+pub const MAX_SCHEMA_PREFIX: usize = 30;
 
 /// The [`PERM_NET`] entry meaning *any host* — see [`check_host`].
 ///
@@ -91,6 +101,89 @@ pub struct ModulePermissions {
     /// The most privileged role the module may grant (`ctx.roles.grant`), or
     /// `None` for no role at all. Never 1: no module may make an admin.
     pub roles: Option<Role>,
+    /// The schema edits it may make through the `schema` ask, or `None` for
+    /// none (TODO ST1.1). Never a grant with every switch off: that reads as
+    /// `None`.
+    pub schema: Option<SchemaGrant>,
+}
+
+/// What a module may do to the schema (TODO ST1.1): `schema_edit`'s three
+/// grants, bounded to the tables whose names start with [`prefix`](Self::prefix).
+///
+/// The prefix is the bound the server can enforce. *Who* may change *which*
+/// table is the application's question (its custom query checks the owner and
+/// the quota); that a table outside the prefix is never touched is the
+/// server's, because a check inside the module or the query is on the wrong
+/// side of the boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaGrant {
+    /// May create tables (and their fields).
+    pub create: bool,
+    /// May change tables' settings and add, alter or rename fields.
+    pub edit: bool,
+    /// May drop tables and fields.
+    pub drop: bool,
+    /// The start every table it touches must have: a lowercase letter, then
+    /// letters, digits or underscores, ending in `_` (`ut_`).
+    pub prefix: String,
+}
+
+impl SchemaGrant {
+    /// Whether `table` is one this grant reaches by name.
+    pub fn covers(&self, table: &str) -> bool {
+        table.len() > self.prefix.len() && table.starts_with(&self.prefix)
+    }
+
+    /// The grant in words: "may create and change tables whose names start
+    /// with `ut_`; may not drop them".
+    pub fn sentence(&self) -> String {
+        let mut may = Vec::new();
+        if self.create {
+            may.push("create");
+        }
+        if self.edit {
+            may.push("change");
+        }
+        if self.drop {
+            may.push("drop");
+        }
+        let may = match may.as_slice() {
+            [one] => (*one).to_owned(),
+            [a, b] => format!("{a} and {b}"),
+            [a, b, c] => format!("{a}, {b} and {c}"),
+            _ => String::new(),
+        };
+        let mut not = Vec::new();
+        if !self.create {
+            not.push("create");
+        }
+        if !self.edit {
+            not.push("change");
+        }
+        if !self.drop {
+            not.push("drop");
+        }
+        let not = match not.as_slice() {
+            [] => String::new(),
+            [one] => format!("; may not {one} them"),
+            [a, b] => format!("; may not {a} or {b} them"),
+            _ => String::new(),
+        };
+        format!(
+            "may {may} tables whose names start with `{}`{not}",
+            self.prefix
+        )
+    }
+
+    /// The grant as it is stored.
+    pub fn to_json(&self) -> Json {
+        json!({
+            "create": self.create,
+            "edit": self.edit,
+            "drop": self.drop,
+            "prefix": self.prefix,
+        })
+    }
 }
 
 impl ModulePermissions {
@@ -106,6 +199,7 @@ impl ModulePermissions {
             && self.write.is_empty()
             && self.env.is_empty()
             && self.roles.is_none()
+            && self.schema.is_none()
     }
 
     /// How many entries there are across every list — what a badge counts.
@@ -115,15 +209,18 @@ impl ModulePermissions {
             + self.write.len()
             + self.env.len()
             + usize::from(self.roles.is_some())
+            + usize::from(self.schema.is_some())
     }
 
     /// The part of the set a **worker** is built with — everything but
-    /// [`roles`](Self::roles), which the server checks when a module asks and
-    /// the isolate never sees. What the pool pins by, so two modules that may
-    /// reach the same hosts share a worker whatever roles they may grant.
+    /// [`roles`](Self::roles) and [`schema`](Self::schema), which the server
+    /// checks when a module asks and the isolate never sees. What the pool
+    /// pins by, so two modules that may reach the same hosts share a worker
+    /// whatever roles they may grant or tables they may change.
     pub fn sandbox(&self) -> ModulePermissions {
         ModulePermissions {
             roles: None,
+            schema: None,
             ..self.clone()
         }
     }
@@ -153,10 +250,19 @@ impl ModulePermissions {
             }
         };
         for key in object.keys() {
-            if ![PERM_NET, PERM_READ, PERM_WRITE, PERM_ENV, PERM_ROLES].contains(&key.as_str()) {
+            if ![
+                PERM_NET,
+                PERM_READ,
+                PERM_WRITE,
+                PERM_ENV,
+                PERM_ROLES,
+                PERM_SCHEMA,
+            ]
+            .contains(&key.as_str())
+            {
                 return Err(Error::invalid(format!(
                     "`{key}` is not a module permission; the permissions are {PERM_NET}, \
-                     {PERM_READ}, {PERM_WRITE}, {PERM_ENV}, {PERM_ROLES}"
+                     {PERM_READ}, {PERM_WRITE}, {PERM_ENV}, {PERM_ROLES}, {PERM_SCHEMA}"
                 )));
             }
         }
@@ -166,6 +272,7 @@ impl ModulePermissions {
             write: entries(object, PERM_WRITE, check_path)?,
             env: entries(object, PERM_ENV, check_env)?,
             roles: role_ceiling(object)?,
+            schema: schema_grant(object)?,
         };
         Ok(permissions)
     }
@@ -183,6 +290,11 @@ impl ModulePermissions {
             PERM_ROLES.to_owned(),
             json!(self.roles.map(|r| vec![r.to_string()]).unwrap_or_default()),
         );
+        // Not a list: three switches and a prefix, and only when granted, so a
+        // module without one is stored and reported exactly as before it existed.
+        if let Some(schema) = &self.schema {
+            object.insert(PERM_SCHEMA.to_owned(), schema.to_json());
+        }
         object
     }
 
@@ -213,6 +325,9 @@ impl ModulePermissions {
         }
         if let Some(ceiling) = self.roles {
             lines.push(format!("may grant users roles {ceiling} to 99"));
+        }
+        if let Some(schema) = &self.schema {
+            lines.push(schema.sentence());
         }
         lines
     }
@@ -308,6 +423,103 @@ fn role_ceiling(object: &Attrs) -> Result<Option<Role>> {
              grant; it may then grant that role and every less privileged one"
         ))),
     }
+}
+
+/// The `schema` entry (TODO ST1.1): absent, `null` or `{}` is none, and so is
+/// an object with every switch off. Any switch on needs a `prefix`.
+fn schema_grant(object: &Attrs) -> Result<Option<SchemaGrant>> {
+    let grant = match object.get(PERM_SCHEMA) {
+        None | Some(Json::Null) => return Ok(None),
+        Some(Json::Object(grant)) => grant,
+        Some(other) => {
+            return Err(Error::invalid(format!(
+                "a module's `{PERM_SCHEMA}` permission should be an object like \
+                 {{ \"create\": true, \"edit\": true, \"drop\": false, \"prefix\": \"ut_\" }}, \
+                 got {}",
+                kind_of(other)
+            )));
+        }
+    };
+    for key in grant.keys() {
+        if !["create", "edit", "drop", "prefix"].contains(&key.as_str()) {
+            return Err(Error::invalid(format!(
+                "`{key}` is not part of the `{PERM_SCHEMA}` permission; it has create, edit, \
+                 drop and prefix"
+            )));
+        }
+    }
+    let switch = |key: &str| match grant.get(key) {
+        None | Some(Json::Null) => Ok(false),
+        Some(Json::Bool(on)) => Ok(*on),
+        Some(other) => Err(Error::invalid(format!(
+            "`{PERM_SCHEMA}.{key}` should be true or false, got {}",
+            kind_of(other)
+        ))),
+    };
+    let (create, edit, drop) = (switch("create")?, switch("edit")?, switch("drop")?);
+    let prefix = match grant.get("prefix") {
+        None | Some(Json::Null) => String::new(),
+        Some(Json::String(prefix)) => prefix.trim().to_owned(),
+        Some(other) => {
+            return Err(Error::invalid(format!(
+                "`{PERM_SCHEMA}.prefix` should be text, like \"ut_\", got {}",
+                kind_of(other)
+            )));
+        }
+    };
+    if !(create || edit || drop) {
+        // Nothing granted, whatever the prefix says: a form that unticks all
+        // three boxes has taken the grant away.
+        return Ok(None);
+    }
+    check_schema_prefix(&prefix)?;
+    Ok(Some(SchemaGrant {
+        create,
+        edit,
+        drop,
+        prefix,
+    }))
+}
+
+/// A table-name prefix a schema grant can be bounded by: a lowercase letter,
+/// then lowercase letters, digits and underscores, **ending in `_`**.
+///
+/// The trailing underscore makes the prefix a namespace rather than a stem:
+/// `u` would reach `users`, `ut_` reaches only the tables named for it. A name
+/// that starts with `_` (where this server keeps its own tables) cannot be one.
+pub fn check_schema_prefix(prefix: &str) -> Result<()> {
+    let refuse = |why: &str| {
+        Err(Error::invalid(format!(
+            "`{prefix}` is not a table-name prefix a schema permission can be bounded by: \
+             {why}. A prefix is like `ut_`: a lowercase letter, then lowercase letters, \
+             digits or underscores, ending in `_`"
+        )))
+    };
+    if prefix.is_empty() {
+        return Err(Error::invalid(format!(
+            "the `{PERM_SCHEMA}` permission needs a `prefix`, the start of every table name \
+             the module may change (like `ut_`): without one it would reach every table"
+        )));
+    }
+    if prefix.len() > MAX_SCHEMA_PREFIX {
+        return refuse(&format!("it is longer than {MAX_SCHEMA_PREFIX} characters"));
+    }
+    if !prefix.starts_with(|c: char| c.is_ascii_lowercase()) {
+        return refuse("it does not start with a lowercase letter");
+    }
+    if !prefix
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    {
+        return refuse("it has a character other than a lowercase letter, a digit or `_`");
+    }
+    if !prefix.ends_with('_') {
+        return refuse(
+            "it does not end in `_`, so it would also match tables named \
+                       something else that happens to start the same way",
+        );
+    }
+    Ok(())
 }
 
 /// A host, or a host and a port. Not a URL: what the permission checks match is
@@ -502,6 +714,12 @@ mod tests {
             write: Vec::new(),
             env: vec!["MQTT_PASSWORD".into()],
             roles: Some(Role::of(70)),
+            schema: Some(SchemaGrant {
+                create: true,
+                edit: false,
+                drop: true,
+                prefix: "ut_".into(),
+            }),
         };
         let stored = Json::Object(permissions.to_json());
         assert_eq!(ModulePermissions::from_json(&stored).unwrap(), permissions);
@@ -543,6 +761,90 @@ mod tests {
                 .roles,
             None,
             "a blank line in the form is no ceiling"
+        );
+    }
+
+    #[test]
+    fn a_schema_grant_needs_a_prefix_and_is_not_the_workers() {
+        let set = ModulePermissions::from_json(
+            &json!({ "schema": { "create": true, "edit": true, "prefix": "ut_" } }),
+        )
+        .unwrap();
+        let grant = set.schema.clone().unwrap();
+        assert!(grant.create && grant.edit && !grant.drop);
+        assert!(grant.covers("ut_books") && !grant.covers("books") && !grant.covers("ut_"));
+        assert_eq!(
+            set.sentences(),
+            ["may create and change tables whose names start with `ut_`; may not drop them"]
+        );
+        assert!(!set.is_closed());
+        assert_eq!(set.granted(), 1);
+        // The server checks it when the module asks; the worker never sees it.
+        assert!(set.sandbox().is_closed());
+        // It round-trips through the stored JSON.
+        let stored = Json::Object(set.to_json());
+        assert_eq!(ModulePermissions::from_json(&stored).unwrap(), set);
+
+        // Empty means none: absent, null, `{}`, and every switch off.
+        for none in [
+            json!({}),
+            json!({ "schema": null }),
+            json!({ "schema": {} }),
+            json!({ "schema": { "create": false, "edit": false, "drop": false, "prefix": "ut_" } }),
+            json!({ "schema": { "create": false, "prefix": "" } }),
+        ] {
+            let set = ModulePermissions::from_json(&none).unwrap();
+            assert_eq!(set.schema, None, "{none}");
+            assert!(set.is_closed(), "{none}");
+        }
+
+        // A grant with no prefix would reach every table, and is refused.
+        let missing = ModulePermissions::from_json(&json!({ "schema": { "create": true } }))
+            .unwrap_err()
+            .to_string();
+        assert!(missing.contains("needs a `prefix`"), "{missing}");
+        let blank =
+            ModulePermissions::from_json(&json!({ "schema": { "drop": true, "prefix": "  " } }))
+                .unwrap_err()
+                .to_string();
+        assert!(blank.contains("needs a `prefix`"), "{blank}");
+        // …and so is one that is not a table-name prefix.
+        for bad in ["u", "_fd_", "Ut_", "ut-", "1ut_", "ut x_"] {
+            let err = ModulePermissions::from_json(
+                &json!({ "schema": { "create": true, "prefix": bad } }),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("not a table-name prefix"), "{bad}: {err}");
+        }
+        for bad in [
+            json!({ "schema": ["create"] }),
+            json!({ "schema": { "create": "yes", "prefix": "ut_" } }),
+            json!({ "schema": { "create": true, "prefix": "ut_", "rename": true } }),
+        ] {
+            assert!(ModulePermissions::from_json(&bad).is_err(), "{bad}");
+        }
+
+        // Each combination reads as one sentence.
+        let all = SchemaGrant {
+            create: true,
+            edit: true,
+            drop: true,
+            prefix: "wiki_".into(),
+        };
+        assert_eq!(
+            all.sentence(),
+            "may create, change and drop tables whose names start with `wiki_`"
+        );
+        let drop_only = SchemaGrant {
+            create: false,
+            edit: false,
+            drop: true,
+            ..all
+        };
+        assert_eq!(
+            drop_only.sentence(),
+            "may drop tables whose names start with `wiki_`; may not create or change them"
         );
     }
 
@@ -687,6 +989,7 @@ mod tests {
             write: Vec::new(),
             env: vec!["HOME".into()],
             roles: None,
+            schema: None,
         };
         let lines = permissions.sentences();
         assert_eq!(lines.len(), 2);

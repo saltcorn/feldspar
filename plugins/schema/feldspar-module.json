@@ -1,0 +1,16 @@
+{
+  "name": "@feldspar/schema",
+  "language": "javascript",
+  "title": "Schema editing",
+  "description": "Let an application's code create and change tables — for an app whose users define their own — within a table-name prefix you choose.",
+  "supplies": [
+    "An action, schema_apply: a batch of schema operations in the shape MCP edit_schema takes, applied in one transaction, or refused whole.",
+    "Convenience actions with Saltcorn 1 shaped arguments, each one operation: create_table, add_field, alter_field, rename_table, drop_field and drop_table.",
+    "Defaults for every table it creates (row history, read and write roles, row-level security), set in its settings so the application need not repeat them.",
+    "A table it creates is connected to the application whose custom query ran it; the row API is not opened. Run the actions from a trigger only an admin may run, from a custom query's trigger(\"…\").asAdmin().run(…), after the query has checked who may."
+  ],
+  "installs": [],
+  "permissions": {
+    "schema": { "create": true, "edit": true, "drop": false, "prefix": "ut_" }
+  }
+}

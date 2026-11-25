@@ -59,6 +59,8 @@ mod module_credits;
 mod module_files;
 #[path = "module_roles.rs"]
 mod module_roles;
+#[path = "module_schema.rs"]
+mod module_schema;
 #[path = "module_services.rs"]
 mod module_services;
 #[path = "module_store.rs"]

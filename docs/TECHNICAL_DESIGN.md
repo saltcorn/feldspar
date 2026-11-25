@@ -14596,7 +14596,9 @@ has a sandbox:
   empty list means nothing, never everything**, and a module installed with nothing declared
   gets the closed set. A fifth entry, `roles`, is not the worker's at all: the most privileged
   role the module may grant users (§15.1e), checked by the server when the module asks, and
-  left out of the set the pool pins by (`ModulePermissions::sandbox`). A container belongs to an isolate and there is no fence inside one, so
+  left out of the set the pool pins by (`ModulePermissions::sandbox`). A sixth, `schema`, is the
+  schema edits it may make (§15.1h), and is the server's in the same way. A container belongs
+  to an isolate and there is no fence inside one, so
   the pool pins **by permission set**: two modules share a worker only when they may reach the
   same things, and editing a module's permissions moves it to a worker that grants what it now
   has, losing its sockets as a restart would. A denial is rewritten into the module's name, what
@@ -15198,6 +15200,93 @@ numbers and dates) and select options. Any other operator is refused by name.
 **Payments stays on webhooks.** Its callbacks come from a provider's servers. They need the raw
 bytes for the signature, no session or credentials, the module's own authority over its own
 tables, and one stable URL on every host. A v1 route provides none of these.
+
+### 15.1h The schema module (`plugins/schema`, `sc_module::schema`, TODO ST1)
+
+An application whose users define their own tables (the Structured Social Wiki design: every
+user table is a real table, made by any signed-in user) has to change the schema from a custom
+query, on behalf of an ordinary user. The admin API and the copilot's `edit_schema` were the only
+callers of `sc_api::schema_edit`, and v1's `Table.create` in a code body is a named stub
+(`v1_api.js`). So schema editing is put behind a module **action**:
+
+```
+custom query ──trigger("make table").asAdmin().run(payload)──▶ an admin-only trigger
+   (checks the app's own rules:          │ action: @feldspar/schema's create_table
+    owner, members, quota)               ▼
+                                   schema.apply([...])  ── the `schema` ask ──▶ schema_edit::apply
+```
+
+**Actions, not functions.** A module function is called with nobody's authority
+(`CallHosts::default()`), because a formula hoists it. Only an action carries its caller's
+context and ask surfaces.
+
+**A granted permission, not an unsafe module.** "Unsafe" means *no permission set bounds it*
+(`sc_module::unsafe_modules`). Schema editing is bounded: `schema_edit` validates, applies in one transaction and refuses
+a batch whole by `Grants`. So it is a sixth entry of `_fd_modules.permissions`, beside `roles`
+and like it the server's to check rather than the worker's (`ModulePermissions::sandbox` leaves
+it out, so it does not split the pool):
+
+```json
+{ "schema": { "create": true, "edit": true, "drop": false, "prefix": "ut_" } }
+```
+
+Absent, `null`, `{}` or every switch off is none. Any switch on needs a `prefix`: a lowercase
+letter, then lowercase letters, digits or `_`, **ending in `_`** (so `u` cannot reach `users`).
+The Modules tab shows it as "may create and change tables whose names start with `ut_`; may not
+drop them" and edits it as three checkboxes and a prefix ("Tables it may change"). A bundled
+manifest may request it, granted on a first install only (§15.1a).
+
+**The application decides who may; the server bounds what can.** The custom query checks the
+application's rules. The `schema` ask (`AskSurface::Schema`, a `sc_module::schema::ModuleSchema`)
+enforces, before anything is applied:
+
+- **the grant**: `create` for `create_table`; `edit` for `alter_table`, `add_field`,
+  `alter_field`, `rename_table` and `add_constraint`; `drop` for `drop_field`, `drop_table`,
+  `drop_constraint` and an `alter_field` that takes a unique rule away. These are also the
+  `Grants` the batch is applied with;
+- **the prefix**: the table every operation creates, alters, renames (both names) or drops must
+  start with it. A key may *point at* a table outside it (`users`, the application's own tables),
+  because only the table the key is on changes;
+- **by name, whatever the prefix**: this server's own tables (`_*`, `users`, `role_grants`, the
+  credit tables), a table a module declares (§15.1b), a table a provider serves and a table in a
+  connected database;
+- **who ran the action**: the ask is served only when the trigger running the action is one only
+  an admin may run (no `min_role`, or the admin's). Then what reached it was configuration: a
+  code body's `asAdmin()`, another trigger, an event. A trigger an application exposes and opens
+  to role 80 is refused, because its caller chose to run it. The event still records the user,
+  and the log line every applied batch writes (`MODULE_SCHEMA_EDIT`) names the module, its grant
+  and that user.
+
+The operations are MCP `edit_schema`'s JSON (`sc_api::mcp::parse_operations`, shared), the
+editor is `Editor::Delegated` (on a table with row-level security only a person changes its
+access settings, disables RLS or drops it), and the answer is `edit_schema`'s
+(`sc_api::mcp::applied_json`) plus `connected` and the catalog's `generation` after the reload.
+
+**Connected to the calling application.** When the event carries an application (a custom
+query's, or a trigger it ran), a table the batch creates is added to that application's `tables`
+and a table it drops is removed (`sc_app::change_stored_app_tables`). Then the catalog's
+`ApplicationHook` (`sc-server`'s `AppMounts`) mounts the application again from the stored
+record, so the live socket, the analytics scope and the next re-projection see the table. The row
+API is not opened (`api_tables` is unchanged). With no application in the event nothing is
+connected, and the answer says so.
+
+**The rest of the run.** A code body's `db.<table>` and `db.table(name)` are plans resolved by the
+host against the live catalog, so the custom query that ran the trigger can insert into the table
+it just created, in the same run. v1's synchronous `Table.findOne` and `Table.find` answer from the
+schema snapshot the run started with (§15.1): refreshing a snapshot already defined in another
+isolate, across the trigger boundary, is not done. They see the table from the next run, and the
+answer's notes say so.
+
+**The module** (`@feldspar/schema`, bundled, not unsafe) requests `create` and `edit` on `ut_`.
+`schema_apply` passes a batch through. `create_table`, `add_field`, `alter_field`,
+`rename_table`, `drop_field` and `drop_table` take v1-shaped arguments (`Table.create(name,
+opts)`, `Field.create({ name, type, required, is_unique, reftable_name })`; `String` is `text`,
+`Key to users` is a reference) and lower each to one operation. Its settings are defaults for
+every created table, unless the operation states them: row history (`history_enabled`,
+`history_keep_days`), `min_role_read` and `min_role_write` (default the admin's), and `rls`
+(default off, because the application's queries reach these tables with `asAdmin()`, which is
+refused on a table with row-level security). There is no check in the module's JavaScript: every
+bound is the server's.
 
 ### 15.2 Python: one interpreter, code bodies and plugin modules (`sc-python`)
 

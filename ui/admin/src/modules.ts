@@ -405,8 +405,65 @@ export const PYTHON_RELOAD =
  * it may grant users (TODO-payments P3.3), checked by the server when it asks. */
 export type PermissionKind = "net" | "read" | "write" | "env" | "roles";
 
-/** A module's permission set as the API sends it. */
-export type ModulePermissionSet = Record<PermissionKind, string[]>;
+/** The schema edits a module may make (TODO ST1.1): which of create, edit and
+ * drop, on the tables whose names start with `prefix`. Checked by the server
+ * when the module asks, like `roles`. */
+export type SchemaGrant = { create: boolean; edit: boolean; drop: boolean; prefix: string };
+
+/** A module's permission set as the API sends it. `schema` is absent when the
+ * module may change no table. */
+export type ModulePermissionSet = Record<PermissionKind, string[]> & { schema?: SchemaGrant };
+
+/** The prefix a new schema grant is offered with — the bundled schema
+ * module's. */
+export const DEFAULT_SCHEMA_PREFIX = "ut_";
+
+/** A schema grant off the wire, or `undefined` when nothing is granted: absent,
+ * unreadable, or every switch off. */
+export function schemaGrant(raw: unknown): SchemaGrant | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const source = raw as Record<string, unknown>;
+  const grant = {
+    create: source.create === true,
+    edit: source.edit === true,
+    drop: source.drop === true,
+    prefix: typeof source.prefix === "string" ? source.prefix : "",
+  };
+  return grant.create || grant.edit || grant.drop ? grant : undefined;
+}
+
+/** A list of verbs as one phrase: "create", "create and change", "create,
+ * change and drop". */
+function verbs(list: string[], joiner: string): string {
+  if (list.length <= 1) return list.join("");
+  return `${list.slice(0, -1).join(", ")} ${joiner} ${list[list.length - 1]}`;
+}
+
+/** A schema grant in words, as the server says it: "may create and change
+ * tables whose names start with ut_; may not drop them". */
+export function schemaSentence(grant: SchemaGrant): string {
+  const all: [boolean, string][] = [
+    [grant.create, "create"],
+    [grant.edit, "change"],
+    [grant.drop, "drop"],
+  ];
+  const may = all.filter(([on]) => on).map(([, verb]) => verb);
+  const not = all.filter(([on]) => !on).map(([, verb]) => verb);
+  const tail = not.length > 0 ? `; may not ${verbs(not, "or")} them` : "";
+  return `may ${verbs(may, "and")} tables whose names start with ${grant.prefix}${tail}`;
+}
+
+/** Why a schema grant's prefix will be refused, or `null` — the server's rule:
+ * a lowercase letter, then lowercase letters, digits or `_`, ending in `_`. */
+export function schemaPrefixProblem(prefix: string): string | null {
+  if (prefix.trim() === "") {
+    return "Tables it may change needs a prefix, the start of every table name it may change, like ut_.";
+  }
+  if (!/^[a-z][a-z0-9_]*_$/.test(prefix) || prefix.length > 30) {
+    return `${prefix} is not a table-name prefix: a lowercase letter, then lowercase letters, digits or _, ending in _ (like ut_).`;
+  }
+  return null;
+}
 
 /** Nothing granted. */
 export const CLOSED_PERMISSIONS: ModulePermissionSet = {
@@ -478,6 +535,8 @@ export function permissionSet(raw: unknown): ModulePermissionSet {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return CLOSED_PERMISSIONS;
   const source = raw as Record<string, unknown>;
   const set: ModulePermissionSet = { net: [], read: [], write: [], env: [], roles: [] };
+  const schema = schemaGrant(source.schema);
+  if (schema) set.schema = schema;
   for (const { key } of PERMISSION_KINDS) {
     const list = source[key];
     if (Array.isArray(list)) {
@@ -493,7 +552,7 @@ export function permissionSet(raw: unknown): ModulePermissionSet {
 
 /** Whether nothing at all is granted. */
 export function isClosed(set: ModulePermissionSet): boolean {
-  return PERMISSION_KINDS.every(({ key }) => set[key].length === 0);
+  return PERMISSION_KINDS.every(({ key }) => set[key].length === 0) && !set.schema;
 }
 
 /** The `net` entry that means *any host* — the server's `ANY_HOST`. */
@@ -516,6 +575,7 @@ export function permissionSummary(set: ModulePermissionSet): string {
   if (set.write.length > 0) parts.push(`writes ${set.write.join(", ")}`);
   if (set.env.length > 0) parts.push(`reads ${set.env.join(", ")}`);
   if ((set.roles ?? []).length > 0) parts.push(`grants users roles ${set.roles[0]} to 99`);
+  if (set.schema) parts.push(schemaSentence(set.schema).replace(/; may not /, ", and may not "));
   return `Reaches only these: ${parts.join("; ")}.`;
 }
 
@@ -580,6 +640,10 @@ export function permissionProblems(set: ModulePermissionSet): string[] {
     problems.push(
       "Roles it may grant is one role, the most privileged; it may then grant every less privileged one too.",
     );
+  }
+  if (set.schema) {
+    const problem = schemaPrefixProblem(set.schema.prefix);
+    if (problem !== null) problems.push(problem);
   }
   return problems;
 }
@@ -655,6 +719,9 @@ export function grantSentence(entry: BundledModule): string | null {
   if (set.read.length > 0) parts.push(`read ${set.read.join(", ")}`);
   if (set.write.length > 0) parts.push(`write ${set.write.join(", ")}`);
   if (set.env.length > 0) parts.push(`read ${set.env.join(", ")}`);
+  if (set.schema) {
+    parts.push(schemaSentence(set.schema).replace(/^may /, "").replace(/; may not /, ", but not "));
+  }
   return `Installing lets it ${parts.join("; ")}. You can change that afterwards.`;
 }
 

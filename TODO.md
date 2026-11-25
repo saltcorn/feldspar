@@ -1460,7 +1460,7 @@ Decisions (from the design discussion):
 - **Additive.** A new ask surface, a new permission key (absent or empty means none), a new
   bundled module. Nothing changes for an installation that does not install it.
 
-- [ ] **ST1.1** The `schema` permission on `_fd_modules.permissions`:
+- [x] **ST1.1** The `schema` permission on `_fd_modules.permissions`:
   `{ "schema": { "create": bool, "edit": bool, "drop": bool, "prefix": "<prefix>" } }`, read into
   `ModulePermissions` and **left out of the set the worker pool pins by** (it is the server's, as
   `roles` is). `prefix` is required and non-empty whenever any grant is on, and must be a valid
@@ -1468,7 +1468,7 @@ Decisions (from the design discussion):
   whose names start with `ut_`; may not drop them"). A bundled manifest may request it, granted
   on first install only (§15.1a). Tests: parsing (missing prefix refused, empty means none),
   the reinstall that keeps a narrowed grant, the permission screen's text.
-- [ ] **ST1.2** `AskSurface::Schema`: `{ op: "apply", operations: [...] }`, the same operation
+- [x] **ST1.2** `AskSurface::Schema`: `{ op: "apply", operations: [...] }`, the same operation
   JSON as MCP `edit_schema`, answered by `schema_edit::apply` with `Grants` from the module's
   permission. Carried only by the **actions** of a module granted it, and served only when the
   action runs at admin authority (from a code body's or a trigger's elevation), so a trigger an
@@ -1481,18 +1481,18 @@ Decisions (from the design discussion):
   its grant and the originating user. Tests: each grant on and off, a prefix escape in each
   operation kind (including `RenameTable` to an unprefixed name), a key to `users` allowed, the
   exposed-trigger refusal, the batch rolled back whole.
-- [ ] **ST1.3** Connect created tables to the calling application. When the event that ran the
+- [x] **ST1.3** Connect created tables to the calling application. When the event that ran the
   action carries an application (a custom query's, or a trigger it ran), a table the batch creates
   is added to that application's `tables` in the same act, and a table it drops is removed. There is
   no `api_tables` change: the row API stays off. With no application in the event, nothing is
   connected and the answer says so. Tests: create from a custom query, then a second query in the same
   app names the table; another application cannot name it; dropping removes it.
-- [ ] **ST1.4** The rest of the run sees the new schema. After a `schema` ask, the calling body's
+- [x] **ST1.4** The rest of the run sees the new schema. After a `schema` ask, the calling body's
   schema snapshot is refreshed to the generation the answer carries, so `db.<new table>` and
   v1's `Table.findOne` resolve it in the same run. If that is not possible across the trigger
   boundary, the answer and the docs say plainly that the table is visible from the next run.
   Tests: create, then insert into the table in the same custom query (or the documented refusal).
-- [ ] **ST1.5** `plugins/schema` (`@feldspar/schema`), bundled, not unsafe. Its manifest requests
+- [x] **ST1.5** `plugins/schema` (`@feldspar/schema`), bundled, not unsafe. Its manifest requests
   `create` and `edit` with an admin-chosen prefix (default `ut_`; `drop` off) and lists what it supplies.
   Actions:
   - `schema_apply`: the operations from the payload, passed through;
@@ -1506,8 +1506,24 @@ Decisions (from the design discussion):
   trigger → action → table exists, history on, connected to the app), `bundled_catalog`'s agreement
   check, and `node --test plugins/schema/test`. Every test that builds a catalog registers
   `catalog.teardown_hook()`.
-- [ ] **ST1.6** Docs: TECHNICAL_DESIGN §15.1h "The schema module", the authority inventory, the row
+- [x] **ST1.6** Docs: TECHNICAL_DESIGN §15.1h "The schema module", the authority inventory, the row
   in `plugins/README.md`, and a tutorial step in `docs/tutorial-modules.md`: a table-builder app where
   signed-in users create tables through a custom query that checks a quota and then runs the
   trigger. The tutorial should say what the app must still enforce itself (who may change which
   table), and that the application's `max_role` must not cap the query's `asAdmin()`.
+
+  Done as described, with these details (CHANGELOG has the rest):
+  - **"Admin authority"** is decided by the trigger running the action: one with no `min_role`
+    (or the admin's) is served, anything opened to a lower role is refused. A trigger's action
+    always runs at admin authority, so its own floor is what tells configuration from a caller.
+  - **The prefix must end in `_`**, so it is a namespace (`u` would reach `users`), and the
+    server's own tables, module-declared tables, provider tables and tables in another database
+    are refused by name whatever the prefix.
+  - **ST1.4:** `db.<table>` already resolves against the live catalog, so the same run inserts
+    into a new table. v1's `Table.findOne` sees it from the next run, as the answer and the docs
+    say. Refreshing a snapshot already defined in the calling isolate was not done.
+  - **The remount** goes through a new catalog seam, `ApplicationHook`, which `AppMounts`
+    implements. A process with no server saves the record and says the change is served from
+    the next start.
+  - **`max_role`** was checked: it caps the user's role, not the query's `asAdmin()` (an app
+    capped at 90 still creates a table).

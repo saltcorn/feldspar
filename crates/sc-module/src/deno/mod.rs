@@ -1761,8 +1761,9 @@ fn unknown_surface(other: &str) -> Error {
              file areas (`module_files`), role grants (`roles`), LLM credits \
              (`credits`), from a service its \
              supervisor (`service`), from an action a consent flow (`oauth`) and, \
-             from a route, the installation's state (`system`) and, from a checklist step, \
-             the run it is a step of (`check`)"
+             from a route, the installation's state (`system`), from a checklist step, \
+             the run it is a step of (`check`) and, from an action granted it, schema \
+             edits (`schema`)"
     ))
 }
 

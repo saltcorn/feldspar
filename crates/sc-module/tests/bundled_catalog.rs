@@ -282,6 +282,78 @@ fn node(script: &str, arg: &Path, what: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// TODO ST1.5: the schema module ships, requests `create` and `edit` on the
+/// `ut_` prefix and never `drop`, reaches nothing else, and exports the seven
+/// actions its card lists — and its own tests pass.
+#[test]
+fn the_schema_module_ships_and_requests_create_and_edit_on_a_prefix() {
+    let catalog = catalog();
+    let schema = catalog.get("schema").expect("the schema module ships");
+    assert_eq!(schema.name, "@feldspar/schema");
+    assert_eq!(schema.language, ModuleLanguage::JavaScript);
+    assert!(
+        schema.unsafe_reason.is_none(),
+        "it is bounded, so not unsafe"
+    );
+    assert!(schema.installs.is_empty());
+    let grant = schema
+        .permissions
+        .schema
+        .clone()
+        .expect("it requests schema edits");
+    assert!(grant.create && grant.edit && !grant.drop, "{grant:?}");
+    assert_eq!(grant.prefix, "ut_");
+    // Nothing a worker would be granted: the schema grant is the server's.
+    assert!(schema.permissions.sandbox().is_closed());
+    assert_eq!(
+        schema.permissions.sentences(),
+        ["may create and change tables whose names start with `ut_`; may not drop them"]
+    );
+
+    let script = "const m = require(process.argv[1]); \
+                  console.log(JSON.stringify(Object.keys(m.actions({})).sort()))";
+    let Some(out) = node(
+        script,
+        &schema.directory.join("index.js"),
+        "the schema module",
+    ) else {
+        return;
+    };
+    let actions: Vec<String> = serde_json::from_str(&out).expect("JSON");
+    assert_eq!(
+        actions,
+        [
+            "add_field",
+            "alter_field",
+            "create_table",
+            "drop_field",
+            "drop_table",
+            "rename_table",
+            "schema_apply"
+        ]
+    );
+    for action in &actions {
+        assert!(
+            schema
+                .supplies
+                .iter()
+                .any(|line| line.contains(action.as_str())),
+            "the card does not mention {action}"
+        );
+    }
+    let output = std::process::Command::new("node")
+        .args(["--test", "test/"])
+        .current_dir(&schema.directory)
+        .output()
+        .expect("node ran above");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// TODO-payments P2.1: the payments module ships, declares the three tables
 /// its card lists, the two webhooks and its service, and may reach **exactly**
 /// the hosts its adapters name — an allow-list, never `*` (design §9).

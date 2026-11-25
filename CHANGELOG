@@ -2,6 +2,81 @@
 
 Changes in reverse chronological order.
 
+## Schema editing from application code: the schema module (TODO ST1)
+
+An application whose users define their own tables can now change the schema from a custom
+query, for an ordinary signed-in user. The path is: the custom query checks the application's
+own rules, then runs an admin-only trigger with `trigger("…").asAdmin().run(…)`; the trigger's
+action is one of the new bundled `@feldspar/schema` module's; the action asks the server, which
+applies the batch with `schema_edit` (validated, one transaction, refused whole). The application
+decides **who** may change a table. The server bounds **what** the module can change. Nothing
+changes for an installation that does not install the module: the permission key, the ask surface
+and the hook are new and absent by default, and a module without the grant is stored and reported
+exactly as before.
+
+- **ST1.1 The `schema` permission.** `_fd_modules.permissions` takes
+  `{ "schema": { "create", "edit", "drop", "prefix" } }` (`sc_module::SchemaGrant`). Absent,
+  `null`, `{}` or every switch off is none. Any switch on needs a prefix: a lowercase letter,
+  then lowercase letters, digits or `_`, ending in `_` (so `u` cannot reach `users`). Like
+  `roles`, it is the server's to check and not the worker's, so it does not split the worker
+  pool. It reads as "may create and change tables whose names start with `ut_`; may not drop
+  them" in the server's sentences, on the module card and beside a bundled card's Install button.
+  The Modules tab's permission form has a "Tables it may change" section (three checkboxes and
+  the prefix), checked before the save. A bundled manifest may request it, granted on the first
+  install only.
+- **ST1.2 The `schema` ask** (`AskSurface::Schema`, `sc_module::schema::ModuleSchema`):
+  `schema.apply(operations, { dry_run })` on an action's argument, in MCP `edit_schema`'s
+  operation JSON (the parser is now shared: `sc_api::mcp::parse_operations` and `applied_json`).
+  It is carried only by the actions of a module granted it, and served only when the trigger
+  running the action is admin-only (no `min_role`). A trigger opened to role 80 is refused,
+  naming its role. Before anything is applied, each operation is checked against the grant (with
+  the module's own wording) and the prefix: the table it creates, alters, renames (both names) or
+  drops. A key may point at `users` or another table. Refused by name whatever the prefix: `_*`,
+  `users`, the role and credit tables, a module's declared tables, provider tables and tables in
+  a connected database. The editor is delegated, so a table with row-level security keeps its
+  access settings. Every applied batch is logged as `MODULE_SCHEMA_EDIT`, naming the module, its
+  grant and the user, and that row is in the authority inventory. The answer is `edit_schema`'s,
+  plus `connected` and the catalog's `generation`.
+- **ST1.3 Connected to the calling application.** A table the batch creates is added to the
+  `tables` of the application whose request ran it, and a table it drops is removed
+  (`sc_app::change_stored_app_tables`). The row API stays off. The new catalog seam
+  `ApplicationHook` (`set_application_hook`, `notify_application_changed`), installed by
+  `sc-server`'s `AppMounts`, mounts the application again from its stored record. With no
+  application in the event, nothing is connected and the answer says so.
+- **ST1.4 The rest of the run.** `db.<table>` and `db.table(name)` resolve against the live
+  catalog, so the custom query that created a table inserts into it in the same run (tested).
+  v1's synchronous `Table.findOne` / `Table.find` answer from the snapshot the run started with
+  and see the table from the next run. The answer's notes and the docs say so.
+- **ST1.5 `plugins/schema` (`@feldspar/schema`)**, bundled, not unsafe. It requests `create` and
+  `edit` on `ut_`, with `drop` off. `schema_apply` passes a batch through. `create_table`,
+  `add_field`, `alter_field`, `rename_table`, `drop_field` and `drop_table` take Saltcorn 1 shaped
+  arguments (`String` → `text`, `Key to users` → a reference) and lower each to one operation.
+  Its settings are defaults for every created table: row history and its days, the read and write
+  roles (the admin's), and RLS (off).
+- **ST1.6 Docs.** TECHNICAL_DESIGN §15.1h "The schema module" (and §15.1's permission list), the
+  `MODULE_SCHEMA_EDIT` row in the security review's inventory, the `plugins/README.md` row, and
+  tutorial-modules.md Step 12, "A table builder": a quota-checking custom query, and what the
+  application must still enforce itself (ownership, quotas, names, row access). An application's
+  `max_role` does not cap the query's `asAdmin()`; this was checked with an application capped at
+  90.
+- Tests:
+  - `sc-module`: permission parsing (missing or invalid prefix refused, empty means none, the
+    sentence, `sandbox` leaves it out, the round trip). `tests/module_schema.rs` drives the ask
+    against Postgres: each grant on and off, a prefix escape in each operation kind (including
+    `rename_table` to an unprefixed name and the bare prefix), a key to `users` allowed, this
+    server's tables refused, a batch rolled back whole (by the prefix and by `schema_edit`), a dry
+    run, and tables connected to and disconnected from the calling application and not another.
+    `bundled_catalog` checks the card's grant, the seven actions against the card and the
+    module's own node tests.
+  - `sc-server` `bundled_schema`, through the router: install from the catalog (the card's grant
+    granted), configure history, then custom query → `asAdmin()` trigger → `create_table`. The
+    table exists with history on and the same run writes and reads it. It is connected to the
+    app (stored and mounted) with no row API, not to the other app, and a second query writes to
+    it. Also: the app's quota, a prefix escape refused, a trigger opened to role 80 refused, an
+    app with `max_role` 90 still creating, and a narrowed grant surviving a reinstall and
+    refusing the next create.
+  - `node --test plugins/schema/test` (7 tests), and `ui/admin` `modules.test.ts`.
+
 ## Interactive Astro applications (TODO W4)
 
 The Astro framework could build a website (pages from the server, forms that post back) but not

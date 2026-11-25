@@ -1304,6 +1304,33 @@ impl SchemaObserver for AppMounts {
     }
 }
 
+/// Serve an application again after its stored record changed below the admin
+/// API — a module's `schema` ask connected the tables it created to the
+/// application whose request ran it (TODO ST1.3). The mount is rebuilt from
+/// what is stored, as a rename's is (`table_rename`), so the live socket, the
+/// analytics scope and the next re-projection see the new tables.
+#[async_trait::async_trait]
+impl sc_catalog::ApplicationHook for AppMounts {
+    async fn application_changed(&self, catalog: &Catalog, app: uuid::Uuid) -> Result<Vec<String>> {
+        let Some(app) = sc_app::load_application(catalog, sc_app::AppId(app)).await? else {
+            return Ok(Vec::new());
+        };
+        if self.get(&app.subdomain).is_none() {
+            return Ok(vec![format!(
+                "application `{}` is not being served, so its new tables are served when it is",
+                app.name
+            )]);
+        }
+        let name = app.name.clone();
+        Ok(match mount_from_disk(self, app).await {
+            Ok(_) => Vec::new(),
+            Err(e) => vec![format!(
+                "application `{name}` could not be mounted again with its new tables: {e}"
+            )],
+        })
+    }
+}
+
 /// The same arrangement for the **trigger** set, and for the same reason one
 /// sentence further on: an agent carrying `admin_copilot` (§11.3) can now save
 /// and delete triggers, so the re-projection cannot live in the admin handler

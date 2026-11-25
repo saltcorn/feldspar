@@ -90,6 +90,7 @@ pub mod permissions;
 pub mod reads;
 pub mod roles;
 pub mod routes;
+pub mod schema;
 pub mod services;
 pub mod spec;
 pub mod store;
@@ -130,9 +131,11 @@ pub use module::{
 pub use modules::{LoadedModule, ModuleIssue, ModuleSet, redacted_configuration, unsupported_json};
 pub use paths::default_modules_root;
 pub use permissions::{
-    ANY_HOST, ModulePermissions, PERM_ENV, PERM_NET, PERM_READ, PERM_ROLES, PERM_WRITE,
+    ANY_HOST, MAX_SCHEMA_PREFIX, ModulePermissions, PERM_ENV, PERM_NET, PERM_READ, PERM_ROLES,
+    PERM_SCHEMA, PERM_WRITE, SchemaGrant, check_schema_prefix,
 };
 pub use roles::ModuleRoles;
+pub use schema::{MODULE_SCHEMA_EDIT, ModuleSchema};
 pub use routes::{
     MatchedRoute, ROUTES_PREFIX, RouteRequest, allowed_methods, match_route, route_module,
     route_path, run_route,

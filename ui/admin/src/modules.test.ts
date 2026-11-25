@@ -64,6 +64,9 @@ import {
   permissionProblems,
   permissionSummary,
   permissionText,
+  schemaGrant,
+  schemaPrefixProblem,
+  schemaSentence,
   serviceState,
   suppliedSummary,
   toolchainMissing,
@@ -535,6 +538,50 @@ describe("a module's permissions", () => {
     expect(permissionProblem("roles", "pro")).toMatch(/role number/);
     expect(permissionProblems({ ...CLOSED_PERMISSIONS, roles: ["70", "80"] })).toHaveLength(1);
     expect(permissionProblems(CLOSED_PERMISSIONS)).toEqual([]);
+  });
+});
+
+describe("a module's schema grant (TODO ST1.1)", () => {
+  const grant = { create: true, edit: true, drop: false, prefix: "ut_" };
+
+  it("reads a grant off the wire, and every switch off as none", () => {
+    expect(modulePermissions(module_({ permissions: { schema: grant } })).schema).toEqual(grant);
+    expect(schemaGrant({ create: false, edit: false, drop: false, prefix: "ut_" })).toBeUndefined();
+    expect(schemaGrant(null)).toBeUndefined();
+    expect(schemaGrant(["create"])).toBeUndefined();
+    // A set without one has no `schema` at all, so it reads as before.
+    expect(modulePermissions(module_({ permissions: { net: [], schema: null } }))).toEqual(CLOSED_PERMISSIONS);
+  });
+
+  it("says it in words, as the server does", () => {
+    expect(schemaSentence(grant)).toBe("may create and change tables whose names start with ut_; may not drop them");
+    expect(schemaSentence({ ...grant, drop: true })).toBe(
+      "may create, change and drop tables whose names start with ut_",
+    );
+    expect(schemaSentence({ create: false, edit: false, drop: true, prefix: "wiki_" })).toBe(
+      "may drop tables whose names start with wiki_; may not create or change them",
+    );
+    const set = { ...CLOSED_PERMISSIONS, schema: grant };
+    expect(isClosed(set)).toBe(false);
+    expect(permissionSummary(set)).toBe(
+      "Reaches only these: may create and change tables whose names start with ut_, and may not drop them.",
+    );
+  });
+
+  it("is printed beside the install button", () => {
+    expect(grantSentence(bundled({ permissions: { schema: grant } }))).toBe(
+      "Installing lets it create and change tables whose names start with ut_, but not drop them. You can change that afterwards.",
+    );
+  });
+
+  it("needs a prefix the server accepts", () => {
+    expect(schemaPrefixProblem("ut_")).toBeNull();
+    expect(schemaPrefixProblem("")).toMatch(/needs a prefix/);
+    for (const bad of ["u", "_fd_", "Ut_", "ut-", "1ut_"]) {
+      expect(schemaPrefixProblem(bad)).toMatch(/not a table-name prefix/);
+    }
+    expect(permissionProblems({ ...CLOSED_PERMISSIONS, schema: { ...grant, prefix: "" } })).toHaveLength(1);
+    expect(permissionProblems({ ...CLOSED_PERMISSIONS, schema: grant })).toEqual([]);
   });
 });
 

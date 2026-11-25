@@ -117,11 +117,17 @@ pub enum AskSurface {
     /// `FELDSPAR_ALLOW_UNSAFE_MODULES=1` (a
     /// [`crate::unsafe_modules::ModuleShell`]).
     Shell,
+    /// `schema`: `{ op: "apply", operations: [...], dry_run }`, a batch of
+    /// schema edits in MCP `edit_schema`'s operation JSON (TODO ST1.2) — only
+    /// for an action of a module an admin granted the `schema` permission,
+    /// run by a trigger only an admin may run (a
+    /// [`crate::schema::ModuleSchema`]).
+    Schema,
 }
 
 impl AskSurface {
     /// Every surface, in [`Asks`]' slot order.
-    pub const ALL: [AskSurface; 7] = [
+    pub const ALL: [AskSurface; 8] = [
         AskSurface::Service,
         AskSurface::Roles,
         AskSurface::Credits,
@@ -129,6 +135,7 @@ impl AskSurface {
         AskSurface::System,
         AskSurface::Check,
         AskSurface::Shell,
+        AskSurface::Schema,
     ];
 
     /// The name the host script asks it by.
@@ -141,6 +148,7 @@ impl AskSurface {
             AskSurface::System => "system",
             AskSurface::Check => "check",
             AskSurface::Shell => "shell",
+            AskSurface::Schema => "schema",
         }
     }
 
@@ -180,6 +188,11 @@ impl AskSurface {
                  or one of its agent skills used by an administrator at the admin console, \
                  on a server started with FELDSPAR_ALLOW_UNSAFE_MODULES=1"
             }
+            AskSurface::Schema => {
+                "this module call cannot change the schema: only an action of a module an \
+                 admin has granted the `schema` permission can (Settings → Modules → \
+                 Permissions, \"Tables it may change\")"
+            }
         }
     }
 
@@ -191,7 +204,7 @@ impl AskSurface {
 /// The ask surfaces one call carries, one slot per [`AskSurface`]. Empty by
 /// default: a call carries only what it was given.
 #[derive(Clone, Copy, Default)]
-pub struct Asks<'a>([Option<&'a dyn Ask>; 7]);
+pub struct Asks<'a>([Option<&'a dyn Ask>; AskSurface::ALL.len()]);
 
 impl<'a> Asks<'a> {
     /// The same, answering `surface` with `ask`.
@@ -1793,7 +1806,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                "service", "roles", "credits", "oauth", "system", "check", "shell"
+                "service", "roles", "credits", "oauth", "system", "check", "shell", "schema"
             ]
         );
         for surface in AskSurface::ALL {

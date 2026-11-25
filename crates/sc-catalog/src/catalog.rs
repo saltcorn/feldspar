@@ -1047,6 +1047,25 @@ impl Catalog {
         }
     }
 
+    /// Install what serves an application again after its stored record
+    /// changed below the admin API — `sc-server`'s mount registry, once, at
+    /// boot.
+    pub fn set_application_hook(&self, hook: Arc<dyn crate::observer::ApplicationHook>) {
+        self.install(|services| services.application_hook = Some(hook));
+    }
+
+    /// Tell the installed application hook, if any, that application `app`'s
+    /// record changed, and hand back its notes. `None` when no hook is
+    /// installed — a process that serves no applications — so the caller can
+    /// say the change is served from the next start.
+    pub async fn notify_application_changed(&self, app: uuid::Uuid) -> Result<Option<Vec<String>>> {
+        let hook = self.service(|services| services.application_hook.clone())?;
+        match hook {
+            Some(hook) => hook.application_changed(self, app).await.map(Some),
+            None => Ok(None),
+        }
+    }
+
     /// Tell the installed observer, if any, that the schema moved, and hand back
     /// the applications it re-projected.
     ///

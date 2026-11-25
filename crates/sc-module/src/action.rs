@@ -30,6 +30,8 @@ use serde_json::{Map, Value as Json, json};
 use crate::consent::ConsentAsks;
 use crate::files::{FileArea, ModuleFiles};
 use crate::host::{AskSurface, CallHosts, ModuleHost};
+use crate::permissions::SchemaGrant;
+use crate::schema::ModuleSchema;
 
 /// One action supplied by one module.
 pub struct ModuleAction {
@@ -55,6 +57,9 @@ pub struct ModuleAction {
     areas: Arc<Vec<FileArea>>,
     /// The most privileged role it may grant users (TODO-payments P3.3).
     roles: Option<Role>,
+    /// The schema edits it may make (TODO ST1.2): the call then carries the
+    /// `schema` ask.
+    schema: Option<SchemaGrant>,
     /// What a direct run takes and answers, as the module declared them
     /// ([`Action::payload_type`], [`Action::returns_type`]).
     payload: Option<Json>,
@@ -97,6 +102,7 @@ impl ModuleAction {
             surfaces,
             areas: Arc::new(Vec::new()),
             roles: None,
+            schema: None,
             payload: None,
             returns: None,
             network: false,
@@ -136,6 +142,14 @@ impl ModuleAction {
     #[must_use]
     pub fn with_role_ceiling(mut self, ceiling: Option<Role>) -> ModuleAction {
         self.roles = ceiling;
+        self
+    }
+
+    /// The same action, able to change the schema within `grant` (TODO ST1.2)
+    /// — the module's [`ModulePermissions::schema`](crate::ModulePermissions::schema).
+    #[must_use]
+    pub fn with_schema_grant(mut self, grant: Option<SchemaGrant>) -> ModuleAction {
+        self.schema = grant;
         self
     }
 
@@ -200,6 +214,10 @@ impl Action for ModuleAction {
             user: ctx.event.user.as_ref(),
         };
         let shell = crate::unsafe_modules::ModuleShell::new(&self.module);
+        let schema = self
+            .schema
+            .as_ref()
+            .map(|grant| ModuleSchema::for_action(ctx, &self.module, grant));
         let mut call = CallHosts::new(hosts.surfaces(), hosts.schema())
             .with_module_files(&files)
             .with_ask(AskSurface::Roles, &roles)
@@ -207,6 +225,9 @@ impl Action for ModuleAction {
             .with_ask(AskSurface::OAuth, &oauth);
         if self.shell {
             call = call.with_ask(AskSurface::Shell, &shell);
+        }
+        if let Some(schema) = &schema {
+            call = call.with_ask(AskSurface::Schema, schema);
         }
         self.host.run(&self.module, &self.name, args, call).await
     }

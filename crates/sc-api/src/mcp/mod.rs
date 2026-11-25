@@ -81,7 +81,7 @@ pub use code_api::{JS_CODE_API, TOOL_DESCRIBE_CODE_API};
 pub use endpoint_tool::{BODY_KEY, ProjectedCall, Projection, check_caller};
 pub use json_schema::{json_schema, object_schema, scalar_schema};
 pub use run_code::TOOL_RUN_CODE;
-pub use schema::{TOOL_DESCRIBE, TOOL_EDIT};
+pub use schema::{TOOL_DESCRIBE, TOOL_EDIT, applied_json, parse_operations};
 pub use triggers::{
     TOOL_DELETE_TRIGGER, TOOL_DESCRIBE_ACTION, TOOL_DESCRIBE_TRIGGERS, TOOL_SAVE_TRIGGER,
     setting_json,

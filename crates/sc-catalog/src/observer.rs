@@ -123,6 +123,24 @@ pub trait TableRenameHook: Send + Sync {
     ) -> sc_error::Result<Vec<String>>;
 }
 
+/// An application's stored record was changed below the admin API — a
+/// module's `schema` ask connected a table it created to the application
+/// whose request ran it (TODO ST1.3) — so what is mounted must be read again.
+///
+/// The catalog carries the seam for the reason it carries the
+/// [`TableRenameHook`]: the mount registry is `sc-server`'s, far above the
+/// module host that made the change, and `sc-server` installs it at boot.
+#[async_trait::async_trait]
+pub trait ApplicationHook: Send + Sync {
+    /// Serve application `app` as it is now stored. The answer is a list of
+    /// notes for the caller; an `Err` is the remount failing, never the change.
+    async fn application_changed(
+        &self,
+        catalog: &Catalog,
+        app: uuid::Uuid,
+    ) -> sc_error::Result<Vec<String>>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
