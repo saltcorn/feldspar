@@ -28,7 +28,10 @@ use sc_types::Role;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use sc_api::{ApiProvider, ApiRequest, ApiResponse, GraphqlProvider, Method, RestProvider};
+use sc_api::{
+    ApiProvider, ApiRequest, ApiResponse, GraphqlProvider, Method, REST_HEADER_ROW_CAP,
+    REST_HEADER_TRUNCATED, RestProvider,
+};
 use sc_auth::User;
 use sc_catalog::{Catalog, TableMeta, bootstrap_table_meta, enable_rls, save_table_meta};
 use sc_db::{DatabaseDriver, DbCapabilities, PhysicalTable, RowStream, SchemaChange, Transaction};
@@ -368,6 +371,46 @@ async fn a_read_is_bounded_by_the_applications_row_cap_however_large_a_limit_ask
             .len(),
         1
     );
+    Ok(())
+}
+
+fn header<'a>(resp: &'a ApiResponse, name: &str) -> Option<&'a str> {
+    resp.headers
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, v)| v.as_str())
+}
+
+/// A list the cap cut short says so: a client that asked for every row must
+/// not be handed the first `row_cap` of them as if they were the table.
+#[tokio::test]
+async fn a_read_the_cap_cut_short_says_so_and_names_the_cap() -> Result<()> {
+    let db = TestDb::new().await?;
+    let (cat, _) = setup(&db).await?;
+    let api = provider(&cat)?.with_row_cap(2);
+    let user = admin()?;
+
+    // Five books: a limit above the cap, and no limit, are both cut short.
+    for query in [&[("limit", "1000")][..], &[]] {
+        let resp = list(&api, &cat, Some(&user), query).await?;
+        assert_eq!(resp.body.as_array().expect("rows").len(), 2);
+        assert_eq!(header(&resp, REST_HEADER_TRUNCATED), Some("true"));
+        assert_eq!(header(&resp, REST_HEADER_ROW_CAP), Some("2"));
+    }
+    // The last page is all there is: no truncation, though the cap bounded it.
+    let resp = list(&api, &cat, Some(&user), &[("offset", "4")]).await?;
+    assert_eq!(resp.body.as_array().expect("rows").len(), 1);
+    assert_eq!(header(&resp, REST_HEADER_TRUNCATED), None);
+    // Exactly the cap's worth left: not truncated either.
+    let resp = list(&api, &cat, Some(&user), &[("offset", "3")]).await?;
+    assert_eq!(resp.body.as_array().expect("rows").len(), 2);
+    assert_eq!(header(&resp, REST_HEADER_TRUNCATED), None);
+    // The caller's own bound, at or under the cap, is not the cap cutting.
+    for limit in ["1", "2"] {
+        let resp = list(&api, &cat, Some(&user), &[("limit", limit)]).await?;
+        assert_eq!(header(&resp, REST_HEADER_TRUNCATED), None, "limit={limit}");
+        assert_eq!(header(&resp, REST_HEADER_ROW_CAP), Some("2"));
+    }
     Ok(())
 }
 

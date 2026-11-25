@@ -2,6 +2,23 @@
 
 Changes in reverse chronological order.
 
+## REST list reads say when the row cap cut them short
+
+From a user report: `GET /api/<table>?limit=2000` answered with 500 rows (the default
+`row_cap`) and nothing to show the list was incomplete. Lookups backed by tables of more than
+500 rows silently failed to resolve anything past row 500.
+
+- **Clamping still happens.** A `limit` above the cap is still lowered to the cap, as before, so
+  running applications get the same rows. Refusing it with a 400 would break clients that send
+  large limits today.
+- **`x-row-cap: <cap>`** is now on every REST list response.
+- **`x-truncated: true`** is added when the cap held rows back. A read the cap bounded (no
+  `limit`, or one above the cap) now fetches cap + 1 rows to find out, then returns the cap. A
+  caller's own `limit` at or under the cap is never flagged. Page on with `offset`.
+- Exported as `sc_api::REST_HEADER_ROW_CAP` / `REST_HEADER_TRUNCATED`. Covered by
+  `rest_query::a_read_the_cap_cut_short_says_so_and_names_the_cap`. TECHNICAL_DESIGN §13 and
+  `docs/tutorial-rest-queries.md` describe the headers.
+
 ## `--admin` and `--role` pass over disabled accounts
 
 From a user report: `feldspar auth token --admin` and `feldspar mcp-token create --admin` (and

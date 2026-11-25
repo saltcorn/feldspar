@@ -9078,7 +9078,12 @@ silently dropped filter answers with rows the caller did not ask for, which is t
 this API can have. `select`, `order`, `limit` and `offset` are therefore reserved words a column
 of the same name cannot be filtered on — the same trade PostgREST makes. `limit` is clamped to
 the application's `row_cap` (default 500) rather than trusted, and an absent one *becomes* the
-cap, exactly as a GraphQL list field's does.
+cap, exactly as a GraphQL list field's does. The clamp is **not silent**: every list response
+carries `x-row-cap: <cap>`, and a read the cap bounded (no `limit`, or one above the cap) asks for
+one row more than it returns, so when rows were held back it carries `x-truncated: true`. A
+caller's own `limit` at or under the cap is never flagged — reaching it is what they asked for.
+A 400 for a `limit` above the cap was the alternative, and is not taken: running applications
+send such limits today and get the first page.
 
 The list endpoints **declare** all of this as query parameters (§13.1), so `listBooks` takes a
 typed options object rather than leaving a hand-written `fetch` as the only way to ask.

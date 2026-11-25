@@ -116,6 +116,16 @@ pub const REST_PROVIDER: &str = "rest";
 /// somebody states otherwise.
 pub const DEFAULT_ROW_CAP: u64 = 500;
 
+/// The response header every list read carries: the application's row cap, so
+/// a client can page in steps it knows will be honoured.
+pub const HEADER_ROW_CAP: &str = "x-row-cap";
+
+/// The response header a list read carries, set to `true`, when the row cap cut
+/// it short: there are more rows than were returned, and the next ones are at
+/// `offset` + the cap. Absent when the rows are all there are, or when the
+/// caller's own `limit` (at or under the cap) was the bound.
+pub const HEADER_TRUNCATED: &str = "x-truncated";
+
 /// The setting behind [`RestProvider::with_row_cap`].
 pub const CFG_ROW_CAP: &str = "row_cap";
 
@@ -1553,8 +1563,20 @@ impl RestProvider {
         user: Option<&User>,
     ) -> Result<ApiResponse> {
         let role = sc_auth::role_of(user);
-        let plan = query::parse(cat, table, req, role, self.row_cap)?;
-        let rows = ownership::read_row_values_as(
+        let mut plan = query::parse(cat, table, req, role, self.row_cap)?;
+        // A read the cap bounds — no `limit`, or one above the cap — asks for
+        // one row more than it returns, so a list cut short can say so rather
+        // than pass for the whole table. A `limit` at or under the cap is the
+        // caller's own bound, and reaching it is not news.
+        let asked = req
+            .query_get(crate::query_string::KEY_LIMIT)
+            .and_then(|n| n.parse::<u64>().ok());
+        let bounded_by_cap =
+            plan.query.limit == Some(self.row_cap) && asked.is_none_or(|n| n > self.row_cap);
+        if bounded_by_cap {
+            plan.query.limit = Some(self.row_cap.saturating_add(1));
+        }
+        let mut rows = ownership::read_row_values_as(
             cat,
             table,
             &plan.query,
@@ -1563,7 +1585,16 @@ impl RestProvider {
             self.evaluator.as_ref(),
         )
         .await?;
-        Ok(ApiResponse::ok(plan.render(table, &rows)))
+        let truncated = bounded_by_cap && rows.len() as u64 > self.row_cap;
+        rows.truncate(self.row_cap as usize);
+        let mut resp = ApiResponse::ok(plan.render(table, &rows));
+        resp.headers
+            .push((HEADER_ROW_CAP.to_owned(), self.row_cap.to_string()));
+        if truncated {
+            resp.headers
+                .push((HEADER_TRUNCATED.to_owned(), "true".to_owned()));
+        }
+        Ok(resp)
     }
 
     /// The existing row `id`, granted to the caller by the formula for `op` —

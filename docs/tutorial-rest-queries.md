@@ -67,7 +67,9 @@ at least one book whose `published` is empty — a null is a case worth seeing.
 **The REST row has one setting** (the application's **API** tab), rendered from what the provider declares about itself:
 **Row cap per list read**, default **500**. It is the largest page a list read will answer
 with — an absent `limit` *becomes* the cap and a larger one is clamped to it, so no caller can
-ask this API for a million rows by leaving a parameter out. Every provider's settings work this way (§13.4): the
+ask this API for a million rows by leaving a parameter out. A list the cap cut short says so:
+every list response carries `x-row-cap: <cap>`, and one with more rows behind it than the cap let
+through also carries `x-truncated: true` — page on with `offset`. Every provider's settings work this way (§13.4): the
 form renders a spec, and a key the provider did not declare is refused on save rather than
 stored and quietly ignored.
 
