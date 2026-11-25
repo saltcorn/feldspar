@@ -418,6 +418,24 @@ const sent = Astro.url.searchParams.get("sent") === "1";
 </style>
 `;
 
+/** The typed API client, for a \`<script>\` (TODO W4.1). */
+function apiTs(ctx) {
+  const rel = ctx.client.replace(/^src\//, "../").replace(/\.ts$/, "");
+  return `// The application's API, for a <script> on a page: a click that saves a row,
+// a list kept current by a stream. It runs in the browser, as the signed-in
+// visitor, and sends the CSRF header itself. The client is generated before
+// every build from what the application exposes.
+//
+//   <script>
+//     import { api } from "../lib/api";
+//     await api.<table>.create({ ... });
+//   </script>
+import { createClient } from "${rel}";
+
+export const api = createClient();
+`;
+}
+
 const NOT_FOUND_ASTRO = `---
 export const prerender = true;
 import Layout from "../layouts/Layout.astro";
@@ -582,6 +600,39 @@ Everything a visitor sees is rendered on the server.
   own: the sitemap lists every static route and each dynamic route's
   \`getStaticPaths()\` — export one from a server-rendered \`[slug].astro\` too,
   to list its pages.
+- **The API from a \`<script>\`**: \`src/lib/api.ts\` is the typed client
+  (\`${ctx.client}\`). A \`<script>\` that imports it calls the application's
+  API as the signed-in visitor, CSRF header included, and subscribes to its
+  streams (\`api.<table>.changes\`, \`new LiveRows(api.<table>, { where })\`):
+
+  \`\`\`astro
+  <button id="like" data-id={post.id}>Like</button>
+  <script>
+    import { api } from "../lib/api";
+    const button = document.getElementById("like")!;
+    button.addEventListener("click", () => api.likes.create({ post: Number(button.dataset.id) }));
+  </script>
+  \`\`\`
+- **Fragments** — part of a page, rendered again on the server: a component in
+  \`src/fragments/\` (\`PostCard.astro\`) is also served on its own at
+  \`/_fragment/PostCard?id=1\` (the query is its \`Astro.props\`), by the
+  same body, as the visitor. Mark a form or link with \`data-fragment="PostCard"\`
+  (and \`data-target\`, \`data-swap\`) and it fetches the fragment and swaps
+  it in; with no JavaScript it does what it says as a plain form or link. A
+  form that posts to \`fragmentUrl("PostCard", { id })\` does its work either
+  way and, with no JavaScript, is sent back to its page. "Load more":
+  \`const { rows, next } = await paginate(db.posts.asUser(), { after })\`.
+  A fragment is reachable by anybody: read with \`asUser()\`.
+- **Live lists**: \`<Live stream="posts_live" fragment="PostCard">{…rows…}</Live>\`
+  keeps a list current from a \`table_changes\` stream the application exposes:
+  a new row's fragment is fetched and inserted, a change re-rendered, a delete
+  removed. The fragment's outermost element carries \`data-key={post.id}\`.
+  \`where={{ author: "eq.7" }}\` filters; \`notice="{n} new posts"\` holds
+  new rows behind a button.
+- **Signing in**: \`<SignIn />\`, \`<SignUp />\` and \`<SignOut />\` from
+  \`feldspar:components\` are forms the server answers, with its own second
+  factor, providers and rules; \`Astro.locals.user\` is the visitor afterwards.
+  \`/_auth/sign-in\` is the server's own sign-in page, for a link from anywhere.
 - **No \`URL\` class** on the server: the isolate has none. \`Astro.url\` has
   \`origin\`, \`pathname\`, \`search\`, \`searchParams\` and \`href\`.
 
@@ -592,6 +643,8 @@ Everything a visitor sees is rendered on the server.
 | \`src/pages/\` | routes (\`index.astro\` → \`/\`, \`blog/[slug].astro\` → \`/blog/:slug\`, \`404.astro\`) |
 | \`src/layouts/Layout.astro\` | the shell: \`<head>\` with title, description, canonical and Open Graph tags |
 | \`src/components/\` | components |
+| \`src/fragments/\` | components that are also served on their own, at \`/_fragment/<Name>\` |
+| \`src/lib/api.ts\` | the typed API client, for a \`<script>\` |
 | \`src/styles/global.css\` | the site-wide stylesheet |
 | \`public/\` | copied to the site root as it is |
 | \`${ctx.runtime}/\` | **generated** — the compiler, the server runtime, the typed client; never edit |
@@ -667,6 +720,43 @@ declare module "feldspar:components" {
     sizes?: string;
     [attribute: string]: unknown;
   }) => any;
+  /** The server's sign-in form. Signed in, it renders its \`signed-in\` slot, or nothing. */
+  export const SignIn: (props: {
+    /** Where to go once signed in: a path on this site; this page when not given. */
+    next?: string;
+    /** Identity providers to offer, by their names in Settings → Authentication. */
+    providers?: Array<string | { name: string; label?: string }>;
+    /** \`false\` hides "Remember me". */
+    remember?: boolean;
+    label?: string;
+    [attribute: string]: unknown;
+  }) => any;
+  /** The server's sign-up form, where the application's REST API allows sign-up; else its \`closed\` slot. */
+  export const SignUp: (props: { next?: string; repeat?: boolean; label?: string; [attribute: string]: unknown }) => any;
+  /** A button that signs the visitor out; nothing when nobody is signed in. */
+  export const SignOut: (props: { next?: string; label?: string; [attribute: string]: unknown }) => any;
+  /** A list kept current by a \`table_changes\` stream: each changed row is its fragment, fetched as the visitor. */
+  export const Live: (props: {
+    stream: string;
+    /** The fragment (a file in \`src/fragments/\`) that renders one row; its outermost element has \`data-key={row.id}\`. */
+    fragment: string;
+    /** The query parameter the row's key is passed as (\`id\`). */
+    param?: string;
+    /** The subscription's filter, in the REST read's terms: \`{ author: "eq.7" }\`. */
+    where?: Record<string, string | string[]>;
+    swap?: "prepend" | "append";
+    /** Hold new rows behind a button saying "{n} new …". */
+    notice?: string;
+    as?: string;
+    [attribute: string]: unknown;
+  }) => any;
+  /** The URL of a fragment with \`props\` as its query, for a form's \`action\` or a link's \`href\`. */
+  export function fragmentUrl(name: string, props?: Record<string, unknown>): string;
+  /** One keyset page of a table query: \`{ rows, next }\`, \`next\` being the \`after\` of the page after. */
+  export function paginate<Row = any>(
+    query: any,
+    options?: { after?: string | number | null; limit?: number; key?: string; order?: "asc" | "desc" }
+  ): Promise<{ rows: Row[]; next: any }>;
 }
 
 declare module "*.png" { const image: ImageMetadata; export default image; }
@@ -688,6 +778,7 @@ build**. Edits here are lost.
 |---|---|
 | \`astro/build.mjs\` | the build: compiles \`src/pages\` into \`dist/\` (\`npm run build\`) |
 | \`astro/server.mjs\` | the runtime compiled pages call — rendering, attributes, slots, routing |
+| \`astro/enhance.js\`, \`astro/live.js\` | the browser scripts for fragments and \`<Live>\`, added only to a page that uses them |
 | \`astro/config.json\` | the framework's settings this build reads: the public site URL |
 | \`astro/env.d.ts\` | editor types for \`db\`, \`Astro\` and \`feldspar:components\` |
 | \`client.ts\`, \`helper.ts\` | the typed API client, for a \`<script>\` that calls the application's API |
@@ -717,6 +808,7 @@ function scaffold(ctx) {
     { path: "src/pages/contact.astro", contents: CONTACT_ASTRO },
     { path: "src/pages/404.astro", contents: NOT_FOUND_ASTRO },
     { path: "src/styles/global.css", contents: GLOBAL_CSS },
+    { path: "src/lib/api.ts", contents: apiTs(ctx) },
     { path: "public/favicon.svg", contents: FAVICON_SVG },
   ];
   for (const table of ctx.tables) {
@@ -731,6 +823,8 @@ function runtime(ctx) {
   return [
     { path: at(ctx.runtime, "astro/build.mjs"), contents: ownFileText("files/build.mjs") },
     { path: at(ctx.runtime, "astro/server.mjs"), contents: ownFileText("files/server.mjs") },
+    { path: at(ctx.runtime, "astro/enhance.js"), contents: ownFileText("files/enhance.js") },
+    { path: at(ctx.runtime, "astro/live.js"), contents: ownFileText("files/live.js") },
     { path: at(ctx.runtime, "astro/config.json"), contents: JSON.stringify(config, null, 2) + "\n" },
     { path: at(ctx.runtime, "astro/env.d.ts"), contents: ENV_D_TS },
     { path: at(ctx.runtime, "README.md"), contents: runtimeReadme(ctx) },

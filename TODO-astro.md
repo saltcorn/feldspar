@@ -41,3 +41,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 - [x] W3.5 Prerender: refuse a page with `<Optimise>`; later, one file per arm (not built:
   it needs the assignment and its exposure row in Rust).
 - [x] W3.6 An Analytics workspace over the two tables.
+
+## W4 — Interactive applications
+
+Moved to [TODO.md](./TODO.md), "W4 — Interactive Astro applications": the generated client from a
+`<script>`, sign-in components, fragments, and live fragments.

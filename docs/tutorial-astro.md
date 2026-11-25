@@ -9,6 +9,10 @@ The bundled **Astro** module does that. You write pages in Astro's `.astro` synt
 compiles them and renders them **on the server**, and a page's frontmatter reads the database
 exactly as a JavaScript code action does.
 
+For an **application** built the same way — people signing in, posting, liking, a timeline
+that updates by itself — see [A Twitter-style app in Astro](tutorial-astro-chirp.md) once you have
+done Steps 1–3 here.
+
 What you need: a server started with a base domain (`feldspar serve --base-domain localhost`),
 a local file store (`apps`, as in the [React tutorial](tutorial-react-todo.md), Step 1), and
 npm on the server.
@@ -218,7 +222,11 @@ Saltcorn uses Astro's **compiler**, not Astro. So:
 | Astro | here |
 |---|---|
 | `astro.config.mjs`, `astro dev`, integrations | none; `npm run build` (the Build button) builds, the server serves |
-| React/Vue/Svelte components, `client:*` islands | not supported — an error naming the component. Write a `<script>` |
+| React/Vue/Svelte components, `client:*` islands | not supported — an error naming the component. Write a `<script>`, or re-render part of the page on the server with a **fragment** ([Chirp](tutorial-astro-chirp.md)) |
+| `server:defer` server islands, partials (`export const partial = true`) | **fragments**: a component in `src/fragments/` is also served on its own at `/_fragment/<Name>`, and a form or link marked `data-fragment` swaps it in |
+| view transitions (`transition:*`, `<ClientRouter />`) | not supported — an error naming the directive |
+| sign-in left to an integration | `<SignIn />`, `<SignUp />`, `<SignOut />` from `feldspar:components`: forms the server answers, with its second factor and identity providers |
+| live data needs a client framework | `<Live stream fragment>`: rows kept current by a `table_changes` stream, each change re-rendered on the server |
 | Markdown/MDX pages, content collections | not supported; keep content in a table |
 | `output: "static"` (prerender by default) | the opposite: **per request** by default, `prerender = true` to opt in |
 | `Astro.url` is a `URL` | an object with `origin`, `pathname`, `search`, `searchParams`, `href` — the server has no `URL` class |

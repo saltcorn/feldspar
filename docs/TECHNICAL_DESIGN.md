@@ -8266,6 +8266,75 @@ import { Optimise, Variant, Goal } from "feldspar:components";
   and variant, and conversions by goal. Made once and found by name afterwards, so the admin's
   changes stand; a failure is logged and does not fail the build. No new admin screen.
 
+##### Interactive pages: fragments, live fragments and signing in
+
+What a website has is enough for a wiki and not for a Twitter-style application, where a like,
+a reply, "load more" and a new post must appear without a reload (TODO W4, tutorial
+[`docs/tutorial-astro-chirp.md`](./tutorial-astro-chirp.md)). The obvious answer, `client:*`
+islands of React components, is refused here on purpose: once the timeline is a React island,
+the site is the React framework with extra steps, two render paths for one card, and a page that
+is empty until a bundle runs. Instead a page **re-renders parts of itself on the server, from
+the same components**, and the live socket (§14.10) says when.
+
+- **The generated client from a `<script>`** (W4.1). `client.ts` and `helper.ts` were already
+  written into `src/feldspar/` before every build; the scaffold now also writes `src/lib/api.ts`
+  (`export const api = createClient()`). A processed `<script>` is bundled for the browser like
+  any other, so it calls the REST API as the signed-in visitor, with the CSRF header the client
+  reads from the cookie, and subscribes over `{mount}/live`. The framework's CSP needs nothing
+  more: `connect-src 'self'` covers the same host's `ws:`/`wss:`.
+- **Fragments** (W4.3). A component in `src/fragments/` is bundled into the body beside the
+  pages and answered at `/_fragment/<Name>` by `mode: "render"` as any page is: the query is its
+  `Astro.props`, a `POST` body is `Astro.request.formData()`, and the bindings, authority, render
+  cache rules and CSRF check are a page's. The answer is the component's HTML alone (no doctype,
+  no stylesheet link: the page has the site's one stylesheet, which holds every component's
+  styles), with `X-Fragment: <Name>` and `X-Robots-Tag: noindex`. Fragments are not routes, are
+  never in the sitemap, and the build fails for one that says `prerender = true`. `fragmentUrl()`
+  builds the address; `paginate(query, { after, limit })` is a keyset page of a table query
+  (`{ rows, next }`), so "load more" neither repeats nor skips a row written meanwhile.
+- **`enhance`**, the browser half: a small script in the module (`files/enhance.js`), built into
+  `/_astro/enhance.<hash>.js` by every build and added by the runtime to a page whose HTML has a
+  `data-fragment` attribute, and to no other page. A marked form or link becomes a fetch of
+  `/_fragment/<name>` (`X-Requested-With: feldspar-fragment`, the CSRF header from the cookie for a
+  write), and the answer replaces `data-target` (or the element) per `data-swap`. Progressive
+  enhancement is the rule: the element's own `href` or `action` is what a browser with no
+  JavaScript follows, and a form posted to a fragment without the header does the fragment's work
+  and is answered with a `303` back to its `_back` field or the referring page. An answer that is
+  not a fragment's (a redirect to a sign-in page) is followed as a page.
+- **`<Live>`** (W4.4): `<Live stream fragment where swap notice>` renders a container with the
+  rows the page already rendered, and the `live` script (`files/live.js`, which imports
+  `enhance`; one build with a shared chunk) subscribes it to the `table_changes` stream with
+  `where` as the filter, over the generated helper's own `LiveConnection`, so the protocol and
+  reconnection are the React client's. For each change the socket delivers, the script fetches
+  that row's fragment as the visitor (`?<param>=<key>`): insert/enter at the top or bottom, update
+  in place (found by `data-key`), delete/leave removed, an empty answer removed. The read checks
+  stay the socket's (L3: a row the subscriber may not read is never delivered) and the fragment's
+  (`asUser()`), so a fragment is never rendered with more authority than the visitor has. Changes
+  are gathered for 50 ms, the last word per row wins, and at most four fragments are fetched at
+  once. `notice` holds new rows behind a button. After a reconnect the container says `stale`,
+  because the changes made meanwhile are not replayed. The host binds `request.live` (the
+  application's socket path, when it exposes a stream), and `<Live>` without one is refused by
+  name.
+- **Signing in** (W4.2). `<SignIn />`, `<SignUp />` and `<SignOut />` render forms that post
+  to `/_auth/sign-in`, `/_auth/sign-up` and `/_auth/sign-out`, which **the host** answers
+  (`server_render::auth`), before the admission check and before the body: they are the
+  application's sign-in surface, and a caller it does not admit reaches them as nobody. A sign-in
+  is `sc_auth::authenticate` under the same throttle as every login, answered as a
+  `SessionAction` on a `303` to `next`, exactly as the Saltcorn UI framework's `/auth/login` is.
+  The router then applies it through the one session path: F9 admission, the second factor (a
+  redirect to `/_feldspar/second-factor/sign-in` that comes back to `next`), "Remember me" and
+  the cookie's scope. Nothing is checked a second time, and a page never sees or sets the session
+  cookie. `next` and `back` are `RedirectTarget`s, so an off-site value is `/`. A failure is a
+  `303` back to the form's page with `?sign_in=failed` or `?sign_in=throttled`, which the
+  component reads, so the forms work with no JavaScript. Sign-up follows the REST API's
+  settings (`rest_signup_role`, and its per-address throttle, now `sc_api::throttle::signup_attempt`
+  for both), and the host binds `request.signUp` so the component can show its `closed` slot. An
+  application that requires email verification is refused (`?sign_up=verify`), because the
+  verification email is the REST API's to send. `GET /_auth/sign-in` is a plain page of the same
+  form, which the 403 a members-only site shows a signed-out visitor links to.
+
+Signed-in renders are never kept by the render cache (the key requires an anonymous `GET`), and
+a page with a sign-in form renders the CSRF token, so it is not kept either.
+
 #### Saltcorn UI: v1's views, hosted rather than reimplemented
 
 The third framework is what GOALS means by "applications can also be built in the saltcorn1

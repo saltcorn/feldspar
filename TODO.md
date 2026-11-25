@@ -1363,3 +1363,75 @@ trigger (which skips rows when `sc.import = '1'`), because `db.sql()` refuses `s
   otherwise); `db.asImport()` and `.asImport()` write in one `import` changeset per run. The
   change log stays on (devices sync from it), and `set_config` stays refused. Tests in
   `sc-api/tests/code_host_import.rs`.
+
+## W4 — Interactive Astro applications (user request)
+
+The Astro framework (`plugins/astro`, milestones W1–W3 in [TODO-astro.md](./TODO-astro.md),
+design in `docs/TECHNICAL_DESIGN.md` §13.3 "Server-rendered frameworks: Astro for websites")
+serves websites: pages rendered on the server, forms that post back, plain `<script>`s. That is
+enough for a wiki but not for a Twitter-style application, where a like, a reply, "load more" and
+new posts must appear without reloading the page. The obvious fix, `client:*` islands of React
+components, is ruled out for the core of such an application: once the timeline is a React island,
+it is the React framework with extra steps. Instead, a page re-renders *parts of itself* on the
+server, from the same components, and the live socket (§14.10) says when.
+
+Decisions (taken as proposed; see TECHNICAL_DESIGN §13.3 "Interactive pages"):
+
+- **No islands, no client router, no view transitions** in this milestone. They stay refused by
+  name.
+- **One render path.** A fragment is a component rendered by the same body, with the same
+  bindings, authority and CSRF token as a page. There is no second API for the browser.
+- **Progressive enhancement.** Every enhanced form or link still works as a plain form post or
+  link when JavaScript is off.
+- **Signed-in renders are never cached.** The render cache keeps only anonymous `GET`s, and that
+  rule holds for fragments too.
+
+- [x] **W4.1** The generated client from a `<script>`. `client.ts` and `helper.ts` are already
+  generated into `src/feldspar/`, but nothing shows or tests calling them from a page. Check, and
+  fix where needed: the client's CSRF header from a rendered page's cookie, signed-in calls with the
+  application's session cookie, and `live.*.subscribe` / `LiveRows` over `{mount}/live` under the
+  framework's CSP (`connect-src`). Add a tutorial step (a like button calling `api.likes.create`, a
+  list kept current with `LiveRows`) and a scaffold example. Tests: an end-to-end run with
+  Chromium against a scratch application (a REST call and a live element received from an Astro
+  page), plus a unit test of the generated CSP.
+- [x] **W4.2** Sign-in components in `feldspar:components`: `<SignIn />`, `<SignUp />`,
+  `<SignOut />`, as server-rendered forms that work without JavaScript. They go through **the one
+  session path** (password, second factor, external providers, disabled accounts, F9 admission,
+  A1's persistent sign-in), as IP1.4's sign-in page does. Nothing is checked a second time in the
+  Astro runtime. The session cookie is set by the host, never by page code, because the runtime
+  keeps `sc_*` cookies away from pages. A second factor and an external provider redirect to the
+  existing `/_feldspar/…` routes and come back to a `next` path that must be on the same origin.
+  Tests: sign-in, a wrong password, a 2FA user, a disabled user, a user F9 refuses, an off-site
+  `next`, sign-out, and the form posted cross-site.
+- [x] **W4.3** Fragments. A component in `src/fragments/` (name to be decided) is requested on its
+  own, for example `GET|POST /_fragment/PostCard?id=123`, and answers its HTML only, rendered by the
+  same body as a page (a new `mode: "fragment"`). A small built-in script (`feldspar:enhance`,
+  bundled to `/_astro/`, so no CSP widening) turns a marked form or link
+  (`data-fragment="PostCard" data-target="#post-123" data-swap="replace|append|prepend"`) into a
+  fetch and swaps in the answer. A non-`GET` needs the CSRF token, as a page's form post does.
+  Fragments under `src/fragments/` are not routes and are not in the sitemap. A keyset-pagination
+  helper (`paginate(query, { after, limit })`, answering the rows and the next cursor) for "load
+  more". Tests: runtime unit tests (a fragment's render, an unknown fragment is a 404, a POST
+  without CSRF is refused, a fragment cannot be prerendered), one Chromium check of a like button
+  and "load more", and the no-JavaScript fallback.
+- [x] **W4.4** Live fragments: `<Live stream="…" where={…} fragment="PostCard" swap="prepend" />`
+  in `feldspar:components`. The page subscribes over the live socket (W4.1) to a `table_changes`
+  stream (L3) with the given filter. For each element the subscriber receives, the browser fetches
+  that row's fragment (W4.3), so a fragment is rendered with the visitor's own authority and the
+  read checks stay the socket's. An `update` replaces the row's fragment, a `delete` or `leave`
+  removes it, and an optional `notice` mode shows "N new" instead of inserting. Fetches are
+  coalesced, so a burst of writes does not become a burst of renders. Tests: a Chromium check
+  with two signed-in visitors (one posts, the other sees it), a row the second visitor may not read
+  never appears, and an `update` and a `delete`.
+- [x] **W4.5** Docs: TECHNICAL_DESIGN §13.3 (fragments, sign-in, live fragments, and why not
+  islands), a "Twitter-style app in Astro" tutorial, the Astro tutorial's comparison table,
+  CHANGELOG.
+
+  Done as described, with these details (CHANGELOG has the rest):
+  - **Names.** The folder is `src/fragments/`, the URL is `/_fragment/<Name>`, and the sign-in
+    routes are `/_auth/sign-in`, `/_auth/sign-up` and `/_auth/sign-out`.
+  - **Sign-up** follows the REST API's settings. It is refused while the REST API requires
+    email verification, because the verification email is the REST API's to send.
+  - **A fix along the way.** A page whose `<script>` spans several lines and imports something
+    failed to render (`$$module1 is not defined`). The build's metadata strip only matched a
+    one-line export.

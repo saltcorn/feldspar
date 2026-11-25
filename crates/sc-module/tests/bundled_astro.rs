@@ -120,9 +120,16 @@ async fn the_astro_framework_declares_a_server_entry() {
     assert_eq!(spec.output_dir, "www/dist");
     assert_eq!(spec.server_entry.as_deref(), Some("_server/entry.js"));
 
-    // Scripts are files, so the policy needs no script widening.
+    // Scripts are files, so the policy needs no script widening — the
+    // built-in `enhance` and `live` scripts included (TODO W4) — and a page's
+    // `<script>` reaches the API and its live socket on its own origin only:
+    // `'self'` covers the same host's `ws:`/`wss:`, which the Chromium walk in
+    // sc-server's `app_astro_interactive` checks in a real browser.
     let csp = astro.default_csp().header_value();
     assert!(!csp.contains("script-src"), "{csp}");
+    assert!(csp.contains("default-src 'self'"), "{csp}");
+    assert!(csp.contains("connect-src 'self'"), "{csp}");
+    assert!(!csp.contains("unsafe-eval"), "{csp}");
     assert!(csp.contains("form-action 'self'"), "{csp}");
 }
 
@@ -148,7 +155,7 @@ async fn the_scaffold_ships_the_build_and_runtime_and_a_page_per_table() {
     };
 
     // The module's own files reach the project byte for byte.
-    for name in ["build.mjs", "server.mjs"] {
+    for name in ["build.mjs", "server.mjs", "enhance.js", "live.js"] {
         let shipped = std::fs::read_to_string(dir.join("files").join(name)).unwrap();
         assert_eq!(
             file(&format!("src/feldspar/astro/{name}")),
@@ -168,6 +175,10 @@ async fn the_scaffold_ships_the_build_and_runtime_and_a_page_per_table() {
     );
     assert!(file("src/pages/index.astro").contains("export const prerender = true"));
     assert!(file("src/pages/contact.astro").contains("<Csrf />"));
+    // A `<script>` calls the API through the generated client (TODO W4.1).
+    assert!(
+        file("src/lib/api.ts").contains("import { createClient } from \"../feldspar/client\";")
+    );
     assert!(file("package.json").contains("\"@astrojs/compiler\": \"4.0.0\""));
 
     // A rebuild rewrites the generated directory and nothing of the author's.

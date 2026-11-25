@@ -56,6 +56,8 @@ mod app_access;
 mod app_agents;
 #[path = "app_api_tokens.rs"]
 mod app_api_tokens;
+#[path = "app_astro_interactive.rs"]
+mod app_astro_interactive;
 #[path = "app_builder_agent.rs"]
 mod app_builder_agent;
 #[path = "app_calling_app.rs"]

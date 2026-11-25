@@ -9,6 +9,7 @@
 // | `dist/_server/entry.js` | every page, compiled into one code body the server runs per request. Never served. |
 // | `dist/_astro/site.<hash>.css` | every component's `<style>` and every imported `.css`, scoped and minified |
 // | `dist/_astro/script.<hash>.js` | each processed `<script>`, bundled for the browser |
+// | `dist/_astro/enhance.<hash>.js`, `live.<hash>.js` | the built-in scripts for fragments and `<Live>`, added only to a page that uses them |
 // | `dist/_astro/<name>.<hash>.<ext>` | images and other files a page imports |
 // | `dist/…` | `public/`, copied as it is |
 //
@@ -30,6 +31,7 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = process.cwd();
 const pagesDir = path.join(root, "src", "pages");
+const fragmentsDir = path.join(root, "src", "fragments");
 const publicDir = path.join(root, "public");
 const outDir = path.join(root, "dist");
 const runtime = path.join(here, "server.mjs");
@@ -122,6 +124,22 @@ if (!pages.some((f) => f.endsWith(".astro"))) {
   process.exit(1);
 }
 
+/** `src/fragments` components (TODO W4.3): each is requested on its own at
+ * `/_fragment/<name>`, its path without `.astro` — `PostCard`, `posts/Card`.
+ * A name starting with `_` is a partial, as in `src/pages`. */
+const fragments = walk(fragmentsDir).filter(
+  (f) => f.endsWith(".astro") && !f.split("/").some((p) => p.startsWith("_"))
+);
+for (const f of fragments) {
+  if (!/^[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)*\.astro$/.test(f)) {
+    console.error(
+      `src/fragments/${f}: a fragment's name is its URL (/_fragment/<name>), so it is letters, ` +
+        "digits, - and _ only"
+    );
+    process.exit(1);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The esbuild plugin: `.astro`, CSS and assets
 // ---------------------------------------------------------------------------
@@ -137,9 +155,15 @@ const assets = new Map(); // source path -> public URL
  * metadata export, and the `import * as $$moduleN` lines behind it — which
  * would otherwise pull a client `<script>`'s imports into the *server* bundle. */
 function stripMetadata(code) {
-  return code
-    .replace(/^import \* as \$\$module\d+ from .*;$/gm, "")
-    .replace(/^export const \$\$metadata = .*;$/gm, "");
+  return (
+    code
+      .replace(/^import \* as \$\$module\d+ from .*;$/gm, "")
+      .replace(/^export const \$\$metadata = .*;$/gm, "")
+      // A metadata export that spans lines (a multi-line <script> is quoted in
+      // it) survives the line above; what it names of the dropped imports is
+      // then nothing, which `createMetadata` ignores anyway.
+      .replace(/\$\$module\d+\b/g, "undefined")
+  );
 }
 
 const astroPlugin = {
@@ -236,13 +260,24 @@ pages.forEach((file, i) => {
   );
 });
 
+const fragmentEntries = [];
+fragments.forEach((file, i) => {
+  const spec = "./" + path.relative(here, path.join(fragmentsDir, file)).split(path.sep).join("/");
+  imports.push(`import * as f${i} from ${JSON.stringify(spec)};`);
+  fragmentEntries.push(
+    `{ name: ${JSON.stringify(file.replace(/\.astro$/, ""))}, file: ${JSON.stringify(file)}, module: f${i} }`
+  );
+});
+
 const entry = `
 import { createSite, handle as handleSite } from ${JSON.stringify("./server.mjs")};
 ${imports.join("\n")}
 const site = createSite({
   routes: [${routes.join(",\n    ")}],
+  fragments: [${fragmentEntries.join(",\n    ")}],
   styles: __feldsparManifest.styles,
   scripts: __feldsparManifest.scripts,
+  browser: __feldsparManifest.browser,
   site: ${JSON.stringify(config.site || "")},
   secret: __feldsparManifest.secret,
 });
@@ -304,6 +339,57 @@ for (const [id, script] of scripts) {
   scriptUrls[id] = `/_astro/${name}`;
 }
 
+// The built-in browser scripts: `enhance` (fragments) and `live` (`<Live>`,
+// which brings `enhance` with it), in one build so the half they share is one
+// chunk. `live` speaks over the generated client's own `LiveConnection`
+// (`src/feldspar/helper.ts`, written before every build by the server); a
+// build run with no helper beside it — by hand, or by a test — gets a stand-in
+// that says what is missing when a `<Live>` starts.
+const helperFile = path.join(here, "..", "helper.ts");
+const helperPlugin = {
+  name: "feldspar-helper",
+  setup(build) {
+    build.onResolve({ filter: /^feldspar:helper$/ }, () =>
+      fs.existsSync(helperFile) ? { path: helperFile } : { path: "helper", namespace: "feldspar-no-helper" }
+    );
+    build.onLoad({ filter: /.*/, namespace: "feldspar-no-helper" }, () => ({
+      contents:
+        "export function liveUrl(base, path) { return path; }\n" +
+        "export class LiveConnection { constructor() { throw new Error(" +
+        JSON.stringify("<Live> needs src/feldspar/helper.ts, which the server writes before each build: build from the admin UI") +
+        "); } }\n",
+      loader: "js",
+    }));
+  },
+};
+const browser = {};
+{
+  const out = await esbuild.build({
+    entryPoints: { enhance: path.join(here, "enhance.js"), live: path.join(here, "live.js") },
+    bundle: true,
+    splitting: true,
+    write: false,
+    outdir: path.join(outDir, "_astro"),
+    entryNames: "[name].[hash]",
+    chunkNames: "chunk.[hash]",
+    format: "esm",
+    platform: "browser",
+    target: "es2020",
+    minify: true,
+    plugins: [helperPlugin],
+    logLevel: "silent",
+  }).catch((e) => {
+    for (const m of e.errors || []) console.error(`the built-in browser scripts: ${m.text}`);
+    process.exit(1);
+  });
+  for (const file of out.outputFiles) {
+    fs.writeFileSync(file.path, file.contents);
+    const name = path.basename(file.path);
+    const kind = name.match(/^(enhance|live)\./);
+    if (kind) browser[kind[1]] = `/_astro/${name}`;
+  }
+}
+
 const styles = [];
 const allCss = [...importedCss.values(), ...css.values()].join("\n");
 if (allCss.trim()) {
@@ -334,7 +420,7 @@ for (const file of walk(publicDir)) {
 // a code action; `request` is what the host bound for this one request.
 // `secret` signs `<Goal>` links, so `/_goal/` redirects only where this site's
 // own pages pointed. The entry is never served, so it stays the server's.
-const manifest = { styles, scripts: scriptUrls, secret: randomBytes(16).toString("hex") };
+const manifest = { styles, scripts: scriptUrls, browser, secret: randomBytes(16).toString("hex") };
 const body = `const __feldsparManifest = ${JSON.stringify(manifest)};
 ${server.outputFiles[0].text}
 return await __feldsparSite.handle(request, typeof user === "undefined" ? null : user);
@@ -342,6 +428,6 @@ return await __feldsparSite.handle(request, typeof user === "undefined" ? null :
 fs.writeFileSync(path.join(outDir, "_server", "entry.js"), body);
 
 console.log(
-  `built ${pages.length} route(s), ${scripts.size} script(s), ` +
+  `built ${pages.length} route(s), ${fragments.length} fragment(s), ${scripts.size} script(s), ` +
     `${styles.length} stylesheet(s), ${assets.size} asset(s)`
 );

@@ -48,6 +48,7 @@
 //! router as before.
 
 use sc_catalog::Authority;
+pub mod auth;
 pub mod cache;
 pub mod images;
 
@@ -127,9 +128,6 @@ pub struct ServerRendered {
     entry: Arc<str>,
     etags: HashMap<String, String>,
     app_id: uuid::Uuid,
-    /// The application's name, which the page is bound as `request.site`: what
-    /// an A/B test's rows are kept under (TODO-astro W3.3).
-    site: String,
     run_name: String,
     dispatcher: Option<Arc<TriggerDispatcher>>,
     cache: Arc<cache::SiteCache>,
@@ -138,6 +136,31 @@ pub struct ServerRendered {
     /// rendered: pages, not files, so not for a caller the application does
     /// not admit (security review #25).
     data_pages: std::collections::HashSet<String>,
+    /// What every request is told about the application beyond the request
+    /// itself: its live socket and whether it offers sign-up (TODO W4).
+    binding: SiteBinding,
+}
+
+/// What a page is told about its application, the same for every request:
+/// the application's name (what an A/B test's rows are kept under), its live
+/// socket's path when it exposes a stream (what `<Live>` subscribes over), and
+/// whether `<SignUp />` has anything to offer.
+#[derive(Debug, Clone, Default)]
+pub struct SiteBinding {
+    site: String,
+    live: Option<String>,
+    sign_up: auth::SignUp,
+}
+
+impl SiteBinding {
+    /// The binding for `app`, as it is now.
+    pub fn of(app: &Application) -> SiteBinding {
+        SiteBinding {
+            site: app.name.clone(),
+            live: (!app.streams.is_empty()).then(|| crate::live_socket_path(app)),
+            sign_up: auth::SignUp::of(app),
+        }
+    }
 }
 
 impl ServerRendered {
@@ -180,7 +203,7 @@ impl ServerRendered {
             entry: Arc::from(source),
             etags,
             app_id: app.id.0,
-            site: app.name.clone(),
+            binding: SiteBinding::of(app),
             run_name: format!("page of {}", app.subdomain.trim()),
             dispatcher,
             cache: Arc::new(cache::SiteCache::new(refresh)),
@@ -275,7 +298,7 @@ impl ServerRendered {
                 &self.entry,
                 &self.run_name,
                 self.app_id,
-                request_binding(&page_req, "prerender", &self.site),
+                request_binding(&page_req, "prerender", &self.binding),
                 Authority::system("prerender: refresh a static page"),
                 Some(trace.clone()),
             )
@@ -346,7 +369,7 @@ impl ServerRendered {
             &self.entry,
             &self.run_name,
             self.app_id,
-            request_binding(req, "render", &self.site),
+            request_binding(req, "render", &self.binding),
             Authority::Caller(&caller),
             Some(trace.clone()),
         )
@@ -396,7 +419,7 @@ impl ServerRendered {
         let Ok(dispatcher) = self.dispatcher() else {
             return Err(err);
         };
-        let mut binding = request_binding(req, "error", &self.site);
+        let mut binding = request_binding(req, "error", &self.binding);
         binding["error"] = Json::String(err.to_string());
         let answer = run_entry(
             dispatcher,
@@ -436,11 +459,28 @@ impl ServerRendered {
     }
 }
 
-/// What a caller the application does not let in gets for a page.
-fn forbidden() -> AppResponse {
+/// What a caller the application does not let in gets for a page — with a
+/// way to sign in, for a caller who is not signed in at all.
+fn forbidden(req: &AppRequest) -> AppResponse {
+    let sign_in = if req.user.is_none() {
+        let next = sc_http::RedirectTarget::or_root(Some(req.path.as_str()));
+        sc_http::RedirectTarget::or_root(Some(auth::SIGN_IN))
+            .with_param("next", next.as_str())
+            .into_string()
+    } else {
+        String::new()
+    };
+    let link = if sign_in.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<p><a href=\"{}\">Sign in</a></p>",
+            sign_in.replace('&', "&amp;")
+        )
+    };
     AppResponse::html(
         403,
-        "<!DOCTYPE html><title>Forbidden</title><h1>You may not see this page</h1>",
+        format!("<!DOCTYPE html><title>Forbidden</title><h1>You may not see this page</h1>{link}"),
     )
 }
 
@@ -480,6 +520,11 @@ impl Framework for ServerRendered {
     }
 
     async fn handle(&self, req: AppRequest, cat: &Catalog) -> Result<AppResponse> {
+        // The sign-in surface, before anything else: a caller the application
+        // does not admit may reach it, as nobody, and nothing more (TODO F9).
+        if req.path.starts_with(auth::AUTH_PREFIX) {
+            return auth::handle(&req, cat, self.binding.sign_up).await;
+        }
         if matches!(req.method, Method::Get) && req.path == images::IMAGE_PATH {
             let source = req
                 .query
@@ -495,7 +540,7 @@ impl Framework for ServerRendered {
             // A prerendered page that read data is a rendered page, written
             // ahead of time: refused as one to a caller not let in.
             if !req.admitted && (refreshable.is_some() || self.data_pages.contains(&key)) {
-                return Ok(forbidden());
+                return Ok(forbidden(&req));
             }
             if let Some((path, current)) = refreshable {
                 return Ok(match current {
@@ -508,7 +553,7 @@ impl Framework for ServerRendered {
         // Somebody the application does not let in gets its files — they are
         // what draws a sign-in — and none of its rendered pages.
         if !req.admitted {
-            return Ok(forbidden());
+            return Ok(forbidden(&req));
         }
         self.render(&req, cat).await
     }
@@ -534,8 +579,9 @@ fn etag(bytes: &[u8]) -> String {
     format!("\"{:016x}-{:x}\"", hasher.finish(), bytes.len())
 }
 
-/// What the entry is bound as `request`. `site` is the application's name.
-fn request_binding(req: &AppRequest, mode: &str, site: &str) -> Json {
+/// What the entry is bound as `request`: the request itself, and what
+/// `binding` says about the application.
+fn request_binding(req: &AppRequest, mode: &str, binding: &SiteBinding) -> Json {
     let (form, json_body) = match &req.body {
         RequestBody::Empty => (Json::Null, Json::Null),
         RequestBody::Form(pairs) => (
@@ -555,7 +601,9 @@ fn request_binding(req: &AppRequest, mode: &str, site: &str) -> Json {
         "csrfToken": req.csrf_token,
         "cookies": req.cookies,
         "visitor": req.visitor,
-        "site": site,
+        "site": binding.site,
+        "live": binding.live,
+        "signUp": binding.sign_up.offered(),
     });
     if !form.is_null() {
         binding["form"] = form;
@@ -677,6 +725,7 @@ pub async fn prerender(
             ))
         })?;
     let name = format!("prerender of {}", app.subdomain.trim());
+    let binding = SiteBinding::of(app);
     let mut base = AppRequest::get("/");
     base.base_url = String::new();
     let list = run_entry(
@@ -685,7 +734,7 @@ pub async fn prerender(
         &entry,
         &name,
         app.id.0,
-        request_binding(&base, "prerender-list", &app.name),
+        request_binding(&base, "prerender-list", &binding),
         Authority::system("prerender: build static pages"),
         None,
     )
@@ -716,7 +765,7 @@ pub async fn prerender(
             &entry,
             &name,
             app.id.0,
-            request_binding(&req, "prerender", &app.name),
+            request_binding(&req, "prerender", &binding),
             Authority::system("prerender: build static pages"),
             Some(trace.clone()),
         )
@@ -955,7 +1004,7 @@ mod tests {
         req.csrf_token = "tok".to_owned();
         req.cookies.insert("theme".to_owned(), "dark".to_owned());
         req.visitor = "v1".to_owned();
-        let binding = request_binding(&req, "render", "Site");
+        let binding = request_binding(&req, "render", &SiteBinding::of(&app()));
         assert_eq!(binding["cookies"], json!({ "theme": "dark" }));
         assert_eq!(binding["method"], "POST");
         assert_eq!(binding["form"], json!([["email", "a@b.c"]]));
@@ -963,5 +1012,12 @@ mod tests {
         assert_eq!(binding["visitor"], "v1");
         assert_eq!(binding["site"], "Site");
         assert!(binding.get("json").is_none());
+        assert_eq!(binding["live"], Json::Null, "no stream, no live socket");
+        assert_eq!(binding["signUp"], false);
+        let live = app()
+            .with_api(crate::ApiConfig::new("rest", "/api"))
+            .with_stream(crate::StreamRef::new("posts_live"));
+        let binding = request_binding(&req, "render", &SiteBinding::of(&live));
+        assert_eq!(binding["live"], "/api/live");
     }
 }

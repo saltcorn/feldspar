@@ -2,6 +2,76 @@
 
 Changes in reverse chronological order.
 
+## Interactive Astro applications (TODO W4)
+
+The Astro framework could build a website (pages from the server, forms that post back) but not
+an application where a like, "load more" or a new post appears without a reload. It can now,
+without islands: a page re-renders parts of itself on the server from the same components, and
+the live socket says when. The new tutorial is `docs/tutorial-astro-chirp.md`, a small Twitter.
+Existing sites are unchanged until they use the new components. A page that uses none of them
+gets no JavaScript.
+
+- **W4.1 The generated client from a `<script>`.** The scaffold now writes `src/lib/api.ts`
+  (`export const api = createClient()`), and `AGENTS.md` shows a `<script>` calling the API. The
+  generated client already sends the CSRF header and opens the live socket, and the framework's
+  `connect-src 'self'` covers the socket. `bundled_astro` now checks the declared CSP, and the
+  Chromium walk below checks it in a browser: no policy violation, and the socket live.
+- **W4.2 `<SignIn />`, `<SignUp />`, `<SignOut />`** in `feldspar:components`: server-rendered
+  forms that post to `/_auth/sign-in`, `/_auth/sign-up` and `/_auth/sign-out`. The host answers
+  these (`sc_app::server_render::auth`) before the admission check, by answering a
+  `SessionAction`, as the Saltcorn UI framework's `/auth/login` does. So the router's one session
+  path decides the second factor, F9 admission, "Remember me" and the cookie, and the page never
+  sees the session cookie. `next` and `back` must be paths on the host. A failure comes back as
+  `?sign_in=failed` or `?sign_up=exists`, so the forms work without JavaScript. `providers=…`
+  links to the identity providers. Sign-up follows the REST API's "Allow sign-up" and role
+  settings, and is refused while the REST API requires email verification. `GET /_auth/sign-in`
+  is a plain sign-in page. The 403 that a members-only site shows signed-out visitors now links
+  to it. The sign-up throttle is `sc_api::throttle::signup_attempt`, shared with REST `signup`
+  (same key and rate as before). The host binds `request.signUp` and `request.live` for every
+  page.
+- **W4.3 Fragments.** A component in `src/fragments/` is also served on its own at
+  `/_fragment/<Name>`, by the same body, with the same bindings, authority, render cache rules
+  and CSRF check as a page. The query becomes `Astro.props`, and the answer is the HTML alone,
+  with `X-Fragment` and `noindex`. Fragments are not routes and are not in the sitemap. A
+  fragment that says `prerender = true` fails the build. The new `enhance` script turns a form or
+  link marked `data-fragment` (`data-target`, `data-swap`, `data-query`) into a fetch and swaps
+  in the answer. With JavaScript off the element works as it is: a form posted to a fragment
+  does its work and gets a 303 back to its page. Also new: `fragmentUrl()`, and
+  `paginate(query, { after, limit })`, a keyset page for "load more". The internal
+  `getStaticPaths` paginate is renamed (no change for sites).
+- **W4.4 `<Live stream fragment where swap notice>`.** It subscribes over the application's live
+  socket, using the generated helper's `LiveConnection`, and fetches each changed row's
+  fragment as the visitor. An insert goes at the top or bottom, an update replaces the row in
+  place (found by `data-key`), and a delete removes it. Changes are coalesced (50 ms, last word
+  per row, four fetches at once). `notice="{n} new"` holds new rows behind a button. The `live`
+  and `enhance` scripts are built into `/_astro/` with a shared chunk and added only to a page
+  that uses them.
+- **W4.5 Docs.** TECHNICAL_DESIGN §13.3 has "Interactive pages: fragments, live fragments and
+  signing in". The Astro tutorial's comparison table has rows for fragments, sign-in and live
+  lists, and links to the new Chirp tutorial. The module's `AGENTS.md`, editor types
+  (`env.d.ts`) and generated README describe the new components.
+- Tests:
+  - `plugins/astro/test`: 7 new tests (fragments, POST with and without the header, `paginate`
+    and "load more", which pages get which script, `<Live>`, the sign-in forms, and refusing to
+    prerender a fragment or a sign-in form).
+  - `sc-app`: unit tests for `server_render::auth`.
+  - `sc-api`: the sign-up throttle.
+  - `sc-server` `app_astro_interactive`, through the real router: sign-in, a wrong password, an
+    unknown address, a disabled account, an account F9 refuses, a 2FA account sent to the
+    second-factor page, an off-site `next`, sign-out (and that a GET cannot sign out),
+    cross-site posts to `/_auth/*` and `/_fragment/*`, and sign-up under the REST settings.
+  - With `SC_TEST_NPM=1` or `SC_ASTRO_NODE_MODULES` and Chromium, the same test builds the
+    tutorial's site and walks it with two signed-in visitors: "load more", a like, a post from
+    the page's script reaching the other visitor through `<Live>`, a private post that never
+    does, an update in place, a delete, and no CSP violation. It then checks the same page with
+    no JavaScript, as plain requests with the visitor's browser cookies: the "load more" link,
+    and the like form posted as-is (Chromium with scripts disabled cannot be driven over CDP).
+- **Fix: a page with a multi-line `<script>` that imports something failed to render**
+  (`ReferenceError: $$module1 is not defined`). The build removes the compiler's metadata
+  export and the `$$moduleN` imports behind it. The regex only matched a one-line export, and a
+  multi-line script makes the export span lines. Leftover `$$moduleN` references are now
+  replaced with `undefined`. The blog page in `plugins/astro/test` now has such a script.
+
 ## REST list reads say when the row cap cut them short
 
 From a user report: `GET /api/<table>?limit=2000` answered with 500 rows (the default

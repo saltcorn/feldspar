@@ -35,6 +35,14 @@ pub const LOGIN_FAILURES_PER_EMAIL: Rate = Rate {
     window: Duration::from_secs(15 * 60),
 };
 
+/// Accounts one client IP may make an hour, through any of an application's
+/// ways of signing up (its REST `signup`, an Astro site's `<SignUp />`): a
+/// person signs up once, a script a thousand times (security review #22).
+pub const SIGNUP_PER_IP: Rate = Rate {
+    max: 5,
+    window: Duration::from_secs(60 * 60),
+};
+
 /// Password-reset requests per client IP.
 pub const RESET_PER_IP: Rate = Rate {
     max: 10,
@@ -91,6 +99,15 @@ pub fn second_factor_attempt(ip: Option<IpAddr>) -> Result<(), Limited> {
     }
 }
 
+/// Whether a sign-up from `ip` may go ahead, counting it. Every way of making
+/// an account counts under the one key, so two forms are not twice the budget.
+pub fn signup_attempt(ip: Option<IpAddr>) -> Result<(), Limited> {
+    match ip {
+        Some(ip) => global().hit(&format!("signup:{ip}"), SIGNUP_PER_IP),
+        None => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,6 +136,19 @@ mod tests {
         }
         assert!(login_attempt(Some(ip), "fresh@example.com").is_err());
         assert!(login_attempt(Some("198.51.100.78".parse().unwrap()), "fresh@example.com").is_ok());
+    }
+
+    #[test]
+    fn sign_ups_are_counted_per_ip() {
+        let ip: IpAddr = "198.51.100.91".parse().unwrap();
+        for _ in 0..SIGNUP_PER_IP.max {
+            assert!(signup_attempt(Some(ip)).is_ok());
+        }
+        assert!(signup_attempt(Some(ip)).is_err());
+        assert!(
+            signup_attempt(None).is_ok(),
+            "no address, nothing to count by"
+        );
     }
 
     #[test]

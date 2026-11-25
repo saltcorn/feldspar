@@ -29,6 +29,13 @@
 // visitor; `<Goal>` and `goal()` count what visitors then do. The choice is
 // made here, on the server, so a visitor's HTML holds only their variant. See
 // "A/B optimisation" below.
+//
+// **Interactive pages** (TODO W4). A component in `src/fragments/` is a
+// *fragment*: rendered on its own at `/_fragment/<Name>`, by this same body,
+// with the same bindings, authority and CSRF check as a page. The small
+// `enhance` script turns a marked form or link into a fetch of a fragment and
+// swaps the answer in; `<Live>` does the same for each row a live stream says
+// changed. No second render path, and no islands. See "Fragments" below.
 
 // ---------------------------------------------------------------------------
 // HTML strings
@@ -588,7 +595,7 @@ export async function renderPage(site, Component, page, props = {}) {
   const result = createResult(site, page);
   const out = await Component(result, props, {});
   if (isResponse(out)) return responseShape(out);
-  let html = await renderValue(out);
+  let html = withBrowserScripts(site, await renderValue(out));
   if (!/^\s*<!doctype/i.test(html)) html = "<!DOCTYPE html>" + html;
   const headers = result.response.headers.__scPairs
     ? result.response.headers.__scPairs()
@@ -603,6 +610,25 @@ export async function renderPage(site, Component, page, props = {}) {
     cache: cacheable(page, headers),
     visitor: page.vary.visitor === true,
   };
+}
+
+/** The page with the built-in browser script it needs, if any: `live` for a
+ * page with a `<Live>` (which brings `enhance` with it), `enhance` for one with
+ * a `data-fragment` form or link. A page with neither gets no script at all,
+ * which is what most of a website is. The script is a file under `/_astro/`,
+ * so the strict CSP stands. */
+export function withBrowserScripts(site, html) {
+  const scripts = site.browser || {};
+  let src = null;
+  if (scripts.live && /\sdata-live="/.test(html)) src = scripts.live;
+  else if (scripts.enhance && /\sdata-fragment="/.test(html)) src = scripts.enhance;
+  if (!src) return html;
+  const tag = `<script type="module" src="${escapeHTML(src)}"></script>`;
+  const at = html.search(/<\/head>/i);
+  if (at >= 0) return html.slice(0, at) + tag + html.slice(at);
+  const end = html.search(/<\/body>/i);
+  if (end >= 0) return html.slice(0, end) + tag + html.slice(end);
+  return html + tag;
 }
 
 /** Whether the render cache may keep this answer for the next visitor: the
@@ -719,7 +745,7 @@ export function routePath(route, params) {
 /** The params and props `getStaticPaths` gives for `params`, or `null` when it
  * lists no such page. */
 async function staticEntry(route, params) {
-  const entries = await route.module.getStaticPaths({ paginate });
+  const entries = await route.module.getStaticPaths({ paginate: staticPaginate });
   for (const entry of entries || []) {
     const p = entry.params || {};
     const same = Object.keys(params).every(
@@ -730,8 +756,10 @@ async function staticEntry(route, params) {
   return null;
 }
 
-/** `paginate(items, { pageSize })` in `getStaticPaths`, as Astro has it. */
-function paginate(items, { pageSize = 10, params = {}, props = {} } = {}) {
+/** `paginate(items, { pageSize })` in `getStaticPaths`, as Astro has it. (The
+ * `paginate` that `feldspar:components` exports is the other kind: a keyset
+ * page of a table query, for "load more".) */
+function staticPaginate(items, { pageSize = 10, params = {}, props = {} } = {}) {
   const pages = Math.max(1, Math.ceil(items.length / pageSize));
   return Array.from({ length: pages }, (_, i) => {
     const n = i + 1;
@@ -758,11 +786,19 @@ function paginate(items, { pageSize = 10, params = {}, props = {} } = {}) {
 // ---------------------------------------------------------------------------
 
 /** Build the site object `handle` serves from what `build.mjs` generated. */
-export function createSite({ routes, styles, scripts, site, secret = "" }) {
+export function createSite({ routes, styles, scripts, site, secret = "", fragments = [], browser = {} }) {
   const ordered = routes
     .map((r) => ({ ...r, segments: parseRoute(r.file) }))
     .sort(compareRoutes);
-  return { routes: ordered, styles, scripts, site, secret };
+  for (const f of fragments) {
+    if (f.module.prerender === true) {
+      throw new Error(
+        `src/fragments/${f.file}: a fragment is rendered on request, for the visitor who ` +
+          "asked, so it cannot be prerendered: remove `export const prerender = true` from it"
+      );
+    }
+  }
+  return { routes: ordered, styles, scripts, site, secret, fragments, browser };
 }
 
 /** The page context for one request. `input` is what the host bound as
@@ -798,6 +834,7 @@ function pageContext(site, input, path, params, who, route = null) {
 /** Find the route for `path`, rendering it with `who` as the visitor. */
 async function serve(site, input, who) {
   const path = input.path || "/";
+  if (path.startsWith(FRAGMENT_PREFIX)) return fragment(site, input, path, who);
   for (const route of site.routes) {
     if (route.file === "404.astro" || route.file === "500.astro") continue;
     const params = matchRoute(route, path);
@@ -834,7 +871,7 @@ async function sitemap(site, input) {
     if (route.segments.every((s) => s.text !== undefined)) {
       paths.add(routePath(route, {}));
     } else if (route.module.getStaticPaths) {
-      for (const entry of (await route.module.getStaticPaths({ paginate })) || []) {
+      for (const entry of (await route.module.getStaticPaths({ paginate: staticPaginate })) || []) {
         paths.add(routePath(route, entry.params || {}));
       }
     }
@@ -934,7 +971,7 @@ async function prerenderList(site) {
           "getStaticPaths()"
       );
     }
-    for (const entry of (await route.module.getStaticPaths({ paginate })) || []) {
+    for (const entry of (await route.module.getStaticPaths({ paginate: staticPaginate })) || []) {
       out.push(routePath(route, entry.params || {}));
       if (route.refresh) refresh.push(routePath(route, entry.params || {}));
     }
@@ -1485,3 +1522,409 @@ async function goalRedirect(site, input, path) {
     cache: false,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Fragments (TODO W4.3): a component rendered on its own
+// ---------------------------------------------------------------------------
+//
+//     src/fragments/PostCard.astro      GET /_fragment/PostCard?id=123
+//
+// - **The same body.** A fragment is rendered by this code body, with a page's
+//   bindings (`db`, `user`, `Astro.request`, the CSRF token), so it is exactly
+//   as private as a page: read with `asUser()` what the visitor may not see
+//   all of. The query is its `Astro.props` (strings), and a `POST`'s body is
+//   `Astro.request.formData()`, as on a page.
+// - **Only its HTML.** No `<!DOCTYPE>`, no stylesheet link (the page already
+//   has the site's one stylesheet, which holds every component's styles).
+// - **Not a route.** Not in the sitemap, `noindex`, and never prerendered.
+// - **Progressive.** A form with `data-fragment` is fetched by the `enhance`
+//   script, which sends `X-Requested-With: feldspar-fragment`. The same form
+//   posted with no JavaScript does the same work and is then redirected back
+//   to the page it was on (a `_back` field, else the referring page), which
+//   renders with the change in it.
+// - **CSRF.** A `POST` passes the server's CSRF check before it arrives here,
+//   as a page's form post does: `<Csrf />` in the form, or the header the
+//   `enhance` script adds.
+
+/** Where a fragment is requested. */
+const FRAGMENT_PREFIX = "/_fragment/";
+
+/** What the `enhance` script sends as `X-Requested-With`. */
+const ENHANCED = "feldspar-fragment";
+
+/** A path on this site, or `null`: what a redirect may go to. */
+function localPath(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text.startsWith("/") || text.startsWith("//") || /[\\\u0000-\u001f]/.test(text)) return null;
+  return text;
+}
+
+/** Where a form posted to a fragment with no JavaScript goes afterwards: its
+ * `_back` field, else the page it was posted from, else the home page. */
+function backTo(input) {
+  const field = (input.form || []).find(([k]) => k === "_back");
+  const back = field && localPath(field[1]);
+  if (back) return back;
+  const referer = String((input.headers || {}).referer || "");
+  const origin = String(input.origin || "").replace(/\/$/, "");
+  if (origin && referer.startsWith(origin + "/")) {
+    const path = localPath(referer.slice(origin.length));
+    if (path) return path;
+  }
+  return "/";
+}
+
+/** `/_fragment/<name>`: render the fragment for this visitor. */
+async function fragment(site, input, path, who) {
+  const name = path
+    .slice(FRAGMENT_PREFIX.length)
+    .replace(/\/$/, "")
+    .split("/")
+    .map(decodeSegment)
+    .join("/");
+  const found = site.fragments.find((f) => f.name === name);
+  if (!found) {
+    return {
+      status: 404,
+      headers: [
+        ["content-type", "text/plain; charset=utf-8"],
+        ["x-robots-tag", "noindex"],
+      ],
+      body: `There is no fragment called "${name}": a fragment is a file in src/fragments/.`,
+      cache: true,
+    };
+  }
+  const page = pageContext(site, input, path, {}, who, null);
+  const result = createResult(site, page);
+  // A fragment goes into a page that has its `<head>` already.
+  result._headRendered = true;
+  const props = {};
+  for (const [k, v] of Object.entries(input.query || {})) props[k] = String(v);
+  const out = await found.module.default(result, props, {});
+  if (isResponse(out)) return { ...(await responseShape(out)), cache: false };
+  const body = await renderValue(out);
+  const method = input.method || "GET";
+  const enhanced = String((input.headers || {})["x-requested-with"] || "") === ENHANCED;
+  if (!enhanced && method !== "GET" && method !== "HEAD") {
+    // Posted by a browser with no JavaScript: the fragment did its work, and
+    // the page it was on shows the result.
+    return {
+      status: 303,
+      headers: [
+        ["location", backTo(input)],
+        ["cache-control", "no-store"],
+      ],
+      body: "",
+      cache: false,
+    };
+  }
+  const headers = result.response.headers.__scPairs
+    ? result.response.headers.__scPairs()
+    : [...result.response.headers];
+  if (!headers.some(([k]) => k === "content-type")) {
+    headers.push(["content-type", "text/html; charset=utf-8"]);
+  }
+  headers.push(["x-fragment", encodeURIComponent(name).replace(/%2F/g, "/")]);
+  headers.push(["x-robots-tag", "noindex"]);
+  return {
+    status: result.response.status,
+    headers,
+    body,
+    cache: cacheable(page, headers),
+    visitor: page.vary.visitor === true,
+  };
+}
+
+/** The URL of the fragment `name` with `props` as its query — for a form's
+ * `action` or a link's `href`: `fragmentUrl("Like", { id: post.id })`. */
+export function fragmentUrl(name, props = {}) {
+  const params = new SearchParams(
+    Object.entries(props).filter(([, v]) => v !== undefined && v !== null)
+  ).toString();
+  const path = String(name).split("/").map(encodeURIComponent).join("/");
+  return `${FRAGMENT_PREFIX}${path}${params ? "?" + params : ""}`;
+}
+
+/** **"Load more"**: one page of `query` (a table query, e.g.
+ * `db.posts.asUser()`), `limit` rows ordered by `key` (`"id"`), newest first
+ * unless `order` is `"asc"`, starting after the row whose key is `after` — the
+ * last page's `next`. Answers `{ rows, next }`; `next` is `null` on the last
+ * page. Keyset rather than offset, so a row written meanwhile neither repeats
+ * nor goes missing. */
+export async function paginate(query, { after, limit = 20, key = "id", order = "desc" } = {}) {
+  if (!query || typeof query.where !== "function" || typeof query.orderBy !== "function") {
+    throw new Error(
+      "paginate(query, …) takes a table query, e.g. paginate(db.posts.asUser(), { after })"
+    );
+  }
+  const n = Math.max(1, Math.min(200, Math.floor(Number(limit)) || 20));
+  const dir = order === "asc" ? "asc" : "desc";
+  let q = query;
+  if (after !== undefined && after !== null && after !== "") {
+    // A key from the query string is text; a numeric key compares as a number.
+    const value = typeof after === "string" && /^-?\d{1,15}$/.test(after) ? Number(after) : after;
+    q = q.where({ [key]: dir === "desc" ? { lt: value } : { gt: value } });
+  }
+  const rows = await q.orderBy(key, dir).limit(n + 1).rows();
+  const shown = rows.slice(0, n);
+  return { rows: shown, next: rows.length > n ? shown[shown.length - 1][key] : null };
+}
+
+// ---------------------------------------------------------------------------
+// Signing in (TODO W4.2): `<SignIn />`, `<SignUp />`, `<SignOut />`
+// ---------------------------------------------------------------------------
+//
+// Server-rendered forms that post to `/_auth/…`, which the *server* answers —
+// not this body — through the one session path every sign-in takes: the
+// second factor, an account the application does not let in, "Remember me"
+// and the session cookie are all its. A page never sees the session cookie,
+// so it could not set one if it tried. A failure comes back to the form's page
+// as `?sign_in=…` (or `?sign_up=…`), which the form reads to say what went
+// wrong, so it all works with no JavaScript.
+
+const AUTH_ROUTES = {
+  signIn: "/_auth/sign-in",
+  signUp: "/_auth/sign-up",
+  signOut: "/_auth/sign-out",
+};
+
+const SIGN_IN_PROBLEMS = {
+  failed: "Incorrect email or password.",
+  throttled: "Too many sign-in attempts. Try again in a few minutes.",
+};
+
+const SIGN_UP_PROBLEMS = {
+  missing: "An email address and a password are both needed.",
+  mismatch: "The two passwords are not the same.",
+  exists: "There is already an account with this email address. Sign in instead.",
+  throttled: "Too many accounts have been made from this address. Try again later.",
+  closed: "This site does not offer sign-up.",
+  verify: "Sign-up is not available here while the site requires email verification.",
+  invalid: "That email address or password cannot be used.",
+};
+
+/** This page's own path and query, without `key` — where a failed form comes
+ * back to. */
+function hereWithout(page, key) {
+  const params = new SearchParams(page.url.searchParams.pairs.filter(([k]) => k !== key));
+  const query = params.toString();
+  return page.url.pathname + (query ? "?" + query : "");
+}
+
+/** A form that carries this visitor's token cannot be written into a file. */
+function refusePrerender(page, what) {
+  if (page.input.mode === "prerender") {
+    const file = page.route ? `src/pages/${page.route.file}` : "this page";
+    throw new Error(
+      `${file} has ${what}, which carries the visitor's CSRF token, so it cannot be ` +
+        "prerendered: remove `export const prerender = true` from it"
+    );
+  }
+}
+
+function hidden(name, value) {
+  return `<input type="hidden" name="${escapeHTML(name)}" value="${escapeHTML(value)}">`;
+}
+
+/** `{ name, label }` for each provider a `<SignIn providers>` names. */
+function providerList(providers) {
+  return (providers || []).map((p) => {
+    const name = typeof p === "string" ? p : p && p.name;
+    if (typeof name !== "string" || !/^[\w-]+$/.test(name)) {
+      throw new Error(
+        "<SignIn providers>: each provider is the name Settings → Authentication gives it, " +
+          'e.g. providers={["google"]} or providers={[{ name: "google", label: "Google" }]}'
+      );
+    }
+    const label = (typeof p === "object" && p.label) || name.charAt(0).toUpperCase() + name.slice(1);
+    return { name, label };
+  });
+}
+
+/** `<SignIn />`: email, password and "Remember me", posted to the server's
+ * sign-in. Props: `next` (where to go once signed in; this page when not
+ * given), `providers` (identity providers to offer, by their names in
+ * Settings → Authentication, e.g. `["google"]`), `remember` (`false` hides the
+ * box), `label` (the button). Signed in, it renders its `signed-in` slot, or
+ * nothing. Other attributes go on the `<form>`. */
+export const SignIn = createComponent(async (result, props = {}, slots = {}) => {
+  const page = result.page;
+  refusePrerender(page, "a <SignIn />");
+  if (page.locals.user) {
+    return slots["signed-in"] ? markHTMLString(await renderValue(slots["signed-in"](result))) : "";
+  }
+  const { next, providers, remember = true, label = "Sign in", ...rest } = props;
+  const back = hereWithout(page, "sign_in");
+  const after = localPath(next) || back;
+  const problem = SIGN_IN_PROBLEMS[page.url.searchParams.get("sign_in")];
+  let html = `<form method="post" action="${AUTH_ROUTES.signIn}"${spreadAttributes({
+    class: "feldspar-sign-in",
+    ...rest,
+  })}>`;
+  html += hidden("_csrf", page.locals.csrfToken) + hidden("next", after) + hidden("back", back);
+  if (problem) html += `<p class="error" role="alert">${escapeHTML(problem)}</p>`;
+  html +=
+    '<label>Email <input type="email" name="email" autocomplete="username" required></label>' +
+    '<label>Password <input type="password" name="password" autocomplete="current-password" required></label>';
+  if (remember !== false) {
+    html +=
+      '<label class="remember"><input type="checkbox" name="remember" value="1" checked> Remember me</label>' +
+      hidden("remember_shown", "1");
+  }
+  html += `<button type="submit">${escapeHTML(label)}</button></form>`;
+  const offered = providerList(providers);
+  if (offered.length) {
+    html += '<div class="feldspar-providers">';
+    for (const p of offered) {
+      const href = `/_feldspar/oauth/${p.name}/start?return_to=${encodeURIComponent(after)}`;
+      html += `<a class="button" href="${escapeHTML(href)}">Sign in with ${escapeHTML(p.label)}</a>`;
+    }
+    html += "</div>";
+  }
+  return markHTMLString(html);
+}, "feldspar:components/SignIn");
+
+/** `<SignUp />`: an account, made by the server under the application's REST
+ * API settings ("Allow sign-up", and the role a new account gets). Props:
+ * `next`, `repeat` (ask for the password twice), `label`. Renders its `closed`
+ * slot, or nothing, when the application offers no sign-up, and nothing for a
+ * visitor who is signed in. */
+export const SignUp = createComponent(async (result, props = {}, slots = {}) => {
+  const page = result.page;
+  refusePrerender(page, "a <SignUp />");
+  if (page.locals.user) return "";
+  if (!page.input.signUp) {
+    return slots.closed ? markHTMLString(await renderValue(slots.closed(result))) : "";
+  }
+  const { next, repeat = false, label = "Create account", ...rest } = props;
+  const back = hereWithout(page, "sign_up");
+  const after = localPath(next) || back;
+  const problem = SIGN_UP_PROBLEMS[page.url.searchParams.get("sign_up")];
+  let html = `<form method="post" action="${AUTH_ROUTES.signUp}"${spreadAttributes({
+    class: "feldspar-sign-up",
+    ...rest,
+  })}>`;
+  html += hidden("_csrf", page.locals.csrfToken) + hidden("next", after) + hidden("back", back);
+  if (problem) html += `<p class="error" role="alert">${escapeHTML(problem)}</p>`;
+  html +=
+    '<label>Email <input type="email" name="email" autocomplete="username" required></label>' +
+    '<label>Password <input type="password" name="password" autocomplete="new-password" required></label>';
+  if (repeat) {
+    html +=
+      '<label>Password again <input type="password" name="password_repeat" autocomplete="new-password" required></label>';
+  }
+  html += `<button type="submit">${escapeHTML(label)}</button></form>`;
+  return markHTMLString(html);
+}, "feldspar:components/SignUp");
+
+/** `<SignOut />`: a button that ends the session (a form post, so a link on
+ * another site cannot sign anybody out). Props: `next` (`/` when not given),
+ * `label`. Renders nothing for a visitor who is not signed in. */
+export const SignOut = createComponent(async (result, props = {}) => {
+  const page = result.page;
+  refusePrerender(page, "a <SignOut />");
+  if (!page.locals.user) return "";
+  const { next, label = "Sign out", ...rest } = props;
+  let html = `<form method="post" action="${AUTH_ROUTES.signOut}"${spreadAttributes({
+    class: "feldspar-sign-out",
+    ...rest,
+  })}>`;
+  html += hidden("_csrf", page.locals.csrfToken) + hidden("next", localPath(next) || "/");
+  html += `<button type="submit">${escapeHTML(label)}</button></form>`;
+  return markHTMLString(html);
+}, "feldspar:components/SignOut");
+
+// ---------------------------------------------------------------------------
+// Live fragments (TODO W4.4): `<Live>`
+// ---------------------------------------------------------------------------
+//
+//     <Live stream="posts_live" fragment="PostCard" swap="prepend">
+//       {posts.map((post) => <PostCard id={post.id} />)}
+//     </Live>
+//
+// The page subscribes over the application's live socket to a
+// `table_changes` stream, with `where` as the filter. For each change the
+// socket delivers — and it delivers only rows this visitor may read — the
+// `live` script fetches that row's fragment, as the visitor, and swaps it in:
+// an insert goes at the top (`prepend`) or the bottom (`append`), an update
+// replaces the row's element, a delete removes it. Each row's element is found
+// by its `data-key`, so the fragment's outermost element must carry
+// `data-key={row.id}`. With `notice="{n} new posts"`, inserts wait behind a
+// button saying how many there are.
+
+const LIVE_SWAPS = ["prepend", "append"];
+
+/** `<Live stream fragment>`: a list kept current by a live stream of a
+ * table's changes. Props: `stream` (a `table_changes` stream the application
+ * exposes), `fragment` (the fragment that renders one row, from
+ * `src/fragments/`), `param` (the query parameter the row's key is passed to
+ * it as; `id`), `where` (the subscription's filter, in the REST read's terms:
+ * `{ author: "eq.7" }`), `swap` (`prepend` or `append`), `notice` (hold new
+ * rows behind a button; `{n}` is how many), `as` (the element; `div`). The
+ * slot is the rows as they are now. */
+export const Live = createComponent(async (result, props = {}, slots = {}) => {
+  const {
+    stream,
+    fragment: name,
+    param = "id",
+    where,
+    swap = "prepend",
+    notice,
+    as = "div",
+    ...rest
+  } = props;
+  if (typeof stream !== "string" || !/^[A-Za-z_]\w*$/.test(stream)) {
+    throw new Error(
+      '<Live> needs a `stream`: the name of a table_changes stream the application exposes, ' +
+        'e.g. <Live stream="posts_live" fragment="PostCard">'
+    );
+  }
+  if (typeof name !== "string" || !result.site.fragments.some((f) => f.name === name)) {
+    throw new Error(
+      `<Live stream="${stream}"> needs a \`fragment\` that renders one row: a file in ` +
+        `src/fragments/${typeof name === "string" ? ` (there is no src/fragments/${name}.astro)` : ""}`
+    );
+  }
+  if (!LIVE_SWAPS.includes(swap)) {
+    throw new Error(`<Live stream="${stream}"> swap is "prepend" (the default) or "append"`);
+  }
+  if (typeof as !== "string" || !/^[a-z][a-z0-9-]*$/.test(as)) {
+    throw new Error(`<Live stream="${stream}"> as is an element name, e.g. as="ul"`);
+  }
+  if (where !== undefined && where !== null) {
+    const ok =
+      typeof where === "object" &&
+      !Array.isArray(where) &&
+      Object.values(where).every(
+        (v) => v === undefined || typeof v === "string" || (Array.isArray(v) && v.every((x) => typeof x === "string"))
+      );
+    if (!ok) {
+      throw new Error(
+        `<Live stream="${stream}"> where is the REST read's filter: column to "op.value", ` +
+          'e.g. where={{ author: `eq.${user.id}` }}'
+      );
+    }
+  }
+  const path = result.page.input.live;
+  if (!path) {
+    throw new Error(
+      `<Live stream="${stream}">: this application exposes no stream, so it has no live socket. ` +
+        "Add the stream to the application, enable its REST API, and build again"
+    );
+  }
+  const inner = slots.default ? await renderValue(slots.default(result)) : "";
+  const attrs = spreadAttributes({
+    ...rest,
+    "data-live": stream,
+    "data-live-path": path,
+    "data-live-where": where ? JSON.stringify(where) : undefined,
+    "data-fragment": name,
+    "data-param": param,
+    "data-swap": swap,
+    "aria-live": "polite",
+  });
+  const button = notice
+    ? `<button type="button" class="feldspar-live-notice" data-live-notice="${escapeHTML(notice)}" hidden></button>`
+    : "";
+  return markHTMLString(`<${as}${attrs}>${button}${inner}</${as}>`);
+}, "feldspar:components/Live");

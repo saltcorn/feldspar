@@ -9330,6 +9330,7 @@ dependencies = [
  "sc-error",
  "sc-expr",
  "sc-files",
+ "sc-http",
  "sc-i18n",
  "sc-proc",
  "sc-query",
