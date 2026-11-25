@@ -235,7 +235,7 @@ export function FitCard({
                 return (
                   <StatusBadge tone={trust.tone}>
                     {trust.tone === "green" ? "✓ " : "⚠ "}
-                    {t(trust.text)}
+                    {trustText(trust.text, t)}
                   </StatusBadge>
                 );
               })()
@@ -530,7 +530,7 @@ function FitDetails({
               <tbody>
                 {posteriorChecks(pm).map((c) => (
                   <tr key={c.key} className={c.ok === false ? "is-warn" : undefined}>
-                    <td>{t(c.label)}</td>
+                    <td>{checkLabel(c.key, c.label, t)}</td>
                     <td className="font-monospace text-secondary">{c.threshold}</td>
                     <td className="font-monospace">{c.value}</td>
                     <td className="text-end">{c.ok === null ? "" : c.ok ? "✓" : "⚠"}</td>
@@ -552,7 +552,7 @@ function FitDetails({
                       <T text="Split" />
                     </th>
                     {errors.columns.map((c) => (
-                      <th key={c}>{t(c)}</th>
+                      <th key={c}>{errorColumnLabel(c, t)}</th>
                     ))}
                   </tr>
                 </thead>
@@ -778,4 +778,80 @@ export function shortWhen(value: string, t: (text: string, args?: Record<string,
     year: when.getFullYear() === now.getFullYear() ? undefined : "numeric",
   });
   return `${day} ${time}`;
+}
+
+// --- words the helpers in ./fitCard return -------------------------------------
+//
+// `fitCard.ts` returns English, so its tests can read it; these put each phrase
+// through `t()` with its message id written out, because the extractor only
+// collects a string literal (an id held in a variable never reaches the
+// catalogue). Anything not listed shows as the helper gave it.
+
+type Translate = (text: string, args?: Record<string, string | number>) => string;
+
+/** A posterior's verdict, as `trustVerdict` words it. */
+function trustText(text: string, t: Translate): string {
+  switch (text) {
+    case "trustworthy":
+      return t("trustworthy");
+    case "chains disagree":
+      return t("chains disagree");
+    case "1 divergence":
+      return t("1 divergence");
+    case "low E-BFMI":
+      return t("low E-BFMI");
+    case "few effective draws":
+      return t("few effective draws");
+    case "tree depth hit":
+      return t("tree depth hit");
+  }
+  const divergences = /^(\d+) divergences$/.exec(text);
+  if (divergences) return t("{count} divergences", { count: Number(divergences[1]) });
+  return text;
+}
+
+/** A sampler diagnostic's name. */
+function checkLabel(key: string, label: string, t: Translate): string {
+  switch (key) {
+    case "rhat":
+      return t("Max R̂");
+    case "ess_bulk":
+      return t("Min bulk ESS");
+    case "ess_tail":
+      return t("Min tail ESS");
+    case "divergent":
+      return t("Divergences");
+    case "treedepth":
+      return t("Tree-depth hits");
+    case "ebfmi":
+      return t("E-BFMI");
+    default:
+      return label;
+  }
+}
+
+/** A column of the errors-by-split table. */
+function errorColumnLabel(column: string, t: Translate): string {
+  switch (column) {
+    case "Rows":
+      return t("Rows");
+    case "R²":
+      return t("R²");
+    case "RMSE":
+      return t("RMSE");
+    case "MAE":
+      return t("MAE");
+    case "Accuracy":
+      return t("Accuracy");
+    case "Classes":
+      return t("Classes");
+    case "WCSS":
+      return t("WCSS");
+    case "Clusters":
+      return t("Clusters");
+    case "Explained variance":
+      return t("Explained variance");
+    default:
+      return column;
+  }
 }

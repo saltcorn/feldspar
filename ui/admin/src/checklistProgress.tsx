@@ -14,7 +14,7 @@ import Spinner from "react-bootstrap/Spinner";
 
 import { api, errorMessage } from "./api";
 import { outcomeTone, type ChecklistRun } from "./checklists";
-import { useT } from "./i18n";
+import { useT, type Translator } from "./i18n";
 import { StatusBadge } from "./layout";
 
 /** The run sockets' paths (the server's `CHECKLIST_RUN_LIVE_ROUTE` and
@@ -294,7 +294,7 @@ export function ChecklistProgressToast({
             <ul className="list-unstyled mb-0 small">
               {v.recent.map((s, i) => (
                 <li key={`${v.done - v.recent.length + i}`} className="d-flex align-items-center gap-2">
-                  <StatusBadge tone={outcomeTone(s.outcome)}>{t(s.outcome)}</StatusBadge>
+                  <StatusBadge tone={outcomeTone(s.outcome)}>{outcomeLabel(s.outcome, t)}</StatusBadge>
                   <span className="text-truncate">{s.label}</span>
                 </li>
               ))}
@@ -304,4 +304,21 @@ export function ChecklistProgressToast({
       </div>
     </div>
   );
+}
+
+/** A step's outcome in words. Each message id is written out so the
+ * extractor can read it; an outcome this list does not know shows as sent. */
+function outcomeLabel(outcome: string, t: Translator["t"]): string {
+  switch (outcome) {
+    case "pass":
+      return t("pass");
+    case "fail":
+      return t("fail");
+    case "error":
+      return t("error");
+    case "skipped":
+      return t("skipped");
+    default:
+      return outcome;
+  }
 }

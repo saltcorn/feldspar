@@ -2776,6 +2776,72 @@ erDiagram
     timestamp last_used_at "throttled to one write a minute"
     timestamp revoked_at "nullable while it is live"
   }
+  OAUTHCLIENTS["_fd_oauth_clients"] {
+    uuid id PK
+    text client_id UK "fdc_...: not a secret"
+    uuid app_id "deliberately NOT a foreign key"
+    text name
+    bool confidential
+    text secret_hash "SHA-256 of the fdcs_ secret; null for a public client"
+    json redirect_uris
+    json scopes
+    bool skip_consent
+    uuid created_by "nullable"
+    timestamp created_at
+    json claim_fields "nullable: further claims, [{claim, field}]"
+    json post_logout_redirect_uris "nullable: nowhere"
+  }
+  OAUTHCODES["_fd_oauth_codes"] {
+    text hash PK "SHA-256 of the fdac_ code"
+    text client_id "-> _fd_oauth_clients.client_id, unenforced"
+    uuid app_id
+    uuid user_id "deliberately NOT a foreign key"
+    text redirect_uri
+    text code_challenge "PKCE"
+    text nonce "nullable"
+    json scopes
+    timestamp auth_time "nullable"
+    text issuer
+    uuid family "the token family it starts"
+    timestamp expires_at
+    timestamp used_at "a code works once"
+    int auth_epoch "the account's epoch at sign-in; null = 0"
+  }
+  OAUTHGRANTS["_fd_oauth_grants"] {
+    uuid id PK
+    uuid user_id "deliberately NOT a foreign key"
+    text client_id
+    uuid app_id
+    json scopes "what the user consented to"
+    timestamp created_at
+    timestamp updated_at
+  }
+  OAUTHTOKENS["_fd_oauth_tokens"] {
+    text hash PK "SHA-256 of the fdat_ / fdrt_ token"
+    uuid id UK
+    text kind "access | refresh"
+    uuid family "every token one code led to"
+    uuid grant_id "-> _fd_oauth_grants.id, unenforced"
+    text client_id
+    uuid app_id
+    uuid user_id "deliberately NOT a foreign key"
+    json scopes
+    timestamp auth_time "nullable"
+    text issuer
+    timestamp created_at
+    timestamp expires_at
+    timestamp used_at "a refresh token's one use"
+    timestamp revoked_at "nullable while it is live"
+    int auth_epoch "null = 0"
+  }
+  OIDCKEYS["_fd_oidc_keys"] {
+    text kid PK "RFC 7638 thumbprint of the public key"
+    text alg "RS256 | ES256"
+    json public_jwk "as the JWKS publishes it"
+    text private_key "PKCS#8 PEM, sealed with the instance key"
+    timestamp created_at
+    timestamp retired_at "null while it signs"
+  }
   PASSWORDTOKENS["_fd_password_tokens"] {
     text token_hash PK "SHA-256 of the emailed token"
     uuid user_id "deliberately NOT a foreign key"

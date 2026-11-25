@@ -177,7 +177,7 @@ async fn model_names_for_a_table_do_not_read_the_datasets() -> Result<()> {
     let reg = registry()?;
     save_model(&cat, &reg, &house_prices(), None).await?;
 
-    let unknown = json!([{ "id": "p", "kind": "model_predictions", "model": "elsewhere" }]);
+    let unknown = json!([{ "id": "p", "kind": "from_a_newer_build", "model": "elsewhere" }]);
     let update = Update::new(
         sc_dataset::DATASETS_TABLE,
         vec![Assignment::new(
@@ -194,7 +194,7 @@ async fn model_names_for_a_table_do_not_read_the_datasets() -> Result<()> {
         .err()
         .unwrap()
         .to_string();
-    assert!(err.contains("model_predictions"), "{err}");
+    assert!(err.contains("from_a_newer_build"), "{err}");
     assert_eq!(
         model_names_for_table(&cat, "houses").await?,
         vec!["house prices"]
