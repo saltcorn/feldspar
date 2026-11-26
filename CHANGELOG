@@ -2,6 +2,23 @@
 
 Changes in reverse chronological order.
 
+## Fix: the CLI resolves frameworks that modules declare
+
+`feldspar app list` reported `project_dir: null` with "framework `astro` has no build step" for
+any application on a framework a module supplies, such as the bundled `@feldspar/astro`. The
+server built and served those applications without trouble. The CLI never loaded the modules, so
+its framework registry held only `code`, `react` and `none`. `feldspar build-app` failed the same
+way for such an application. Re-emitting the generated client after `app tables`,
+`app api-tables`, `api add-query` and `api remove-query` also failed, though only with a
+warning.
+
+These commands now load the installed modules first when the application is on a module's
+framework (`sc_cli::app::uses_module_framework`), the same way they already did for an
+application that exposes triggers. They load them only in that case, so listing or building
+`code` and `react` applications starts no module worker, exactly as before. The new test
+`app_list_json_resolves_a_framework_a_module_declares` installs a framework-declaring fixture
+module with `feldspar module install --local` and checks the path `app list --json` reports.
+
 ## Schema editing from application code: the schema module (TODO ST1)
 
 An application whose users define their own tables can now change the schema from a custom

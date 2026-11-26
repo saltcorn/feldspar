@@ -7,7 +7,9 @@ use sc_error::Result;
 use sc_server::{ServerConfig, ServiceManager};
 
 use super::api::open_app;
-use super::serve::{Services, install_services, serving_defaults, take_option};
+use super::serve::{
+    Services, install_services, install_services_if, serving_defaults, take_option,
+};
 
 pub(crate) async fn app_command(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
@@ -74,17 +76,19 @@ pub(crate) async fn app_tables_command(args: &[String], api: bool) -> Result<()>
             // the exposed triggers — so an app exposing any is rewritten with
             // the live trigger set, as `app triggers` rewrites it, rather than
             // losing their methods.
-            let triggers = match app.triggers.is_empty() {
-                true => None,
-                false => {
-                    let config = ServerConfig::from_args(serving_defaults(&db).iter())?;
-                    sc_dns::init()?;
-                    let Services { triggers, .. } =
-                        install_services(&catalog, &config, &ServiceManager::default()).await?;
-                    Some(triggers)
-                }
-            };
-            match sc_app::emit_app_client(&catalog, &app, triggers.as_ref()).await {
+            // So is an app on a module's framework, whose client path is the
+            // module's to say.
+            let services = install_services_if(
+                &catalog,
+                &db,
+                !app.triggers.is_empty() || sc_cli::app::uses_module_framework(&app),
+            )
+            .await?;
+            let triggers = services
+                .as_ref()
+                .filter(|_| !app.triggers.is_empty())
+                .map(|s| &s.triggers);
+            match sc_app::emit_app_client(&catalog, &app, triggers).await {
                 Ok(written) if written.is_empty() => {}
                 Ok(written) => eprintln!("feldspar: rewrote {}", written.join(", ")),
                 Err(e) => eprintln!(
@@ -210,6 +214,14 @@ pub(crate) async fn app_list_command(args: &[String]) -> Result<()> {
     connect_stored_file_stores(&catalog).await?;
 
     let apps = sc_app::list_applications(&catalog).await?;
+    // A module's framework resolves only once the modules are loaded; the
+    // services are held while the list is made.
+    let _services = install_services_if(
+        &catalog,
+        &db,
+        apps.iter().any(sc_cli::app::uses_module_framework),
+    )
+    .await?;
     let out: Vec<serde_json::Value> = apps
         .iter()
         .map(|app| sc_cli::app::app_json(&catalog, app))

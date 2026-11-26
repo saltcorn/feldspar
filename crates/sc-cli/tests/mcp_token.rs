@@ -175,3 +175,96 @@ async fn app_list_json_gives_each_applications_project_directory() -> sc_error::
     );
     Ok(())
 }
+
+/// An application on a framework a **module** declares gets the directory too:
+/// the command loads the modules before resolving it, as the server does. Until
+/// it did, the list said "framework `astro` has no build step" about a framework
+/// the running server builds, because the CLI's framework registry held only the
+/// built-ins.
+///
+/// The module is `sc-module`'s `framework-module` fixture (its `toy` framework
+/// is built from `{{ store }}/{{ project }}`), installed through
+/// `feldspar module install --local` into a modules root under a throwaway
+/// `XDG_DATA_HOME`. That is an `npm install` of a directory with no
+/// dependencies, so it reaches no network but needs npm, and skips without it.
+#[tokio::test]
+async fn app_list_json_resolves_a_framework_a_module_declares() -> sc_error::Result<()> {
+    let have_npm = Command::new("npm")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if !have_npm {
+        eprintln!("skipping: npm is not available");
+        return Ok(());
+    }
+    let db = TestDb::new().await?;
+    let url = db.url();
+    let catalog = connect_catalog(&DbConfig::from_url(&url)).await?;
+
+    let root = std::env::temp_dir().join(format!("sc-cli-app-list-module-{}", std::process::id()));
+    let store = root.join("store");
+    std::fs::create_dir_all(store.join("todo"))?;
+    let xdg = root.join("xdg");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../sc-module/tests/fixtures/framework-module");
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_feldspar"))
+            .args(args)
+            .env("XDG_DATA_HOME", &xdg)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run the feldspar binary");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    let fixture = fixture.display().to_string();
+    let (ok, _, stderr) = run(&[
+        "module",
+        "install",
+        "--local",
+        &fixture,
+        "--database-url",
+        &url,
+    ]);
+    assert!(ok, "{stderr}");
+
+    sc_catalog::save_file_store(
+        &catalog,
+        &FileStoreDef::local("apps", store.display().to_string()),
+    )
+    .await?;
+    // Saved as `code`, then switched to `toy` in the row: `save_application`
+    // validates against this test process's registry, which has no modules
+    // loaded. The stored value is the one the admin form writes.
+    let framework = FrameworkRef::new("code")
+        .with("store", "apps")
+        .with("output", "dist")
+        .with("command", "true");
+    save_application(&catalog, &Application::new("Todo", "todo", framework)).await?;
+    db.execute(
+        r#"UPDATE _fd_applications SET framework = '{"name": "toy", "config": {"store": "apps", "project": "todo"}}' WHERE subdomain = 'todo'"#,
+    )
+    .await?;
+
+    let (ok, stdout, stderr) = run(&["app", "list", "--json", "--database-url", &url]);
+    std::fs::remove_dir_all(&root).ok();
+    assert!(ok, "{stderr}");
+    let apps: Json = serde_json::from_str(&stdout).expect("app list --json is JSON alone");
+    let todo = &apps[0];
+    assert_eq!(todo["framework"], "toy", "{todo}");
+    assert_eq!(todo["file_store"], "apps", "{todo}");
+    assert_eq!(todo["source_dir"], "todo", "{todo}");
+    assert!(todo.get("error").is_none(), "{todo}");
+    assert_eq!(
+        todo["project_dir"].as_str().map(std::path::Path::new),
+        Some(store.join("todo").as_path()),
+        "{todo}"
+    );
+    Ok(())
+}

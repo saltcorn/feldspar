@@ -1300,7 +1300,9 @@ directory `build-app` runs in. An application with no such directory (a store th
 is not connected or not on this machine's disk, a framework with no source tree) is
 still listed, with `project_dir: null` and the reason in `error`. Only the JSON is
 on stdout, so `jq -r '.[] | select(.subdomain=="todo") | .project_dir'` works
-directly on it.
+directly on it. When an application is on a framework a module supplies (Astro,
+Vue), the command loads the installed modules first, as the server does, so it
+takes a few seconds longer and prints the modules' boot lines on stderr.
 
 The triggers an application exposes (the admin form's **Triggers** tick boxes) are
 changed from the terminal the same way:

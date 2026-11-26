@@ -16,6 +16,11 @@
 //! source tree, a store that is not connected, a store with no local disk —
 //! is still listed, with `project_dir: null` and the reason in `error`: a list
 //! that left it out would read as "there is no such application".
+//!
+//! A framework a **module** declares (`@feldspar/astro`, `@feldspar/vue`) is
+//! known to this process only once the modules are loaded, so the command loads
+//! them first when any application is on one ([`uses_module_framework`]) — and
+//! only then, so listing `code` and `react` applications starts no module worker.
 
 use sc_app::Application;
 use sc_catalog::Catalog;
@@ -31,6 +36,20 @@ pub fn parse_list(args: &[String]) -> Result<bool> {
             "unknown app list argument `{other}`; it takes --json"
         ))),
     }
+}
+
+/// Whether `app`'s framework is one a module declares rather than one of the
+/// built-ins (`code`, `react`, `none`).
+///
+/// A command that resolves such an application's source, build or generated
+/// client has to load the modules first: the framework registry is filled by
+/// loading them, and a process that has not answers "framework `astro` has no
+/// build step" about a framework the running server builds.
+pub fn uses_module_framework(app: &Application) -> bool {
+    !matches!(
+        app.framework.name.as_str(),
+        sc_app::CODE_FRAMEWORK | sc_app::REACT_FRAMEWORK | sc_app::NONE_FRAMEWORK
+    )
 }
 
 /// One application as `app list --json` reports it.
@@ -160,6 +179,17 @@ mod tests {
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn only_a_framework_no_built_in_supplies_needs_the_modules() {
+        let app = |name: &str| Application::new("A", "a", sc_app::FrameworkRef::new(name));
+        for builtin in ["code", "react", "none"] {
+            assert!(!uses_module_framework(&app(builtin)), "{builtin}");
+        }
+        for declared in ["astro", "vue"] {
+            assert!(uses_module_framework(&app(declared)), "{declared}");
+        }
     }
 
     #[test]

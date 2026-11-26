@@ -307,6 +307,26 @@ pub(crate) struct Services {
     pub(crate) view_services: Arc<sc_agent::ViewServices>,
 }
 
+/// [`install_services`] when `needed`, configured as `app triggers` configures
+/// it — for a command that needs the modules only for some applications: one
+/// exposing triggers (a trigger over a module's action is in the live set only
+/// once the modules are), or one on a framework a module declares
+/// ([`sc_cli::app::uses_module_framework`]).
+pub(crate) async fn install_services_if(
+    catalog: &Arc<sc_catalog::Catalog>,
+    db: &DbConfig,
+    needed: bool,
+) -> Result<Option<Services>> {
+    if !needed {
+        return Ok(None);
+    }
+    let config = ServerConfig::from_args(serving_defaults(db).iter())?;
+    sc_dns::init()?;
+    install_services(catalog, &config, &ServiceManager::default())
+        .await
+        .map(Some)
+}
+
 /// The agents, models, triggers, modules and streams over `catalog`, and the
 /// mount registry that carries them — everything `serve` brings up between
 /// connecting the database and mounting the applications.

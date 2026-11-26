@@ -9,9 +9,8 @@ use sc_cli::{
     extract_file_stores,
 };
 use sc_error::Result;
-use sc_server::{ServerConfig, ServiceManager};
 
-use super::serve::{Services, install_services, serving_defaults, set_public_origin, take_option};
+use super::serve::{install_services_if, set_public_origin, take_option};
 
 pub(crate) async fn build_app_command(args: &[String]) -> Result<()> {
     let (subdomain, rest) = match args.split_first() {
@@ -54,23 +53,23 @@ pub(crate) async fn build_app_command(args: &[String]) -> Result<()> {
         "feldspar: building application `{}` ({})",
         app.name, subdomain
     );
-    let source = app_source_from_config(&app.framework)?;
     // An app that exposes triggers projects `api.run<Name>()` from the live
     // trigger set, which a trigger over a module's action is in only once the
     // modules are — so the services come up as `app triggers` brings them up.
-    // An app with none builds without them, as it always has.
-    let triggers = match app.triggers.is_empty() {
-        true => None,
-        false => {
-            let config = ServerConfig::from_args(serving_defaults(&db).iter())?;
-            sc_log::set_log_sql(false);
-            sc_dns::init()?;
-            let Services { triggers, .. } =
-                install_services(&catalog, &config, &ServiceManager::default()).await?;
-            Some(triggers)
-        }
-    };
-    let report = build_application(&catalog, &app, &source, triggers.as_ref()).await?;
+    // So does an app on a framework a module declares, whose build step is the
+    // module's: without the modules loaded there is none to resolve. An app
+    // with neither builds without them, as it always has.
+    let needs_modules = !app.triggers.is_empty() || sc_cli::app::uses_module_framework(&app);
+    if needs_modules {
+        sc_log::set_log_sql(false);
+    }
+    let services = install_services_if(&catalog, &db, needs_modules).await?;
+    let triggers = services
+        .as_ref()
+        .filter(|_| !app.triggers.is_empty())
+        .map(|s| &s.triggers);
+    let source = app_source_from_config(&app.framework)?;
+    let report = build_application(&catalog, &app, &source, triggers).await?;
 
     // The tool output is the point of running this here rather than clicking
     // Build, so it goes to stdout whole — not the tail an error message can
@@ -154,8 +153,21 @@ pub(crate) async fn open_app(
 /// which half happened, so nobody goes looking for a client method that was
 /// never written — an unreachable store or an app with no client path is a
 /// configuration to fix, not a query to add again.
-pub(crate) async fn reemit_client(catalog: &sc_catalog::Catalog, app: &sc_app::Application) {
-    match sc_app::emit_app_client(catalog, app, None).await {
+///
+/// An app on a module's framework gets the modules loaded first, since its
+/// client path is the module's to say; failing to load them is reported the
+/// same way.
+pub(crate) async fn reemit_client(
+    catalog: &std::sync::Arc<sc_catalog::Catalog>,
+    db: &DbConfig,
+    app: &sc_app::Application,
+) {
+    let services = install_services_if(catalog, db, sc_cli::app::uses_module_framework(app)).await;
+    let emitted = match services {
+        Ok(_services) => sc_app::emit_app_client(catalog, app, None).await,
+        Err(e) => Err(e),
+    };
+    match emitted {
         Ok(written) if written.is_empty() => {
             eprintln!(
                 "feldspar: application `{}` generates no client, so nothing was \
@@ -212,7 +224,7 @@ pub(crate) async fn add_query_command(args: &[String]) -> Result<()> {
         parsed.app
     );
     print_query_columns(&saved, &mount, &name)?;
-    reemit_client(&catalog, &saved).await;
+    reemit_client(&catalog, &db, &saved).await;
     Ok(())
 }
 
@@ -360,6 +372,6 @@ pub(crate) async fn remove_query_command(args: &[String]) -> Result<()> {
         "feldspar: removed `{name}` from the API at {mount} of `{}`",
         parsed.app
     );
-    reemit_client(&catalog, &saved).await;
+    reemit_client(&catalog, &db, &saved).await;
     Ok(())
 }
