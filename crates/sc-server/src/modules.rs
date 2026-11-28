@@ -92,6 +92,9 @@ pub struct ModuleServices {
     /// and asking the runtime for that is what makes sure there is one.
     python: Arc<sc_python::PythonRuntime>,
     host: Arc<ModuleHost>,
+    /// The server's handlers for a module's `agents` and `apps` requests
+    /// (TODO-app-constructor AC12.2, AC12.3). Routes, services and hooks all use them.
+    server_asks: crate::module_agents::ServerSurfaces,
     /// The **Python** module host, over that same runtime: one interpreter per
     /// process, so a Python module and a Python body share it (§1).
     python_host: Arc<PyModuleHost>,
@@ -180,6 +183,11 @@ impl ModuleServices {
         );
         let supervisor = ServiceSupervisor::new(catalog, &host, Backoff::default())?;
         supervisor.set_dispatcher(Arc::clone(dispatcher));
+        let server_asks = crate::module_agents::ServerSurfaces {
+            agents: crate::module_agents::ModuleAgentHost::new(catalog, agents, dispatcher),
+            apps: crate::module_apps::ModuleAppHost::new(catalog),
+        };
+        supervisor.set_server_asks(Arc::new(server_asks.clone()));
         let services = Arc::new(ModuleServices {
             catalog: Arc::clone(catalog),
             dispatcher: Arc::clone(dispatcher),
@@ -192,6 +200,7 @@ impl ModuleServices {
             python,
             surfaces: Arc::new(CodeSurfaces::new()?),
             host,
+            server_asks,
             loaded: RwLock::new(Arc::new(ModuleSet::empty())),
             supervisor,
             run_services: std::sync::atomic::AtomicBool::new(false),
@@ -305,6 +314,11 @@ impl ModuleServices {
         // step of an uninstalled module's type errors naming why instead of
         // half-running.
         crate::check_steps::install_module_step_types(&self.host, &set);
+        // And the **agent traits** (TODO-app-constructor AC12.1), into the
+        // agent registry every runner and the admin API share — whole, so an
+        // uninstalled module's trait leaves the picker, and an agent naming it
+        // stops validating with the reason, at once.
+        crate::agent_traits::install_module_traits(&self.host, &set, self.agents.registry());
         // And the **view patterns** (TODO "Saltcorn UI" 11.1): into
         // `sc-viewpattern`'s registry, which a view's save is checked against,
         // and into the view runtime's, which renders them — both whole, so an
@@ -655,10 +669,63 @@ impl ModuleServices {
             request,
             caller,
             &system,
+            Some(&self.server_asks),
             installation,
         )
         .await
         .map(Some)
+    }
+
+    /// Sets the JavaScript evaluator for agent runs that modules start.
+    pub fn set_agent_evaluator(&self, evaluator: Arc<dyn sc_expr::JsEvaluator>) {
+        self.server_asks.agents.set_evaluator(evaluator);
+    }
+
+    /// The application mounts a module's build goes through
+    /// (TODO-app-constructor AC12.3).
+    pub fn set_app_mounts(&self, mounts: &Arc<crate::apps::AppMounts>) {
+        self.server_asks.apps.set_mounts(mounts);
+    }
+
+    /// Stop (abort) every agent run a module started that this server drives.
+    /// For tests only. A server shutting down leaves the runs live, so the
+    /// module can drive them on after the restart.
+    pub fn stop_module_runs(&self) {
+        self.server_asks.agents.stop_all();
+    }
+
+    /// Tell every module with an `on_application_deleted` hook that `app` was
+    /// deleted (TODO-app-constructor AC12.5). The deletion has happened: a
+    /// module whose hook fails is logged, and the others are still told.
+    pub async fn application_deleted(&self, app: &sc_app::Application) {
+        let set = self.modules();
+        let app = json!({
+            "id": app.id.0.to_string(),
+            "name": app.name,
+            "subdomain": app.subdomain,
+            "description": app.description,
+            "framework": app.framework.name,
+        });
+        for loaded in sc_module::application_deleted_modules(&set) {
+            if let Err(e) = sc_module::application_deleted(
+                &self.catalog,
+                &self.host,
+                Some(&self.dispatcher),
+                loaded,
+                app.clone(),
+                Some(&self.server_asks),
+            )
+            .await
+            {
+                sc_log::log_error!(
+                    "feldspar: module `{}` could not clean up after the deleted application \
+                     `{}`: {}",
+                    loaded.module.name,
+                    app["subdomain"].as_str().unwrap_or_default(),
+                    e.chain()
+                );
+            }
+        }
     }
 
     /// The loaded set as it stands — what the Modules tab renders.

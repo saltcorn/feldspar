@@ -15,7 +15,6 @@ import type {
   ListApplicationsResponse,
   ListBackupSchedulesResponse,
   ListChecklistsResponse,
-  ListConstructionsResponse,
   ListLlmProvidersResponse,
   ListTriggersResponse,
   ListUsersResponse,
@@ -28,7 +27,7 @@ import {
   type Entity,
   type EntityKind,
 } from "../entities";
-import { constructPath } from "../construction";
+import { constructPath, listConstructions, type ConstructionSummary } from "../appConstructor";
 import {
   attention,
   buildingPhase,
@@ -89,7 +88,7 @@ export function Home() {
   const providers = useLoaded<ListLlmProvidersResponse>(() => api.listLlmProviders());
   const applications = useLoaded<ListApplicationsResponse>(() => api.listApplications());
   const users = useLoaded<ListUsersResponse>(() => api.listUsers());
-  const constructions = useLoaded<ListConstructionsResponse>(() => api.listConstructions());
+  const constructions = useLoaded<ConstructionSummary[]>(listConstructions);
   const [fromDescription, setFromDescription] = useState(false);
 
   const loadingAttention = [triggers, schedules, checklists, system, constructions].some(
@@ -270,7 +269,7 @@ function Applications({
   onDescribe,
 }: {
   applications: Loaded<ListApplicationsResponse>;
-  constructions: ListConstructionsResponse | null;
+  constructions: ConstructionSummary[] | null;
   /** Whether an LLM provider exists, so an application can be built from a description. */
   canDescribe: boolean;
   onDescribe: () => void;

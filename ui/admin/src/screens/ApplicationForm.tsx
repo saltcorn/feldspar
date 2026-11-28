@@ -127,6 +127,19 @@ function cspSuggestionsOf(listing: ListModulesResponse): CspSuggestion[] {
   );
 }
 
+/** A field a module adds to an application's settings (TODO-app-constructor
+ * AC12.9), stored as the application's attribute `name`. */
+type ModuleSetting = ListModulesResponse["modules"][number]["application_settings"][number] & {
+  module: string;
+};
+
+/** Every module's application settings. */
+function moduleSettingsOf(listing: ListModulesResponse): ModuleSetting[] {
+  return listing.modules.flatMap((m) =>
+    (m.application_settings ?? []).map((s) => ({ ...s, module: m.name })),
+  );
+}
+
 /** An application's attributes as an object, whatever was stored. */
 function attributesOf(attributes: unknown): Record<string, unknown> {
   return attributes && typeof attributes === "object" && !Array.isArray(attributes)
@@ -253,6 +266,9 @@ export function ApplicationForm({
   // P1.4), and the ones switched on for this application, by key. Nothing a
   // module suggests is allowed until it is switched on here.
   const [cspSuggestions, setCspSuggestions] = useState<CspSuggestion[]>([]);
+  // The settings modules add, and this application's values for them.
+  const [moduleSettings, setModuleSettings] = useState<ModuleSetting[]>([]);
+  const [moduleValues, setModuleValues] = useState<Record<string, unknown>>({});
   const [cspSources, setCspSources] = useState<string[]>([]);
   // Who may use the application at all (TODO F9). The defaults let everybody
   // in as they are, which is what an application without them did.
@@ -266,9 +282,6 @@ export function ApplicationForm({
   const [guestDays, setGuestDays] = useState("30");
   // Run the application's checklists after each build (TODO-checklists C4.3).
   const [checkAfterBuild, setCheckAfterBuild] = useState(false);
-  // The LLM provider Plan & build works with, by name; empty for the builder
-  // agent's, else the default.
-  const [constructorProvider, setConstructorProvider] = useState("");
   const [llmProviders, setLlmProviders] = useState<string[]>([]);
   // Which coding agent the sidebar's "Coding agent" link opens (UX1.5): always
   // a named one, starting on the one the link opens now; `null` when neither
@@ -305,9 +318,9 @@ export function ApplicationForm({
           .catch(() => [] as FileStoreItem[]);
         // A server that cannot list its modules offers no suggestions, and an
         // application keeps the ones it has switched on.
-        const suggestions = await api
-          .listModules()
-          .then(cspSuggestionsOf, () => [] as CspSuggestion[]);
+        const listing = await api.listModules().catch(() => null);
+        const suggestions = listing ? cspSuggestionsOf(listing) : [];
+        const fromModules = listing ? moduleSettingsOf(listing) : [];
         // A server without agents answers with an error: the picker is empty,
         // and an application that already exposes one keeps it.
         const agentList = await api.listAgents().catch(() => []);
@@ -332,6 +345,7 @@ export function ApplicationForm({
         setAllTables(tbls);
         setAllFileStores(stores);
         setCspSuggestions(suggestions);
+        setModuleSettings(fromModules);
         setAllAgents(agentNames);
         setLlmProviders(llmProviderNames);
         if (existing) {
@@ -362,10 +376,12 @@ export function ApplicationForm({
           const attributes = attributesOf(existing.attributes);
           setGuestSessions(attributes.guest_sessions === true);
           setCheckAfterBuild(attributes.check_after_build === true);
-          setConstructorProvider(
-            typeof attributes.constructor_provider === "string"
-              ? attributes.constructor_provider
-              : "",
+          setModuleValues(
+            Object.fromEntries(
+              fromModules
+                .filter((m) => attributes[m.name] !== undefined)
+                .map((m) => [m.name, attributes[m.name]]),
+            ),
           );
           const builder = builderAgentFor(existing, agentList);
           setBuilderAgent(builder);
@@ -482,11 +498,13 @@ export function ApplicationForm({
     attributes: withCodingAgent(
       {
         ...attributesOf(stored?.attributes),
+        // The modules' settings, under the form's own: a module cannot
+        // overwrite what the form writes.
+        ...moduleValues,
         csp_sources: cspSources,
         guest_sessions: guestSessions,
         guest_session_days: Number.parseInt(guestDays, 10) || 30,
         check_after_build: checkAfterBuild,
-        constructor_provider: constructorProvider || undefined,
       },
       codingAgent,
     ),
@@ -1337,30 +1355,19 @@ export function ApplicationForm({
                 </Form.Text>
               </Form.Group>
             )}
-            {frameworkName === "react" && (
-              <Form.Group className="mb-3" controlId="appConstructorProvider">
-                <Form.Label>{t("LLM provider for Plan & build")}</Form.Label>
-                <Form.Select
-                  value={constructorProvider}
-                  onChange={(e) => setConstructorProvider(e.target.value)}
-                >
-                  <option value="">{t("The builder agent's, else the default")}</option>
-                  {/* A stored name that no longer exists stays visible, so
-                    saving the form does not quietly drop it. */}
-                  {constructorProvider && !llmProviders.includes(constructorProvider) && (
-                    <option value={constructorProvider}>{constructorProvider}</option>
-                  )}
-                  {llmProviders.map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
-                </Form.Select>
-                <Form.Text muted>
-                  <T text="The provider the agent that plans the application and builds its data model talks to. A change applies the next time it plans or runs." />
-                </Form.Text>
-              </Form.Group>
-            )}
+            {moduleSettings
+              .filter((m) => m.frameworks.length === 0 || m.frameworks.includes(frameworkName))
+              .map((m) => (
+                <ModuleSettingField
+                  key={`${m.module}/${m.name}`}
+                  setting={m}
+                  value={moduleValues[m.name]}
+                  llmProviders={llmProviders}
+                  onChange={(value) =>
+                    setModuleValues((values) => ({ ...values, [m.name]: value }))
+                  }
+                />
+              ))}
           </>
         );
       case "checklists":
@@ -1838,5 +1845,63 @@ export function UnknownFrameworkAlert({
         { framework: app.framework.name },
       )}
     </Alert>
+  );
+}
+
+/** One field a module adds to an application's settings (TODO-app-constructor
+ * AC12.9): a text, a switch or a choice of LLM provider. An empty text or
+ * choice is stored as nothing. */
+function ModuleSettingField({
+  setting,
+  value,
+  llmProviders,
+  onChange,
+}: {
+  setting: ModuleSetting;
+  value: unknown;
+  llmProviders: string[];
+  onChange: (value: unknown) => void;
+}) {
+  const { t } = useT();
+  const id = `moduleSetting-${setting.module}-${setting.name}`;
+  const help = setting.description ? (
+    <Form.Text muted>
+      {setting.description} {t("(from the module {module})", { module: setting.module })}
+    </Form.Text>
+  ) : (
+    <Form.Text muted>{t("(from the module {module})", { module: setting.module })}</Form.Text>
+  );
+  if (setting.kind === "switch") {
+    return (
+      <Form.Group className="mb-3" controlId={id}>
+        <Form.Check
+          type="switch"
+          label={setting.label}
+          checked={value === true}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+        {help}
+      </Form.Group>
+    );
+  }
+  const text = typeof value === "string" ? value : "";
+  return (
+    <Form.Group className="mb-3" controlId={id}>
+      <Form.Label>{setting.label}</Form.Label>
+      {setting.kind === "llm_provider" ? (
+        <Form.Select value={text} onChange={(e) => onChange(e.target.value || undefined)}>
+          <option value="">{t("None chosen")}</option>
+          {text && !llmProviders.includes(text) && <option value={text}>{text}</option>}
+          {llmProviders.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </Form.Select>
+      ) : (
+        <Form.Control value={text} onChange={(e) => onChange(e.target.value || undefined)} />
+      )}
+      {help}
+    </Form.Group>
   );
 }

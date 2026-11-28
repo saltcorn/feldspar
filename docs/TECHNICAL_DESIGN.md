@@ -114,8 +114,6 @@ feldspar/
 │  │                              #    stage shapes and grain, reading a stage, the snapshot a
 │  │                              #    fit records, `_fd_datasets`, and reading as the caller
 │  │                              #    (`access.rs`: `Caller`, `Reader::guard`, `Sharing`, §14.9)
-│  ├─ sc-construct/               # 5. the App Constructor's state (§11.6): `_fd_construction*`,
-│  │                              #    phase and task validation, and what the runner does next
 │  ├─ sc-action/                  # 6. Action trait + registry, Event/Trigger model, `_fd_triggers`
 │  │                              #    storage & validation, the live set, dispatch, scheduler
 │  ├─ sc-llm/                     # 6. object-safe LlmProvider seam over a provider crate
@@ -266,8 +264,6 @@ graph TD
   coretraits --> repomap["sc-repomap"]
   coretraits --> mcp["sc-mcp"]
   coretraits --> check["sc-check"]
-  coretraits --> construct["sc-construct"]
-  construct --> catalog
   check --> agent
   check --> app
   mcp --> net["sc-net"]
@@ -384,7 +380,6 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-model` | `sc-catalog` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-analytics` | `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-db-sqlite` `sc-error` `sc-model` `sc-query` `sc-types` |
 | `sc-stream` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
-| `sc-construct` | `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
 | `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-net` `sc-proc` `sc-types` |
 | `sc-bayesreg` | `sc-error` `sc-model` `sc-stan` `sc-types` |
 | `sc-agent` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
@@ -397,11 +392,11 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-module` | `sc-access` `sc-action` `sc-action-builtins` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-http` `sc-log` `sc-model` `sc-proc` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
 | `sc-python` | `sc-action` `sc-action-builtins` `sc-catalog` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-proc` `sc-types` |
 | `sc-check` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-types` `sc-viewpattern` |
-| `sc-agent-builtins` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-construct` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-proc` `sc-query` `sc-repomap` `sc-types` |
+| `sc-agent-builtins` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-proc` `sc-query` `sc-repomap` `sc-types` |
 | `sc-backup` | `sc-access` `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-net` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
 | `sc-sync` | `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-mcp` `sc-model` `sc-module` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-bayesreg` `sc-catalog` `sc-check` `sc-config` `sc-construct` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-http` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-sync` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-bayesreg` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-construct` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-sync` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-bayesreg` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-http` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-sync` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-bayesreg` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-sync` `sc-types` `sc-viewpattern` `sc-workflow` |
 
 Four things the graph is worth reading for:
 
@@ -6356,210 +6351,61 @@ feedback → self-heal). For users who prefer an external coding agent, the copi
 
 #### The App Constructor
 
-Plan: [TODO-app-constructor.md](../TODO-app-constructor.md). The first version covers
-specification → phases → tasks → run, for **React applications**. Clarifying questions,
-research, feedback and self-healing come later.
+Plan: [TODO-app-constructor.md](../TODO-app-constructor.md). Plan & build is the bundled module
+`plugins/app-constructor` (`@feldspar/app-constructor`), not part of the server. It is built only
+on the module extension points — agent traits (§15.1h), agents and runs (§15.1i), applications
+(§15.1j), admin screens (§15.1l) and an application's deletion (§15.1k) — plus its own tables,
+routes, service and an application setting. An installation that does not install it has no
+Plan & build; the admin's "Application from a description" and the onboarding offer to install it
+from the bundled catalog first. Its manifest asks for `agents: console` and `apps: build`, which
+installing it from the catalog grants. (An earlier built-in constructor in the server was
+removed before it shipped.)
 
 **An orchestration over the tools that exist, not a second tool set.** v1's constructor had to
 generate builder layouts and untyped view configurations, so most of its code repaired and
-validated what the model wrote. Feldspar already has typed tools for every part: `edit_schema`
-and the copilot for the data model, and the builder agent with its plan, check and commit loop
-for the code. The constructor decides **what** to build and in what order, and leaves the
-**how** to the agents that already build.
+validated what the model wrote. Feldspar already has typed tools for every part: the built-in
+`data_model` trait (the schema, queries and code libraries, an admin's at the console only) for
+the data model, and the builder agent with its plan, check and commit loop for the code. The
+constructor decides **what** to build and in what order, and leaves the **how** to the agents
+that already build. Its own trait, `constructor`, holds the planning tools, so planning is an
+ordinary agent run with a transcript; the construction agent has both traits.
 
-**One construction per application.** A construction exists to build one application, so it
-belongs to the application: it has a link in the application's sidebar section, is deleted with
-the application, and does not become an entity kind or a sidebar entry of its own. Home reports
-on it as it reports on checklists: a failed construction needs attention, and a running one
-shows its progress.
+**One construction per application,** a React application only. It belongs to the application:
+its screen is a link in the application's sidebar section, and it is deleted with the
+application, through the module's deletion hook, with the agent made for it.
 
-**Typed tables, not a metadata store.** v1 kept its constructor state as JSON in `_sc_metadata`
-rows keyed by a string. Here the construction, its phases and its tasks are each a table, as
-checklists, their steps and their runs are:
-- **Deletion:** deleting the application deletes its construction, phases and tasks, as it
-  deletes its views. A row keyed by a string would be left behind.
-- **Resume:** at startup the runner finds running constructions with a query on a column.
-- **Concurrent writes:** the runner updates one task while the admin edits phases. With
-  everything in one document, the two writes could overwrite each other.
-
-A phase stores no status of its own. Its status follows from its tasks, so the two cannot drift
-apart, and a phase's tasks are also what protect it from being deleted.
+**Typed tables, not a metadata store.** The construction, its phases, tasks, mockups,
+questions, feedback, the runs it started and the errors it met are each a module table
+(`ac_*`). A phase stores no status of its own: it follows from its tasks, so the two cannot
+drift apart. Children are deleted before the rows they point at, and changes that span rows
+are one transaction.
 
 **Phases first, tasks just in time.** The specification becomes phases with requirements, which
-the admin edits before anything runs. A phase's tasks are planned only when that phase starts,
-so a feature task is written against the tables the data-model task actually created, not the
-ones the plan expected. The first phase is always the data model. Each task makes one artefact
-and is briefed with what exists already, which is v1's defence against the model recreating
-what is there.
+the admin edits before anything runs. A phase's tasks are planned only when that phase is
+reached, so a feature task is written against the tables the data-model task actually created.
+The first phase is always the data model. A phase's tasks can be planned on their own and
+reviewed (and planned again, with a note) before they run.
 
-**Tasks reviewed before they run, when the admin wants.** Planning a phase's tasks is one short
-run; running them is many, each with a build. So the phase the runner reaches next can be
-planned on its own (`planPhaseTasks`): the run plans it and ends `planned` before a task runs.
-Only that phase, because a later one would be planned against tables that do not exist yet. Its
-tasks can then be planned again, with a note, as long as none has started: they are deleted,
-and the planning run is told the old list and the note (the construction's `plan_note`). The
-flag and the note are columns of the construction, so a restart in the middle resumes the same
-planning run, and an ordinary run clears them.
+**Research before the phases, when the admin wants it.** The construction agent can ask
+clarifying questions, whose answers belong to the specification, and propose mockups — each
+screen a self-contained HTML page shown in a sandboxed frame, proposed in rounds, at most one
+chosen. The chosen mockup shapes the plan and is written into the application's source tree for
+the feature tasks to match. Asking again discards the mockups drawn before the answers.
 
-**Mockups before the phases, when the admin wants them** (AC7). The construction agent
-proposes a few mockups of the application's main screens (two by default) with `save_mockups`;
-the admin chooses one, or comments on them and has them revised, before the phases are planned.
-- **What a mockup is:** each screen a self-contained HTML page with its CSS inline, no scripts
-  and nothing loaded from elsewhere. That is quick for a model to write and needs no build. The
-  generated React apps style themselves with their own plain CSS, so a mockup's CSS carries over
-  to the app's styles directly.
-- **Shown safely:** the admin shows a screen in an `<iframe sandbox srcdoc>` with no `allow-*`.
-  It runs no script, submits no form, opens no window and has an origin of its own, and the
-  admin's own content security policy still applies to it.
-- **Rounds, not edits:** a proposal is a round of rows in `_fd_construction_mockups`. A
-  revision is the next round, written from the admin's feedback, which is stored on the mockups
-  it is about, so earlier rounds stay readable. One mockup at most is chosen.
-- **The chosen one reaches the build** in three places. The phase plan and each phase's task
-  plan are told its screens, HTML included, so the data model has the fields they show and the
-  features follow its screens. Choosing it writes the screens into the application's source tree
-  as `mockups/<screen>.html`, and a feature task is told which files to read and match.
-- **Optional:** the phases can be planned without a mockup, or without choosing one. A mockup
-  run is driven as a plan run is, flagged in the process's memory (`designing`), and one run of
-  the construction agent is allowed at a time.
+**Feedback on a built phase** is recorded first and planned only when the admin approves it,
+into requirements and follow-up tasks appended to that phase.
 
-**Clarifying questions first, when the admin wants them** (AC8). Before the mockups, the
-construction agent can ask what the specification leaves open (`ask_questions`, at most ten,
-only what would change what gets built), and the admin answers what they can. This is v1's
-research step without the web searches, which may follow.
-- **Stored per question** in `_fd_construction_questions` (construction, position, question,
-  answer). Asking again replaces the open questions and keeps the answered ones, and the run is
-  told the answered ones so it does not ask them again.
-- **Questions before mockups:** the mockups are drawn from the answers, so saving questions
-  discards the construction's mockups, every round and the chosen one, in the same
-  transaction. The screen confirms it first. Their files under `mockups/` stay in the source
-  tree but reach no task: a feature task is only pointed at them while a mockup is chosen.
-- **The answers belong to the specification:** the mockup run and the phase plan are told them
-  after it, and the session header carries them, so every later run (a phase's task plan, a
-  task) has them too.
-- **Driven like a mockup run** (`asking`). The process tracks one activity per construction
-  (planning, designing or asking) under one lock, so a second run of the construction agent is
-  refused rather than raced. A run that asks nothing says so on the construction.
-- **On the screen** the questions and the mockups share one optional step, Research, between
-  the specification and the phases, numbered in that order. The specification offers only
-  "Continue to research" and "Plan phases".
+**Two kinds of task, two agents.** A `data_model` task runs the construction agent; a `feature`
+task runs the application's builder agent, and a green build — not the model saying so — decides
+that it is done.
 
-**Feedback on a built phase** (AC9). Once a phase has built something, the admin can say what
-should change, on that phase. This is v1's feedback tab, per phase first: feedback on the whole
-application, and feedback sent from the application's own pages, may follow.
-- **Stored per feedback** in `_fd_construction_feedback` (phase, which gives the construction,
-  title, description, and the requirements the agent made of it). A phase takes feedback once a
-  task of it is done and none has failed, which would stop the runner before the follow-up tasks.
-- **Given, then approved.** Giving feedback only records it, so it can be given at any time,
-  even while the construction runs, and later by users other than the admin. The admin
-  approves it by starting the run that plans it, recorded as the feedback's `run`, or declines
-  it, which deletes it.
-- **Planned by a run of the construction agent** (`plan_feedback`, once per feedback): the
-  requirements it adds, kept with the feedback rather than on the phase so a re-plan or an
-  edit of the phases does not lose them, and one to five follow-up tasks. The run is told the
-  phase as built: each task's brief, what its run said and what it created.
-- **Follow-up tasks are the phase's tasks:** appended after its own, naming the feedback
-  (`_fd_construction_tasks.feedback`, a nullable column the bootstrap adds). The runner needs no
-  change: it always works on the earliest phase with unfinished tasks, so it reaches them
-  before anything later. They wait as `todo` until the admin runs them, as a phase's planned
-  tasks do.
-- **Its status:** `given` until approved; then from its tasks, as a phase's: none is open (being
-  planned, or its planning failed; plan it again), then planned, running, failed or done. Feedback is
-  deleted with its tasks until one of them has run.
-- **One run of the agent at a time:** planning feedback is one more activity beside planning,
-  designing and asking. A reader learns a run has ended only after its outcome is recorded:
-  the construction is read after what the agent is busy with, never before, so a run that
-  failed is never shown as finished without its error.
-
-**The Activity tab and the error log** (AC10). Every error the construction meets is logged in
-`_fd_construction_errors`, with what failed (`source`: planning the phases, planning a phase's
-tasks, running a task, mockups, questions, a feedback, or the runner itself), the phase, task
-or feedback it was on, the agent run, and the construction run it happened in.
-- **Every run the construction starts is recorded** in `_fd_construction_runs`: each run of
-  the construction agent (phases, mockups, questions, feedback), recorded by `launch` before it
-  starts, and each runner session (`build`), recorded with the status by `mark_running` and
-  `mark_planning`.
-- **The current error is derived, not stored:** it is the newest error logged for the
-  construction's latest run, read when the construction is loaded and answered as its `error`,
-  the entry marked `current`. Starting a run is what clears it, as the new run has no error
-  yet; nothing is written to clear it.
-- **What the runs record is not stored again:** the run that planned the phases (`plan_run`
-  in the API) is the latest launched `phases` run's; a feedback is approved once a run
-  planning it has launched, and that run is its `run`. The error log is the exception: like
-  the phase and task, it keeps the feedback it was planning, so the list reads without a
-  lookup.
-- **Foreign keys** hold the links whose rows the code always deletes first: a construction's
-  phases, mockups, questions, runs and errors; a phase's tasks and feedback; a feedback's
-  tasks; an error's construction run. Feldspar's keys have no `ON DELETE`, so
-  `delete_construction` deletes in that order. The error log's phase, task, feedback and run, and the
-  links to `_fd_runs`, stay plain: what they name can be deleted first.
-- **Logged where it happens:** `set_plan_error` for the agent's runs and
-  `set_construction_status` for the runner, each with its construction run. So the log has
-  every error the screen ever showed, including those where no run failed: a run that ended
-  without doing its job, an admin who is no longer one, tasks that wait on each other.
-- **The runner knows its step:** before planning a phase's tasks or running a task it notes
-  the step (and the run once started), so an unexpected error is logged as that step's.
-- **On the screen** the Progress tab became **Activity**, last after the steps since it spans
-  them, and always open. It has three cards, always shown, only Now open on the first visit, each
-  header summing up what it holds: **Now** (what the construction agent or the runner is
-  doing), **Errors** (newest first, the current one marked, each with its run) and **Phases**
-  (the progress). Which are open is remembered per browser. The construction answers the
-  newest 100 errors.
-
-**Two kinds of task, two agents.**
-- A `data_model` task runs the construction's own agent, which has the copilot's tools.
-- A `feature` task is delegated to the application's builder agent. Its own check decides
-  whether the feature works, and a green build decides whether the task is done. The model saying
-  so does not count.
-
-The planning tools belong to a trait on the construction's agent (`app_constructor`), so
-planning is an ordinary agent run with a transcript, not a hidden call.
-- The phase list is saved whole, as `save_plan` saves a plan, through one validation that the
-  admin's edits use too. A phase that has tasks survives a list that leaves it out, so a
-  re-plan cannot erase the record of what was built.
-- A plan run is driven in a server task, not in the request, and its id is kept on the
-  construction. Whether it is still being planned is what this process is driving, not the
-  run's stored state, so a run interrupted by a restart does not block the next plan.
-
-**A server-side runner.** A chat run ends when its socket closes, and a construction runs for
-much longer than anyone watches it. The runner is therefore a server task that owns the
-construction until it is done, failed or stopped.
-- Its state is written to the construction's tables after every task, and every agent run
-  writes its own steps (§11.2).
-- After a restart, a construction that was running resumes, and a task's run is continued, never
-  started twice.
-- It runs as the admin who started it. That admin's role is checked again before each task, as
-  the chat socket checks its session before each turn.
-- A failed task stops the whole construction. Later tasks depend on it, and a run that continued
-  past it would build on a gap.
-
-How the runner is built (`sc-server`'s `construction_runner`):
-- **What comes next is a pure function** (`sc_construct::next_step`) of the phases and their
-  tasks: plan the first phase without tasks, else run the first `todo` task whose dependencies
-  are done (a `running` one first, after a restart), else stop on a failed task, else finish.
-  A skipped task counts as done for the tasks after it.
-- **`depends_on` names earlier tasks of the same list by number**, so a phase's tasks cannot
-  wait on each other in a circle. Earlier phases are done before a phase starts.
-- **A feature task is a run of the builder agent**, not a `DelegateRequest`: delegation hangs a
-  child run off a parent run, and the runner is a server task, not a run. The builder starts in
-  `plan` mode, as in its chat, and plans and implements the feature with `save_plan` and
-  `implement_feature`. A task's run id is written on the task before the run is driven; after a
-  restart the runner loads that run and drives it on, and `implement_feature` continues its own
-  sessions in the same way.
-- **What a task made** is the tables that exist after it and did not before. The change-log
-  records row data, not schema changes, so it cannot say this.
-- **Stopping** races the run's drive against a stop signal; the run that loses is aborted with
-  the sessions it delegated to, and its task goes back to `todo`.
-- **One server process for now.** Whether a construction is being planned or run, and its stop
-  signal, are kept in the process's memory, so two server nodes on one database do not see each
-  other's. Several nodes will need a lease on the construction row, claimed with a conditional
-  `UPDATE` as the workflow queue claims runs (TODO-app-constructor AC3.6).
-
-**The Plan & build screen** (`ui/admin`, `#/applications/<id>/construct`) shows the
-specification, the phases and the progress as numbered tabs, and opens the step the status
-points to. It polls `getConstruction` every two seconds while the construction runs or is being
-planned, rather than listening to a stream: one admin watches it, and the runner already writes
-every change to the tables. The phases are edited as a draft and saved whole through
-`savePhases`, so a poll replaces them only while the draft has no unsaved edits.
+**A runner, as the module's service.** A construction runs far longer than anyone watches it,
+so a service drives it until it is done, failed or stopped: it writes its state after every task,
+resumes a running construction after a restart without starting a task's run twice, and stops on
+a failed task. Its runs act for the administrator who started the construction, and stop when
+that user is no longer an administrator. Every error is logged with the step and run it happened
+in; the current error is the newest of the latest run, derived rather than stored. One worker
+per module holds what is busy and what is being stopped, so one server process is assumed.
 
 ### 11.7 Agents in an application's pages
 
@@ -15224,6 +15070,135 @@ numbers and dates) and select options. Any other operator is refused by name.
 **Payments stays on webhooks.** Its callbacks come from a provider's servers. They need the raw
 bytes for the signature, no session or credentials, the module's own authority over its own
 tables, and one stable URL on every host. A v1 route provides none of these.
+
+### 15.1h Agent traits from modules (TODO-app-constructor AC12.1)
+
+A module's `agent_traits` export adds traits to the agent registry (§11.2) beside the built-ins.
+Each trait has a description, settings on the agent, a prompt, its tools (each with a schema, a
+`mutates` flag and a `run`), and optionally a session header. This is the first of the extension
+points the App Constructor needs to move out of core into a module.
+
+**The declaration is data.** A trait's tool list and prompt are read wherever a tool set is
+needed, including validation and the trait picker, where nothing can wait on a worker. So they
+are evaluated once, when the module loads, and cross in the manifest. They can depend on the
+module's settings, but not on an agent's. A broken tool costs its whole trait, which is an issue
+on the card, because a trait missing a tool would offer the model less than its prompt promises.
+A tool that mutates is offered only to a run that acts.
+
+**The registry has a module slot.** The module traits are swapped whole on every module change,
+like frameworks and step types. The slot is shared by every handle on the registry, so a runner
+built at boot sees a module installed later. Built-ins are looked up first and cannot be
+shadowed. A run already holding a trait keeps it until it finishes.
+
+**A call runs as the run's caller.** A tool's `Table` reads and writes are the caller's, as a
+route's are, so a module's tool is no way around what the person chatting may do. The trait's
+per-run state crosses with each call and is saved with the run. An agent naming a trait whose
+module is gone stops validating, like one naming any other unknown trait.
+
+**Some tools are an administrator's.** A tool, or a whole trait, marked `admin_only` is offered
+only to an administrator at the console, and refused if called anyway by any other run. That
+excludes a run a trigger or an application's page started, whose prompt someone else wrote
+(AC12.7). It is how a module's tools that change an application's plan or its schema stay as
+closely held as the built-in constructor's.
+
+**Core tools stay core.** A module's trait cannot reach the server's own tool sets, so the twelve
+tools the constructor builds a data model with are a built-in trait of their own, `data_model`,
+held the same way. A module's agent is given that trait beside the module's own, rather than the
+module re-implementing schema editing over a weaker surface.
+
+### 15.1i Agents and runs from modules (TODO-app-constructor AC12.2)
+
+A module makes agents and starts, follows and stops their runs: `req.feldspar.agents` in a
+route, `ctx.agents` in a service. It reads an agent, saves or deletes one, starts a run with a
+prompt, reads a run and its messages, waits for it to end, aborts it, and drives on a run that
+nothing drives.
+
+**A permission an admin grants.** `agents` is a module permission like `roles`: checked by the
+server when the module asks, never by the worker, granted on the install card or the Modules
+tab. `run` makes and runs agents, each run acting for whoever asked. `console` also gives a run
+an administrator starts the admin console's authority, with the tools that act as the server
+(the shell, the project's scripts). An agent that builds an application needs those tools, and
+a module that can hand them to a prompt it wrote is a module the admin has to trust that far,
+so it is a separate grant.
+
+**Whose authority.** A route's run acts for the route's signed-in caller. A service has no
+caller, so it cannot start a run of its own. It starts one on behalf of an earlier run the
+module started, and the new run acts for that run's user, loaded again: a user since deleted
+stops the work, and an administrator since demoted gets their own authority without the
+console's. This is how a module's background work keeps acting for the admin who started it,
+the way the App Constructor's runner does, without a module ever naming a user.
+
+**What a module may touch.** The agents it made and the runs it started, both stamped with its
+name. An agent an admin made may be read and run but not changed or deleted. Making and
+changing agents takes an administrator at a route, or the module's own service. A route's
+caller sees their own runs; an administrator sees all the module's runs.
+
+**The server drives.** A run is driven in a task of the server's, as any other run, and the
+module waits on it in calls of at most a minute. Driving is per process: a restart leaves a run
+live with nothing driving it, which a module reads as `driven: false` and drives on from its
+service. A module's service is how it picks up its own work after a restart; it needs no
+start-up hook of its own.
+
+### 15.1j Applications from modules (TODO-app-constructor AC12.3)
+
+A module reads applications, reads and writes the files of an application's project, and builds
+it: `req.feldspar.apps` in a route, `ctx.apps` in a service. An application is named by its id or
+its subdomain, and reads as its name, subdomain, description, framework, settings and the name of
+its builder agent.
+
+**A permission, in two steps.** `apps` is granted like `agents`. `read` reads applications and
+their builds. `build` also changes an application's project and builds it; a build runs the
+project's own scripts, so that is the larger grant. At a route only an administrator's call is
+answered, because applications are the admin's.
+
+**A project path stays in its project.** A path is relative to the project's source directory in
+the application's file store, and one that climbs out of it is refused.
+
+**A build is the Build button's**, in a task of the server's: the client brought up to date, the
+bundle built and mounted, and the checklists that follow a build. A module starts it and waits on
+it, a minute at a time, or reads how it ended: succeeded with its log, or failed with the
+bundler's words. The last build of each application is kept in memory: after a restart there is
+none until the next. Starting one while one is running answers the running one.
+
+**Settings a module adds to an application** (AC12.9). A module declares `application_settings`:
+fields stored as the application's attributes, each a text, a switch or a choice of LLM provider,
+optionally only for some frameworks. The module card carries them and the application form
+shows them beside its own, so a setting a module needs per application (which provider plans
+it) is edited where the application is. The form writes its own attributes after the modules',
+so a module cannot overwrite one of the form's. The `agents` surface lists the LLM providers,
+with each one's default chat model and which is the installation's default, for a module that
+chooses one.
+
+### 15.1l Admin screens from modules (TODO-app-constructor AC12.4)
+
+A module adds screens to the admin with `admin_screens`. Each names a GET route of the module's
+that serves the screen's script, an ES module exporting `mount(element, host)`. An application's
+screen (`scope: "application"`) is a link in the sidebar of the applications on the frameworks it
+names, at `#/applications/<id>/m/<module>/<screen>`. The admin's (`scope: "admin"`) is at
+`#/m/<module>/<screen>` and is linked from the module's card.
+
+**A script the admin imports, not a page it frames.** The screen renders in the admin's own page,
+under its header and sidebar, and so needs no change to the admin's content-security policy: the
+script is served from the admin's own origin, which `script-src 'self'` allows, while framing
+one of the admin's own pages would need `frame-ancestors` opened. A framed page would not have
+been safer either: on the admin's origin it reaches the same session. What a screen can do is
+what the module's routes, and its `agents` and `apps` permissions, answer for the signed-in admin.
+
+**What the admin lends.** `host` carries the application (for an application's screen), the
+rest of the URL after the screen's name, links and moves within the screen, and a `fetch` to the
+module's routes with the session and the CSRF header a POST needs. A move within the screen calls
+the mounted screen's `update(path)` rather than mounting it again, so it keeps its state. The
+module bundles its own UI code; the admin's components are not an API.
+
+### 15.1k An application's deletion, told to modules (TODO-app-constructor AC12.5)
+
+A module that keeps something per application exports `on_application_deleted(app, ctx)`, and the
+server calls it after an administrator deletes an application, with the application as it was.
+The hook runs as the module over its own tables, as a webhook does: the application is gone and
+nobody's request is waiting on what the module kept for it. Its `ctx` has `agents` and `apps` as
+a service's, so a module can delete an agent it made for the application. Every module with the
+hook is told in turn. One that fails is logged and stops neither the others nor the deletion,
+which has already happened; what it failed to delete stays until it is deleted by hand.
 
 ### 15.2 Python: one interpreter, code bodies and plugin modules (`sc-python`)
 

@@ -384,8 +384,9 @@ async fn the_traits_endpoint_declares_each_traits_configuration() -> sc_error::R
     ];
     for trait_ in traits {
         let spec = trait_["config_spec"].as_array().unwrap();
-        // `docs` alone has no form: documentation is the same for every agent.
-        if trait_["name"] == json!("docs") {
+        // `docs` and `data_model` have no form: documentation is the same for
+        // every agent, and the data model is the server's.
+        if trait_["name"] == json!("docs") || trait_["name"] == json!("data_model") {
             assert!(spec.is_empty(), "{trait_}");
             continue;
         }

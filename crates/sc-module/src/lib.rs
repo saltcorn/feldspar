@@ -77,6 +77,7 @@ pub mod frameworks;
 pub mod functions;
 pub mod host;
 pub mod install;
+pub mod lifecycle;
 pub mod model_providers;
 pub mod module;
 pub mod modules;
@@ -85,6 +86,7 @@ pub mod permissions;
 pub mod reads;
 pub mod roles;
 pub mod routes;
+pub mod server_asks;
 pub mod services;
 pub mod spec;
 pub mod store;
@@ -106,14 +108,15 @@ pub use deno::{DenoModuleHost, PoolBounds};
 pub use frameworks::ModuleFrameworks;
 pub use functions::ModuleFunctions;
 pub use host::{
-    ActionManifest, Ask, AskSurface, Asks, CallHosts, CheckStepManifest, FrameworkManifest,
-    FunctionArg, FunctionManifest, ModelProviderManifest, ModuleHost, ModuleManifest,
-    RouteManifest, ServiceManifest, TableProviderManifest, UnsupportedEntity, WebhookManifest,
-    prime_v8,
+    ActionManifest, AdminScreenManifest, AgentToolManifest, AgentTraitManifest, AppSettingManifest,
+    Ask, AskSurface, Asks, CallHosts, CheckStepManifest, FrameworkManifest, FunctionArg,
+    FunctionManifest, ModelProviderManifest, ModuleHost, ModuleManifest, RouteManifest,
+    ServiceManifest, TableProviderManifest, UnsupportedEntity, WebhookManifest, prime_v8,
 };
 pub use install::{
     InstalledPackage, Installer, MIN_NPM_VERSION, have_node, have_npm, npm_too_old, npm_version,
 };
+pub use lifecycle::{MODULE_HOOK, application_deleted, application_deleted_modules};
 pub use model_providers::ModuleModelProviders;
 pub use module::{
     MODULE_LANGUAGES, MODULE_SOURCES, Module, ModuleId, ModuleLanguage, ModuleSource,
@@ -121,13 +124,15 @@ pub use module::{
 pub use modules::{LoadedModule, ModuleIssue, ModuleSet, redacted_configuration, unsupported_json};
 pub use paths::default_modules_root;
 pub use permissions::{
-    ANY_HOST, ModulePermissions, PERM_ENV, PERM_NET, PERM_READ, PERM_ROLES, PERM_WRITE,
+    ANY_HOST, AgentGrant, AppsGrant, ModulePermissions, PERM_AGENTS, PERM_APPS, PERM_ENV, PERM_NET,
+    PERM_READ, PERM_ROLES, PERM_WRITE,
 };
 pub use roles::ModuleRoles;
 pub use routes::{
     MatchedRoute, ROUTES_PREFIX, RouteRequest, allowed_methods, match_route, route_module,
     route_path, run_route,
 };
+pub use server_asks::ServerAsks;
 pub use services::{Backoff, SERVICE_EVENTS, ServiceState, ServiceStatus, ServiceSupervisor};
 pub use spec::config_fields_to_form_fields;
 pub use store::{

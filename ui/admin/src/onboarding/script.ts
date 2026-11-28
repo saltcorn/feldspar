@@ -8,7 +8,8 @@
 //   - **Generative AI** — an LLM provider (the one already there, or a new one
 //     set up in a form here), then either an admin copilot on it with its chat
 //     opened, or a React application built from a description with the App
-//     Constructor, its Plan & build screen opened.
+//     Constructor module (installed from the bundled catalog first if it is
+//     not), its Plan & build screen opened.
 //   - **Point and click** — a Saltcorn UI application, selected in the sidebar,
 //     and a pointer to the first table.
 //   - **Write code** — the MCP settings for an outside coding agent, or a React
@@ -18,7 +19,7 @@
 // is the *what* and `effects.ts` the *how*; `script.test.ts` drives it with
 // fakes.
 
-import { constructPath } from "../construction";
+import { constructPath } from "../appConstructor";
 import type { FieldSpec } from "../settings";
 import { ask, finish, flow, form, run, say, t } from "./flow";
 
@@ -42,6 +43,10 @@ export interface OnboardingFx {
   /** An agent with the `admin_copilot` trait on `provider`, made if there is
    * none; answers its name. */
   copilot(provider: string): Promise<string>;
+  /** Whether the App Constructor module (Plan & build) is installed and loaded. */
+  constructorInstalled(): Promise<boolean>;
+  /** Install the App Constructor module from the bundled catalog. */
+  installConstructor(): Promise<void>;
   /** A React application and its construction on `provider` (the App
    * Constructor's "Application from a description"); answers its id and name. */
   constructApplication(app: { name: string; provider: string }): Promise<{ id: string; name: string }>;
@@ -182,7 +187,7 @@ export const ONBOARDING = flow<OnboardingFx>({
         {
           label: t("Application from a description"),
           description: t("Describe a whole application in a few paragraphs. It is planned in phases and built task by task, as a React application."),
-          go: "ai-app",
+          go: "ai-app-check",
         },
       ],
     }),
@@ -193,6 +198,25 @@ export const ONBOARDING = flow<OnboardingFx>({
         go: finish({ to: "/agents/{agent}/chat" }),
         set: { agent: await fx.copilot(ctx.vars.provider) },
       }),
+    }),
+    "ai-app-check": run({
+      busy: t("Looking for the App Constructor…"),
+      exits: ["ai-app", "ai-app-install"],
+      do: async (_ctx, fx) => ((await fx.constructorInstalled()) ? "ai-app" : "ai-app-install"),
+    }),
+    "ai-app-install": say({
+      title: t("Install the App Constructor"),
+      note: t("Outside this guide, it is installed under Settings → Modules → Bundled modules."),
+      text: t("Plan & build comes with Saltcorn as the App Constructor module, which is not installed yet. Installing it adds its tables, the Plan & build screen on each React application, and the agents that plan and build."),
+      buttons: [{ label: t("Install the App Constructor"), go: "ai-app-installing" }],
+    }),
+    "ai-app-installing": run({
+      busy: t("Installing the App Constructor…"),
+      exits: ["ai-app"],
+      do: async (_ctx, fx) => {
+        await fx.installConstructor();
+        return "ai-app";
+      },
     }),
     "ai-app": form({
       title: t("Application from a description"),

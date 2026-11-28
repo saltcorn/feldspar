@@ -1,0 +1,7 @@
+# What npm leaves out when it installs this module. It reads this file instead
+# of `.gitignore`, which leaves out `screen/`: the built screen is git-ignored
+# but must be installed, since the module serves it. The screen's source and its
+# tools are not needed once it is built.
+ui/
+node_modules/
+server/test/

@@ -14,12 +14,11 @@ import type {
   ListApplicationsResponse,
   ListBackupSchedulesResponse,
   ListChecklistsResponse,
-  ListConstructionsResponse,
   ListLlmProvidersResponse,
   ListTriggersResponse,
 } from "./client";
 import type { Entity, EntityKind } from "./entities";
-import { constructPath } from "./construction";
+import { constructPath, type ConstructionSummary } from "./appConstructor";
 import { format, type Translator } from "./i18n";
 import { usage } from "./systemInfo";
 
@@ -43,8 +42,9 @@ export type AttentionInputs = {
   schedules: ListBackupSchedulesResponse | null;
   checklists: ListChecklistsResponse | null;
   system: GetSystemInfoResponse | null;
-  /** Plan & build's constructions, one per application that has one. */
-  constructions: ListConstructionsResponse | null;
+  /** Plan & build's constructions, one per application that has one; none
+   * when the App Constructor module is not installed. */
+  constructions: ConstructionSummary[] | null;
   /** Only for the applications' names; without it a construction is named by
    * its application's id. */
   applications?: ListApplicationsResponse | null;
@@ -155,7 +155,7 @@ export function uncheckedMessage(checks: AttentionCheck[], t: T = format): strin
  * framework: the phase being built while it runs ("phase 2/4"), else nothing.
  * The phase is the first not done, so it never reads past the last. */
 export function buildingPhase(
-  construction: ListConstructionsResponse[number] | undefined,
+  construction: ConstructionSummary | undefined,
 ): { phase: number; phases: number } | null {
   if (!construction || construction.status !== "running" || construction.phases === 0) return null;
   return {

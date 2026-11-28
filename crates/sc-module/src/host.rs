@@ -109,17 +109,28 @@ pub enum AskSurface {
     /// a module declares asks of the run it is a step of (TODO-checklists C3.5).
     /// The server answers it in the step's own context (`sc_check::declared`).
     Check,
+    /// `agents`: `{ op, … }`, the agents a module makes and the runs it starts,
+    /// follows and stops (TODO-app-constructor AC12.2), held to the `agents`
+    /// permission an admin granted. A route's call asks as its caller; a
+    /// service's only continues runs the module started. Answered by the server.
+    Agents,
+    /// `apps`: `{ op, … }`, the applications a module reads, and the projects it
+    /// changes and builds (TODO-app-constructor AC12.3), held to the `apps`
+    /// permission. Answered by the server.
+    Apps,
 }
 
 impl AskSurface {
     /// Every surface, in [`Asks`]' slot order.
-    pub const ALL: [AskSurface; 6] = [
+    pub const ALL: [AskSurface; 8] = [
         AskSurface::Service,
         AskSurface::Roles,
         AskSurface::Credits,
         AskSurface::OAuth,
         AskSurface::System,
         AskSurface::Check,
+        AskSurface::Agents,
+        AskSurface::Apps,
     ];
 
     /// The name the host script asks it by.
@@ -131,6 +142,8 @@ impl AskSurface {
             AskSurface::OAuth => "oauth",
             AskSurface::System => "system",
             AskSurface::Check => "check",
+            AskSurface::Agents => "agents",
+            AskSurface::Apps => "apps",
         }
     }
 
@@ -164,6 +177,14 @@ impl AskSurface {
                 "only a module's checklist step can ask for this (`ctx.browser`, `ctx.http`, \
                  `ctx.data`, `ctx.runStep`)"
             }
+            AskSurface::Agents => {
+                "this module call cannot reach agents: `agents` is there in a route \
+                 (`req.feldspar.agents`) and a service (`ctx.agents`)"
+            }
+            AskSurface::Apps => {
+                "this module call cannot reach applications: `apps` is there in a route \
+                 (`req.feldspar.apps`) and a service (`ctx.apps`)"
+            }
         }
     }
 
@@ -175,7 +196,7 @@ impl AskSurface {
 /// The ask surfaces one call carries, one slot per [`AskSurface`]. Empty by
 /// default: a call carries only what it was given.
 #[derive(Clone, Copy, Default)]
-pub struct Asks<'a>([Option<&'a dyn Ask>; 6]);
+pub struct Asks<'a>([Option<&'a dyn Ask>; 8]);
 
 impl<'a> Asks<'a> {
     /// The same, answering `surface` with `ask`.
@@ -605,6 +626,135 @@ pub struct CheckStepManifest {
     pub timeout: Option<f64>,
 }
 
+/// One **agent trait** a module supplies (TODO-app-constructor AC12.1).
+///
+/// A module exports `agent_traits` beside its `actions`:
+///
+/// ```js
+/// agent_traits: {
+///   shop_notes: {
+///     description: "Keeps notes on the shop's orders",
+///     config_fields: [],
+///     prompt: "Write a note whenever you learn something about an order.",
+///     tools: {
+///       save_note: {
+///         description: "Save one note",
+///         parameters: { type: "object", properties: { text: { type: "string" } } },
+///         mutates: true,
+///         run: async (args, ctx) => ({ saved: true }),
+///       },
+///     },
+///     session_header: async (ctx) => "Notes so far: …",
+///   },
+/// }
+/// ```
+///
+/// What crosses is the declaration, tools included, because an agent's tool
+/// list is read where nothing can wait on a worker. `run` and
+/// `session_header` stay in the worker, reached through
+/// [`ModuleHost::call_agent_trait`].
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct AgentTraitManifest {
+    /// The name an agent stores it under.
+    pub name: String,
+    /// One line for the trait picker.
+    #[serde(default)]
+    pub description: String,
+    /// Its configuration on an agent, as v1 `configFields`.
+    #[serde(default)]
+    pub config_fields: Vec<Json>,
+    /// What it adds to the system prompt, the same on every step.
+    #[serde(default)]
+    pub prompt: Option<String>,
+    /// Its tools.
+    #[serde(default)]
+    pub tools: Vec<AgentToolManifest>,
+    /// Whether it puts something in a run's session header.
+    #[serde(default)]
+    pub session_header: bool,
+}
+
+/// One tool of a module's [`AgentTraitManifest`].
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct AgentToolManifest {
+    /// The name the model calls.
+    pub name: String,
+    /// What it does, in the words the model is given.
+    #[serde(default)]
+    pub description: String,
+    /// JSON Schema for its arguments.
+    #[serde(default)]
+    pub parameters: Json,
+    /// Whether it changes anything: such a tool is offered only to a run that
+    /// acts, never to one that plans or explores.
+    #[serde(default)]
+    pub mutates: bool,
+    /// Whether only an administrator at the console may have it
+    /// (TODO-app-constructor AC12.7): withheld from every other run, and from
+    /// one a trigger or an application's page started.
+    #[serde(default)]
+    pub admin_only: bool,
+}
+
+/// One field a module adds to an application's settings form
+/// (TODO-app-constructor AC12.9), stored as the application's attribute
+/// `name`.
+///
+/// A module exports `application_settings` beside its `actions`:
+///
+/// ```js
+/// application_settings: [
+///   {
+///     name: "constructor_provider",
+///     label: "LLM provider for Plan & build",
+///     description: "The provider the construction agent talks to.",
+///     kind: "llm_provider",
+///     frameworks: ["react"],
+///   },
+///   { name: "notes_on", label: "Keep notes", kind: "switch" },
+/// ],
+/// ```
+///
+/// The first is a choice of the LLM providers, shown only for React
+/// applications; the second a switch, shown for every application. What the
+/// admin picks is stored in the application's attributes
+/// (`attributes.constructor_provider`, `attributes.notes_on`), which the module
+/// reads back as `settings` from `apps.get(app)`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AppSettingManifest {
+    /// The attribute it is stored as.
+    pub name: String,
+    /// The form's label.
+    pub label: String,
+    /// The help under it.
+    #[serde(default)]
+    pub description: String,
+    /// `text`, `switch` or `llm_provider`.
+    pub kind: String,
+    /// The frameworks whose applications have it; empty for every one.
+    #[serde(default)]
+    pub frameworks: Vec<String>,
+}
+
+/// One screen a module adds to the admin (TODO-app-constructor AC12.4): the
+/// admin SPA imports `script`, one of the module's GET routes, and calls its
+/// `mount(element, host)`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AdminScreenManifest {
+    /// Its name in the admin's URL.
+    pub name: String,
+    /// The sidebar's label.
+    pub label: String,
+    /// The module route serving its script, as the module declared it.
+    pub script: String,
+    /// `application` (a link in an application's sidebar) or `admin`.
+    pub scope: String,
+    /// For an application's screen, the frameworks whose applications have
+    /// it; empty for every one.
+    #[serde(default)]
+    pub frameworks: Vec<String>,
+}
+
 /// One **service** a module runs in the background (TODO-imap M5).
 ///
 /// A module exports `services` beside its `actions` and `tables`:
@@ -767,6 +917,20 @@ pub struct ModuleManifest {
     /// The checklist step types it declares (TODO-checklists C3.5).
     #[serde(default)]
     pub check_steps: Vec<CheckStepManifest>,
+    /// The agent traits it supplies (TODO-app-constructor AC12.1).
+    #[serde(default)]
+    pub agent_traits: Vec<AgentTraitManifest>,
+    /// Whether it has an `on_application_deleted` hook (TODO-app-constructor
+    /// AC12.5).
+    #[serde(default)]
+    pub application_deleted: bool,
+    /// The fields it adds to an application's settings form
+    /// (TODO-app-constructor AC12.9).
+    #[serde(default)]
+    pub application_settings: Vec<AppSettingManifest>,
+    /// The screens it adds to the admin (TODO-app-constructor AC12.4).
+    #[serde(default)]
+    pub admin_screens: Vec<AdminScreenManifest>,
     /// The application tables it asks to read (TODO-payments P4.1) — admitted
     /// only where its stored configuration names them ([`crate::reads`]).
     #[serde(default)]
@@ -1081,6 +1245,25 @@ impl ModuleHost {
         }
     }
 
+    /// Tell one module an application was deleted
+    /// (`on_application_deleted(app, ctx)`, TODO-app-constructor AC12.5).
+    pub async fn application_deleted(
+        &self,
+        module: &str,
+        app: Json,
+        call: CallHosts<'_>,
+    ) -> Result<Json> {
+        #[cfg(feature = "deno-host")]
+        {
+            self.pool.application_deleted(module, app, call).await
+        }
+        #[cfg(not(feature = "deno-host"))]
+        {
+            let _ = (module, app, call);
+            Err(no_runtime())
+        }
+    }
+
     /// Run one of v1's **routes** of one module: call its `callback(req, res,
     /// next)` for `request` — the route it matched (`route`: `{ method, url }`),
     /// its `params`, and `{ path, base, query, headers, body, ip, user }`, the
@@ -1122,6 +1305,31 @@ impl ModuleHost {
         #[cfg(not(feature = "deno-host"))]
         {
             let _ = (module, step, request, call);
+            Err(no_runtime())
+        }
+    }
+
+    /// Call into one **agent trait** of one module (TODO-app-constructor
+    /// AC12.1): `request` is `{ call, tool, args, context }`, where `call` is
+    /// `tool` or `session_header`, and the answer is `{ result, state }`, the
+    /// trait's state in the run as the call left it. A `Table` read or write
+    /// inside is served from `call`. Bounded like an action.
+    pub async fn call_agent_trait(
+        &self,
+        module: &str,
+        trait_: &str,
+        request: Json,
+        call: CallHosts<'_>,
+    ) -> Result<Json> {
+        #[cfg(feature = "deno-host")]
+        {
+            self.pool
+                .call_agent_trait(module, trait_, request, call)
+                .await
+        }
+        #[cfg(not(feature = "deno-host"))]
+        {
+            let _ = (module, trait_, request, call);
             Err(no_runtime())
         }
     }
@@ -1560,9 +1768,16 @@ mod tests {
     #[test]
     fn a_refusal_the_module_rethrew_stays_a_refusal() {
         let err = module_refusal("auth error: user `u` (role 30) may not act as user `v` (role 1)");
-        assert_eq!(err.auth_message(), Some("user `u` (role 30) may not act as user `v` (role 1)"));
+        assert_eq!(
+            err.auth_message(),
+            Some("user `u` (role 30) may not act as user `v` (role 1)")
+        );
         assert_eq!(err.to_string().matches("auth error").count(), 1, "{err}");
-        assert!(module_refusal("").to_string().contains("without saying why"));
+        assert!(
+            module_refusal("")
+                .to_string()
+                .contains("without saying why")
+        );
     }
 
     #[test]
@@ -1650,7 +1865,9 @@ mod tests {
         let names: Vec<&str> = AskSurface::ALL.iter().map(|s| s.name()).collect();
         assert_eq!(
             names,
-            ["service", "roles", "credits", "oauth", "system", "check"]
+            [
+                "service", "roles", "credits", "oauth", "system", "check", "agents", "apps"
+            ]
         );
         for surface in AskSurface::ALL {
             assert_eq!(AskSurface::from_name(surface.name()), Some(surface));

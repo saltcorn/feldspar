@@ -1,0 +1,11 @@
+{
+  "name": "@feldspar/app-constructor",
+  "version": "0.1.0",
+  "description": "The App Constructor: an application described in a few paragraphs, planned as phases and tasks, and built by agents.",
+  "main": "server/index.js",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "test": "node --test 'server/test/**/*.test.mjs'"
+  }
+}

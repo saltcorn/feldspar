@@ -224,8 +224,6 @@ pub fn admin_handlers_with(
     crate::agent_memory::register(&mut reg, catalog.clone());
     // --- checklists ----------------------------------
     crate::checklists::register(&mut reg, catalog.clone(), apps.clone());
-    // --- the App Constructor (TODO-app-constructor) ---------------------------
-    crate::constructions::register(&mut reg, catalog.clone(), apps.clone());
 
     reg
 }
@@ -421,6 +419,43 @@ pub(crate) async fn install_module_json(
     ))
 }
 
+/// The fields a module adds to an application's settings form
+/// (TODO-app-constructor AC12.9).
+fn application_settings_json(loaded: &sc_module::LoadedModule) -> Json {
+    json!(
+        loaded
+            .manifest
+            .as_ref()
+            .map(|m| m.application_settings.clone())
+            .unwrap_or_default()
+    )
+}
+
+/// The screens a module adds to the admin (TODO-app-constructor AC12.4), each
+/// with the URL its script is served at.
+fn admin_screens_json(loaded: &sc_module::LoadedModule) -> Json {
+    let screens = loaded
+        .manifest
+        .as_ref()
+        .map(|m| m.admin_screens.as_slice())
+        .unwrap_or_default();
+    Json::Array(
+        screens
+            .iter()
+            .map(|screen| {
+                json!({
+                    "name": screen.name,
+                    "label": screen.label,
+                    "scope": screen.scope,
+                    "frameworks": screen.frameworks,
+                    "segment": sc_module::hook_segment(&loaded.module.name),
+                    "script_url": sc_module::route_path(&loaded.module.name, &screen.script),
+                })
+            })
+            .collect(),
+    )
+}
+
 /// One loaded module as JSON (matching `module_schema`): the row, what the
 /// package supplies, and everything wrong with it.
 ///
@@ -583,6 +618,13 @@ fn module_json(
         // application's New view offers beside v1's six. One whose name was
         // taken is not here; its issue says so.
         "view_patterns": loaded.view_pattern_names(),
+        // And the agent traits (TODO-app-constructor AC12.1): what the agent
+        // form offers beside the built-in traits.
+        "agent_traits": loaded.agent_trait_names(),
+        // What it adds to the admin: fields on an application's settings form
+        // and screens (TODO-app-constructor AC12.4, AC12.9).
+        "application_settings": application_settings_json(loaded),
+        "admin_screens": admin_screens_json(loaded),
         // The content-security sources it suggests an application allow
         // (TODO-payments P1.4), each switched on per application by its `key`.
         "csp_sources": loaded

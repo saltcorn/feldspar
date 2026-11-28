@@ -62,6 +62,77 @@ pub const PERM_ENV: &str = "env";
 /// 99. Not a worker permission at all, but granted the way they are: by an
 /// admin, on the install card and the Modules tab, never by the package.
 pub const PERM_ROLES: &str = "roles";
+/// The agents the module may make and run (TODO-app-constructor AC12.2): one
+/// entry, [`AgentGrant::Run`] or [`AgentGrant::Console`]. Like `roles`, checked
+/// by the server when the module asks, never by the worker.
+pub const PERM_AGENTS: &str = "agents";
+
+/// The applications the module may reach (TODO-app-constructor AC12.3): one
+/// entry, [`AppsGrant::Read`] or [`AppsGrant::Build`]. Checked by the server.
+pub const PERM_APPS: &str = "apps";
+
+/// How far a module may go with applications ([`PERM_APPS`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AppsGrant {
+    /// `read`: read applications — name, subdomain, framework, settings — and
+    /// their builds' results.
+    Read,
+    /// `build`: the same, and read and write the files of an application's
+    /// project and build it. A build runs the project's own scripts.
+    Build,
+}
+
+impl AppsGrant {
+    /// The stored spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AppsGrant::Read => "read",
+            AppsGrant::Build => "build",
+        }
+    }
+
+    /// The grant spelled `text`, if it is one.
+    pub fn parse(text: &str) -> Option<AppsGrant> {
+        match text {
+            "read" => Some(AppsGrant::Read),
+            "build" => Some(AppsGrant::Build),
+            _ => None,
+        }
+    }
+}
+
+/// How far a module may go with agents ([`PERM_AGENTS`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AgentGrant {
+    /// `run`: make, change and delete its own agents, and start, follow and
+    /// stop runs of agents, each run with the authority of whoever asked —
+    /// never the tools that act as the server.
+    Run,
+    /// `console`: the same, and a run an administrator starts through the
+    /// module's route has the admin console's authority, with the tools that
+    /// act as the server (the shell, the project's scripts): what an agent that
+    /// builds an application needs.
+    Console,
+}
+
+impl AgentGrant {
+    /// The stored spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentGrant::Run => "run",
+            AgentGrant::Console => "console",
+        }
+    }
+
+    /// The grant spelled `text`, if it is one.
+    pub fn parse(text: &str) -> Option<AgentGrant> {
+        match text {
+            "run" => Some(AgentGrant::Run),
+            "console" => Some(AgentGrant::Console),
+            _ => None,
+        }
+    }
+}
 
 /// The [`PERM_NET`] entry meaning *any host* — see [`check_host`].
 ///
@@ -91,6 +162,10 @@ pub struct ModulePermissions {
     /// The most privileged role the module may grant (`ctx.roles.grant`), or
     /// `None` for no role at all. Never 1: no module may make an admin.
     pub roles: Option<Role>,
+    /// What the module may do with agents, or `None` for nothing.
+    pub agents: Option<AgentGrant>,
+    /// What the module may do with applications, or `None` for nothing.
+    pub apps: Option<AppsGrant>,
 }
 
 impl ModulePermissions {
@@ -106,6 +181,8 @@ impl ModulePermissions {
             && self.write.is_empty()
             && self.env.is_empty()
             && self.roles.is_none()
+            && self.agents.is_none()
+            && self.apps.is_none()
     }
 
     /// How many entries there are across every list — what a badge counts.
@@ -115,6 +192,8 @@ impl ModulePermissions {
             + self.write.len()
             + self.env.len()
             + usize::from(self.roles.is_some())
+            + usize::from(self.agents.is_some())
+            + usize::from(self.apps.is_some())
     }
 
     /// The part of the set a **worker** is built with — everything but
@@ -124,6 +203,8 @@ impl ModulePermissions {
     pub fn sandbox(&self) -> ModulePermissions {
         ModulePermissions {
             roles: None,
+            agents: None,
+            apps: None,
             ..self.clone()
         }
     }
@@ -153,10 +234,21 @@ impl ModulePermissions {
             }
         };
         for key in object.keys() {
-            if ![PERM_NET, PERM_READ, PERM_WRITE, PERM_ENV, PERM_ROLES].contains(&key.as_str()) {
+            if ![
+                PERM_NET,
+                PERM_READ,
+                PERM_WRITE,
+                PERM_ENV,
+                PERM_ROLES,
+                PERM_AGENTS,
+                PERM_APPS,
+            ]
+            .contains(&key.as_str())
+            {
                 return Err(Error::invalid(format!(
                     "`{key}` is not a module permission; the permissions are {PERM_NET}, \
-                     {PERM_READ}, {PERM_WRITE}, {PERM_ENV}, {PERM_ROLES}"
+                     {PERM_READ}, {PERM_WRITE}, {PERM_ENV}, {PERM_ROLES}, {PERM_AGENTS}, \
+                     {PERM_APPS}"
                 )));
             }
         }
@@ -166,6 +258,8 @@ impl ModulePermissions {
             write: entries(object, PERM_WRITE, check_path)?,
             env: entries(object, PERM_ENV, check_env)?,
             roles: role_ceiling(object)?,
+            agents: one_of(object, PERM_AGENTS, AgentGrant::parse, AGENTS_CHOICES)?,
+            apps: one_of(object, PERM_APPS, AppsGrant::parse, APPS_CHOICES)?,
         };
         Ok(permissions)
     }
@@ -182,6 +276,14 @@ impl ModulePermissions {
         object.insert(
             PERM_ROLES.to_owned(),
             json!(self.roles.map(|r| vec![r.to_string()]).unwrap_or_default()),
+        );
+        object.insert(
+            PERM_AGENTS.to_owned(),
+            json!(self.agents.map(|g| vec![g.as_str()]).unwrap_or_default()),
+        );
+        object.insert(
+            PERM_APPS.to_owned(),
+            json!(self.apps.map(|g| vec![g.as_str()]).unwrap_or_default()),
         );
         object
     }
@@ -213,6 +315,21 @@ impl ModulePermissions {
         }
         if let Some(ceiling) = self.roles {
             lines.push(format!("may grant users roles {ceiling} to 99"));
+        }
+        match self.agents {
+            Some(AgentGrant::Run) => lines.push("may make and run agents".to_owned()),
+            Some(AgentGrant::Console) => lines.push(
+                "may make and run agents, with the server's own tools when an admin starts them"
+                    .to_owned(),
+            ),
+            None => {}
+        }
+        match self.apps {
+            Some(AppsGrant::Read) => lines.push("may read applications".to_owned()),
+            Some(AppsGrant::Build) => {
+                lines.push("may read, change and build applications' projects".to_owned());
+            }
+            None => {}
         }
         lines
     }
@@ -306,6 +423,60 @@ fn role_ceiling(object: &Attrs) -> Result<Option<Role>> {
         _ => Err(Error::invalid(format!(
             "the `{PERM_ROLES}` permission is one role, the most privileged the module may \
              grant; it may then grant that role and every less privileged one"
+        ))),
+    }
+}
+
+/// What the `agents` entry may be, for the refusal.
+const AGENTS_CHOICES: &str = "`run` (make and run agents) or `console` (and with the server's own \
+                              tools when an admin starts them)";
+/// What the `apps` entry may be, for the refusal.
+const APPS_CHOICES: &str =
+    "`read` (read applications) or `build` (and change and build their projects)";
+
+/// A list of at most one grant, the entry `key` names: `agents` or `apps`.
+fn one_of<T: Copy + Ord>(
+    object: &Attrs,
+    key: &str,
+    parse: impl Fn(&str) -> Option<T>,
+    choices: &str,
+) -> Result<Option<T>> {
+    let list = match object.get(key) {
+        None | Some(Json::Null) => return Ok(None),
+        Some(Json::Array(list)) => list,
+        Some(other) => {
+            return Err(Error::invalid(format!(
+                "a module's `{key}` permission should be a list, got {}",
+                kind_of(other)
+            )));
+        }
+    };
+    let mut grants = Vec::new();
+    for entry in list {
+        match entry {
+            Json::String(s) if s.trim().is_empty() => {}
+            Json::String(s) => grants.push(parse(s.trim()).ok_or_else(|| {
+                Error::invalid(format!(
+                    "`{}` is not a `{key}` permission; it is {choices}",
+                    s.trim()
+                ))
+            })?),
+            other => {
+                return Err(Error::invalid(format!(
+                    "a module's `{key}` permission should be a list of strings, and one entry is \
+                     {}",
+                    kind_of(other)
+                )));
+            }
+        }
+    }
+    grants.sort_unstable();
+    grants.dedup();
+    match grants.as_slice() {
+        [] => Ok(None),
+        [one] => Ok(Some(*one)),
+        _ => Err(Error::invalid(format!(
+            "the `{key}` permission is one entry: {choices}"
         ))),
     }
 }
@@ -502,6 +673,8 @@ mod tests {
             write: Vec::new(),
             env: vec!["MQTT_PASSWORD".into()],
             roles: Some(Role::of(70)),
+            agents: Some(AgentGrant::Console),
+            apps: Some(AppsGrant::Build),
         };
         let stored = Json::Object(permissions.to_json());
         assert_eq!(ModulePermissions::from_json(&stored).unwrap(), permissions);
@@ -680,6 +853,26 @@ mod tests {
     }
 
     #[test]
+    fn the_agents_grant_is_one_entry_and_not_the_workers() {
+        let set = ModulePermissions::from_json(&json!({ "agents": ["console"] })).unwrap();
+        assert_eq!(set.agents, Some(AgentGrant::Console));
+        assert_eq!(set.granted(), 1);
+        assert!(!set.is_closed());
+        assert_eq!(set.sandbox(), ModulePermissions::closed());
+        assert!(set.sentences()[0].contains("server's own tools"));
+        let set = ModulePermissions::from_json(&json!({ "agents": ["run", ""] })).unwrap();
+        assert_eq!(set.agents, Some(AgentGrant::Run));
+        assert_eq!(set.to_json()["agents"], json!(["run"]));
+        assert!(ModulePermissions::from_json(&json!({ "agents": ["root"] })).is_err());
+        assert!(ModulePermissions::from_json(&json!({ "agents": ["run", "console"] })).is_err());
+        assert!(ModulePermissions::from_json(&json!({ "agents": "run" })).is_err());
+        let set = ModulePermissions::from_json(&json!({ "apps": ["build"] })).unwrap();
+        assert_eq!(set.apps, Some(AppsGrant::Build));
+        assert_eq!(set.sandbox(), ModulePermissions::closed());
+        assert!(ModulePermissions::from_json(&json!({ "apps": ["write"] })).is_err());
+    }
+
+    #[test]
     fn the_granted_capabilities_read_as_sentences() {
         let permissions = ModulePermissions {
             net: vec!["broker.example:1883".into()],
@@ -687,6 +880,8 @@ mod tests {
             write: Vec::new(),
             env: vec!["HOME".into()],
             roles: None,
+            agents: None,
+            apps: None,
         };
         let lines = permissions.sentences();
         assert_eq!(lines.len(), 2);

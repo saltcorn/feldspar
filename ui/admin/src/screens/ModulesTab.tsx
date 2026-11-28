@@ -75,6 +75,7 @@ import {
 import { SettingsFields, buildConfig, initialValues, type FieldSpec } from "../settings";
 import { unsavedNames } from "../settingsSaving";
 import { T, useT } from "../i18n";
+import { moduleScreenPath } from "../moduleScreens";
 
 export function ModulesTab() {
   const { t } = useT();
@@ -767,6 +768,34 @@ function ModuleCard({
           </>
         )}
 
+        {(module.admin_screens ?? []).length > 0 && (
+          <>
+            <div className="text-secondary mb-1"><T text="Screens" /></div>
+            <ul className="list-unstyled mb-2">
+              {module.admin_screens.map((screen) => (
+                <li key={`${screen.scope}/${screen.name}`}>
+                  {screen.scope === "admin" ? (
+                    <a href={`#${moduleScreenPath(null, screen.segment, screen.name)}`}>
+                      {screen.label}
+                    </a>
+                  ) : (
+                    <>
+                      {screen.label}{" "}
+                      <span className="text-secondary">
+                        {screen.frameworks.length > 0
+                          ? t("(in the sidebar of {frameworks} applications)", {
+                              frameworks: screen.frameworks.join(", "),
+                            })
+                          : t("(in every application's sidebar)")}
+                      </span>
+                    </>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+
         {module.table_providers.length > 0 && (
           <>
             <div className="text-secondary mb-1"><T text="Table providers" /></div>
@@ -885,6 +914,8 @@ function PermissionsForm({
     write: parsePermissionText(text.write ?? ""),
     env: parsePermissionText(text.env ?? ""),
     roles: parsePermissionText(text.roles ?? ""),
+    agents: parsePermissionText(text.agents ?? ""),
+    apps: parsePermissionText(text.apps ?? ""),
   };
   const problems = permissionProblems(edited);
 

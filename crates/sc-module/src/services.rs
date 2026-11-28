@@ -157,9 +157,24 @@ struct Shared {
     /// because a server builds its dispatcher and its modules in that order but
     /// a test may have none.
     dispatcher: RwLock<Option<Arc<TriggerDispatcher>>>,
+    /// The server's handlers for a service's `ctx.agents` and `ctx.apps`
+    /// (TODO-app-constructor AC12.2, AC12.3). The server sets them with
+    /// [`ServiceSupervisor::set_server_asks`] after creating the supervisor, as
+    /// it does the dispatcher. `None` until then, and in a test without a
+    /// server: a service then has no `ctx.agents` or `ctx.apps`.
+    server: RwLock<Option<Arc<dyn crate::server_asks::ServerAsks>>>,
     backoff: Backoff,
     statuses: RwLock<BTreeMap<(String, String), ServiceStatus>>,
     router: Arc<ChangeRouter>,
+}
+
+/// What an admin granted a module that the server checks when it asks: the
+/// roles it may grant, and what it may do with agents and applications.
+#[derive(Debug, Clone, Copy)]
+struct Grants {
+    roles: Option<Role>,
+    agents: Option<crate::permissions::AgentGrant>,
+    apps: Option<crate::permissions::AppsGrant>,
 }
 
 /// One supervising task.
@@ -183,12 +198,20 @@ impl ServiceSupervisor {
                 catalog: Arc::clone(catalog),
                 host: Arc::clone(host),
                 dispatcher: RwLock::new(None),
+                server: RwLock::new(None),
                 backoff,
                 statuses: RwLock::new(BTreeMap::new()),
                 router,
             }),
             running: tokio::sync::Mutex::new(Vec::new()),
         })
+    }
+
+    /// Give `ctx.agents` and `ctx.apps` what answers them.
+    pub fn set_server_asks(&self, server: Arc<dyn crate::server_asks::ServerAsks>) {
+        if let Ok(mut guard) = self.shared.server.write() {
+            *guard = Some(server);
+        }
     }
 
     /// Give `ctx.runTrigger` a dispatcher to run triggers through.
@@ -227,7 +250,11 @@ impl ServiceSupervisor {
                     .await,
             );
             let areas: Arc<Vec<FileArea>> = Arc::new(file_areas(&loaded.table_declarations()));
-            let roles = loaded.module.permissions.roles;
+            let grants = Grants {
+                roles: loaded.module.permissions.roles,
+                agents: loaded.module.permissions.agents,
+                apps: loaded.module.permissions.apps,
+            };
             for service in &manifest.services {
                 let module = loaded.module.name.clone();
                 self.shared.set_status(ServiceStatus {
@@ -245,7 +272,7 @@ impl ServiceSupervisor {
                     service.name.clone(),
                     Arc::clone(&tables),
                     Arc::clone(&areas),
-                    roles,
+                    grants,
                     stopped,
                 ));
                 running.push(Running {
@@ -335,7 +362,7 @@ async fn supervise(
     service: String,
     tables: Arc<TableScope>,
     areas: Arc<Vec<FileArea>>,
-    roles: Option<Role>,
+    grants: Grants,
     mut stop: oneshot::Receiver<()>,
 ) {
     let backoff = shared.backoff;
@@ -344,7 +371,7 @@ async fn supervise(
         shared.update_status(&module, &service, |s| s.state = ServiceState::Running);
         let began = Instant::now();
         let ended = run_once(
-            &shared, &module, &service, &tables, &areas, roles, &mut stop,
+            &shared, &module, &service, &tables, &areas, grants, &mut stop,
         )
         .await;
         shared.router.forget(&module, &service);
@@ -387,10 +414,10 @@ async fn run_once(
     service: &str,
     tables: &TableScope,
     areas: &[FileArea],
-    roles: Option<Role>,
+    grants: Grants,
     stop: &mut oneshot::Receiver<()>,
 ) -> Ended {
-    let ended = serve_once(shared, module, service, tables, areas, roles, stop).await;
+    let ended = serve_once(shared, module, service, tables, areas, grants, stop).await;
     shared.router.forget(module, service);
     ended
 }
@@ -408,7 +435,7 @@ async fn serve_once(
     service: &str,
     tables: &TableScope,
     areas: &[FileArea],
-    roles: Option<Role>,
+    grants: Grants,
     stop: &mut oneshot::Receiver<()>,
 ) -> Ended {
     let catalog = &*shared.catalog;
@@ -451,7 +478,7 @@ async fn serve_once(
         received,
     ));
     let files = ModuleFiles::new(catalog, module, areas);
-    let roles = crate::roles::ModuleRoles::new(catalog, module, roles);
+    let roles = crate::roles::ModuleRoles::new(catalog, module, grants.roles);
     let credits = crate::credits::ModuleCredits::new(catalog, module);
     let schema = schema_snapshot(catalog).ok();
     let call = CallHosts {
@@ -468,6 +495,21 @@ async fn serve_once(
             .with(AskSurface::Roles, &roles)
             .with(AskSurface::Credits, &credits),
     };
+    // The agents and applications a service reaches, when the server
+    // supplies them: as the module, which may only continue what a caller of
+    // its started.
+    let server = shared.server.read().ok().and_then(|a| a.clone());
+    let agents = server
+        .as_ref()
+        .map(|s| s.agents(module, grants.agents, None));
+    let apps = server.as_ref().map(|s| s.apps(module, grants.apps, None));
+    let mut call = call;
+    if let Some(agents) = &agents {
+        call.asks = call.asks.with(AskSurface::Agents, agents.as_ref());
+    }
+    if let Some(apps) = &apps {
+        call.asks = call.asks.with(AskSurface::Apps, apps.as_ref());
+    }
     let run = shared.host.run_service(module, service, call);
     tokio::pin!(run);
     let ended = tokio::select! {
@@ -613,6 +655,18 @@ impl ScopedTables<'_> {
     /// Refuse a request that would reach past the module's tables, naming why.
     fn admit(&self, request: &Json) -> Result<()> {
         match request.get("op").and_then(Json::as_str) {
+            // A batch is its writes, each admitted as it would be alone.
+            Some("batch") => {
+                if let Some(Json::Array(plans)) = request.get("plans") {
+                    for plan in plans {
+                        if plan.get("op").and_then(Json::as_str) == Some("batch") {
+                            return Err(Error::invalid("a batch cannot hold another batch"));
+                        }
+                        self.admit(plan)?;
+                    }
+                }
+                return Ok(());
+            }
             Some("sql") => {
                 return Err(Error::invalid(format!(
                     "a {kind} of `{}` cannot run its own SQL: a {kind} reaches only its \

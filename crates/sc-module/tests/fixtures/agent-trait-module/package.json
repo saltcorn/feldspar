@@ -1,0 +1,8 @@
+{
+  "name": "@saltcorn-test/agent-traits",
+  "version": "0.1.0",
+  "description": "A module that supplies agent traits, for the agent trait tests.",
+  "main": "index.js",
+  "private": true,
+  "license": "MIT"
+}

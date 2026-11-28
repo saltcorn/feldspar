@@ -106,6 +106,16 @@ impl LoadedModule {
             .unwrap_or_default()
     }
 
+    /// The agent traits this module supplies (TODO-app-constructor AC12.1).
+    /// One whose name a built-in or another module has is still listed here;
+    /// the server reports it when it installs the set.
+    pub fn agent_trait_names(&self) -> Vec<String> {
+        self.manifest
+            .as_ref()
+            .map(|m| m.agent_traits.iter().map(|t| t.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
     /// The tables this module declares (TODO-imap M4), as read from its
     /// manifest. A declaration that does not read is left out here and was an
     /// issue on the card when the module loaded.
@@ -607,6 +617,10 @@ mod tests {
             webhooks: Vec::new(),
             routes: Vec::new(),
             check_steps: Vec::new(),
+            agent_traits: Vec::new(),
+            application_deleted: false,
+            application_settings: Vec::new(),
+            admin_screens: Vec::new(),
             reads: Vec::new(),
             csp: Vec::new(),
             frameworks: Vec::new(),

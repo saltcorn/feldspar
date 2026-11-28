@@ -96,6 +96,9 @@ function module_(overrides: Partial<Module> = {}): Module {
     csp_sources: [],
     model_providers: [],
     stream_providers: [],
+    agent_traits: [],
+    application_settings: [],
+    admin_screens: [],
     view_patterns: [],
     unsupported: [],
     issues: [],
@@ -130,7 +133,7 @@ function bundled(overrides: Partial<BundledModule> = {}): BundledModule {
     tables: [],
     services: [],
     webhooks: [],
-    permissions: { net: ["*"], read: [], write: [], env: [], roles: [] },
+    permissions: { net: ["*"], read: [], write: [], env: [], roles: [], agents: [], apps: [] },
     installed: false,
     ...overrides,
   };
@@ -355,6 +358,14 @@ describe("how an installed module reads", () => {
     ).toBe("2 stream providers");
   });
 
+  it("counts the agent traits it supplies", () => {
+    const notes = module_({ actions: [], agent_traits: ["notes"] });
+    expect(moduleStatus(notes)).toEqual({ label: "1 agent trait", tone: "green" });
+    expect(suppliedSummary(module_({ actions: [], agent_traits: ["notes", "plan"] }))).toBe(
+      "2 agent traits",
+    );
+  });
+
   it("counts the view patterns it supplies", () => {
     // `@saltcorn/kanban` is two view patterns and nothing else.
     const kanban = module_({ actions: [], view_patterns: ["Kanban", "KanbanAllocator"] });
@@ -466,6 +477,8 @@ describe("a module's permissions", () => {
       write: [],
       env: [],
       roles: [],
+      agents: [],
+      apps: [],
     });
     // A role ceiling, as the server stores it and as a manifest requests it.
     expect(modulePermissions(module_({ permissions: { roles: ["70"] } })).roles).toEqual(["70"]);
@@ -483,7 +496,7 @@ describe("a module's permissions", () => {
     expect(isClosed(CLOSED_PERMISSIONS)).toBe(true);
     expect(permissionSummary(CLOSED_PERMISSIONS)).toMatch(/reaches nothing/i);
     expect(
-      permissionSummary({ net: ["broker:1883"], read: ["/srv/data"], write: [], env: [], roles: [] }),
+      permissionSummary({ net: ["broker:1883"], read: ["/srv/data"], write: [], env: [], roles: [], agents: [], apps: [] }),
     ).toBe("Reaches only these: connects to broker:1883; reads /srv/data.");
     expect(permissionSummary({ ...CLOSED_PERMISSIONS, roles: ["70"] })).toBe(
       "Reaches only these: grants users roles 70 to 99.",
@@ -525,10 +538,20 @@ describe("a module's permissions", () => {
     expect(permissionProblem("env", "MQTT_PASSWORD")).toBeNull();
     expect(permissionProblem("env", "A=B")).toMatch(/variable name/);
     expect(
-      permissionProblems({ net: ["https://x"], read: ["rel"], write: [], env: [], roles: [] }),
+      permissionProblems({ net: ["https://x"], read: ["rel"], write: [], env: [], roles: [], agents: [], apps: [] }),
     ).toHaveLength(2);
     // A role ceiling: one number, never the admin's or the public's.
     expect(permissionProblem("roles", "70")).toBeNull();
+    expect(permissionProblem("agents", "console")).toBeNull();
+    expect(permissionProblem("agents", "root")).toMatch(/run or console/);
+    expect(permissionProblem("apps", "build")).toBeNull();
+    expect(permissionProblem("apps", "write")).toMatch(/read or build/);
+    expect(permissionProblems({ ...CLOSED_PERMISSIONS, agents: ["run", "console"] })).toEqual([
+      "Agents is one entry: run or console.",
+    ]);
+    expect(permissionSummary({ ...CLOSED_PERMISSIONS, agents: ["console"] })).toBe(
+      "Reaches only these: makes and runs agents, with the server's own tools when an admin starts them.",
+    );
     expect(permissionProblem("roles", "1")).toMatch(/admin/);
     expect(permissionProblem("roles", "100")).toMatch(/public/);
     expect(permissionProblem("roles", "pro")).toMatch(/role number/);
@@ -560,7 +583,7 @@ describe("the bundled catalog", () => {
     expect(sentence).toMatch(/any host/);
     expect(sentence).toMatch(/change that afterwards/);
     // A named host reads as itself rather than as a wildcard.
-    expect(grantSentence(bundled({ permissions: { net: ["a.example"], read: [], write: [], env: [], roles: [] } }))).toMatch(
+    expect(grantSentence(bundled({ permissions: { net: ["a.example"], read: [], write: [], env: [], roles: [], agents: [], apps: [] } }))).toMatch(
       /connect to a.example/,
     );
     // And an entry that asks for nothing says nothing — which is every Python
@@ -612,14 +635,14 @@ describe("any host", () => {
     // The wildcard exists for a module whose addresses are configured per table
     // — an RSS feed's host is on the table, not the module — and "connects to *"
     // would be the one rendering that reads as *less* than it is.
-    expect(permissionSummary({ net: ["*"], read: [], write: [], env: [], roles: [] })).toMatch(
+    expect(permissionSummary({ net: ["*"], read: [], write: [], env: [], roles: [], agents: [], apps: [] })).toMatch(
       /connects to any host/,
     );
-    expect(permissionSummary({ net: ["a.example"], read: [], write: [], env: [], roles: [] })).toMatch(
+    expect(permissionSummary({ net: ["a.example"], read: [], write: [], env: [], roles: [], agents: [], apps: [] })).toMatch(
       /connects to a.example/,
     );
     // It is a grant, so it is not the closed set.
-    expect(isClosed({ net: ["*"], read: [], write: [], env: [], roles: [] })).toBe(false);
+    expect(isClosed({ net: ["*"], read: [], write: [], env: [], roles: [], agents: [], apps: [] })).toBe(false);
     // And the form does not refuse it on the way in.
     expect(permissionProblem("net", "*")).toBeNull();
   });

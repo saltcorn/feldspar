@@ -460,6 +460,115 @@ async fn the_body_reads_and_writes_its_tables_through_db() -> Result<()> {
     Ok(())
 }
 
+/// `db.atomically(...)` (TODO-app-constructor AC12.6): the writes its
+/// function lists are made together — all of them, or none when one fails —
+/// and a read, an `async` function or a nested call is refused before anything
+/// is written.
+#[tokio::test]
+async fn writes_listed_in_atomically_land_together_or_not_at_all() -> Result<()> {
+    let db = TestDb::new().await?;
+    let catalog = setup(&db).await?;
+    let titles = || async {
+        let rows = db
+            .client()
+            .await?
+            .query("SELECT title FROM books ORDER BY id", &[])
+            .await
+            .map_err(|e| Error::database(e.to_string()))?;
+        Ok::<_, Error>(rows.iter().map(|r| r.get::<_, String>(0)).collect::<Vec<_>>())
+    };
+
+    // The second insert reuses a key: neither lands, nor does the update.
+    let failed = run(
+        &catalog,
+        &book_insert(),
+        "await db.atomically((db) => {\n\
+           db.books.insert({ id: 8, title: 'Second', pages: 20 });\n\
+           db.books.where({ id: 7 }).update({ title: 'Renamed' });\n\
+           db.books.insert({ id: 8, title: 'Again', pages: 30 });\n\
+         });\n\
+         return 'written';",
+    )
+    .await;
+    assert!(failed.is_err(), "{failed:?}");
+    assert_eq!(titles().await?, ["A Book"]);
+
+    // All three land, and each answers as it would alone.
+    let out = run(
+        &catalog,
+        &book_insert(),
+        "const [made, , gone] = await db.atomically((db) => {\n\
+           db.books.insert({ id: 8, title: 'Second', pages: 20 });\n\
+           db.books.where({ id: 7 }).update({ title: 'Renamed' });\n\
+           db.books.where({ id: 8 }).delete();\n\
+         });\n\
+         return { made: made.title, gone };",
+    )
+    .await?;
+    assert_eq!(out["made"], json!("Second"), "{out}");
+    assert_eq!(titles().await?, ["Renamed"]);
+
+    for (body, says) in [
+        (
+            "await db.atomically((db) => { db.books.rows(); }); return 1;",
+            "holds writes",
+        ),
+        (
+            "await db.atomically(async (db) => { db.books.insert({ id: 9 }); }); return 1;",
+            "must not be async",
+        ),
+        (
+            "await db.atomically((db) => { db.atomically(() => {}); }); return 1;",
+            "inside atomically",
+        ),
+    ] {
+        let refused = run(&catalog, &book_insert(), body).await.unwrap_err();
+        assert!(refused.to_string().contains(says), "{body}: {refused}");
+    }
+    assert_eq!(titles().await?, ["Renamed"]);
+
+    // An async function's write after its first `await` is refused too, not
+    // sent on its own after the batch was refused.
+    let out = run(
+        &catalog,
+        &book_insert(),
+        "let said = '', late = '';\n\
+         try {\n\
+           await db.atomically(async (tx) => {\n\
+             await null;\n\
+             try { await tx.books.insert({ id: 9, title: 'Late', pages: 1 }); }\n\
+             catch (e) { late = e.message; }\n\
+           });\n\
+         } catch (e) { said = e.message; }\n\
+         await db.books.rows();\n\
+         return { said, late };",
+    )
+    .await?;
+    assert!(out["said"].as_str().unwrap_or_default().contains("must not be async"), "{out}");
+    assert!(out["late"].as_str().unwrap_or_default().contains("after atomically()"), "{out}");
+    assert_eq!(titles().await?, ["Renamed"]);
+
+    // Each write in a batch is one of the run's calls: two batches of 150 are
+    // more than the 200 a run may spend, though each is one request.
+    let refused = run(
+        &catalog,
+        &book_insert(),
+        "for (let b = 0; b < 2; b++) {\n\
+           await db.atomically((tx) => {\n\
+             for (let i = 0; i < 150; i++) tx.books.where({ id: -1 }).delete();\n\
+           });\n\
+         }\n\
+         return 1;",
+    )
+    .await
+    .expect_err("the budget is spent");
+    assert!(
+        refused.to_string().contains("database calls in one run"),
+        "{refused}"
+    );
+    Ok(())
+}
+
 /// The writes a model guesses from another ORM — `update(id, values)`,
 /// `delete(id)` — are refused naming the call to write instead, with the
 /// author's own id and values in it, and touch nothing; the form

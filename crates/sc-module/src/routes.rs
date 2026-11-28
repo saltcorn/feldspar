@@ -176,8 +176,10 @@ fn v1_user(caller: &Principal) -> Json {
 ///
 /// `system` answers the module's `systeminformation`, `EventLog` and
 /// `MetaData`; `installation` is `{ config: { … } }`, the installation-wide
-/// settings `getState().getConfig` answers by v1's names. An error is a failure
-/// to run the route — the caller answers `500` for it.
+/// settings `getState().getConfig` answers by v1's names. `server`, when the
+/// server supplies it, answers `req.feldspar.agents` and `req.feldspar.apps`
+/// as `caller`. An error is a failure to run the route — the caller answers
+/// `500` for it.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_route(
     catalog: &Catalog,
@@ -188,6 +190,7 @@ pub async fn run_route(
     request: RouteRequest,
     caller: &Principal,
     system: &dyn Ask,
+    server: Option<&dyn crate::server_asks::ServerAsks>,
     installation: Json,
 ) -> Result<WebhookResponse> {
     let module = loaded.module.name.as_str();
@@ -204,9 +207,19 @@ pub async fn run_route(
             ..CodeHosts::default()
         },
         schema: schema.as_deref(),
-        asks: Asks::default().with(AskSurface::System, system),
         ..CallHosts::default()
     };
+    let permissions = &loaded.module.permissions;
+    let agents = server.map(|s| s.agents(module, permissions.agents, Some(caller)));
+    let apps = server.map(|s| s.apps(module, permissions.apps, Some(caller)));
+    let mut call = call;
+    call.asks = Asks::default().with(AskSurface::System, system);
+    if let Some(agents) = &agents {
+        call.asks = call.asks.with(AskSurface::Agents, agents.as_ref());
+    }
+    if let Some(apps) = &apps {
+        call.asks = call.asks.with(AskSurface::Apps, apps.as_ref());
+    }
     let mut arrived = request_json(&request.request);
     if let Json::Object(map) = &mut arrived {
         let rest = map.remove("rest").unwrap_or(Json::Null);

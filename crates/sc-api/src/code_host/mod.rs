@@ -960,6 +960,73 @@ impl<'a> TableHost<'a> {
         }
     }
 
+    /// The same host with its statements inside `tx`: a batch's own copy.
+    fn joined(&self, tx: sc_catalog::SharedTx) -> TableHost<'a> {
+        TableHost {
+            catalog: self.catalog,
+            caller: self.caller.clone(),
+            limits: self.limits,
+            evaluator: self.evaluator.clone(),
+            executor: rows::Executor::of(Some(tx)),
+            calls: AtomicU32::new(self.calls.load(Ordering::SeqCst)),
+            viewer_only: self.viewer_only,
+            default_authority: self.default_authority.clone(),
+            admin: self.admin.clone(),
+        }
+    }
+
+    /// `{ op: "batch", plans: [...] }` (TODO-app-constructor AC12.6): writes
+    /// made together, in one transaction — every one of them, or none. Each is
+    /// what it would be alone: its authority, its checks, its events, which
+    /// fire once the batch has committed. Inside a transaction already (a
+    /// workflow step's) the batch joins it, and lands or is rolled back with
+    /// it. A batch holds writes only: a read in one would read before the
+    /// writes it sits between had happened.
+    async fn batch(&self, request: Json) -> Result<Json> {
+        let Some(Json::Array(plans)) = request.get("plans") else {
+            return Err(Error::invalid(
+                "a batch is `{ op: \"batch\", plans: [...] }`, the writes to make together",
+            ));
+        };
+        for plan in plans {
+            match plan.get("op").and_then(Json::as_str) {
+                Some("insert" | "update" | "delete") => {}
+                other => {
+                    return Err(Error::invalid(format!(
+                        "a batch holds writes (insert, update, delete), and `{}` is not one; \
+                         read before the batch or after it",
+                        other.unwrap_or("this request")
+                    )));
+                }
+            }
+        }
+        // Each write is one of the run's calls: the copy counts them, and what
+        // it counted is added back here, so a batch is no way around the bound.
+        let run = |host: TableHost<'a>| async move {
+            let start = host.calls.load(Ordering::SeqCst);
+            let mut answers = Vec::with_capacity(plans.len());
+            let mut outcome = Ok(());
+            for plan in plans {
+                match host.call(plan.clone()).await {
+                    Ok(answer) => answers.push(answer),
+                    Err(e) => {
+                        outcome = Err(e);
+                        break;
+                    }
+                }
+            }
+            let spent = host.calls.load(Ordering::SeqCst).saturating_sub(start);
+            self.calls.fetch_add(spent, Ordering::SeqCst);
+            outcome.map(|()| Json::Array(answers))
+        };
+        if let rows::Executor::Transaction(tx) = &self.executor {
+            return run(self.joined(tx.clone())).await;
+        }
+        let tx = sc_catalog::SharedTx::begin_primary(self.catalog)?;
+        let outcome = run(self.joined(tx.clone())).await;
+        tx.finish(outcome).await
+    }
+
     /// Spend one of the run's database calls.
     ///
     /// The runtime counts these too, and both counts are wanted: the guest's
@@ -1113,6 +1180,9 @@ impl CodeHost for TableHost<'_> {
         // API, at the plan's authority.
         if request.get("op").and_then(Json::as_str) == Some("history") {
             return history::answer(self, request).await;
+        }
+        if request.get("op").and_then(Json::as_str) == Some("batch") {
+            return self.batch(request).await;
         }
         let plan: Plan = serde_json::from_value(request).map_err(refuse)?;
         // The values this terminal presents, and no others: the plan's own

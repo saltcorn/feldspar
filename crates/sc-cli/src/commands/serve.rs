@@ -436,6 +436,8 @@ pub(crate) async fn install_services(
         config.saltcorn_ui_dir.clone(),
     )
     .await?;
+    // The agent runs a module starts evaluate JavaScript as every other run does.
+    modules.set_agent_evaluator(evaluator.clone());
 
     // Streams: the `_fd_streams` table, the provider registry, and the
     // supervisor that subscribes to every enabled stream (TODO "Streams").
@@ -477,6 +479,10 @@ pub(crate) async fn install_services(
             .with_saltcorn_ui_dir(config.saltcorn_ui_dir.clone())
             .with_analytics_dir(config.analytics_dir.clone()),
     );
+    // A module builds applications through the mounts (TODO-app-constructor AC12.3).
+    if let Some(modules) = apps.modules() {
+        modules.set_app_mounts(&apps);
+    }
     Ok(Services {
         apps,
         triggers,

@@ -37,6 +37,7 @@ import { splitRoute } from "./builder";
 import type { ListAgentsResponse, ListApplicationsResponse } from "./client";
 import {
   IconAlertTriangle,
+  IconApps,
   IconBooks,
   IconCode,
   IconDeviceMobile,
@@ -49,9 +50,9 @@ import {
   IconMessagePlus,
   IconSettings,
   IconSparkles,
-  IconTool,
 } from "./icons";
 import { useT } from "./i18n";
+import { moduleScreensOf, type ModuleScreenRef } from "./moduleScreens";
 
 type AppItem = ListApplicationsResponse[number];
 type AgentItem = ListAgentsResponse[number];
@@ -60,7 +61,7 @@ const CURRENT_APP_KEY = "saltcorn-admin-application";
 
 const LINK_ICONS: Record<AppNavLink["id"], ReactNode> = {
   "app-link": <IconExternalLink />,
-  construct: <IconTool />,
+  module: <IconApps />,
   "edit-code": <IconCode />,
   claude: <IconSparkles />,
   build: <IconHammer />,
@@ -89,6 +90,7 @@ export function ApplicationsNav({ route, folded }: { route: string; folded: bool
   const actions = useAppActions();
   const [apps, setApps] = useState<AppItem[] | null>(null);
   const [agents, setAgents] = useState<AgentItem[]>([]);
+  const [screens, setScreens] = useState<ModuleScreenRef[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(storedAppId);
   const [open, setOpen] = useState(false);
   const pickerRef = useRef<HTMLLIElement>(null);
@@ -108,6 +110,11 @@ export function ApplicationsNav({ route, folded }: { route: string; folded: bool
       .listAgents()
       .then((found) => live && setAgents(found))
       .catch(() => live && setAgents([]));
+    // The screens modules add; a server that cannot list its modules adds none.
+    api
+      .listModules()
+      .then((found) => live && setScreens(moduleScreensOf(found)))
+      .catch(() => live && setScreens([]));
     return () => {
       live = false;
     };
@@ -150,7 +157,9 @@ export function ApplicationsNav({ route, folded }: { route: string; folded: bool
     if (current) void resumeTargetBuilds(current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resumeKey]);
-  const links = current ? appNavLinks(current, builderAgentFor(current, agents), window.location) : [];
+  const links = current
+    ? appNavLinks(current, builderAgentFor(current, agents), window.location, screens)
+    : [];
   const listActive = onApplicationsList(path);
 
   const choose = (app: { id: string }) => {

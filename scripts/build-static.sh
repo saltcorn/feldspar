@@ -578,6 +578,17 @@ EOF
 stage_plugins() {
     local plugins="${REPO_ROOT}/plugins"
     [[ -d "${plugins}" ]] || { echo "error: ${plugins} is missing; it belongs in the artifact" >&2; exit 1; }
+    # A plugin with an admin screen (TODO-app-constructor AC12.4) builds it from
+    # its `ui/` source into its `screen/` directory, which the module serves and
+    # git does not track: the screen is built code, so it is built here, for the
+    # artifact, as the admin UI is built for the binary.
+    local screen
+    for screen in "${plugins}"/*/ui/package.json; do
+        [[ -f "${screen}" ]] || continue
+        echo "building the admin screen of $(basename "$(dirname "$(dirname "${screen}")")")"
+        (cd "$(dirname "${screen}")" && npm ci --no-audit --no-fund && npm run build) \
+            || { echo "error: the admin screen in $(dirname "${screen}") did not build" >&2; exit 1; }
+    done
     mkdir -p "${STAGE}/plugins"
     cp -r "${plugins}/." "${STAGE}/plugins/"
     # Nothing a package manager left behind travels: a `node_modules` from a

@@ -729,6 +729,27 @@ impl DenoModuleHost {
             .map_err(|e| denial(module, e))
     }
 
+    /// One call into one of a module's agent traits; `request` carries the
+    /// call, the tool, its arguments and the run's context.
+    pub async fn call_agent_trait(
+        &self,
+        module: &str,
+        trait_: &str,
+        request: Json,
+        call: CallHosts<'_>,
+    ) -> Result<Json> {
+        let index = self.worker_for(module).await;
+        let mut message = request;
+        if let Json::Object(map) = &mut message {
+            map.insert("op".to_owned(), json!("agent_trait_call"));
+            map.insert("module".to_owned(), json!(module));
+            map.insert("trait".to_owned(), json!(trait_));
+        }
+        self.send_with(index, message, None, call)
+            .await
+            .map_err(|e| denial(module, e))
+    }
+
     pub async fn run_webhook(
         &self,
         module: &str,
@@ -745,6 +766,24 @@ impl DenoModuleHost {
                 "webhook": webhook,
                 "request": request,
             }),
+            None,
+            call,
+        )
+        .await
+        .map_err(|e| denial(module, e))
+    }
+
+    /// Tell `module` an application was deleted.
+    pub async fn application_deleted(
+        &self,
+        module: &str,
+        app: Json,
+        call: CallHosts<'_>,
+    ) -> Result<Json> {
+        let index = self.worker_for(module).await;
+        self.send_with(
+            index,
+            json!({ "op": "application_deleted", "module": module, "app": app }),
             None,
             call,
         )

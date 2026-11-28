@@ -105,7 +105,7 @@ describe("attention", () => {
       key: "construction:k1",
       tone: "red",
       title: "Plan & build of Gym log failed",
-      href: "#/applications/a1/construct",
+      href: "#/applications/a1/m/app-constructor/construct",
     });
   });
 

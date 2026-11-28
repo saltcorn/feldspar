@@ -10,8 +10,8 @@
 
 import { claudeUrl, ideUrl } from "./App";
 import { appUrl } from "./adminAddress";
-import { constructPath, constructible } from "./construction";
 import type { ListAgentsResponse, ListApplicationsResponse } from "./client";
+import { applicationScreens, moduleScreenPath, type ModuleScreenRef } from "./moduleScreens";
 
 type AppItem = ListApplicationsResponse[number];
 type AgentItem = ListAgentsResponse[number];
@@ -25,7 +25,7 @@ const BUILD_TRAIT_APPLICATION = "application";
 export type AppNavLink = {
   id:
   | "app-link"
-  | "construct"
+  | "module"
   | "edit-code"
   | "claude"
   | "build"
@@ -69,8 +69,11 @@ export type TargetLink = {
 
 /** A link's key among its siblings: an application has one link of each kind,
  * except `target`, of which it has one per target. */
-export function linkKey(link: Pick<AppNavLink, "id" | "target">): string {
-  return link.target ? `${link.id}:${link.target.name}` : link.id;
+export function linkKey(link: Pick<AppNavLink, "id" | "target" | "href">): string {
+  if (link.target) return `${link.id}:${link.target.name}`;
+  // A module's screens are one kind of link, told apart by where they go.
+  if (link.id === "module") return `${link.id}:${link.href ?? ""}`;
+  return link.id;
 }
 
 /** Where the admin itself is served: what an application's subdomain sits on. */
@@ -107,9 +110,8 @@ export function builderAgentFor(
  *
  * - **The application itself comes first**, on its own subdomain, in a new
  *   tab: it is what all the other links are for.
- * - A **React** application gets **Plan & build** right after it: building
- *   it from a description (TODO-app-constructor AC4). The constructor builds
- *   React applications only.
+ * - The **screens modules add** for its framework follow it: Plan & build, the
+ *   bundled App Constructor module's, on a React application.
  * - An application that is **built** from a source tree (React, code) gets the
  *   loop an admin works in: edit the code, build. A build rewrites the
  *   generated client first, so there is no separate link for that. One with no
@@ -139,6 +141,9 @@ export function appNavLinks(
   > & { framework: { name: string } },
   agent: string | null,
   admin: AdminLocation,
+  /** The screens modules add (TODO-app-constructor AC12.4): an application's,
+   * for its framework, are links right after the application link. */
+  screens: ModuleScreenRef[] = [],
 ): AppNavLink[] {
   const base = `/applications/${encodeURIComponent(app.id)}`;
   const links: AppNavLink[] = [
@@ -150,14 +155,9 @@ export function appNavLinks(
       matches: [],
     },
   ];
-  if (constructible(app)) {
-    const construct = constructPath(app.id);
-    links.push({
-      id: "construct",
-      label: "Plan & build",
-      href: `#${construct}`,
-      matches: [construct],
-    });
+  for (const screen of applicationScreens(screens, app.framework.name)) {
+    const path = moduleScreenPath(app.id, screen.segment, screen.name);
+    links.push({ id: "module", label: screen.label, href: `#${path}`, matches: [path] });
   }
   // Any application with a directory of its own — built from it, or (with no
   // framework) serving it as it is — can have it opened in the IDE.

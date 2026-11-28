@@ -1,0 +1,4 @@
+# The built screen (`ui/` builds it; the release builds it too) and what npm installs.
+screen/
+node_modules/
+ui/node_modules/

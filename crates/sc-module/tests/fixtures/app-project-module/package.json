@@ -1,0 +1,8 @@
+{
+  "name": "app-project-module",
+  "version": "0.1.0",
+  "description": "A test module that reads applications, writes their project files and builds them (TODO-app-constructor AC12.3), and cleans up after a deleted one (AC12.5).",
+  "main": "index.js",
+  "license": "MIT",
+  "private": true
+}

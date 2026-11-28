@@ -817,6 +817,11 @@ const supportedKeys = new Set([
   "reads",
   // The content-security sources a module suggests (TODO-payments P1.4).
   "csp",
+  // Agent traits: tools an agent can be given (TODO-app-constructor AC12.1).
+  "agent_traits",
+  "on_application_deleted",
+  "application_settings",
+  "admin_screens",
   // Saltcorn UI (TODO "Saltcorn UI" §6): view patterns, and the scripts and
   // stylesheets a document rendering them wants.
   "viewtemplates",
@@ -1321,6 +1326,10 @@ function serviceContext(record, configuration) {
     roles: moduleRoles((plan) => askFor(callId, "roles", plan)),
     /** LLM credits (TODO-payments P6.4): `grant`, `revoke`, `balance`, `setThreshold`. */
     credits: moduleCredits((plan) => askFor(callId, "credits", plan)),
+    /** Agents and their runs (TODO-app-constructor AC12.2), as this module. */
+    agents: moduleAgents((plan) => askFor(callId, "agents", plan)),
+    /** Applications, their builds and projects (AC12.3), as this module. */
+    apps: moduleApps((plan) => askFor(callId, "apps", plan)),
     /** Run another trigger, as `trigger.run(name, payload)` does in a body. */
     runTrigger: (trigger, payload) =>
       askFor(callId, "trigger", {
@@ -1649,6 +1658,254 @@ async function runCheckStep({ module: name, step: stepName, params, context }) {
   return answer === undefined ? null : answer;
 }
 
+/** This system's `agent_traits` key (TODO-app-constructor AC12.1): traits an
+ * agent can be given, beside the built-in ones.
+ *
+ * ```js
+ * agent_traits: {
+ *   shop_notes: {
+ *     description: "Keeps notes on the shop's orders",
+ *     config_fields: [{ name: "tag", label: "Tag", type: "String" }],
+ *     prompt: "Write a note whenever you learn something about an order.",
+ *     tools: {
+ *       save_note: {
+ *         description: "Save one note",
+ *         parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+ *         mutates: true,
+ *         run: async (args, ctx) => ({ saved: true }),
+ *       },
+ *     },
+ *     session_header: async (ctx) => "Notes so far: …",
+ *   },
+ * }
+ * ```
+ *
+ * An object, or a function of the module's configuration returning one; a
+ * trait's `prompt` and `tools` may be functions of it too. The manifest carries
+ * everything but the functions: the server lists an agent's tools where it
+ * cannot wait on a worker, so they are data, read once at load. Each call of a
+ * tool, and each session header, is one `agent_trait_call`. */
+const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** `application_settings` (TODO-app-constructor AC12.9): fields the module adds
+ * to an application's settings form, each stored as the application's attribute
+ * of that name. `kind` is `text`, `switch` or `llm_provider` (a choice of the
+ * LLM providers); `frameworks` limits a field to applications on those
+ * frameworks. A list, or a function of the module's configuration answering
+ * one. */
+const SETTING_KINDS = ["text", "switch", "llm_provider"];
+const SETTING_NAME = /^[a-z][a-z0-9_]{0,63}$/;
+
+/** `admin_screens` (TODO-app-constructor AC12.4): screens the module adds to the
+ * admin. Each names the route of the module's that serves its script — an ES
+ * module exporting `mount(element, host)` — and is an application's
+ * (`scope: "application"`, a link in its sidebar, for the `frameworks` named)
+ * or the admin's (`scope: "admin"`, opened from the module's card). */
+const SCREEN_NAME = /^[a-z][a-z0-9-]{0,63}$/;
+
+function evalAdminScreens(plugin, routes) {
+  const issues = [];
+  const raw = plugin.admin_screens;
+  if (raw === undefined || raw === null) return { screens: [], issues };
+  if (!Array.isArray(raw)) {
+    return { screens: [], issues: ["its `admin_screens` should be a list of screens"] };
+  }
+  const screens = [];
+  for (const screen of raw) {
+    const name = screen && screen.name;
+    if (typeof name !== "string" || !SCREEN_NAME.test(name)) {
+      issues.push(
+        `an admin screen is named ${JSON.stringify(name)}; a name is lower-case letters, digits and -`,
+      );
+      continue;
+    }
+    const scope = screen.scope || "application";
+    if (scope !== "application" && scope !== "admin") {
+      issues.push(`the admin screen "${name}" is for ${scope}; a screen is an "application"'s or the "admin"'s`);
+      continue;
+    }
+    const script = screen.script;
+    if (typeof script !== "string" || !routes.some((r) => r.method === "GET" && r.url === script)) {
+      issues.push(
+        `the admin screen "${name}" cannot be shown: its script ${JSON.stringify(script)} is not one of the module's GET routes`,
+      );
+      continue;
+    }
+    screens.push({
+      name,
+      label: typeof screen.label === "string" ? screen.label : name,
+      script,
+      scope,
+      frameworks: Array.isArray(screen.frameworks) ? screen.frameworks.filter((f) => typeof f === "string") : [],
+    });
+  }
+  return { screens, issues };
+}
+
+async function evalApplicationSettings(plugin, configuration) {
+  const issues = [];
+  let raw = plugin.application_settings;
+  if (typeof raw === "function") {
+    try {
+      raw = await raw(configuration || {});
+    } catch (e) {
+      return { settings: [], issues: [`its application settings could not be built: ${e.message}`] };
+    }
+  }
+  if (raw === undefined || raw === null) return { settings: [], issues };
+  if (!Array.isArray(raw)) {
+    return { settings: [], issues: ["its `application_settings` should be a list of fields"] };
+  }
+  const settings = [];
+  for (const field of raw) {
+    const name = field && field.name;
+    if (typeof name !== "string" || !SETTING_NAME.test(name)) {
+      issues.push(
+        `an application setting is named ${JSON.stringify(name)}; a name is lower-case letters, digits and _`,
+      );
+      continue;
+    }
+    const kind = field.kind || "text";
+    if (!SETTING_KINDS.includes(kind)) {
+      issues.push(`the application setting "${name}" is a ${kind}; a setting is ${SETTING_KINDS.join(", ")}`);
+      continue;
+    }
+    settings.push({
+      name,
+      label: typeof field.label === "string" ? field.label : name,
+      description: typeof field.description === "string" ? field.description : "",
+      kind,
+      frameworks: Array.isArray(field.frameworks) ? field.frameworks.filter((f) => typeof f === "string") : [],
+    });
+  }
+  return { settings, issues };
+}
+
+async function evalAgentTraits(plugin, configuration) {
+  const exported = plugin.agent_traits;
+  let raw = {};
+  const issues = [];
+  const config = configuration || {};
+  if (typeof exported === "function") {
+    try {
+      raw = (await exported(config)) || {};
+    } catch (e) {
+      issues.push(`its agent traits could not be built: ${e.message}`);
+      raw = {};
+    }
+  } else if (exported && typeof exported === "object") {
+    raw = exported;
+  }
+  const traits = [];
+  // Per trait, the functions that answer `agent_trait_call`: they stay in
+  // this worker, while `traits` is the data the server is sent.
+  const handlers = {};
+  if (Array.isArray(raw)) {
+    issues.push("its `agent_traits` is a list; it should be an object of traits by name");
+    return { traits, handlers, issues };
+  }
+  for (const [name, impl] of Object.entries(raw)) {
+    if (!impl || typeof impl !== "object") {
+      issues.push(`the agent trait "${name}" is not an object`);
+      continue;
+    }
+    let built;
+    try {
+      const value = async (v) => (typeof v === "function" ? await v(config) : v);
+      built = {
+        configFields: (await value(impl.config_fields)) || [],
+        prompt: await value(impl.prompt),
+        tools: (await value(impl.tools)) || {},
+      };
+    } catch (e) {
+      issues.push(`the agent trait "${name}" could not be built: ${e.message}`);
+      continue;
+    }
+    if (Array.isArray(built.tools) || typeof built.tools !== "object") {
+      issues.push(`the tools of the agent trait "${name}" should be an object of tools by name`);
+      continue;
+    }
+    const tools = [];
+    const runs = {};
+    let broken = false;
+    for (const [tool, spec] of Object.entries(built.tools)) {
+      if (!TOOL_NAME.test(tool)) {
+        issues.push(
+          `the agent trait "${name}" has a tool "${tool}", and a tool's name is letters, digits, _ and - (at most 64)`,
+        );
+        broken = true;
+        continue;
+      }
+      if (!spec || typeof spec.run !== "function") {
+        issues.push(`the tool "${tool}" of the agent trait "${name}" has no run function`);
+        broken = true;
+        continue;
+      }
+      runs[tool] = spec.run;
+      tools.push({
+        name: tool,
+        description: typeof spec.description === "string" ? spec.description : "",
+        parameters:
+          spec.parameters && typeof spec.parameters === "object"
+            ? spec.parameters
+            : { type: "object", properties: {} },
+        mutates: spec.mutates === true,
+        // A trait's `admin_only` holds for each of its tools.
+        admin_only: spec.admin_only === true || impl.admin_only === true,
+      });
+    }
+    // A trait missing one of its tools would offer the model less than the
+    // prompt promises: it is left out whole, and the card says why.
+    if (broken) continue;
+    handlers[name] = {
+      runs,
+      sessionHeader: typeof impl.session_header === "function" ? impl.session_header : null,
+    };
+    traits.push({
+      name,
+      description: typeof impl.description === "string" ? impl.description : "",
+      config_fields: Array.isArray(built.configFields) ? built.configFields : [],
+      prompt: typeof built.prompt === "string" && built.prompt ? built.prompt : null,
+      tools,
+      session_header: typeof impl.session_header === "function",
+    });
+  }
+  return { traits, handlers, issues };
+}
+
+/** One call into a module's agent trait: a tool's `run(args, ctx)`, or its
+ * `session_header(ctx)`. `ctx.state` is the trait's state in this run, `null`
+ * until a call sets it; what the call leaves there is saved with the run. A
+ * `Table` read or write inside runs as the run's caller. */
+async function runAgentTrait({ module: name, trait: traitName, call, tool, args, context }) {
+  const entry = loaded.get(name);
+  if (!entry) throw new Error(`the module ${name} is not loaded in this host`);
+  const impl = entry.agentTraitHandlers && entry.agentTraitHandlers[traitName];
+  if (!impl) throw new Error(`the module ${name} has no agent trait ${traitName}`);
+  const info = context || {};
+  const ctx = {
+    module: name,
+    trait: traitName,
+    configuration: entry.configuration || {},
+    config: info.config || {},
+    run: info.run || {},
+    user: info.user || null,
+    brief: info.brief ?? null,
+    state: info.state ?? null,
+    /** The tables, as a code body's `db`, as the run's caller. */
+    db: globalThis.__scMakeDb(running.getStore() && running.getStore().call),
+  };
+  if (call === "session_header") {
+    if (!impl.sessionHeader) return { result: null, state: ctx.state };
+    const header = await impl.sessionHeader(ctx);
+    return { result: typeof header === "string" && header ? header : null, state: ctx.state };
+  }
+  const run = impl.runs[tool];
+  if (!run) throw new Error(`the agent trait ${traitName} of ${name} has no tool ${tool}`);
+  const answer = await run(args || {}, ctx);
+  return { result: answer === undefined ? null : answer, state: ctx.state ?? null };
+}
+
 /** This system's `csp` key (TODO-payments P1.4): content-security sources the
  * module suggests an application allow — a provider's embedded form, say.
  * Data: an object of `{ description, sources }` by name, or a function of the
@@ -1701,6 +1958,30 @@ async function evalCsp(plugin, configuration) {
  * `files`, `roles`, `credits`, `runTrigger` and `log`, every ask on this call. The answer is
  * `{ status, body, headers }`: a string or bytes body is sent as it is, and
  * anything else as JSON. */
+/** `on_application_deleted(app, ctx)` (TODO-app-constructor AC12.5): an
+ * application was deleted, and the module deletes what it keeps for it. `app`
+ * is the application as it was (`{ id, name, subdomain, … }`). It runs as the
+ * module over its own tables, as a webhook does, and `ctx` also has `agents`
+ * and `apps`, as a service's. */
+async function runApplicationDeleted({ module: name, app }) {
+  const entry = loaded.get(name);
+  if (!entry) throw new Error(`the module ${name} is not loaded in this host`);
+  const hook = entry.plugin && entry.plugin.on_application_deleted;
+  if (typeof hook !== "function") return null;
+  const store = running.getStore();
+  const callId = store && store.call;
+  const ctx = {
+    module: name,
+    configuration: entry.configuration || {},
+    db: globalThis.__scMakeDb(callId),
+    files: moduleFiles((plan) => askFor(callId, "module_files", plan)),
+    agents: moduleAgents((plan) => askFor(callId, "agents", plan)),
+    apps: moduleApps((plan) => askFor(callId, "apps", plan)),
+  };
+  await hook(app || {}, ctx);
+  return null;
+}
+
 async function runWebhook({ module: name, webhook: hookName, request }) {
   const entry = loaded.get(name);
   if (!entry) throw new Error(`the module ${name} is not loaded in this host`);
@@ -1961,6 +2242,15 @@ async function runRoute({ module: name, route: routeRef, params, request }) {
     isAuthenticated: () => !!user,
     getLocale: () => currentLocale(),
     __: translate,
+    /** What Saltcorn Feldspar adds to v1's request, as the route's caller:
+     * agents and their runs, and applications (TODO-app-constructor AC12.2,
+     * AC12.3). */
+    feldspar: {
+      /** The tables, as a code body's `db`, as the route's caller. */
+      db: globalThis.__scMakeDb(running.getStore() && running.getStore().call),
+      agents: moduleAgents((plan) => ask("agents", plan)),
+      apps: moduleApps((plan) => ask("apps", plan)),
+    },
   };
   const own = {
     req,
@@ -2969,6 +3259,19 @@ async function loadModule({ module: name, dir, configuration }) {
   } = await evalCheckSteps(plugin, configuration);
   issues.push(...checkStepIssues);
 
+  const { settings: applicationSettings, issues: applicationSettingIssues } =
+    await evalApplicationSettings(plugin, configuration);
+  issues.push(...applicationSettingIssues);
+  const { screens: adminScreens, issues: adminScreenIssues } = evalAdminScreens(plugin, routeList);
+  issues.push(...adminScreenIssues);
+
+  const {
+    traits: agentTraits,
+    handlers: agentTraitHandlers,
+    issues: agentTraitIssues,
+  } = await evalAgentTraits(plugin, configuration);
+  issues.push(...agentTraitIssues);
+
   const {
     frameworks,
     set: frameworkSet,
@@ -3004,6 +3307,7 @@ async function loadModule({ module: name, dir, configuration }) {
     webhooks: webhookSet,
     routes: routeSet,
     checkSteps: checkStepSet,
+    agentTraitHandlers,
     configuration: configuration || {},
   });
   // The registry may hold this module's previous patterns: rebuild it on the
@@ -3026,6 +3330,10 @@ async function loadModule({ module: name, dir, configuration }) {
     webhooks: webhookList,
     routes: routeList,
     check_steps: checkSteps,
+    agent_traits: agentTraits,
+    application_deleted: typeof plugin.on_application_deleted === "function",
+    application_settings: applicationSettings,
+    admin_screens: adminScreens,
     reads,
     csp,
     frameworks,
@@ -3227,6 +3535,123 @@ function moduleRoles(send) {
     /** The grant `ref` names, or `null`. */
     get(ref) {
       return send({ op: "get", ref });
+    },
+  };
+}
+
+/** `ctx.agents` of a service and `req.feldspar.agents` of a route
+ * (TODO-app-constructor AC12.2): the agents this module makes, and the runs it
+ * starts, follows and stops. A route's call asks as its caller; a service's
+ * continues what a caller started (`on_behalf_of`). Every run answer is
+ * `{ id, agent, state, error, description, conclusion, answer, user,
+ * authority, created_at, updated_at }` (`authority` is `console` or `user`); `state` is `running`, `waiting`, `done`,
+ * `failed` or `aborted`, and `driven` says whether this server is driving it. */
+function moduleAgents(send) {
+  const runId = (run) => (run && typeof run === "object" ? run.id : run);
+  return {
+    /** The agent called `name`, or `null`. */
+    get(name) {
+      return send({ op: "get", name });
+    },
+    /** Create the agent, or change one this module made: `{ name, provider,
+     * model, description, system_prompt, traits: [{ trait, config }],
+     * attributes }`. Answers it as saved. */
+    save(agent) {
+      return send({ op: "save", agent });
+    },
+    /** Delete the agent `name` if this module made it; answers `{ deleted }`. */
+    remove(name) {
+      return send({ op: "delete", name });
+    },
+    /** Start a run of `agent` with `prompt`, driven by the server; answers the
+     * run at once. `mode` is `act` (the default), `plan` or `explore`.
+     * `on_behalf_of` is the id of an earlier run this module started, whose
+     * caller the new run acts for — what a service starts with. */
+    start({ agent, prompt, description, mode, on_behalf_of } = {}) {
+      return send({
+        op: "start",
+        agent,
+        prompt,
+        description,
+        mode,
+        on_behalf_of: runId(on_behalf_of),
+      });
+    },
+    /** The run `id` as it stands. */
+    run(id) {
+      return send({ op: "run", id: runId(id) });
+    },
+    /** The run's messages: its transcript, as the run keeps it. */
+    messages(id) {
+      return send({ op: "messages", id: runId(id) });
+    },
+    /** Wait until the run has ended, or `timeout_ms` (at most a minute) has
+     * passed; answers it as it then stands. */
+    wait(id, { timeout_ms } = {}) {
+      return send({ op: "wait", id: runId(id), timeout_ms });
+    },
+    /** Stop the run, and every run it delegated to. */
+    abort(id) {
+      return send({ op: "abort", id: runId(id) });
+    },
+    /** Drive on a run that is live but that nothing drives (one a restart
+     * left behind). */
+    drive(id) {
+      return send({ op: "drive", id: runId(id) });
+    },
+    /** The LLM providers an agent can be given: `[{ name, default, model }]`,
+     * `model` the provider's default chat model, or `null` when it has none. */
+    providers() {
+      return send({ op: "providers" });
+    },
+  };
+}
+
+/** `ctx.apps` of a service and `req.feldspar.apps` of a route
+ * (TODO-app-constructor AC12.3): applications, their builds and the files of
+ * their projects. `app` is an application's id or its subdomain; a `path` is
+ * relative to the project's source directory. */
+function moduleApps(send) {
+  return {
+    /** The application, or `null`: `{ id, name, subdomain, description,
+     * framework, settings, builder_agent }`. */
+    get(app) {
+      return send({ op: "get", app });
+    },
+    /** Every application. */
+    list() {
+      return send({ op: "list" });
+    },
+    /** Start building the application, as its Build button does; answers the
+     * build at once: `{ state: "running" | "succeeded" | "failed", log, error,
+     * started_at, finished_at }`. */
+    build(app) {
+      return send({ op: "build", app });
+    },
+    /** The application's last build on this server, or `null`. */
+    lastBuild(app) {
+      return send({ op: "last_build", app });
+    },
+    /** Wait until the build has finished, or `timeout_ms` (at most a minute);
+     * answers it as it then stands. */
+    waitBuild(app, { timeout_ms } = {}) {
+      return send({ op: "wait_build", app, timeout_ms });
+    },
+    /** The file's text, or `null` when there is none. */
+    read(app, path) {
+      return send({ op: "read", app, path });
+    },
+    /** Write the file, making its directory. */
+    write(app, path, content) {
+      return send({ op: "write", app, path, content: String(content) });
+    },
+    /** The entries of a directory: `[{ name, path, dir }]`, or `[]` for none. */
+    files(app, path = "") {
+      return send({ op: "files", app, path });
+    },
+    /** Delete the file; answers `{ deleted }`. */
+    remove(app, path) {
+      return send({ op: "remove", app, path });
     },
   };
 }
@@ -5517,6 +5942,11 @@ async function handle(request) {
       if (pending) await pending;
       return await runWebhook(request);
     }
+    case "application_deleted": {
+      const pending = loading.get(request.module);
+      if (pending) await pending;
+      return await runApplicationDeleted(request);
+    }
     case "route_call": {
       const pending = loading.get(request.module);
       if (pending) await pending;
@@ -5526,6 +5956,11 @@ async function handle(request) {
       const pending = loading.get(request.module);
       if (pending) await pending;
       return await runCheckStep(request);
+    }
+    case "agent_trait_call": {
+      const pending = loading.get(request.module);
+      if (pending) await pending;
+      return await runAgentTrait(request);
     }
     // Saltcorn UI's view runtime (TODO "Saltcorn UI" §3). No module to wait
     // on: the runtime is not a module in `loaded`, and imports itself.

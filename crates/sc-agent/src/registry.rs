@@ -8,7 +8,7 @@
 //! [`config_spec`](crate::AgentTrait::config_spec) alone.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 
 use sc_error::{Error, Result};
 
@@ -30,7 +30,16 @@ pub struct AgentRegistry {
     /// built them (TODO §7b). Shared by every clone, so a runner made from any
     /// handle on this registry reaches them.
     view: Arc<ViewServices>,
+    /// The traits the installed modules supply (TODO-app-constructor AC12.1),
+    /// swapped whole on every module change by
+    /// [`install_module_traits`](Self::install_module_traits). Shared by every
+    /// clone, like `view`, so the registry a runner was handed at boot sees a
+    /// module installed afterwards. Looked up after the built-ins, which a
+    /// module can never shadow.
+    modules: Arc<RwLock<ModuleTraits>>,
 }
+
+type ModuleTraits = Arc<BTreeMap<String, Arc<dyn AgentTrait>>>;
 
 impl AgentRegistry {
     /// An empty registry.
@@ -78,9 +87,51 @@ impl AgentRegistry {
         Ok(())
     }
 
-    /// The trait registered under `name`, if any.
-    pub fn get(&self, name: &str) -> Option<&Arc<dyn AgentTrait>> {
-        self.traits.get(name)
+    /// Install the traits the modules supply, in place of the last set
+    /// (TODO-app-constructor AC12.1). Every clone of this registry sees the new
+    /// set at once; a run already holding one of the old traits keeps it.
+    ///
+    /// Each pair is the module and its trait. A trait whose name a built-in
+    /// or an earlier module already has is left out, and the answer is one
+    /// sentence per trait left out, for the module's card.
+    pub fn install_module_traits(&self, traits: Vec<(String, Arc<dyn AgentTrait>)>) -> Vec<String> {
+        let mut issues = Vec::new();
+        let mut set: BTreeMap<String, Arc<dyn AgentTrait>> = BTreeMap::new();
+        let mut owner: BTreeMap<String, String> = BTreeMap::new();
+        for (module, trait_) in traits {
+            let name = trait_.name().to_owned();
+            if self.traits.contains_key(&name) {
+                issues.push(format!(
+                    "{module}: the agent trait `{name}` is not available, because a built-in \
+                     trait has that name"
+                ));
+                continue;
+            }
+            if let Some(first) = owner.get(&name) {
+                issues.push(format!(
+                    "{module}: the agent trait `{name}` is not available, because {first} \
+                     supplies one with that name"
+                ));
+                continue;
+            }
+            owner.insert(name.clone(), module);
+            set.insert(name, trait_);
+        }
+        *self.modules.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(set);
+        issues
+    }
+
+    fn module_traits(&self) -> ModuleTraits {
+        Arc::clone(&self.modules.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// The trait registered under `name`, if any: a built-in, else one a
+    /// module supplies.
+    pub fn get(&self, name: &str) -> Option<Arc<dyn AgentTrait>> {
+        match self.traits.get(name) {
+            Some(builtin) => Some(Arc::clone(builtin)),
+            None => self.module_traits().get(name).cloned(),
+        }
     }
 
     /// The trait registered under `name`, or a configuration error naming it and
@@ -90,38 +141,46 @@ impl AgentRegistry {
     /// because an agent naming a trait nothing implements must be reported, never
     /// silently run without it. An agent quietly missing the tool it was built
     /// around would answer confidently from nothing.
-    pub fn require(&self, name: &str) -> Result<&Arc<dyn AgentTrait>> {
+    pub fn require(&self, name: &str) -> Result<Arc<dyn AgentTrait>> {
         self.get(name).ok_or_else(|| {
+            let names = self.names();
             Error::config(format!(
                 "unknown agent trait `{name}`; the registered traits are {}",
-                if self.traits.is_empty() {
+                if names.is_empty() {
                     "(none)".to_owned()
                 } else {
-                    self.names().join(", ")
+                    names.join(", ")
                 }
             ))
         })
     }
 
     /// Every registered trait's name, in order — what the admin UI lists.
-    pub fn names(&self) -> Vec<&str> {
-        self.traits.keys().map(String::as_str).collect()
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.traits.keys().cloned().collect();
+        names.extend(self.module_traits().keys().cloned());
+        names.sort();
+        names
     }
 
     /// Every registered trait, in name order — what the admin API's `agentTraits`
     /// projects into names, descriptions and config specs.
-    pub fn all(&self) -> impl Iterator<Item = &Arc<dyn AgentTrait>> {
-        self.traits.values()
+    pub fn all(&self) -> Vec<Arc<dyn AgentTrait>> {
+        let modules = self.module_traits();
+        let mut all: Vec<(&String, &Arc<dyn AgentTrait>)> =
+            self.traits.iter().chain(modules.iter()).collect();
+        all.sort_by(|a, b| a.0.cmp(b.0));
+        all.into_iter().map(|(_, t)| Arc::clone(t)).collect()
     }
 
     /// How many traits are registered.
     pub fn len(&self) -> usize {
-        self.traits.len()
+        self.traits.len() + self.module_traits().len()
     }
 
     /// Whether nothing is registered.
     pub fn is_empty(&self) -> bool {
-        self.traits.is_empty()
+        self.len() == 0
     }
 }
 
@@ -184,7 +243,7 @@ mod tests {
         assert_eq!(reg.require("run_trigger").unwrap().name(), "run_trigger");
         assert!(reg.get("query_table").is_some());
         assert_eq!(reg.names(), vec!["query_table", "run_trigger"]);
-        assert_eq!(reg.all().count(), 2);
+        assert_eq!(reg.all().len(), 2);
     }
 
     #[test]

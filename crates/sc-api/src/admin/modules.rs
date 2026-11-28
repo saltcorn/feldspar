@@ -279,6 +279,40 @@ fn module_schema() -> TypeSchema {
         // what one *asks for* is its configuration wizard, a call per step on
         // `viewConfigStep`.
         StructField::new("view_patterns", TypeSchema::array(TypeSchema::text())),
+        // The agent traits it supplies (TODO-app-constructor AC12.1) — names
+        // only: what one asks for is on `agentTraits`, beside the built-ins.
+        StructField::new("agent_traits", TypeSchema::array(TypeSchema::text())),
+        // The fields it adds to an application's settings form
+        // (TODO-app-constructor AC12.9), each stored as the application's
+        // attribute `name`. `kind` is `text`, `switch` or `llm_provider`;
+        // `frameworks` limits it to applications on those (none: every one).
+        StructField::new(
+            "application_settings",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("name", TypeSchema::text()),
+                StructField::new("label", TypeSchema::text()),
+                StructField::new("description", TypeSchema::text()),
+                StructField::new("kind", TypeSchema::text()),
+                StructField::new("frameworks", TypeSchema::array(TypeSchema::text())),
+            ])),
+        ),
+        // The screens it adds to the admin (TODO-app-constructor AC12.4): the
+        // SPA imports `script_url` and calls its `mount(element, host)`, at
+        // `#/applications/<id>/m/<segment>/<name>` for an application's screen
+        // (`scope: "application"`, in the sidebar of applications on
+        // `frameworks`, or every one) and `#/m/<segment>/<name>` for the
+        // admin's.
+        StructField::new(
+            "admin_screens",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("name", TypeSchema::text()),
+                StructField::new("label", TypeSchema::text()),
+                StructField::new("scope", TypeSchema::text()),
+                StructField::new("frameworks", TypeSchema::array(TypeSchema::text())),
+                StructField::new("segment", TypeSchema::text()),
+                StructField::new("script_url", TypeSchema::text()),
+            ])),
+        ),
         // The content-security sources it suggests (TODO-payments P1.4): an
         // application allows one when its admin puts the `key` in the
         // application's `csp_sources` attribute. `sources` is directive → hosts.

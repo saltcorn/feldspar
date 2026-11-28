@@ -257,6 +257,7 @@ export function moduleStatus(module: Module): {
   const models = module.model_providers.length;
   const streams = module.stream_providers.length;
   const patterns = module.view_patterns.length;
+  const traits = module.agent_traits.length;
   if (actions > 0) parts.push(actions === 1 ? "1 action" : `${actions} actions`);
   if (providers > 0) {
     parts.push(providers === 1 ? "1 table provider" : `${providers} table providers`);
@@ -270,6 +271,7 @@ export function moduleStatus(module: Module): {
   if (patterns > 0) {
     parts.push(patterns === 1 ? "1 view pattern" : `${patterns} view patterns`);
   }
+  if (traits > 0) parts.push(traits === 1 ? "1 agent trait" : `${traits} agent traits`);
   return {
     label: parts.length === 0 ? "Loaded" : parts.join(", "),
     tone: "green",
@@ -292,6 +294,7 @@ export function suppliedSummary(module: Module): string {
     [module.model_providers.length, "model provider", "model providers"],
     [module.stream_providers.length, "stream provider", "stream providers"],
     [module.view_patterns.length, "view pattern", "view patterns"],
+    [module.agent_traits.length, "agent trait", "agent traits"],
   ];
   const parts = counts
     .filter(([count]) => count > 0)
@@ -394,10 +397,13 @@ export const NO_SANDBOX =
 export const PYTHON_RELOAD =
   "Reloading re-imports the package where it can. A distribution with a compiled extension in it, and any version change, takes full effect only when this server restarts.";
 
-/** The five things a module can be granted. The keys are the server's. The
+/** The seven things a module can be granted. The keys are the server's. The
  * first four are what its worker may reach; `roles` is the most privileged role
- * it may grant users (TODO-payments P3.3), checked by the server when it asks. */
-export type PermissionKind = "net" | "read" | "write" | "env" | "roles";
+ * it may grant users (TODO-payments P3.3), `agents` what it may do with agents
+ * (`run` or `console`, TODO-app-constructor AC12.2) and `apps` with
+ * applications (`read` or `build`, AC12.3), all checked by the server when it
+ * asks. */
+export type PermissionKind = "net" | "read" | "write" | "env" | "roles" | "agents" | "apps";
 
 /** A module's permission set as the API sends it. */
 export type ModulePermissionSet = Record<PermissionKind, string[]>;
@@ -409,6 +415,8 @@ export const CLOSED_PERMISSIONS: ModulePermissionSet = {
   write: [],
   env: [],
   roles: [],
+  agents: [],
+  apps: [],
 };
 
 /** One kind, as the form asks for it. */
@@ -452,6 +460,18 @@ export const PERMISSION_KINDS: PermissionKindSpec[] = [
     help: "The most privileged role it may give users, as a number: 70 lets it grant roles 70 to 99, for as long as a subscription lasts, say. Blank grants none. No module may grant the admin role.",
     placeholder: "70",
   },
+  {
+    key: "agents",
+    label: "Agents",
+    help: "run lets it make agents and start their runs, each acting for whoever asked. console also gives a run an administrator starts the server's own tools (the shell, the project's scripts), which an agent that builds an application needs. Blank grants neither.",
+    placeholder: "run",
+  },
+  {
+    key: "apps",
+    label: "Applications",
+    help: "read lets it read applications: their names, frameworks, settings and builds. build also lets it change the files of an application's project and build it, which runs the project's own scripts. Blank grants neither.",
+    placeholder: "read",
+  },
 ];
 
 /** A module's stored permissions, narrowed from the wire's opaque JSON.
@@ -471,7 +491,7 @@ export function modulePermissions(module: Module): ModulePermissionSet {
 export function permissionSet(raw: unknown): ModulePermissionSet {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return CLOSED_PERMISSIONS;
   const source = raw as Record<string, unknown>;
-  const set: ModulePermissionSet = { net: [], read: [], write: [], env: [], roles: [] };
+  const set: ModulePermissionSet = { net: [], read: [], write: [], env: [], roles: [], agents: [], apps: [] };
   for (const { key } of PERMISSION_KINDS) {
     const list = source[key];
     if (Array.isArray(list)) {
@@ -510,6 +530,18 @@ export function permissionSummary(set: ModulePermissionSet): string {
   if (set.write.length > 0) parts.push(`writes ${set.write.join(", ")}`);
   if (set.env.length > 0) parts.push(`reads ${set.env.join(", ")}`);
   if ((set.roles ?? []).length > 0) parts.push(`grants users roles ${set.roles[0]} to 99`);
+  if ((set.agents ?? []).length > 0) {
+    parts.push(
+      set.agents[0] === "console"
+        ? "makes and runs agents, with the server's own tools when an admin starts them"
+        : "makes and runs agents",
+    );
+  }
+  if ((set.apps ?? []).length > 0) {
+    parts.push(
+      set.apps[0] === "build" ? "reads, changes and builds applications' projects" : "reads applications",
+    );
+  }
   return `Reaches only these: ${parts.join("; ")}.`;
 }
 
@@ -556,6 +588,12 @@ export function permissionProblem(kind: PermissionKind, entry: string): string |
     if (role >= 100) return `Role ${role} cannot be granted: the public role is everybody's already.`;
     return null;
   }
+  if (kind === "agents") {
+    return entry === "run" || entry === "console" ? null : `${entry} is not run or console.`;
+  }
+  if (kind === "apps") {
+    return entry === "read" || entry === "build" ? null : `${entry} is not read or build.`;
+  }
   return entry.startsWith("/")
     ? null
     : `${entry} is not an absolute path, so it would mean a different directory depending on where the server was started.`;
@@ -575,6 +613,8 @@ export function permissionProblems(set: ModulePermissionSet): string[] {
       "Roles it may grant is one role, the most privileged; it may then grant every less privileged one too.",
     );
   }
+  if (set.agents.length > 1) problems.push("Agents is one entry: run or console.");
+  if (set.apps.length > 1) problems.push("Applications is one entry: read or build.");
   return problems;
 }
 

@@ -267,40 +267,30 @@ async fn a_triggered_run_has_no_admin_copilot_and_builds_nothing() -> Result<()>
 }
 
 #[tokio::test]
-async fn the_constructors_tools_are_neither_offered_to_nor_run_for_a_run_of_untrusted_origin()
--> Result<()> {
-    // Its plan tools decide what the runner later builds with the admin's
-    // rights, so a prompt somebody else wrote must not reach them either.
+async fn the_data_model_tools_are_an_administrators_at_the_console_only() -> Result<()> {
+    // The schema and the application's queries are the application itself
+    // (TODO-app-constructor AC13.2): a prompt somebody else wrote reaches none.
     let env = Env::new().await?;
-    let cfg = sc_agent_builtins::app_constructor_config("shop");
-    let admin = offered_to(&env, "app_constructor", &cfg, &RunCaller::system());
-    for tool in [
-        sc_agent_builtins::TOOL_SAVE_PHASES,
-        sc_agent_builtins::TOOL_SAVE_TASKS,
-        sc_api::mcp::TOOL_EDIT,
-    ] {
-        assert!(
-            admin.iter().any(|t| t == tool),
-            "{tool} for an admin: {admin:?}"
-        );
+    let cfg = Attrs::new();
+    let admin = offered_to(&env, "data_model", &cfg, &RunCaller::system());
+    for tool in sc_agent_builtins::DATA_MODEL_TOOLS {
+        assert!(admin.iter().any(|t| t == tool), "{tool} for an admin: {admin:?}");
     }
+    assert_eq!(admin.len(), sc_agent_builtins::DATA_MODEL_TOOLS.len(), "{admin:?}");
     for caller in [RunCaller::triggered(), exposed_admin()] {
-        let offered = offered_to(&env, "app_constructor", &cfg, &caller);
+        let offered = offered_to(&env, "data_model", &cfg, &caller);
         assert!(offered.is_empty(), "offered {offered:?}");
         let err = env
             .call_tool(
-                "app_constructor",
+                "data_model",
                 &cfg,
-                sc_agent_builtins::TOOL_SAVE_PHASES,
-                json!({"phases": []}),
+                sc_api::mcp::TOOL_EDIT,
+                json!({ "operations": [] }),
                 &caller,
             )
             .await
             .expect_err("refused");
-        assert!(
-            err.to_string().contains("only for an admin's own runs"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("only for an administrator's own runs"), "{err}");
     }
     Ok(())
 }

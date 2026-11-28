@@ -69,8 +69,8 @@ import { ApplicationViews } from "./screens/ApplicationViews";
 import { ChecklistDetail } from "./screens/ChecklistDetail";
 import { ChecklistRun } from "./screens/ChecklistRun";
 import { Checklists } from "./screens/Checklists";
-import { Construct } from "./screens/Construct";
-import { constructRoute } from "./construction";
+import { ModuleScreen } from "./screens/ModuleScreen";
+import { moduleScreenRoute } from "./moduleScreens";
 import { PageProperties } from "./screens/PageProperties";
 import { ViewEditor } from "./screens/ViewEditor";
 import { DbConnections } from "./screens/DbConnections";
@@ -858,19 +858,11 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
       />
     );
   }
-  // Plan & build (TODO-app-constructor AC4): the application's construction.
-  // Its Phases tab, and one phase's own page, are routes under it.
-  const constructAt = constructRoute(path);
-  if (constructAt) {
-    return (
-      <Construct
-        key={path}
-        appId={constructAt.appId}
-        tab={constructAt.tab}
-        phaseId={constructAt.phaseId}
-        feedbackPhase={constructAt.feedbackPhase}
-      />
-    );
+  // A screen a module adds (TODO-app-constructor AC12.4), an application's or
+  // the admin's.
+  const moduleScreenAt = moduleScreenRoute(path);
+  if (moduleScreenAt) {
+    return <ModuleScreen route={moduleScreenAt} />;
   }
   // An application's checklists (TODO-checklists C1.16) live under its own
   // route, so the sidebar keeps it current; the data-only ones are below.

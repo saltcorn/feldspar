@@ -1,0 +1,26 @@
+{
+  "name": "@feldspar/app-constructor",
+  "language": "javascript",
+  "title": "App Constructor (Plan & build)",
+  "description": "Describe an application in a few paragraphs, and let agents plan it in phases and build it task by task, with you reviewing each step.",
+  "supplies": [
+    "Eight tables: ac_constructions (one per application, with its specification and where its run is), ac_phases and ac_tasks (the plan and its tasks), ac_mockups, ac_questions and ac_feedback (what the construction gathered from you on the way), ac_runs (the agent runs it started) and ac_errors (every error it met).",
+    "The Plan & build screen on each React application, an agent trait `constructor` with the construction agent's planning tools, and a service that runs each construction's tasks with the construction agent and the application's builder agent."
+  ],
+  "installs": [],
+  "permissions": {
+    "agents": ["console"],
+    "apps": ["build"]
+  },
+  "tables": [
+    "ac_constructions",
+    "ac_phases",
+    "ac_feedback",
+    "ac_tasks",
+    "ac_mockups",
+    "ac_questions",
+    "ac_runs",
+    "ac_errors"
+  ],
+  "services": ["runner"]
+}

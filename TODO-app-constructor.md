@@ -298,6 +298,62 @@ can have one fixed by a fix task. Waits for the system error log, `_fd_errors`
   `error` column on `_fd_construction_feedback`); the agent plans fix tasks, the admin reviews
   and runs them. An error that comes back after its fix ran reopens.
 
+## AC12 — What a module needs to be the constructor
+
+The constructor is to move out of core into a bundled module (`plugins/app-constructor`), as
+React Native is one. A module cannot do that today: it supplies actions, functions, providers,
+frameworks, view patterns, tables, services, webhooks and routes, and the constructor needs
+agent tools, agent runs, builds, an admin screen and the application's lifecycle. These are the
+extension points, each useful to other modules too; the port itself comes after them, and drops
+the existing constructions (no migration of `_fd_construction*`).
+
+- [x] AC12.1 Agent traits from modules: a module exports `agent_traits`, each with a
+  description, `config_fields`, a static `prompt`, its `tools` (name, description, JSON
+  schema, as data, since the tool list is read where nothing can wait on a worker), `call`
+  and optionally `session_header`. They join the agent registry beside the built-ins, rebuilt
+  on every module change; a name a built-in or another module has is an issue on the card. A
+  tool call runs as the run's caller: `Table` reads and writes with its authority.
+- [x] AC12.2 Agent runs from modules: create or update an agent, start a run of it with a
+  prompt, read how it stands and how it ended, abort it, drive a stopped run on by its id.
+- [x] AC12.3 An application's builds and project files from modules: the result of its last
+  build, start one, read and write files in its project.
+- [x] AC12.4 Admin screens from modules: a page the module serves, shown in the admin, and an
+  entry in an application's sidebar for the frameworks it names.
+- [x] AC12.5 An application-deleted hook, so a module deletes what it keeps per application.
+- [x] AC12.6 Atomic writes from modules: a batch of inserts, updates and deletes on the
+  module's tables applied in one transaction, all or nothing (the constructor replaces a plan's
+  phases and tasks together).
+- [x] AC12.7 Module agent tools held back by caller: a trait or tool marked for admins only is
+  withheld from a run whose caller is not an admin, and from a run a trigger or an
+  application's page started, and refused if called anyway.
+- [x] AC12.8 Waiting on runs, and work after a restart: a module waits for a run to end (or
+  for a time limit) and reads how it ended; a module's service is how it picks up its own
+  unfinished work when the server starts.
+- [x] AC12.9 Applications from modules: read an application (name, subdomain, description,
+  framework, settings) and the name of its builder agent; list the LLM providers an agent can
+  use, and which is the default; a module adds fields to an application's settings form.
+
+## AC13 — The constructor as a bundled module
+
+The constructor in JavaScript, in `plugins/app-constructor` (`@feldspar/app-constructor`), on
+the extension points of AC12. The Rust constructor keeps working until the module replaces it,
+then it is removed. Existing constructions are dropped, not migrated.
+
+- [x] AC13.1 The module and its tables: constructions, phases, tasks, runs, questions,
+  mockups, feedback and errors, with the store's rules (positions, a phase's status from its
+  tasks, what may be edited when), tested in JS.
+- [x] AC13.2 The planning tools as the module's agent trait, for admins only.
+- [x] AC13.3 The admin API as module routes: create, specification, plan, questions, mockups,
+  feedback, phases, run, stop, retry, skip, plan a phase's tasks, delete.
+- [x] AC13.4 The runner as the module's service: plans each phase's tasks when it reaches
+  it, runs them one by one with the construction agent or the application's builder agent,
+  and picks up a running construction after a restart.
+- [x] AC13.5 The Plan & build screen served by the module, in the admin and in each React
+  application's sidebar.
+- [x] AC13.6 The Rust constructor removed: `sc-construct`, its endpoints, runner, agent trait,
+  CLI commands and admin screen. It never shipped, so there is no migration: a development
+  database drops the `_fd_construction*` tables and the `app_constructor` agents by hand.
+
 ## Later (not planned yet)
 
 From v1, once AC1–AC5 work:

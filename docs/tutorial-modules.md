@@ -701,6 +701,204 @@ https://js.provider.example`). Only `https://` and `wss://` hosts are accepted, 
 that load or reach something; a keyword such as `'unsafe-inline'` is refused, with an issue on the
 card. `csp` can also be a function of the module's configuration.
 
+## Step 12 — Giving agents tools
+
+A module can supply **agent traits**: tools an agent is given, beside the built-in ones. A trait
+appears in the agent form's trait picker once the module is installed:
+
+```js
+const Table = require("@saltcorn/data/models/table");
+
+module.exports = {
+  agent_traits: {
+    notes: {
+      description: "Keeps notes",
+      config_fields: [{ name: "tag", label: "Tag", type: "String" }],
+      prompt: "Write a note whenever you learn something worth keeping.",
+      tools: {
+        save_note: {
+          description: "Save one note",
+          parameters: {
+            type: "object",
+            properties: { text: { type: "string" } },
+            required: ["text"],
+          },
+          mutates: true,
+          run: async (args, ctx) => {
+            await Table.findOne("notes").insertRow({ text: `${ctx.config.tag || ""}${args.text}` });
+            return { saved: true };
+          },
+        },
+      },
+      session_header: async (ctx) => `You are helping with: ${ctx.brief}`,
+    },
+  },
+};
+```
+
+The tools and the prompt are read once, when the module loads, so they can depend on the module's
+settings but not on the agent's. `config_fields` is what an agent sets when it is given the trait,
+and a tool reads it as `ctx.config`. A tool that changes something says `mutates: true`; an agent
+that is only planning or exploring is not offered it.
+
+A tool runs **as the person the agent is working for**. Its `Table` reads and writes are theirs,
+with their role and their ownership rules, so a tool cannot do more than the person chatting may.
+`ctx.run` is the run (`id`, `agent`, `mode`) and `ctx.user` the person. `ctx.state` is kept for
+the rest of the run: set it in one call and read it in the next. What `run` returns is what the
+model reads, and a throw is read as the tool's error, which the model can act on.
+
+A tool that only an administrator should have says `admin_only: true`, and so can a whole trait.
+Such a tool is offered only to an administrator working at the admin console. It is withheld
+from everyone else, and from a run a trigger or an application's page started, because someone
+else wrote that run's prompt. It is refused if called anyway.
+
+A trait whose name is already taken, by a built-in or by another module, is not installed, and the
+server says so. A tool with no `run` costs its whole trait, which is an issue on the card. Removing
+the module takes the trait away, and an agent that still names it says so instead of running
+without it.
+
+## Step 13 — Making agents and running them
+
+A module can make agents and run them: start a run with a prompt, wait for it, read how it
+ended, and stop it. That needs the **Agents** permission, which an admin grants on the card:
+
+- `run`: the module makes agents and starts their runs, and each run acts for whoever asked.
+- `console`: the same, and a run an administrator starts gets the admin console's tools too (the
+  shell, the project's scripts). Grant it only to a module you trust that far.
+
+A route reaches it as `req.feldspar.agents`, and acts for the signed-in person calling it:
+
+```js
+module.exports = {
+  routes: [
+    {
+      method: "post",
+      url: "/summarise",
+      callback: async (req, res) => {
+        const agents = req.feldspar.agents;
+        if (!(await agents.get("summariser"))) {
+          await agents.save({ name: "summariser", provider: "house", system_prompt: "Summarise." });
+        }
+        const run = await agents.start({ agent: "summariser", prompt: req.body.text });
+        const ended = await agents.wait(run.id, { timeout_ms: 30000 });
+        res.json({ state: ended.state, summary: ended.answer });
+      },
+    },
+  ],
+};
+```
+
+A run is `{ id, agent, state, live, driven, conclusion, answer, error, … }`. `wait` returns
+after at most a minute, ended or not, so long work waits in a loop. `messages(id)` is the run's
+transcript, `abort(id)` stops it, and `remove(name)` deletes an agent the module made. A module
+may change and delete only the agents it made, and read only the runs it started. Making and
+changing agents takes an administrator.
+
+A service reaches the same thing as `ctx.agents`, but it has no caller of its own, so it starts
+a run **on behalf of** an earlier one the module started: `ctx.agents.start({ agent, prompt,
+on_behalf_of: earlier.id })` acts for the person that run acted for. That is how a module keeps
+working for the admin who started something, in the background.
+
+The server drives the runs. A restart leaves a run `live` with `driven: false`, and a service
+picks it up again with `ctx.agents.drive(id)`.
+
+## Step 14 — Working on an application's project
+
+With the **Applications** permission a module reads applications, and with `build` it also
+changes their projects and builds them (a build runs the project's own scripts, so grant `build`
+only to a module you trust that far). A route reaches it as `req.feldspar.apps`, a service as
+`ctx.apps`, and at a route only an administrator's call is answered:
+
+```js
+const apps = req.feldspar.apps;
+const app = await apps.get("crm"); // by subdomain or id; null if there is none
+await apps.write("crm", "mockups/home.html", "<p>Home</p>");
+const html = await apps.read("crm", "mockups/home.html"); // null when the file is not there
+const entries = await apps.files("crm", "mockups"); // [{ name, path, dir }]
+await apps.remove("crm", "mockups/home.html");
+await apps.build("crm");
+const build = await apps.waitBuild("crm", { timeout_ms: 60000 });
+// build.state is "running", "succeeded" or "failed"; build.error says why a build failed
+```
+
+`app` carries `id`, `name`, `subdomain`, `description`, `framework`, `settings` and
+`builder_agent`, the name of the agent that builds its code. A path is relative to the project's
+source directory and may not leave it. A build is the one the Build button starts. `lastBuild`
+reads the last one, which the server keeps until it restarts.
+
+A module can add fields to an application's settings form. Each is stored as one of the
+application's attributes, and `apps.get(...)` reads it back in `settings`:
+
+```js
+application_settings: [
+  { name: "notes_provider", label: "Notes provider", kind: "llm_provider", frameworks: ["react"] },
+  { name: "notes_on", label: "Keep notes", kind: "switch" },
+],
+```
+
+`kind` is `text`, `switch` or `llm_provider` (a choice of the LLM providers; `agents.providers()`
+lists them with their default chat model). `frameworks` limits a field to applications on
+those frameworks. The fields appear on the application's Development settings.
+
+A module that keeps something for each application cleans it up when the application is
+deleted, with a hook:
+
+```js
+on_application_deleted: async (app, ctx) => {
+  await ctx.db.app_notes.where({ application: app.id }).delete();
+},
+```
+
+It runs as the module, over its own tables, with `ctx.agents` and `ctx.apps` as a service has
+them. `app` is the application as it was: `id`, `name`, `subdomain`, `description` and
+`framework`.
+
+## Step 15 — A screen in the admin
+
+A module can add a screen to the admin. The screen is a script that one of the module's routes
+serves: an ES module exporting `mount(element, host)`. The admin imports it and renders it in its
+own page:
+
+```js
+module.exports = {
+  routes: [
+    {
+      method: "get",
+      url: "/ui.js",
+      callback: (req, res) => {
+        res.set("content-type", "text/javascript; charset=utf-8");
+        res.send(require("./dist/ui.cjs")); // module.exports = "<the script>"
+      },
+    },
+  ],
+  admin_screens: [
+    { name: "notes", label: "Notes", script: "/ui.js", scope: "application", frameworks: ["react"] },
+  ],
+};
+```
+
+The route `require`s the script rather than reading it with `fs`. A module may `require` its own
+package's files, but `fs` reads only the paths its `read` permission lists. So build the script
+into a CommonJS file whose export is its text: `module.exports = "export function mount…"`.
+The App Constructor's `ui/vite.config.ts` does this with a small Vite plugin.
+
+An `application` screen is a link in the sidebar of the applications on `frameworks` (or every
+application, when it names none). An `admin` screen is opened from the module's card on the
+Modules tab. The script is built however you like. It mounts into `element`, and `host` gives it:
+
+- `host.app`: the application, for an application's screen;
+- `host.path`: what follows the screen's name in the URL (`""`, `/phases/2`);
+- `host.href(path)` and `host.navigate(path)`: a link to, and a move to, a path within the screen;
+- `host.json(path, init)`: a request to one of the module's routes, with the admin's session and
+  the CSRF header, answering the JSON body (a route's `{ error }` is thrown).
+
+The routes behind a screen read and write tables with `req.feldspar.db`, the same chain a code
+body's `db` is (`req.feldspar.db.notes.where({ app: id }).rows()`), as the signed-in caller. An
+agent tool has it as `ctx.db`, as the run's caller.
+
+`mount` may return a function that unmounts it, or `{ unmount, update }`. `update(path)` is
+called when the URL moves within the screen, so the screen keeps its state.
+
 ## Developing a module against a running server
 
 Point the **local directory** source at your checkout. The package is copied into the modules
@@ -756,7 +954,8 @@ ordinary tables from then on, and yours to drop.
 ## What this is not, yet
 
 - **Only actions, functions, table providers, view patterns, tables, services, webhooks, tables
-  read through its settings and content-security suggestions.** Types, field
+  read through its settings, content-security suggestions, agent traits, agents and their
+  runs, and applications' projects and builds.** Types, field
   views and event types are named in the tab and not loaded. Only JavaScript modules have
   `files` (TODO-imap M6); a Python module cannot declare tables yet, so it has no file area.
 - **Not only JavaScript any more.** The Type dropdown now offers four pairs, because a module can

@@ -158,35 +158,6 @@ pub const DELETE_DATABASE_CONNECTION: HandlerId<AdminOnly> =
     HandlerId::new("deleteDatabaseConnection");
 pub const TEST_DATABASE_CONNECTION: HandlerId<AdminOnly> = HandlerId::new("testDatabaseConnection");
 
-// --- `admin::constructions` ---
-
-pub const LIST_CONSTRUCTIONS: HandlerId<AdminOnly> = HandlerId::new("listConstructions");
-pub const GET_CONSTRUCTION: HandlerId<AdminOnly> = HandlerId::new("getConstruction");
-pub const CREATE_CONSTRUCTION: HandlerId<AdminOnly> = HandlerId::new("createConstruction");
-pub const SAVE_CONSTRUCTION_SPECIFICATION: HandlerId<AdminOnly> =
-    HandlerId::new("saveConstructionSpecification");
-pub const PLAN_CONSTRUCTION: HandlerId<AdminOnly> = HandlerId::new("planConstruction");
-pub const PROPOSE_MOCKUPS: HandlerId<AdminOnly> = HandlerId::new("proposeMockups");
-pub const CHOOSE_MOCKUP: HandlerId<AdminOnly> = HandlerId::new("chooseMockup");
-pub const GET_MOCKUP_SCREENS: HandlerId<AdminOnly> = HandlerId::new("getMockupScreens");
-pub const ASK_CONSTRUCTION_QUESTIONS: HandlerId<AdminOnly> =
-    HandlerId::new("askConstructionQuestions");
-pub const ANSWER_CONSTRUCTION_QUESTIONS: HandlerId<AdminOnly> =
-    HandlerId::new("answerConstructionQuestions");
-pub const GIVE_CONSTRUCTION_FEEDBACK: HandlerId<AdminOnly> =
-    HandlerId::new("giveConstructionFeedback");
-pub const PLAN_CONSTRUCTION_FEEDBACK: HandlerId<AdminOnly> =
-    HandlerId::new("planConstructionFeedback");
-pub const DELETE_CONSTRUCTION_FEEDBACK: HandlerId<AdminOnly> =
-    HandlerId::new("deleteConstructionFeedback");
-pub const SAVE_PHASES: HandlerId<AdminOnly> = HandlerId::new("savePhases");
-pub const RUN_CONSTRUCTION: HandlerId<AdminOnly> = HandlerId::new("runConstruction");
-pub const PLAN_PHASE_TASKS: HandlerId<AdminOnly> = HandlerId::new("planPhaseTasks");
-pub const STOP_CONSTRUCTION: HandlerId<AdminOnly> = HandlerId::new("stopConstruction");
-pub const RETRY_TASK: HandlerId<AdminOnly> = HandlerId::new("retryTask");
-pub const SKIP_TASK: HandlerId<AdminOnly> = HandlerId::new("skipTask");
-pub const DELETE_CONSTRUCTION: HandlerId<AdminOnly> = HandlerId::new("deleteConstruction");
-
 // --- `admin::entities` ---
 
 pub const LIST_ENTITIES: HandlerId<AdminOnly> = HandlerId::new("listEntities");

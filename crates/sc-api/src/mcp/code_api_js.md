@@ -278,6 +278,17 @@ There is **no** `db.t.update(id, values)`, `db.t.delete(id)`, `db.t.find()`,
 argument (the new values) and `.delete()` takes none; without a `.where()` both throw rather
 than touch every row. To read one row by id, use `db.t.get(id)`.
 
+Writes that must land together — all of them or none — go in `db.atomically(fn)`. The function
+lists them and must not be `async`; they are made in one transaction once it returns, and the
+answer is each write's own answer, in order. A read inside it is refused (read before or after):
+
+```js
+const [order] = await db.atomically((db) => {
+  db.orders.insert({ customer: 3, total: 120 });
+  db.stock.where({ item: 9 }).update({ reserved: true });
+});
+```
+
 Conditions (`.where()`, `.having()`): an object — `{ status: "open", pages: { gte: 100 },
 id: { in: [1, 2] }, due: { gte: start, lt: end } }`, operators `eq ne gt gte lt lte in nin like
 ilike is_null` (several on one field must all hold, so two make a range), nested with

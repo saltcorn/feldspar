@@ -56,10 +56,10 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 {
                     obj.insert("agent".to_owned(), json!(name));
                 }
-                // Its construction too, with the agent made for it: a
-                // construction exists to build this application.
-                if let Some(app) = &existing {
-                    crate::constructions::delete_construction_of(&catalog, app).await?;
+                // And what the modules keep for it (TODO-app-constructor AC12.5),
+                // a construction of the App Constructor module among them.
+                if let (Some(app), Some(modules)) = (&existing, apps.modules()) {
+                    modules.application_deleted(app).await;
                 }
                 Ok(HandlerResponse::ok(body))
             }

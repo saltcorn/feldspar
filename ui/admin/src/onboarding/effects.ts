@@ -7,6 +7,11 @@
 import { api } from "../api";
 import { ideUrl, navigate } from "../App";
 import { noteApplicationsChanged } from "../appActions";
+import {
+  constructorState,
+  createConstruction,
+  installConstructor,
+} from "../appConstructor";
 import type { CreateApplicationRequest } from "../client";
 import { NEW_LOCAL_FILE_STORE } from "../newFileStore";
 import { buildConfig, initialValues } from "../settings";
@@ -112,10 +117,25 @@ export const onboardingEffects: OnboardingFx = {
     };
   },
 
+  async constructorInstalled() {
+    return constructorState(await api.listModules()).installed;
+  },
+
+  async installConstructor() {
+    await installConstructor();
+    // Its screen is a link in the sidebar from now on.
+    noteApplicationsChanged();
+  },
+
   async constructApplication({ name, provider }) {
+    if (!constructorState(await api.listModules()).installed) {
+      throw new Error(
+        "Plan & build is the App Constructor module, which is not installed. Install it first (Settings → Modules → Bundled modules).",
+      );
+    }
     const app = await onboardingEffects.createApplication({ name, framework: REACT });
     try {
-      await api.createConstruction(app.id, { provider });
+      await createConstruction(app.id, provider);
     } catch (err) {
       // An application with no construction is not what was asked for, and
       // left behind it would be a second one after the corrected attempt.

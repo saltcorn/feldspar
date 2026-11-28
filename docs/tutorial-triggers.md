@@ -366,6 +366,21 @@ Who "the user" is, is **whoever caused the event**: the signed-in person for a t
 reads as the public role, because a nightly job has no user to act as. That is why admin is the
 default.
 
+**When writes must land together, make them atomically.** `db.atomically(fn)` makes every
+write its function lists in one transaction: all of them, or none if one fails. The function
+only lists the writes, so it must not be `async`, and a read inside it is refused. Read before
+it or after it:
+
+```js
+const [order] = await db.atomically((db) => {
+  db.orders.insert({ customer: payload.customer, total: payload.total });
+  db.stock.where({ item: payload.item }).update({ reserved: true });
+});
+```
+
+Each write is what it would be alone, with its checks and its triggers. The triggers fire once
+all the writes are in.
+
 **When the chain cannot ask it, write the SQL.** A window function, a recursive CTE, an
 `ON CONFLICT` — `db.sql()` runs a statement you wrote and gives you its rows. The values go in
 the array and are **bound**, never pasted into the text, so `$1` is a value even when the value

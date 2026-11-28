@@ -9,8 +9,12 @@ import { ONBOARDING, providerFields, REACT, SALTCORN_UI, type OnboardingFx } fro
 import { subdomainFor, unusedName } from "./naming";
 
 /** Fake effects that record what they were asked to do. */
-function fakes(providers: { name: string; is_default: boolean }[] = []) {
+function fakes(
+  providers: { name: string; is_default: boolean }[] = [],
+  { hasConstructor = true }: { hasConstructor?: boolean } = {},
+) {
   const calls: string[] = [];
+  let installed = hasConstructor;
   const fx: OnboardingFx = {
     providers: async () => providers,
     backends: async () => [
@@ -30,7 +34,13 @@ function fakes(providers: { name: string; is_default: boolean }[] = []) {
       calls.push(`copilot on ${provider}`);
       return "Admin copilot";
     },
+    constructorInstalled: async () => installed,
+    installConstructor: async () => {
+      calls.push("install the App Constructor");
+      installed = true;
+    },
     constructApplication: async (app) => {
+      if (!installed) throw new Error("not installed");
       calls.push(`construct ${app.name} on ${app.provider}`);
       return { id: "app-1", name: app.name };
     },
@@ -116,11 +126,26 @@ describe("the onboarding script", () => {
       const { fx, calls } = fakes([{ name: "main", is_default: true }]);
       let state = await settle(ONBOARDING, pick(startFlow(ONBOARDING), "Generative AI"), fx);
       state = await settle(ONBOARDING, pick(state, "Use {provider}"), fx);
-      state = pick(state, "Application from a description");
+      state = await settle(ONBOARDING, pick(state, "Application from a description"), fx);
       expect(at(state)).toBe("ai-app");
       state = await submit(ONBOARDING, state, { name: " Gym log " }, fx);
-      expect(state).toMatchObject({ done: { to: "/applications/app-1/construct" } });
+      // Plan & build is the App Constructor module's screen.
+      expect(state).toMatchObject({ done: { to: "/applications/app-1/m/app-constructor/construct" } });
       expect(calls).toEqual(["construct Gym log on main"]);
+    });
+
+    it("installs the App Constructor module first when it is not installed", async () => {
+      const { fx, calls } = fakes([{ name: "main", is_default: true }], { hasConstructor: false });
+      let state = await settle(ONBOARDING, pick(startFlow(ONBOARDING), "Generative AI"), fx);
+      state = await settle(ONBOARDING, pick(state, "Use {provider}"), fx);
+      state = await settle(ONBOARDING, pick(state, "Application from a description"), fx);
+      expect(at(state)).toBe("ai-app-install");
+      expect(calls).toEqual([]);
+      state = await settle(ONBOARDING, pick(state, "Install the App Constructor"), fx);
+      expect(at(state)).toBe("ai-app");
+      state = await submit(ONBOARDING, state, { name: "Gym log" }, fx);
+      expect(state).toMatchObject({ done: { to: "/applications/app-1/m/app-constructor/construct" } });
+      expect(calls).toEqual(["install the App Constructor", "construct Gym log on main"]);
     });
 
     it("with a provider, can still set up a new one", async () => {

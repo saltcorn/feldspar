@@ -2,6 +2,108 @@
 
 Changes in reverse chronological order.
 
+## Plan & build as a bundled module
+
+The App Constructor is now a bundled module, **App Constructor (Plan & build)**, installed
+from Settings → Modules. It does what the built-in Plan & build does: an admin describes a React
+application, the construction agent asks its questions, proposes mockups and plans the phases,
+and the runner plans each phase's tasks and builds them one by one with the construction agent
+and the application's builder agent, building the application after each feature. Stop, retry,
+skip, planning one phase and feedback on a built phase work as before, and a construction that
+was running when the server stopped carries on when it starts. Its screen is in the
+application's sidebar, and the LLM provider it uses is on the application's settings. Deleting
+an application deletes its construction and the agent made for it. Installing it grants the
+module the right to run agents with the admin's console tools and to build applications.
+
+The built-in Plan & build is gone, so Plan & build needs the module. Creating an application
+from a description offers to install it when it is missing, and the home page reads the
+constructions from it.
+
+Tests: `plugins/app-constructor/test/`, `plugins/app-constructor/ui/src/*.test.ts(x)`,
+`crates/sc-server/tests/app_constructor_module.rs`,
+`ui/admin/src/appConstructor.test.ts`, `ui/admin/src/onboarding/script.test.ts`.
+
+## Agents can have the data-model tools on their own
+
+A new built-in trait, **data_model**, gives an agent the twelve tools the App Constructor builds
+a data model with: describing the schema, creating and changing tables and fields (never
+dropping them), and saving the application's queries and code libraries, with the documentation
+tools. Like the constructor's, they are offered only to an administrator at the admin console,
+never to a run a trigger or an application's page started.
+
+Tests: `crates/sc-agent-builtins/tests/host_privileges.rs`.
+
+## Modules can add screens to the admin
+
+A module can now add a screen to the admin. The screen renders in the admin's own page, under its
+header and sidebar. An application's screen is a link in the sidebar of the applications on the
+frameworks it names. An admin-wide screen opens from the module's card on the Modules tab, which
+also lists a module's screens. The screen talks to the module's own routes as the signed-in
+admin. A module's routes and its agent tools can also use the `db` chain code bodies use
+(`req.feldspar.db`, `ctx.db`), as their caller. See Step 15 of the modules tutorial.
+
+Tests: `ui/admin/src/moduleScreens.test.ts`, `crates/sc-server/tests/module_apps.rs`,
+`crates/sc-server/tests/module_agent_traits.rs`.
+
+## Writes that land together in code
+
+A code body, or a module, can now make several writes together with `db.atomically(...)`: every
+insert, update and delete it lists is made in one transaction, so either all of them land or,
+when one fails, none do. The triggers they fire run once all of them are in. The agents' code
+API description explains it.
+
+Tests: `crates/sc-action-builtins/tests/run_js_code.rs`, `crates/sc-server/tests/module_apps.rs`.
+
+## Modules can work on an application's project and build it
+
+A module can now read applications, read and write the files of an application's project, and
+build it the way the Build button does: it starts a build, waits for it, and reads whether it
+succeeded or what the bundler said. This needs a new **Applications** permission, granted on the
+module's card. With `read`, a module reads applications. With `build`, it also changes their
+projects and builds them. Only an administrator's request reaches applications through a
+module's route. A path stays inside the application's project. See Step 14 of the modules
+tutorial.
+
+A module can also clean up after a deleted application: its `on_application_deleted` hook is
+called with the application as it was, and deletes what the module kept for it. A module can add
+fields to an application's settings form (a text, a switch or a choice of LLM provider), which
+the form shows with its development settings, and list the LLM providers with their default
+models.
+
+Tests: `crates/sc-server/tests/module_apps.rs`, `crates/sc-server/tests/module_agent_runs.rs`,
+`crates/sc-module/src/permissions.rs`, `ui/admin/src/modules.test.ts`.
+
+## Modules can make agents and run them
+
+A module can now make agents and run them. It starts a run with a prompt, waits for it, reads how
+it ended and what was said, and stops it. A route does this for the signed-in person calling it.
+A module's background service has no caller of its own, so it continues work on behalf of a run
+the module started earlier, and picks up a run a restart left behind. This needs a new **Agents**
+permission, which an admin grants on the module's card. With `run`, each run acts for whoever
+asked. With `console`, a run an administrator starts also gets the admin console's tools, which
+an agent that builds an application needs. A module may change and delete only the agents it
+made, and read only the runs it started. Making agents takes an administrator. See Step 13 of
+the modules tutorial.
+
+Tests: `crates/sc-server/tests/module_agent_runs.rs`, `crates/sc-module/src/permissions.rs`,
+`crates/sc-server/src/module_agents.rs`, `ui/admin/src/modules.test.ts`.
+
+## Modules can give agents tools
+
+A module can now supply agent traits, which appear in the agent form's trait picker beside the
+built-in ones. Each trait brings its tools, a paragraph of system prompt, its own settings on the
+agent, and optionally a session header. A tool runs as the person the agent works for: what it
+reads and writes is theirs, under their role and ownership rules. A tool that changes something
+is offered only to an agent that acts, not to one that plans or explores. The module card counts
+the agent traits a module supplies. A trait whose name is taken, or whose tool is missing its
+code, is left out and says why. Removing the module takes its traits away, and an agent that
+still names one says so. A tool, or a whole trait, marked `admin_only` is offered only to an
+administrator at the admin console, never to a run a trigger or an application's page started,
+and is refused if called anyway. This is the first step in moving the App Constructor out of the
+core into a module of its own. See Step 12 of the modules tutorial.
+
+Tests: `crates/sc-server/tests/module_agent_traits.rs`, `crates/sc-server/src/agent_traits.rs`.
+
 ## Plan & build: an Activity tab with every error
 
 Plan & build's Progress tab is now Activity, the last tab, since it covers every step, and it

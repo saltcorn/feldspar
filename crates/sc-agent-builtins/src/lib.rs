@@ -110,10 +110,10 @@ pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> = sc_catalog::U
 );
 
 mod admin_copilot;
-mod app_constructor;
 mod ask_user;
 mod build_application;
 mod coding;
+mod data_model;
 mod docs;
 mod edit_table_rows;
 mod files;
@@ -155,11 +155,7 @@ pub use admin_copilot::{
     AdminCopilot, CFG_ALLOW_ACCESS, CFG_ALLOW_APPLICATIONS, CFG_ALLOW_CREATE, CFG_ALLOW_DROP,
     CFG_ALLOW_EDIT, CFG_ALLOW_TRIGGERS,
 };
-pub use app_constructor::{
-    AppConstructor, CFG_CONSTRUCTED_APPLICATION, DATA_MODEL_TOOLS, TOOL_ASK_QUESTIONS,
-    TOOL_PLAN_FEEDBACK, TOOL_SAVE_MOCKUPS, TOOL_SAVE_PHASES, TOOL_SAVE_TASKS,
-    app_constructor_config,
-};
+pub use data_model::{DATA_MODEL_TOOLS, DataModel};
 pub use ask_user::{
     AskUser, CFG_ANSWER_PROMPT, CFG_ASK_PROMPT, CFG_ASK_TOOL_NAME, CFG_DISCUSS_LABEL,
     CFG_DISCUSS_PROMPT, DEFAULT_ASK_TOOL, DISCUSS_VALUE,
@@ -331,7 +327,7 @@ pub fn register_agent_actions(
 
 pub fn register_builtin_traits(registry: &mut AgentRegistry) -> Result<()> {
     registry.register(Arc::new(AdminCopilot))?;
-    registry.register(Arc::new(AppConstructor))?;
+    registry.register(Arc::new(DataModel))?;
     registry.register(Arc::new(QueryTable))?;
     registry.register(Arc::new(EditTableRows))?;
     registry.register(Arc::new(PreviewPane))?;
@@ -371,10 +367,10 @@ mod tests {
             registry.names(),
             vec![
                 "admin_copilot",
-                "app_constructor",
                 "ask_user",
                 "build_application",
                 "coding",
+                "data_model",
                 "docs",
                 "edit_table_rows",
                 "generate_image",
@@ -415,9 +411,10 @@ mod tests {
         for trait_ in registry.all() {
             assert!(!trait_.description().is_empty(), "{}", trait_.name());
             let spec = trait_.config_spec();
-            // `docs` alone has no form at all: documentation is the same for
-            // every agent, so there is nothing about it to configure.
-            if trait_.name() == "docs" {
+            // `docs` has no form at all: documentation is the same for every
+            // agent, so there is nothing about it to configure. Nor has
+            // `data_model`: it is the whole data model, an admin's at the console.
+            if matches!(trait_.name(), "docs" | "data_model") {
                 assert!(spec.is_empty());
                 continue;
             }

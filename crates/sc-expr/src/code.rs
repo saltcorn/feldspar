@@ -813,8 +813,66 @@ Object.defineProperty(globalThis, "__scMakeDb", {
   // it is what tells the host *whose* call this is, and a body is handed the
   // handle rather than the token, so there is nothing for another body to guess.
   value: (__scTok) => {
-  // Every plan carries the run's own token.
-  const send = (plan) => __scDbCall(__scTok, plan);
+  // Every plan carries the run's own token. While `atomically()` lists its
+  // writes they are recorded instead of sent, and go together after it.
+  let recording = null;
+  const send = (plan) => {
+    if (recording) {
+      recording.push(plan);
+      return Promise.resolve(undefined);
+    }
+    return __scDbCall(__scTok, plan);
+  };
+  // `db.atomically((db) => { … })` (TODO-app-constructor AC12.6): the writes
+  // the function makes, made together in one transaction — all of them, or
+  // none. The function lists them and is not awaited: it runs to its end
+  // before any of them is sent, so it must not be async, and a read in it is
+  // refused. Named so no table is likely to be called it: `db.<name>` is also
+  // how a body reaches a table, and a table called that is still
+  // `db.table("atomically")`.
+  //
+  // The function is handed a handle of its own, whose calls are recorded while
+  // it runs and refused once it has returned: an async function's writes after
+  // its first `await` would otherwise be sent one by one, outside the batch,
+  // after the batch was refused. While it runs, a write through the outer `db`
+  // is recorded too.
+  const atomically = (authority, build, sender) => {
+    if (typeof build !== "function") {
+      throw new Error(
+        "atomically() takes a function that makes the writes, e.g. db.atomically((db) => { db.a.insert({ x: 1 }); })"
+      );
+    }
+    if (recording || sender !== send) {
+      throw new Error("atomically() cannot be called inside atomically()");
+    }
+    const plans = [];
+    let open = true;
+    const record = (plan) => {
+      if (!open) {
+        return Promise.reject(new Error(
+          "this write was made after atomically()'s function returned, so it is refused: the function lists the writes and must not be async"
+        ));
+      }
+      plans.push(plan);
+      return Promise.resolve(undefined);
+    };
+    recording = plans;
+    let listed;
+    try {
+      listed = build(handle(authority, record));
+    } finally {
+      recording = null;
+      open = false;
+    }
+    if (listed && typeof listed.then === "function") {
+      // Its later writes are refused; that rejection is this one's news.
+      if (typeof listed.catch === "function") listed.catch(() => {});
+      throw new Error(
+        "atomically()'s function must not be async: it lists the writes, which are made together once it returns"
+      );
+    }
+    return __scDbCall(__scTok, { op: "batch", plans: plans });
+  };
   const userAuthority = (who) => {
     // TODO-type-hardening H8.8: `asUser()` is the event's caller; `asUser(id)`
     // (or `asUser(row)`) is one named user, sent as the plan's `{ user: id }`
@@ -925,7 +983,7 @@ Object.defineProperty(globalThis, "__scMakeDb", {
           '.aggregate({ ' + fn + ': "' + fn + "(" + (arg === undefined ? "" : arg) + ')" }).rows()'
         );
       }
-      return send(plan("aggregate", {
+      return state.send(plan("aggregate", {
         aggregate: [{ alias: "value", fn: fn, arg: arg === undefined ? null : arg }],
       })).then((r) =>
         r === null || r === undefined || r.value === undefined ? null : r.value
@@ -941,9 +999,9 @@ Object.defineProperty(globalThis, "__scMakeDb", {
             "answers aggregate values, so say which"
           );
         }
-        return send(plan("select", extra));
+        return state.send(plan("select", extra));
       }
-      return send(plan("aggregate", extra)).then((r) => (Array.isArray(r) ? r : [r]));
+      return state.send(plan("aggregate", extra)).then((r) => (Array.isArray(r) ? r : [r]));
     };
     // `.iter()`: the rows, one batch per host call, resuming each time from the
     // cursor the last batch answered with. The isolate holds one batch rather
@@ -994,7 +1052,7 @@ Object.defineProperty(globalThis, "__scMakeDb", {
           // rule said where a guest cannot reach it.
           delete p.offset;
         }
-        const reply = await send(p);
+        const reply = await state.send(p);
         const batch = reply.rows;
         for (let i = 0; i < batch.length; i++) {
           yield batch[i];
@@ -1052,8 +1110,8 @@ Object.defineProperty(globalThis, "__scMakeDb", {
       iter: (batchSize) => iterate(batchSize),
       first: () => read({ limit: 1 }).then((r) => (r.length ? r[0] : null)),
       get: (pk) =>
-        send(plan("select", { pk: pk, limit: 1 })).then((r) => (r.length ? r[0] : null)),
-      exists: () => send(plan("select", { limit: 1 })).then((r) => r.length > 0),
+        state.send(plan("select", { pk: pk, limit: 1 })).then((r) => (r.length ? r[0] : null)),
+      exists: () => state.send(plan("select", { limit: 1 })).then((r) => r.length > 0),
       count: () => scalar("count"),
       sum: (f) => scalar("sum", f),
       avg: (f) => scalar("avg", f),
@@ -1064,12 +1122,12 @@ Object.defineProperty(globalThis, "__scMakeDb", {
       // newest first, the rows deleted and not back, a row as it was, and the
       // two ways back — each a write through the row layer, under this
       // query's authority, in a `restore` changeset of its own.
-      history: (key) => send(historyPlan("history", { key: rowKey("history", key) })),
+      history: (key) => state.send(historyPlan("history", { key: rowKey("history", key) })),
       deleted: () => {
         const p = historyPlan("deleted", {});
         if (state.limit !== null) p.limit = state.limit;
         if (state.offset !== null) p.offset = state.offset;
-        return send(p);
+        return state.send(p);
       },
       asOf: (key, when) => {
         if (when instanceof Date) when = when.toISOString();
@@ -1078,30 +1136,30 @@ Object.defineProperty(globalThis, "__scMakeDb", {
             "asOf()'s second argument is when: a time, a date, or an entry's seq"
           );
         }
-        return send(historyPlan("as_of", { key: rowKey("asOf", key), as_of: when }));
+        return state.send(historyPlan("as_of", { key: rowKey("asOf", key), as_of: when }));
       },
-      restore: (key) => send(historyPlan("restore", { key: rowKey("restore", key) })),
+      restore: (key) => state.send(historyPlan("restore", { key: rowKey("restore", key) })),
       revert: (key, version) => {
         if (typeof version !== "number" || !Number.isInteger(version) || version < 1) {
           throw new Error(
             "revert()'s second argument is the version to go back to, from history()"
           );
         }
-        return send(historyPlan("revert", { key: rowKey("revert", key), version: version }));
+        return state.send(historyPlan("revert", { key: rowKey("revert", key), version: version }));
       },
 
-      insert: (values) => send(plan("insert", { values: values })),
+      insert: (values) => state.send(plan("insert", { values: values })),
       update: (...args) => {
         byWhere("update", args);
         bounded("update");
-        return send(plan("update", { values: args[0] }));
+        return state.send(plan("update", { values: args[0] }));
       },
-      delete: (...args) => { byWhere("delete", args); bounded("delete"); return send(plan("delete")); },
+      delete: (...args) => { byWhere("delete", args); bounded("delete"); return state.send(plan("delete")); },
     };
   };
-  const table = (authority, name) =>
+  const table = (authority, name, sender) =>
     query({
-      table: name, authority: authority,
+      send: sender, table: name, authority: authority,
       where: [], select: [], order: [], group: [], having: [], aggregate: [],
       limit: null, offset: null, request: null,
     });
@@ -1111,7 +1169,7 @@ Object.defineProperty(globalThis, "__scMakeDb", {
   // fluently. Unknown option keys are refused rather than ignored, because an
   // option that silently does nothing is the worst way to learn it was spelled
   // wrong.
-  const sql = (authority, text, params, options) => {
+  const sql = (authority, text, params, options, sender) => {
     if (typeof text !== "string") {
       throw new Error('sql() takes the SQL text, e.g. db.sql("select 1 as n")');
     }
@@ -1132,7 +1190,7 @@ Object.defineProperty(globalThis, "__scMakeDb", {
       });
       if (options.asUser !== undefined) asUser = !!options.asUser;
     }
-    return send({
+    return sender({
       op: "sql",
       authority: asUser === null ? authority : (asUser ? "user" : "admin"),
       sql: text,
@@ -1140,12 +1198,15 @@ Object.defineProperty(globalThis, "__scMakeDb", {
     });
   };
   // `db.table("x")` is the general form; `db.x` is a Proxy over the same call.
-  const handle = (authority) => {
+  // `sender` is where its calls go: the run's `send`, or the recorder of the
+  // `atomically()` whose function it was handed.
+  const handle = (authority, sender = send) => {
     const base = {
-      table: (name) => table(authority, name),
-      sql: (text, params, options) => sql(authority, text, params, options),
-      asUser: (who) => handle(userAuthority(who)),
-      asAdmin: () => handle("admin"),
+      table: (name) => table(authority, name, sender),
+      sql: (text, params, options) => sql(authority, text, params, options, sender),
+      atomically: (build) => atomically(authority, build, sender),
+      asUser: (who) => handle(userAuthority(who), sender),
+      asAdmin: () => handle("admin", sender),
       // The plan seam itself, and the one thing on this handle that is not the
       // fluent surface: one plan in, a promise of its answer out, over this
       // run's own token.
@@ -1157,13 +1218,13 @@ Object.defineProperty(globalThis, "__scMakeDb", {
       // body nothing the chain does not: a plan is re-resolved against the
       // catalog on arrival and every name in it refused there, which is why the
       // chain can be a convenience rather than a boundary.
-      __scSend: (plan) => send(plan),
+      __scSend: (plan) => sender(plan),
     };
     return new Proxy(base, {
       get: (target, prop) => {
         if (typeof prop !== "string") return undefined;
         if (Object.prototype.hasOwnProperty.call(target, prop)) return target[prop];
-        return table(authority, prop);
+        return table(authority, prop, sender);
       },
     });
   };

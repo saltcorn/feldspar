@@ -1,0 +1,8 @@
+{
+  "name": "agent-runner-module",
+  "version": "0.1.0",
+  "description": "A test module that makes an agent and starts, follows and stops its runs (TODO-app-constructor AC12.2).",
+  "main": "index.js",
+  "license": "MIT",
+  "private": true
+}

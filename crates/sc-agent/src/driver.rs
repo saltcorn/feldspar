@@ -457,7 +457,7 @@ impl<'a> Runner<'a> {
                 self.registry
                     .require(&enabled.trait_)
                     .ok()
-                    .map(|t| (Arc::clone(t), &enabled.config))
+                    .map(|t| (t, &enabled.config))
             })
     }
 
